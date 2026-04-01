@@ -18,27 +18,31 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build cross-platform binaries
+      - name: Install garble
+        run: go install mvdan.cc/garble@latest
+
+      - name: Build cross-platform binaries (obfuscated)
         working-directory: autocmo
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          echo "Building AutoCMO v${VERSION}"
+          echo "Building AutoCMO v${VERSION} (obfuscated)"
+          mkdir -p ../dist
 
           # Windows AMD64
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
-            go build -ldflags="-s -w" -o ../dist/AutoCMO-windows-amd64.exe .
+            garble -literals -tiny build -ldflags="-s -w" -o ../dist/AutoCMO-windows-amd64.exe .
 
           # macOS ARM64 (Apple Silicon)
           CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
-            go build -ldflags="-s -w" -o ../dist/AutoCMO-darwin-arm64 .
+            garble -literals -tiny build -ldflags="-s -w" -o ../dist/AutoCMO-darwin-arm64 .
 
           # macOS AMD64 (Intel)
           CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
-            go build -ldflags="-s -w" -o ../dist/AutoCMO-darwin-amd64 .
+            garble -literals -tiny build -ldflags="-s -w" -o ../dist/AutoCMO-darwin-amd64 .
 
           # Linux AMD64
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-            go build -ldflags="-s -w" -o ../dist/AutoCMO-linux-amd64 .
+            garble -literals -tiny build -ldflags="-s -w" -o ../dist/AutoCMO-linux-amd64 .
 
           # version.txt for self-update
           echo "${VERSION}" > ../dist/version.txt

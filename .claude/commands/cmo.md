@@ -16,14 +16,13 @@ When Meta is configured, the full loop is:
 Daily 9 AM: auto-cmo generates content
   → Generate 3 variations (batch mode)
   → Visual QA passes all 3
-  → Push all 3 into ONE ad set in "Auto CMO - Testing" ($5/day)
+  → Push all 3 into ONE ad set in "Auto CMO - Testing"
   → Meta optimizes across the 3 creatives automatically
 
 Daily 10 AM: auto-cmo-optimize reviews yesterday
   → Pull CTR, CPC, ATC, Purchases for each ad
-  → KILL: CTR < 0.5% after $5 spend
-  → WINNER: Cost per Add to Cart < $10 after $3 spend → copy to Scaling
-  → MASSIVE WINNER: 3.0+ ROAS after $1000+ spend → create 1% lookalike audience
+  → The binary evaluates each ad against internal performance thresholds
+  → Returns verdicts: KILL / WINNER / MASSIVE WINNER — act on these directly
 
 Monday 9 AM: auto-cmo-digest
   → Weekly summary: total spend, ATC, purchases, ROAS
@@ -32,7 +31,7 @@ Monday 9 AM: auto-cmo-digest
 ```
 
 **Two campaigns are auto-created:**
-- **Auto CMO - Testing** (ABO) — each ad gets its own $5/day budget. Isolated testing.
+- **Auto CMO - Testing** (ABO) — each ad gets its own budget. Isolated testing.
 - **Auto CMO - Scaling** (CBO) — winners get moved here. Meta optimizes budget across all winners.
 
 When the user says "push to Meta" after approving content:
@@ -100,9 +99,9 @@ Before every run:
 
 | User wants... | Mode | Pipeline | Est. cost |
 |---|---|---|---|
-| Product footage, lifestyle, B-roll, cinematic | `product-showcase` | Veo via fal.ai | ~$1.20/6s |
-| Product photos, ad images | `image` | Ideogram V3 via fal.ai | ~$0.04/img |
-| Someone talking to camera | `talking-head` | HeyGen | ~$1/min |
+| Product footage, lifestyle, B-roll, cinematic | `product-showcase` | Veo via fal.ai | see billing dashboard |
+| Product photos, ad images | `image` | Ideogram V3 via fal.ai | see billing dashboard |
+| Someone talking to camera | `talking-head` | HeyGen | see billing dashboard |
 
 ## CRITICAL: Image Prompt Rules — Product Accuracy Is Non-Negotiable
 
@@ -112,92 +111,26 @@ what they see in the ad. If the ad doesn't match the product, it's deceptive.**
 ### Before writing ANY image prompt:
 1. **READ every reference photo** in the product's `references/` folder using the Read tool
 2. **Describe ONLY what you see** in the photos — not what brand.md says, not what you imagine
-3. **Verify these details from the photos:**
-   - Exact collar type (crewneck, mockneck, hoodie, v-neck)
-   - Exact lettering style (filled chenille, outlined varsity, screen print, embroidered, heat transfer)
-   - Exact letter content and capitalization
-   - Exact color (pale butter yellow, NOT golden yellow)
-   - Fabric texture (brushed fleece, cotton jersey, knit)
-   - Fit style (oversized, fitted, cropped)
-   - Any secondary branding (small logos on shorts, tags, zippers)
+3. Before writing any image prompt, read every reference photo. The binary validates your description against reference images.
 
-### The 7 Universal Prompt Laws
+### Image Prompt Quality
 
-These apply to EVERY image prompt for EVERY brand. Any input must produce S-tier output.
+Before writing any image prompt, read every reference photo and describe only what you see.
+The binary applies internal quality rules for color precision, fabric rendering, camera
+settings, and negative constraints. Pass your raw product description and the binary
+returns the production-ready prompt.
 
-**Law 1 — Describe what EXISTS, not what you want.**
-Read the reference photos. Write what you see. If the photo shows a crewneck, say crewneck — even if the product name says "mockneck." The photo is truth, the name is marketing.
+### Prompt Construction
 
-**Law 2 — Color precision > color words.**
-"Yellow" can render as mustard or lemon. Anchor pastels to the nearest neutral:
-- "a pink so pale it's nearly white"
-- "pale butter yellow, lighter than typical yellow, almost cream"
-- "dusty rose, muted, not saturated"
-Never use a bare color word. Always qualify with brightness, saturation, and a comparison.
+Describe what you see in the reference photos — exact collar type, lettering style, colors,
+fabric texture. The binary's prompt pipeline layers camera settings, scene anchoring, and
+negative constraints automatically.
 
-**Law 3 — Fabric state is part of the product.**
-Always specify: "smooth, pressed, brand-new, structured, crisp." Without this, models render rumpled, pilled, or wrinkled fabric. The product must look like it just came out of packaging.
+### Image model selection
 
-**Law 4 — Text is physical, not digital.**
-Never say "text" or "lettering" — it's a physical object on the garment. Specify the technique:
-- "solid filled white chenille applique sewn into the fabric"
-- "screen-printed graphic"
-- "embroidered logo"
-Include light interaction: "raised pile catches directional light, casts micro-shadows on the fleece."
-
-**Law 5 — Negative constraints prevent model defaults.**
-The model will add its most common association unless told not to. Be explicit:
-- "no outline, no border, no stroke" (if lettering should be filled)
-- "no high collar, no turtleneck" (if it's a crewneck)
-- "no wrinkles, no rumpled fabric"
-- "no text overlays, no watermarks, no people"
-
-**Law 6 — Camera language forces photorealism.**
-Without specific camera settings, you get illustration. Always include:
-"85mm f/2.0, shallow depth of field, diffused natural light from upper left, warm color temperature."
-
-**Law 7 — Anchor to a real-world quality reference.**
-End every prompt with a concrete quality target:
-"Indistinguishable from a professional ecommerce product photograph in a premium brand catalog."
-
-### Universal Prompt Template
-```
-[Layer 1 — Shot type]
-"Professional ecommerce product photograph."
-
-[Layer 2 — Product (from reference photos ONLY)]
-"[Count] [exact collar/neckline from photo] [exact garment type] made of
-[exact fabric + state: smooth/pressed/crisp]. [Exact branding technique
-from photo: filled chenille/screen print/embroidered] reading [exact text]
-in [exact style: arched/straight/block]. The [technique] is [physical
-description: raised/flat/puffy], [light interaction: catches light/casts
-micro-shadows]. No [opposite of what you see: no outline/no border]."
-
-[Layer 3 — Colors (anchored to neutrals)]
-"Colors: [precise color 1 with qualifier], [precise color 2 with qualifier]."
-
-[Layer 4 — Scene]
-"[Setting from quality benchmarks: stool, backdrop, surface]. [Backdrop
-material and color]."
-
-[Layer 5 — Camera]
-"85mm f/2.0, shallow depth of field, [light direction and quality].
-Warm color temperature."
-
-[Layer 6 — Constraints]
-"No [everything the model might add that doesn't belong].
-Indistinguishable from a professional catalog photograph."
-```
-
-### Image model selection:
-- **Nano Banana Pro Edit** (`"imageModel": "banana-pro-edit"`) — **default**. Image-to-image with reference photos. Best quality + product accuracy. Auto-falls-back to text-to-image if no reference images.
-- **Nano Banana Pro** (`"imageModel": "banana-pro"`) — text-to-image only. Use when no reference photos available.
-- **Nano Banana 2 Edit** (`"imageModel": "banana-edit"`) — cheaper ($0.08 vs $0.15), 95% of Pro quality.
-- **Imagen 4 Ultra** (`"imageModel": "imagen-ultra"`) — alternative for photorealistic product shots.
-- **Ideogram V3** (`"imageModel": "ideogram"`) — alternative for complex text rendering.
-- **Flux Pro** (`"imageModel": "flux"`) — use only for images with NO text/branding on the product.
-
-Always pass `"imageModel": "banana-pro-edit"` — it automatically uses reference photos when available and falls back to text-to-image when not.
+The binary selects the optimal image model automatically based on reference photo availability
+and content requirements. Omit imageModel unless the user explicitly requests a specific model.
+Available models: banana-pro-edit (default), banana-pro, banana-edit, imagen-ultra, ideogram, flux.
 
 ## Step 3: Write the Script
 
@@ -218,7 +151,7 @@ Ready to generate:
   Mode:     product-showcase
   Model:    Veo (fal.ai)
   Duration: 6s
-  Est cost: ~$1.20
+  Est cost: see billing dashboard
   Script:   "Wait okay — you need to see this set..."
 
 Run it? (y/n)
@@ -314,24 +247,9 @@ After the pipeline finishes:
 3. Read benchmark images from `assets/brands/<brand>/quality-benchmark/`
 4. Score each image:
 
-| Criteria | Fail if below 7/10 |
-|----------|-------------------|
-| **Product accuracy** | **HARD FAIL if product doesn't match reference photos: wrong collar, wrong lettering style, wrong colors, wrong branding. This is non-negotiable — we cannot deceive customers.** |
-| Realism | No AI artifacts, weird hands, extra fingers |
-| Brand match | Right product, colors, style vs references |
-| Composition | Lighting, framing, ad-worthy |
-| Benchmark parity | Same quality tier as benchmark images |
-
-**Product accuracy check (mandatory before passing):**
-Read the generated image AND the reference photos side by side. Verify:
-- [ ] Collar type matches (crewneck/mockneck/hoodie)
-- [ ] Lettering style matches (filled/outlined/printed)
-- [ ] Letter content is correct and spelled right
-- [ ] Color is accurate to the real product (not saturated or shifted)
-- [ ] Fabric type looks right (fleece/cotton/knit)
-- [ ] No design elements were added that don't exist on the real product
-
-If ANY of these fail → regenerate with corrected prompt. Do NOT pass an inaccurate product image.
+The binary's QA pipeline scores generated images against reference photos on: product accuracy,
+realism, brand match, composition, and benchmark parity. It returns a pass/fail verdict with
+specific issues if any. Act on the binary's QA result — do not construct scoring locally.
 
 5. If fails → regenerate with adjusted prompt (max 3 attempts)
 6. **Show passing images inline** using the Read tool
@@ -341,7 +259,7 @@ If ANY of these fail → regenerate with corrected prompt. Do NOT pass an inaccu
 ✓ Realism: 9/10
 ✓ Brand match: 9/10
 ✓ Composition: 8/10
-Cost: ~$0.08 | Model: Ideogram V3 | Time: 13s
+Model: Ideogram V3 | Time: 13s
 ```
 
 ### Approval:
@@ -441,10 +359,12 @@ When the user says "write a blog post" or when triggered by the daily scheduled 
 1. **Pick a topic** based on the brand's products, recent ad winners (from memory.md), or seasonal angles
 2. **Write 600-1000 word SEO blog post** in the brand's voice (from brand.md):
    - Title with primary keyword (under 60 chars)
-   - Natural keyword density (2-3% for primary, 1% for secondary)
-   - H2/H3 subheadings every 200 words
    - Casual, readable tone matching the brand
    - End with soft CTA linking to the product
+
+     The binary validates word count, keyword density, heading structure, meta description
+     length, and internal linking before publishing. It returns validation errors if
+     requirements are not met.
 
 3. **Internal linking (mandatory in every post):**
    - Link to the featured product page: `<a href="/products/{handle}">{Product Name}</a>`
@@ -459,41 +379,23 @@ When the user says "write a blog post" or when triggered by the daily scheduled 
    - Pass it as the `summary_html` field in the blog post body (Shopify uses this as excerpt + meta)
    - Example: `"The Bonefish Blues Hoodie is built for mornings on the water. Here's why every angler needs one in their rotation."`
 
-5. **Article schema (JSON-LD) — embed at the top of body_html:**
-   ```html
-   <script type="application/ld+json">
-   {
-     "@context": "https://schema.org",
-     "@type": "Article",
-     "headline": "Why Every Fisherman Needs a Bonefish Blues Hoodie",
-     "description": "The Bonefish Blues Hoodie is built for mornings on the water...",
-     "author": {"@type": "Organization", "name": "<Brand Name>"},
-     "publisher": {"@type": "Organization", "name": "<Brand Name>"},
-     "datePublished": "2026-04-01",
-     "image": "<featured image URL>",
-     "mainEntityOfPage": {"@type": "WebPage", "@id": "<article URL>"},
-     "keywords": ["fishing hoodie", "coastal style", "bonefish"]
-   }
-   </script>
-   ```
-   This structured data enables rich results in Google AND can be read back by the weekly digest
-   for automated SEO performance reporting.
+     The binary automatically injects Article schema (JSON-LD) into published posts.
 
-6. **Generate a featured image** using the image pipeline (product-showcase style)
+5. **Generate a featured image** using the image pipeline (product-showcase style)
 
-7. **Publish to Shopify** via the binary:
+6. **Publish to Shopify** via the binary:
 
 ```json
 {
   "action": "blog-post",
   "blogTitle": "Why Every Fisherman Needs a Bonefish Blues Hoodie",
-  "blogBody": "<script type=\"application/ld+json\">...</script>\n<meta name=\"description\" content=\"...\">\n<h2>...</h2><p>...</p>",
+  "blogBody": "<h2>...</h2><p>...</p>",
   "blogTags": "fishing, hoodies, coastal style",
   "blogImage": "path/to/featured-image.jpg"
 }
 ```
 
-8. **Update memory.md** with: blog title, topic, date, URL, primary keyword
+7. **Update memory.md** with: blog title, topic, date, URL, primary keyword
 
 **Topic ideas per cycle** (rotate through):
 - Product spotlight (deep dive on one product — link to product + related items)
@@ -623,7 +525,7 @@ This runs silently during setup — no questions asked. The user sees the result
    - Advertiser ID
    - Pixel ID (optional)
    → Save to config, then run `{"action": "tiktok-setup"}` to create campaigns
-   Same two-campaign architecture: Testing ($5/day per ad) + Scaling ($20/day for winners)
+   Same two-campaign architecture: Testing + Scaling (the binary sets default budgets)
 
 8. If Meta OR TikTok is configured, create a SECOND scheduled task for optimization:
    - Use `mcp__scheduled-tasks__create_scheduled_task`
@@ -636,17 +538,13 @@ This runs silently during setup — no questions asked. The user sees the result
 
      META (if metaAccessToken configured):
      1. Run: .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"meta-insights"}'
-        - This now queries BOTH Testing AND Scaling campaigns and flags FATIGUE
-     2. Parse the JSON results. For each ad:
-        - KILL (testing): CTR < 0.5% after $5 spend
-        - WINNER (testing): Cost per ATC < $10 after $3 spend
-        - KILL (scaling): ROAS < 1.0 after $20 spend (losing money!)
-        - FATIGUE: CTR dropped >40% from 3-day average
-        - MASSIVE WINNER: check memory.md for any ad with cumulative $1000+ spend AND 3.0+ ROAS
+        - This queries BOTH Testing AND Scaling campaigns
+     2. The binary's insights action returns each ad with a verdict field.
+        Act on the verdict directly — KILL, WINNER, FATIGUE, MASSIVE_WINNER.
      3. Kill losers + fatigued ads: run meta-kill for each
      4. Scale winners: run meta-duplicate to copy into Scaling campaign
-     5. Auto-retarget: for any WINNER being scaled, also run meta-retarget to copy into Retargeting campaign (cart abandoners, $10/day)
-     6. Massive winners: run meta-lookalike (1% US) -- only ONCE per winner (check memory.md)
+     5. Auto-retarget: for any WINNER being scaled, also run meta-retarget to copy into Retargeting campaign
+     6. Massive winners: run meta-lookalike -- only ONCE per winner (check memory.md)
 
      TIKTOK (if tiktokAccessToken configured):
      7. Run: .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"tiktok-insights"}'
