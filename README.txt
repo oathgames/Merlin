@@ -1,5 +1,10 @@
-AutoCMO — Autonomous AI CMO
-============================
+     _         _         ____ __  __  ___
+    / \  _   _| |_ ___  / ___|  \/  |/ _ \
+   / _ \| | | | __/ _ \| |   | |\/| | | | |
+  / ___ \ |_| | || (_) | |___| |  | | |_| |
+ /_/   \_\__,_|\__\___/ \____|_|  |_|\___/
+
+  Autonomous AI CMO — v0.1.2
 
 Replace your marketing team with an AI-powered Claude Code plugin.
 Generate ads, manage campaigns, write SEO blogs, run competitor intel.
