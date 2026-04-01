@@ -9,16 +9,16 @@
 Replace your marketing team with an AI-powered Claude Code plugin.
 Generate ads, manage campaigns, write SEO blogs, run competitor intel.
 
-SETUP (3 steps)
+SETUP
 
-  1. Ask Claude to clone this repo:
-     "Clone https://github.com/oathgames/AutoCMO and open it"
+  1. Download or clone this repo:
+     git clone https://github.com/oathgames/AutoCMO.git
   2. Open the folder in Claude Code
   3. Type: /cmo
 
-  That's it. The /cmo command downloads the binary, sets up your config,
-  and walks you through everything. The only thing you need is a fal.ai
-  API key (free tier: https://fal.ai).
+  That's it. /cmo handles everything else — downloads the binary,
+  sets up your config, walks you through brand setup. The only thing
+  you need is a fal.ai API key (free tier: https://fal.ai).
 
 WHAT YOU CAN DO
   Just talk naturally:
