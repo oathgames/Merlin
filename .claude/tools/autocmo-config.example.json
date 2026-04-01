@@ -27,6 +27,7 @@
   "productName": "My Brand",
   "productUrl": "https://mybrand.com",
   "productDescription": "A short description of your brand.",
+  "vertical": "",
   "outputDir": "../../results",
   "qualityGate": true
 }
