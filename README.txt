@@ -11,8 +11,9 @@ Generate ads, manage campaigns, write SEO blogs, run competitor intel.
 
 SETUP (3 steps)
 
-  1. Download this folder (or clone it)
-  2. Open it in Claude Code
+  1. Ask Claude to clone this repo:
+     "Clone https://github.com/oathgames/AutoCMO and open it"
+  2. Open the folder in Claude Code
   3. Type: /cmo
 
   That's it. The /cmo command downloads the binary, sets up your config,
