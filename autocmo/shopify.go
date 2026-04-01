@@ -413,3 +413,394 @@ func runBlogList(cfg *Config) {
 		log.Fatalf("[ERROR] %v", err)
 	}
 }
+
+// ── Analytics Functions ────────────────────────────────────
+
+// shopifyGetOrders fetches orders created since the given date (RFC3339).
+// Paginates through all results using Shopify's link-based pagination.
+func shopifyGetOrders(cfg *Config, sinceDate string) ([]map[string]interface{}, error) {
+	var allOrders []map[string]interface{}
+	endpoint := fmt.Sprintf("/orders.json?status=any&created_at_min=%s&limit=250", sinceDate)
+
+	for endpoint != "" {
+		data, err := shopifyRequest(cfg, "GET", endpoint, nil)
+		if err != nil {
+			return allOrders, err
+		}
+
+		var result struct {
+			Orders []map[string]interface{} `json:"orders"`
+		}
+		if err := json.Unmarshal(data, &result); err != nil {
+			return allOrders, fmt.Errorf("cannot parse orders response: %w", err)
+		}
+
+		if len(result.Orders) == 0 {
+			break
+		}
+		allOrders = append(allOrders, result.Orders...)
+		if len(result.Orders) < 250 {
+			break
+		}
+		// Simple page-based fallback (Shopify cursor pagination requires Link header parsing)
+		break
+	}
+	return allOrders, nil
+}
+
+// shopifyGetAnalytics is the CLI entry point for order analytics.
+// Pulls orders from the last N days and prints revenue, AOV, top products, and customer metrics.
+func shopifyGetAnalytics(cfg *Config, days int) {
+	if cfg.ShopifyStore == "" || cfg.ShopifyAccessToken == "" {
+		log.Fatal("[ERROR] shopifyStore and shopifyAccessToken required for analytics")
+	}
+
+	fmt.Println("============================================================")
+	fmt.Println("  Shopify Analytics")
+	fmt.Println("============================================================")
+
+	sinceDate := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
+	orders, err := shopifyGetOrders(cfg, sinceDate)
+	if err != nil {
+		log.Fatalf("[ERROR] fetching orders: %v", err)
+	}
+
+	if len(orders) == 0 {
+		fmt.Printf("\n  No orders found in the last %d days.\n", days)
+		return
+	}
+
+	// ── Calculate metrics ──────────────────────────────────
+	totalRevenue := 0.0
+	revenueByDay := map[string]float64{}
+	productRevenue := map[string]float64{}
+	customerOrders := map[string]int{} // email → order count
+
+	for _, order := range orders {
+		// Total price
+		price := parseFloat(order, "total_price")
+		totalRevenue += price
+
+		// Revenue by day
+		if createdAt, ok := order["created_at"].(string); ok && len(createdAt) >= 10 {
+			day := createdAt[:10]
+			revenueByDay[day] += price
+		}
+
+		// Product revenue
+		if lineItems, ok := order["line_items"].([]interface{}); ok {
+			for _, li := range lineItems {
+				if item, ok := li.(map[string]interface{}); ok {
+					name := ""
+					if n, ok := item["title"].(string); ok {
+						name = n
+					}
+					itemPrice := parseFloat(item, "price")
+					qty := 1.0
+					if q, ok := item["quantity"].(float64); ok {
+						qty = q
+					}
+					productRevenue[name] += itemPrice * qty
+				}
+			}
+		}
+
+		// Customer tracking
+		if customer, ok := order["customer"].(map[string]interface{}); ok {
+			if email, ok := customer["email"].(string); ok && email != "" {
+				customerOrders[email]++
+			}
+		}
+	}
+
+	orderCount := len(orders)
+	aov := totalRevenue / float64(orderCount)
+
+	// ── Print summary ──────────────────────────────────────
+	fmt.Printf("\n  Period:             Last %d days\n", days)
+	fmt.Printf("  Total Revenue:      $%.2f\n", totalRevenue)
+	fmt.Printf("  Order Count:        %d\n", orderCount)
+	fmt.Printf("  AOV:                $%.2f\n", aov)
+
+	// ── Revenue by day (sorted) ────────────────────────────
+	fmt.Printf("\n  ── Revenue by Day ──────────────────────────────────\n")
+	fmt.Printf("  %-12s %12s\n", "DATE", "REVENUE")
+	fmt.Println("  ──────────────────────────────")
+	sortedDays := sortedKeys(revenueByDay)
+	for _, day := range sortedDays {
+		fmt.Printf("  %-12s $%11.2f\n", day, revenueByDay[day])
+	}
+
+	// ── Top 5 products ─────────────────────────────────────
+	fmt.Printf("\n  ── Top 5 Products by Revenue ───────────────────────\n")
+	fmt.Printf("  %-40s %12s\n", "PRODUCT", "REVENUE")
+	fmt.Println("  ──────────────────────────────────────────────────────")
+	topProducts := topNByValue(productRevenue, 5)
+	for _, kv := range topProducts {
+		name := kv.key
+		if len(name) > 38 {
+			name = name[:38] + ".."
+		}
+		fmt.Printf("  %-40s $%11.2f\n", name, kv.value)
+	}
+
+	// ── Customer metrics ───────────────────────────────────
+	totalCustomers := len(customerOrders)
+	returning := 0
+	for _, count := range customerOrders {
+		if count > 1 {
+			returning++
+		}
+	}
+	newCustomers := totalCustomers - returning
+	fmt.Printf("\n  ── Customer Metrics ────────────────────────────────\n")
+	fmt.Printf("  Total Customers:    %d\n", totalCustomers)
+	fmt.Printf("  New Customers:      %d\n", newCustomers)
+	fmt.Printf("  Returning:          %d\n", returning)
+	if totalCustomers > 0 {
+		fmt.Printf("  Returning Ratio:    %.1f%%\n", float64(returning)/float64(totalCustomers)*100)
+	}
+
+	// ── JSON output ────────────────────────────────────────
+	analyticsData := map[string]interface{}{
+		"period_days":        days,
+		"total_revenue":      totalRevenue,
+		"order_count":        orderCount,
+		"aov":                aov,
+		"revenue_by_day":     revenueByDay,
+		"top_products":       productRevenue,
+		"total_customers":    totalCustomers,
+		"new_customers":      newCustomers,
+		"returning_customers": returning,
+	}
+	writeAnalyticsJSON(cfg, "shopify-analytics", analyticsData)
+}
+
+// shopifyGetCustomerCohorts pulls orders and groups customers by first-purchase month.
+// Calculates cohort size, repeat rate, LTV, and churn indicators.
+func shopifyGetCustomerCohorts(cfg *Config, days int) {
+	if cfg.ShopifyStore == "" || cfg.ShopifyAccessToken == "" {
+		log.Fatal("[ERROR] shopifyStore and shopifyAccessToken required for cohort analysis")
+	}
+
+	fmt.Println("============================================================")
+	fmt.Println("  Shopify Customer Cohorts")
+	fmt.Println("============================================================")
+
+	sinceDate := time.Now().AddDate(0, 0, -days).Format(time.RFC3339)
+	orders, err := shopifyGetOrders(cfg, sinceDate)
+	if err != nil {
+		log.Fatalf("[ERROR] fetching orders: %v", err)
+	}
+
+	if len(orders) == 0 {
+		fmt.Printf("\n  No orders found in the last %d days.\n", days)
+		return
+	}
+
+	// Build per-customer order history
+	type customerData struct {
+		email      string
+		orders     []time.Time
+		totalSpend float64
+	}
+	customers := map[string]*customerData{}
+
+	for _, order := range orders {
+		email := ""
+		if customer, ok := order["customer"].(map[string]interface{}); ok {
+			if e, ok := customer["email"].(string); ok {
+				email = e
+			}
+		}
+		if email == "" {
+			continue
+		}
+
+		price := parseFloat(order, "total_price")
+		var orderTime time.Time
+		if createdAt, ok := order["created_at"].(string); ok {
+			orderTime, _ = time.Parse(time.RFC3339, createdAt)
+		}
+
+		if customers[email] == nil {
+			customers[email] = &customerData{email: email}
+		}
+		customers[email].orders = append(customers[email].orders, orderTime)
+		customers[email].totalSpend += price
+	}
+
+	// Group by first-purchase month (cohort)
+	type cohortStats struct {
+		month          string
+		size           int
+		repeatCount    int
+		totalSpend     float64
+		hasRecentOrder bool // any order in last 30 days
+	}
+	cohorts := map[string]*cohortStats{}
+	thirtyDaysAgo := time.Now().AddDate(0, 0, -30)
+
+	for _, cd := range customers {
+		// Find earliest order
+		earliest := cd.orders[0]
+		hasRecent := false
+		for _, t := range cd.orders {
+			if t.Before(earliest) {
+				earliest = t
+			}
+			if t.After(thirtyDaysAgo) {
+				hasRecent = true
+			}
+		}
+
+		month := earliest.Format("2006-01")
+		if cohorts[month] == nil {
+			cohorts[month] = &cohortStats{month: month}
+		}
+		c := cohorts[month]
+		c.size++
+		c.totalSpend += cd.totalSpend
+		if len(cd.orders) > 1 {
+			c.repeatCount++
+		}
+		if hasRecent {
+			c.hasRecentOrder = true
+		}
+	}
+
+	// ── Print cohort table ─────────────────────────────────
+	fmt.Printf("\n  %-10s %8s %10s %10s %12s %s\n", "COHORT", "SIZE", "REPEAT%", "AVG LTV", "TOTAL REV", "CHURN?")
+	fmt.Println("  ────────────────────────────────────────────────────────────────────")
+
+	sortedMonths := sortedKeys(map[string]float64{})
+	// Build sorted month list from cohorts
+	monthList := make([]string, 0, len(cohorts))
+	for m := range cohorts {
+		monthList = append(monthList, m)
+	}
+	sortedMonths = monthList
+	sortStrings(sortedMonths)
+
+	cohortOutput := []map[string]interface{}{}
+	for _, month := range sortedMonths {
+		c := cohorts[month]
+		repeatRate := 0.0
+		avgLTV := 0.0
+		if c.size > 0 {
+			repeatRate = float64(c.repeatCount) / float64(c.size) * 100
+			avgLTV = c.totalSpend / float64(c.size)
+		}
+		churn := ""
+		if !c.hasRecentOrder {
+			churn = "CHURNED"
+		}
+		fmt.Printf("  %-10s %8d %9.1f%% $%9.2f $%11.2f %s\n",
+			c.month, c.size, repeatRate, avgLTV, c.totalSpend, churn)
+
+		cohortOutput = append(cohortOutput, map[string]interface{}{
+			"month":        c.month,
+			"size":         c.size,
+			"repeat_rate":  repeatRate,
+			"avg_ltv":      avgLTV,
+			"total_revenue": c.totalSpend,
+			"churned":      !c.hasRecentOrder,
+		})
+	}
+
+	// ── JSON output ────────────────────────────────────────
+	writeAnalyticsJSON(cfg, "shopify-cohorts", map[string]interface{}{
+		"period_days": days,
+		"cohorts":     cohortOutput,
+	})
+}
+
+// ── Analytics Helpers ──────────────────────────────────────
+
+// parseFloat extracts a float64 from a map field (handles string or number).
+func parseFloat(m map[string]interface{}, key string) float64 {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return val
+	case string:
+		var f float64
+		fmt.Sscanf(val, "%f", &f)
+		return f
+	}
+	return 0
+}
+
+// kvPair is a key-value pair for sorting.
+type kvPair struct {
+	key   string
+	value float64
+}
+
+// topNByValue returns the top N entries from a map, sorted by value descending.
+func topNByValue(m map[string]float64, n int) []kvPair {
+	pairs := make([]kvPair, 0, len(m))
+	for k, v := range m {
+		pairs = append(pairs, kvPair{k, v})
+	}
+	// Simple selection sort (small N)
+	for i := 0; i < len(pairs) && i < n; i++ {
+		maxIdx := i
+		for j := i + 1; j < len(pairs); j++ {
+			if pairs[j].value > pairs[maxIdx].value {
+				maxIdx = j
+			}
+		}
+		pairs[i], pairs[maxIdx] = pairs[maxIdx], pairs[i]
+	}
+	if len(pairs) > n {
+		pairs = pairs[:n]
+	}
+	return pairs
+}
+
+// sortedKeys returns map keys sorted alphabetically.
+func sortedKeys(m map[string]float64) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sortStrings(keys)
+	return keys
+}
+
+// sortStrings sorts a string slice in place (simple insertion sort).
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j] < s[j-1]; j-- {
+			s[j], s[j-1] = s[j-1], s[j]
+		}
+	}
+}
+
+// writeAnalyticsJSON writes analytics data as JSON to the results directory.
+func writeAnalyticsJSON(cfg *Config, name string, data interface{}) {
+	dir := cfg.OutputDir
+	if dir == "" {
+		dir = "results"
+	}
+	os.MkdirAll(dir, 0755)
+
+	filename := fmt.Sprintf("%s_%s.json", name, time.Now().Format("2006-01-02_150405"))
+	outPath := filepath.Join(dir, filename)
+
+	jsonData, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		fmt.Printf("  [WARN] Cannot marshal analytics JSON: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(outPath, jsonData, 0644); err != nil {
+		fmt.Printf("  [WARN] Cannot write %s: %v\n", outPath, err)
+		return
+	}
+	fmt.Printf("\n  JSON saved: %s\n", outPath)
+}

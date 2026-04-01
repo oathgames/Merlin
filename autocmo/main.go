@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const appVersion = "0.1.2"
+const appVersion = "0.2.0"
 const updateURL = "https://github.com/oathgames/AutoCMO/releases/latest/download"
 
 // Config holds all pipeline settings, loaded from autocmo-config.json
@@ -57,7 +57,8 @@ type Config struct {
 	ShopifyStore       string `json:"shopifyStore"`       // e.g., "shopnorthswell" (without .myshopify.com)
 	ShopifyAccessToken string `json:"shopifyAccessToken"` // Admin API access token
 
-
+	// Klaviyo (email marketing)
+	KlaviyoAPIKey string `json:"klaviyoApiKey"` // Klaviyo private API key
 
 	// Product
 	ProductName        string `json:"productName"`
@@ -151,6 +152,13 @@ type Command struct {
 	// Music
 	MusicDir  string `json:"musicDir,omitempty"`  // Directory with background music tracks
 	SkipMusic bool   `json:"skipMusic,omitempty"` // true = no background music
+
+	// Social posting
+	SocialPlatform    string   `json:"socialPlatform,omitempty"`    // "facebook", "instagram", "both" (default)
+	SocialCaption     string   `json:"socialCaption,omitempty"`     // Post text / caption
+	SocialImageURL    string   `json:"socialImageUrl,omitempty"`    // Public URL of image to post
+	SocialImagePath   string   `json:"socialImagePath,omitempty"`   // Local image path (uploaded to fal CDN)
+	SocialCarouselURLs []string `json:"socialCarouselUrls,omitempty"` // Additional image URLs for IG carousel
 
 	// Testing
 	Test bool `json:"test,omitempty"` // true = skip video API, use placeholder
@@ -312,6 +320,18 @@ func main() {
 				log.Fatalf("[ERROR] %v", err)
 			}
 			fmt.Printf("  Updated image %d alt text on product %d\n", iid, pid)
+		case "shopify-analytics":
+			days := 30
+			if cmd.BatchCount > 0 {
+				days = cmd.BatchCount
+			}
+			shopifyGetAnalytics(cfg, days)
+		case "shopify-cohorts":
+			days := 180
+			if cmd.BatchCount > 0 {
+				days = cmd.BatchCount
+			}
+			shopifyGetCustomerCohorts(cfg, days)
 		case "meta-setup-retargeting":
 			if cfg.MetaPixelID == "" {
 				log.Fatal("[ERROR] metaPixelId required for retargeting audiences")
@@ -385,6 +405,26 @@ func main() {
 				days = 30
 			}
 			runArchive(cfg, days)
+		case "klaviyo-performance":
+			klaviyoGetPerformance(cfg, 30)
+		case "klaviyo-lists":
+			klaviyoGetLists(cfg)
+		case "klaviyo-campaigns":
+			if err := klaviyoGetCampaigns(cfg, 30); err != nil {
+				log.Fatalf("[ERROR] %v", err)
+			}
+		case "social-post":
+			runSocialPost(cfg, &cmd)
+		case "seo-keywords":
+			runSEOKeywords(cfg, &cmd)
+		case "seo-rankings":
+			runSEORankings(cfg)
+		case "seo-update-rank":
+			runSEOUpdateRank(cfg, &cmd)
+		case "seo-track":
+			runSEOTrack(cfg, &cmd)
+		case "seo-gaps":
+			runSEOGaps(cfg)
 		default: // "generate" or empty
 			runPipelineWithCommand(cfg, &cmd)
 		}
@@ -2018,6 +2058,8 @@ const configTemplate = `{
 
   "shopifyStore": "",
   "shopifyAccessToken": "",
+
+  "klaviyoApiKey": "",
 
   "productName": "My Product",
   "productUrl": "https://myproduct.com",
