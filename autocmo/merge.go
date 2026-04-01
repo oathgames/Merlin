@@ -232,6 +232,93 @@ func extractFFmpegFromZip(zipPath, destPath string) error {
 
 // pickMusicTrack selects a random music file from a directory.
 // Supports .mp3, .wav, .ogg, .flac, .m4a.
+// ensureMusicPack checks if any music tracks exist in the music directory.
+// If empty, downloads the CC0 music pack from the latest GitHub Release.
+func ensureMusicPack(musicDir string) {
+	if musicDir == "" {
+		return
+	}
+	// Check if any tracks already exist
+	entries, err := os.ReadDir(musicDir)
+	if err == nil {
+		for _, e := range entries {
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			switch ext {
+			case ".mp3", ".wav", ".ogg", ".flac", ".m4a":
+				return // Already have music
+			}
+		}
+	}
+
+	// No tracks — download the CC0 music pack
+	fmt.Println("  Downloading CC0 music pack (one-time, ~44MB)...")
+	packURL := updateURL + "/autocmo-music-pack.zip"
+
+	client := &http.Client{Timeout: 120 * time.Second}
+	resp, err := client.Get(packURL)
+	if err != nil {
+		fmt.Printf("  [WARN] Cannot download music pack: %v\n", err)
+		fmt.Println("  Drop .mp3 files into assets/music/ manually.")
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		fmt.Printf("  [WARN] Music pack not available (HTTP %d)\n", resp.StatusCode)
+		return
+	}
+
+	// Save to temp file
+	os.MkdirAll(musicDir, 0755)
+	tmpPath := filepath.Join(musicDir, "music-pack.zip")
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		fmt.Printf("  [WARN] Cannot create temp file: %v\n", err)
+		return
+	}
+
+	n, err := io.Copy(f, resp.Body)
+	f.Close()
+	if err != nil {
+		os.Remove(tmpPath)
+		fmt.Printf("  [WARN] Download incomplete: %v\n", err)
+		return
+	}
+
+	// Extract zip
+	r, err := zip.OpenReader(tmpPath)
+	if err != nil {
+		os.Remove(tmpPath)
+		fmt.Printf("  [WARN] Cannot open music pack: %v\n", err)
+		return
+	}
+
+	extracted := 0
+	for _, zf := range r.File {
+		if zf.FileInfo().IsDir() {
+			continue
+		}
+		destPath := filepath.Join(musicDir, filepath.Base(zf.Name))
+		src, err := zf.Open()
+		if err != nil {
+			continue
+		}
+		dst, err := os.Create(destPath)
+		if err != nil {
+			src.Close()
+			continue
+		}
+		io.Copy(dst, src)
+		dst.Close()
+		src.Close()
+		extracted++
+	}
+	r.Close()
+	os.Remove(tmpPath)
+
+	fmt.Printf("  Downloaded %d CC0 music tracks (%.1f MB)\n", extracted, float64(n)/1024/1024)
+}
+
 func pickMusicTrack(musicDir string) string {
 	if musicDir == "" {
 		return ""

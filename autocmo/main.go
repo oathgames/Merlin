@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const appVersion = "0.1.1"
+const appVersion = "0.1.2"
 const updateURL = "https://github.com/oathgames/AutoCMO/releases/latest/download"
 
 // Config holds all pipeline settings, loaded from autocmo-config.json
@@ -1176,6 +1176,7 @@ func runPipeline(cfg *Config, cmd *Command) {
 		} else {
 			musicDir = filepath.Join(cfg.OutputDir, "..", "assets", "music")
 		}
+		ensureMusicPack(musicDir)
 		track := pickMusicTrack(musicDir)
 		if track != "" {
 			musicPath := filepath.Join(runDir, "with_music.mp4")
