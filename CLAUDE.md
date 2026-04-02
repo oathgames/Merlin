@@ -68,3 +68,28 @@ recommendations smarter with every release.
 - Memory compounds — every run improves the next.
 - Brand-level assets (voice, avatar, quality bar) are shared across all products.
 - Product-level assets (reference photos) are unique per item.
+
+## Technical Reference (read before executing)
+
+### Quality Gate (universal)
+Every piece of content — email images, ad creatives, social posts, blog featured images — must pass through QA before use. Verify product images match reference photos. Images get full 3-attempt retry. Video gets a lighter check (script + first frame) due to cost.
+
+### Email Templates
+- 600px wide (Klaviyo standard). Table-based HTML with inline styles.
+- Use the real logo PNG (downloaded during onboarding to `logo/logo.png`), never AI-generated text.
+- Use real product photos from Shopify CDN, never AI-generated product shots.
+- Brand colors are exact hex codes from the website's CSS (stored in `brand.md` → Brand Colors section).
+- Puppeteer for HTML screenshots: set `NODE_PATH` to global npm modules path on Windows.
+
+### Slack File Upload (3-step — the ONLY method that works)
+1. `GET https://slack.com/api/files.getUploadURLExternal?filename=X&length=Y` (with query params, NOT JSON body)
+2. `POST` the raw file bytes to the returned `upload_url`
+3. `POST https://slack.com/api/files.completeUploadExternal` with JSON: `{files: [{id, title}], channel_id, initial_comment}`
+- `files.upload` and `files.uploadV2` are deprecated and will fail.
+- Bot requires scopes: `channels:read`, `channels:join`, `files:read`, `files:write`, `chat:write`.
+- `files:write` alone will upload but silently fail to share to channels.
+
+### AI Image Generation
+- fal.ai cannot produce pixel-perfect logos or text — only use for lifestyle/hero imagery.
+- Always use real logos, real product photos, and real brand colors for production content.
+- Brand colors extracted from website CSS custom properties (`--color-button`, `--color-foreground`, etc.) during onboarding.
