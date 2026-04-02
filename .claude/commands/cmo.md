@@ -176,7 +176,7 @@ Before every run:
 | Product photos, ad images | `image` | fal.ai (model auto-selected) |
 | Someone talking to camera | `talking-head` | HeyGen |
 
-## CRITICAL: Image Prompt Rules — Product Accuracy Is Non-Negotiable
+## CRITICAL: Image Ad Laws — Product Accuracy Is Non-Negotiable
 
 **The generated image MUST look exactly like the real product. Customers will buy
 what they see in the ad. If the ad doesn't match the product, it's deceptive.**
@@ -184,20 +184,71 @@ what they see in the ad. If the ad doesn't match the product, it's deceptive.**
 ### Before writing ANY image prompt:
 1. **READ every reference photo** in the product's `references/` folder using the Read tool
 2. **Describe ONLY what you see** in the photos — not what brand.md says, not what you imagine
-3. Before writing any image prompt, read every reference photo. The binary validates your description against reference images.
+3. If a template image exists in `quality-benchmark/`, READ it and use it as the composition target
 
-### Image Prompt Quality
+### Use Structured Ad Briefs (not freeform prompts)
 
-Before writing any image prompt, read every reference photo and describe only what you see.
-The binary applies internal quality rules for color precision, fabric rendering, camera
-settings, and negative constraints. Pass your raw product description and the binary
-returns the production-ready prompt.
+**Always use `adBrief` instead of `imagePrompt`.** The structured brief produces consistently better results because every visual dimension is explicitly controlled.
 
-### Prompt Construction
+```json
+{
+  "action": "image",
+  "adBrief": {
+    "product": "Black strapless faux-leather mini dress with top buckle detail, styled with a heavy silver western buckle belt, a black fringe crossbody bag, and pointed-toe black cowboy boots.",
+    "headline": "Forever 21",
+    "subheadline": "Bold style for the wild at heart.",
+    "bodyText": "The Western Collection",
+    "cta": "Shop now",
+    "typography": "White sans-serif text, centered over lower-third of main image, clean modern aesthetic, high contrast against dark product and car background.",
+    "environment": "A sprawling desert landscape at golden hour; hero image features a vintage silver classic car with chrome accents reflecting the sunset; three right-side panels showcase sensory details: the grainy texture of the black leather, the ornate engravings on the silver belt buckle, and the sway of the leather fringe.",
+    "subject": "Young woman with long, sun-kissed wavy hair and accent braids; confident, cool expression; leaning relaxed against the car hood in a desert sunset setting.",
+    "lighting": "Deep golden hour glow from the horizon, casting long shadows and creating warm, radiant highlights on the model's skin and the car's metallic surface; soft, cinematic orange and pink sky.",
+    "colorPalette": "Midnight black, shimmering chrome silver, sunset orange, dusty earth tones, and muted sage; trendy, moody, and high-saturation desert vibes.",
+    "camera": "Multi-frame collage; main frame is a medium-full shot at a slight 45-degree angle; detail frames are macro-focus with a soft, artistic blur.",
+    "mood": "Rebellious, chic, and adventurous; captures the raw energy of a sunset road trip and the premium feel of textured leather and silver metal.",
+    "postProcess": "Balanced contrast, warm temperature, no watermarks, no text glare, sharp focus on product textures.",
+    "negatives": "No watermarks, no text glare on leather, no unintended objects, no motion blur, no harsh artificial shadows.",
+    "goal": "Awareness",
+    "focus": "Product Shot"
+  },
+  "imageFormat": "both",
+  "referencesDir": "assets/brands/forever21/products/western-dress/references",
+  "skipSlack": true
+}
+```
 
-Describe what you see in the reference photos — exact collar type, lettering style, colors,
-fabric texture. The binary's prompt pipeline layers camera settings, scene anchoring, and
-negative constraints automatically.
+### How to fill the AdBrief
+
+**`product` (REQUIRED):** Read every reference photo. Describe EXACTLY what you see: fabric, color, fit, logo, stitching, buttons, collar type. Be obsessively specific. This is the anchor.
+
+**`environment`:** Describe the scene/background. If using a template from quality-benchmark, describe the template's setting. If no template, pick a setting that fits the brand voice and product vibe.
+
+**`subject`:** Who is wearing/using the product? Age, hair, expression, pose, body language. Be specific.
+
+**`lighting`:** Direction, quality, color temperature. "Golden hour from the left" not "nice lighting."
+
+**`colorPalette`:** List the dominant colors with adjectives. "Midnight black, chrome silver, dusty earth tones" not "dark colors."
+
+**`camera`:** Shot type (medium, close-up, full body), angle, depth of field, composition style.
+
+**`mood`:** The emotional feeling of the image in 3-5 words.
+
+**`typography` + `headline` + `cta`:** Only include if the image should have text overlay. Most product photos should NOT have text.
+
+**`negatives`:** Always include. Default: "No watermarks, no text glare, no unintended objects, no motion blur, no harsh artificial shadows." Add product-specific negatives like "no fuzzy texture" for smooth fabrics.
+
+**`postProcess`:** Color grading and contrast instructions.
+
+### Template-Matching Workflow (S-tier results)
+
+For the best results, use a template from `quality-benchmark/`:
+
+1. Read the template image from `assets/brands/<brand>/quality-benchmark/`
+2. Analyze it: composition, lighting, mood, color palette, camera angle
+3. Fill the `adBrief` fields to MATCH the template but with YOUR product
+4. Pass `templatePath` pointing to the template image
+
+This is the same approach professional agencies use — recreate proven compositions with new products.
 
 ### Image model selection
 
