@@ -304,6 +304,16 @@ For images:
 | SEO audit | `{"action": "seo-audit"}` |
 | Add image alt text | `{"action": "seo-fix-alt", "adId": "PRODUCT_ID", "campaignId": "IMAGE_ID", "blogTitle": "alt text"}` |
 | Scan competitor ads | `{"action": "competitor-scan", "blogBody": "Madhappy,Pangaia", "imageCount": 5}` |
+| **Email** | |
+| Email audit | `{"action": "email-audit"}` |
+| Email performance | `{"action": "klaviyo-performance"}` |
+| List subscriber lists | `{"action": "klaviyo-lists"}` |
+| List campaigns | `{"action": "klaviyo-campaigns"}` |
+| **Google Ads** | |
+| Google Ads status | `{"action": "google-ads-status"}` |
+| Google Ads setup | `{"action": "google-ads-setup"}` |
+| **Marketing Calendar** | |
+| Analyze launch cadence | `{"action": "calendar"}` |
 
 ## Step 6: Visual QA + Inline Preview
 
@@ -895,3 +905,153 @@ User says "add a new brand" → same flow, creates new folder under `assets/bran
 **G) Adding a new product:**
 User drops photos in a new subfolder → Claude auto-generates `product.md` on next run.
 Or: "add product [name]" → Claude checks the store for new products and imports them.
+
+## Email Marketing
+
+When the user says "audit my email", "check email flows", "email performance", or anything email-related:
+
+### Email Audit
+Run the email audit to analyze Klaviyo setup:
+```bash
+.claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"email-audit"}'
+```
+
+The binary returns JSON with: existing flows, lists, campaigns, missing essential flows, and recommendations.
+
+Present the results as:
+```
+( ◕ ◡ ◕ )  Email Audit — <Brand Name>
+─────────────────────────────────────────────
+
+Subscriber Lists: X
+Active Flows: X/6 essential
+Recent Campaigns: X in last 30 days
+
+Flow Coverage:
+  ✓ Welcome Series         ← active
+  ✓ Abandoned Cart         ← active
+  ✗ Browse Abandonment     ← MISSING — recovers window shoppers
+  ✓ Post-Purchase          ← active
+  ✗ Win-back               ← MISSING — re-engages lapsed buyers
+  ✗ Sunset                 ← MISSING — protects deliverability
+
+Recommendations:
+  1. Set up Browse Abandonment — triggers when someone views
+     a product but doesn't add to cart. Lower intent but high volume.
+  2. Set up Win-back — re-engage customers silent for 60-90 days.
+  3. ...
+```
+
+If `klaviyoApiKey` is not configured, ask: "Want to connect Klaviyo for email marketing? I'll need your API key from Klaviyo → Settings → API Keys."
+
+### Essential DTC Email Flows
+These 6 flows are the foundation. When recommending them, explain:
+
+1. **Welcome Series** (3 emails over 5 days): Welcome + brand story → bestsellers showcase → social proof + first-purchase discount
+2. **Abandoned Cart** (3 emails): Reminder (1hr) → social proof (24hr) → urgency/discount (48hr)
+3. **Browse Abandonment** (2 emails): "Still looking?" (4hr) → related products (24hr)
+4. **Post-Purchase** (3 emails): Thank you + order details → how to use/style → review request (14 days)
+5. **Win-back** (3 emails): "We miss you" (60 days) → bestsellers update (75 days) → final discount (90 days)
+6. **Sunset** (2 emails): "Still interested?" (90 days no opens) → final chance before suppression (120 days)
+
+## Google Ads
+
+When the user says "set up Google Ads", "Google Ads status", or anything Google Ads related:
+
+### Status Check
+```bash
+.claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"google-ads-status"}'
+```
+
+If not connected, explain the value and walk through setup:
+```
+( ◕ ◡ ◕ )  Google Ads — Not Connected
+
+Google Ads captures people actively searching for products like yours.
+It's the highest-intent ad channel — buyers come to you.
+
+Recommended campaign structure for DTC:
+  1. Performance Max — automated Shopping + Display + YouTube
+     (this is your bread and butter — feeds from your product catalog)
+  2. Brand Search — protects your brand name from competitors
+     (low cost, high conversion, non-negotiable)
+  3. Non-Brand Search — captures category searches
+     (e.g., "coastal fishing hoodie" — higher cost, broader reach)
+
+To connect, you'll need:
+  - Google Ads account (ads.google.com)
+  - Your 10-digit customer ID (top right of Google Ads dashboard)
+
+Paste your customer ID and I'll save it. Full integration coming soon.
+```
+
+Save `googleAdsCustomerId` to config when the user provides it.
+
+## Marketing Calendar
+
+When the user says "marketing calendar", "plan my content", "launch schedule", or anything calendar-related:
+
+### Step 1: Analyze Launch Cadence
+If Shopify is connected, pull product launch data:
+```bash
+.claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"calendar"}'
+```
+
+The binary returns: launch history, average cadence, seasonal signals, and gaps.
+
+### Step 2: Present the Analysis
+```
+( ◕ ◡ ◕ )  Marketing Calendar Analysis — <Brand>
+─────────────────────────────────────────────────
+
+Product Catalog: 24 products across 5 categories
+Launch Cadence: ~1 new product every 18 days
+Most Active: March (6 launches) | Least Active: July (0 launches)
+Last Launch: 12 days ago (Bonefish Blues Hoodie)
+Next Predicted: ~6 days from now
+
+Seasonal Signals:
+  • Summer collection detected (June-August tags)
+  • Holiday products detected (November-December)
+
+Gaps:
+  • No launches planned for July — historically your quietest month
+  • No Valentine's Day products detected
+```
+
+### Step 3: Propose a Calendar
+Based on the analysis, generate a 30-day marketing calendar:
+
+```
+( ◕ ◡ ◕ )  Proposed 30-Day Calendar — <Brand>
+─────────────────────────────────────────────────
+
+Week 1:
+  Mon  - Product spotlight: [recent launch] (image ad + blog post)
+  Wed  - Lifestyle content: [seasonal topic] (image ad)
+  Fri  - UGC/testimonial style (talking-head or product-showcase)
+
+Week 2:
+  Mon  - Blog post: [SEO topic from content gaps]
+  Wed  - Product spotlight: [rotate to different product]
+  Fri  - Competitor-inspired angle (based on competitor scan)
+
+Week 3:
+  Mon  - Email campaign: [product roundup or seasonal theme]
+  Wed  - New product tease (if launch predicted)
+  Fri  - Performance review + double down on winners
+
+Week 4:
+  Mon  - Blog post: [lifestyle/culture angle]
+  Wed  - Retarget last month's best performer
+  Fri  - Monthly digest + plan next month
+
+Channels per piece:
+  • Every image → Meta Testing + TikTok Testing
+  • Every blog → Shopify + email newsletter
+  • Winners from Week 1-2 → scale in Week 3-4
+```
+
+Ask: "Want me to set this up as your daily schedule? I'll generate the right content on the right days automatically."
+
+If yes, update the auto-cmo scheduled task prompt to follow the calendar pattern instead of random product selection.
