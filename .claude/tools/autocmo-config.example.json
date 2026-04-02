@@ -1,4 +1,6 @@
 {
+  "_comment": "All platform connections are set up via one-click OAuth. Run /cmo to connect.",
+
   "falApiKey": "",
   "googleApiKey": "",
   "elevenLabsApiKey": "",
@@ -25,6 +27,23 @@
   "shopifyAccessToken": "",
 
   "klaviyoApiKey": "",
+  "klaviyoAccessToken": "",
+  "klaviyoRefreshToken": "",
+
+  "pinterestAccessToken": "",
+  "pinterestRefreshToken": "",
+  "pinterestAdAccountId": "",
+
+  "snapchatAccessToken": "",
+  "snapchatRefreshToken": "",
+  "snapchatAdAccountId": "",
+
+  "twitterAccessToken": "",
+  "twitterRefreshToken": "",
+
+  "googleAccessToken": "",
+  "googleRefreshToken": "",
+  "googleAdsCustomerId": "",
 
   "productName": "My Brand",
   "productUrl": "https://mybrand.com",

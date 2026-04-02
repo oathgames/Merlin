@@ -646,12 +646,27 @@ This runs silently during setup — no questions asked. The user sees the result
    - Ask: "Should new ads go live automatically, or wait for your approval? (default: wait for approval)" → save to `autoPublishAds` (true/false)
 
 **D) TikTok Ads setup (optional):**
-   "Want to also push to TikTok?" → if yes, ask for:
-   - TikTok Access Token (from TikTok Ads Manager → API)
-   - Advertiser ID
-   - Pixel ID (optional)
-   → Save to config, then run `{"action": "tiktok-setup"}` to create campaigns
-   Same budget caps apply (shared maxDailyAdBudget / maxMonthlyAdSpend).
+   "Want to also push to TikTok?" → if yes:
+   - Run `tiktok-login` — opens browser for one-click TikTok authorization:
+     ```bash
+     .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"tiktok-login"}'
+     ```
+   - Parse JSON output, write `tiktokAccessToken`, `tiktokAdvertiserId` into config
+   - If multiple advertisers, ask which one to use
+   - Run `{"action": "tiktok-setup"}` to create campaigns
+   - Same budget caps apply (shared maxDailyAdBudget / maxMonthlyAdSpend)
+
+**E) Additional platforms (optional):**
+   For each platform the user wants to connect, use the same pattern:
+   - Shopify: `{"action": "shopify-login"}` — auto-discovers store
+   - Klaviyo: `{"action": "klaviyo-login"}` — connects email marketing
+   - Pinterest: `{"action": "pinterest-login"}` — connects Pinterest Ads
+   - Snapchat: `{"action": "snapchat-login"}` — connects Snapchat Ads
+   - Google Ads: `{"action": "google-login"}` — connects Google Ads
+   - X/Twitter: `{"action": "twitter-login"}` — connects X Ads
+
+   All login commands open the user's browser for one-click authorization.
+   Parse the JSON output and write values into config. Never ask for manual tokens or IDs.
 
 6. If Meta OR TikTok is configured, create a SECOND scheduled task for optimization:
    - Use `mcp__scheduled-tasks__create_scheduled_task`
