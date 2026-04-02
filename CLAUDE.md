@@ -99,6 +99,11 @@ Every piece of content — email images, ad creatives, social posts, blog featur
 - On partial failure (creative/ad fails after ad set created), the ad set is auto-cleaned up.
 
 ### AI Image Generation
+- **Always use structured `adBrief` instead of freeform `imagePrompt`.** Every visual dimension must be explicit.
+- The `adBrief` fields: product, environment, subject, lighting, colorPalette, camera, mood, typography, postProcess, negatives.
+- **Product accuracy is non-negotiable.** The `product` field must describe ONLY what you see in reference photos.
+- **Template matching produces S-tier results.** Use images from `quality-benchmark/` as composition targets.
 - fal.ai cannot produce pixel-perfect logos or text — only use for lifestyle/hero imagery.
 - Always use real logos, real product photos, and real brand colors for production content.
-- Brand colors extracted from website CSS custom properties (`--color-button`, `--color-foreground`, etc.) during onboarding.
+- Brand colors extracted from website CSS custom properties during onboarding.
+- **Negatives are mandatory.** Always include: "No watermarks, no text glare, no unintended objects, no motion blur."
