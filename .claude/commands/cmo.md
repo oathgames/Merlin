@@ -47,16 +47,21 @@ If missing, copy from the example template:
 cp .claude/tools/autocmo-config.example.json .claude/tools/autocmo-config.json
 ```
 
-Then check if `falApiKey` is empty in the config. If empty, ask the user:
+Then check if `falApiKey` is empty in the config. If empty:
 
-```
-To generate images and videos, you need a fal.ai API key (free tier available).
+1. Run api-key-setup to open the browser to the key page:
+   ```bash
+   .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"api-key-setup","provider":"fal"}'
+   ```
+2. Tell the user: "I opened fal.ai in your browser — create a key and paste it here. Or skip this for now and set it up later."
+3. If the user pastes a key, verify it:
+   ```bash
+   .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"verify-key","provider":"fal","apiKey":"THE_KEY"}'
+   ```
+4. If valid, write it into `.claude/tools/autocmo-config.json` in the `falApiKey` field.
+5. If the user says "skip" or "later", continue without it — it's not required for setup.
 
-  1. Go to https://fal.ai/dashboard/keys
-  2. Create a key, paste it here
-```
-
-Wait for the key. Write it into `.claude/tools/autocmo-config.json` in the `falApiKey` field. Then continue — do NOT ask about any other API keys during first setup. Those come later when the user needs them.
+Do NOT ask about any other API keys during first setup. Those come later when the user actually needs them (e.g., ElevenLabs when they want voiceover, HeyGen when they want talking heads). Use the same api-key-setup + verify-key pattern for all providers: fal, elevenlabs, heygen, arcads, google.
 
 ### C) Load performance insights
 
@@ -629,8 +634,8 @@ This runs silently during setup — no questions asked. The user sees the result
      ```
    - Tell user: "Daily content is set! I'll generate fresh ads and blog drafts every weekday at 9 AM."
 
-**C) Meta Ads setup (optional):**
-5. "Want to auto-push ads to Meta?" → if yes:
+**C) Meta Ads setup (optional — user can skip and set up later):**
+5. "Want to connect Meta Ads? You can skip this and set it up anytime later." → if yes:
    - Run `meta-login` — this opens the user's browser for one-click Facebook authorization:
      ```bash
      .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"meta-login"}'
@@ -645,8 +650,8 @@ This runs silently during setup — no questions asked. The user sees the result
    - Also ask: "What's your max monthly ad spend? (default: $300)" → save to `maxMonthlyAdSpend`
    - Ask: "Should new ads go live automatically, or wait for your approval? (default: wait for approval)" → save to `autoPublishAds` (true/false)
 
-**D) TikTok Ads setup (optional):**
-   "Want to also push to TikTok?" → if yes:
+**D) TikTok Ads setup (optional — user can skip and set up later):**
+   "Want to connect TikTok Ads? Skip if you don't need it right now." → if yes:
    - Run `tiktok-login` — opens browser for one-click TikTok authorization:
      ```bash
      .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"tiktok-login"}'
@@ -656,8 +661,8 @@ This runs silently during setup — no questions asked. The user sees the result
    - Run `{"action": "tiktok-setup"}` to create campaigns
    - Same budget caps apply (shared maxDailyAdBudget / maxMonthlyAdSpend)
 
-**E) Additional platforms (optional):**
-   For each platform the user wants to connect, use the same pattern:
+**E) Additional platforms (all optional — connect anytime):**
+   Don't offer these during initial setup. When the user later asks to use a platform that isn't connected, use the same one-click pattern:
    - Shopify: `{"action": "shopify-login"}` — auto-discovers store
    - Klaviyo: `{"action": "klaviyo-login"}` — connects email marketing
    - Pinterest: `{"action": "pinterest-login"}` — connects Pinterest Ads
