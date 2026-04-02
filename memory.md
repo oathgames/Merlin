@@ -14,5 +14,11 @@ Accumulated learnings from every run. Claude reads this before generating conten
 ## Voice Notes
 <!-- Voice settings, styles, and cloning observations -->
 
+## Monthly Spend
+<!-- Updated by the optimization task. Format: YYYY-MM | Meta: $X.XX | TikTok: $X.XX | Total: $X.XX -->
+
+## Errors
+<!-- Token expiry, API failures, binary errors. One line per incident. -->
+
 ## Run Log
-<!-- One line per run: date, mode, model, pass/fail, key takeaway -->
+<!-- One line per run: date, brand, product, mode, model, pass/fail, key takeaway -->

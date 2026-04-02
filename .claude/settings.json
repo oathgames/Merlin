@@ -3,7 +3,7 @@
     "Stop": [
       {
         "type": "prompt",
-        "prompt": "If any AutoCMO runs happened this session (check results/ for new timestamped folders created today), update memory.md with findings. Read the qa_report.json and script.txt from each new run folder. Append: 1) A run log entry under '## Run Log' with date, brand, product, mode, model, pass/fail, and a one-sentence takeaway 2) Any quality findings under '## What Works' or '## What Fails'. Keep entries to one sentence each. If no new run folders exist in results/, do nothing. When reporting findings, prefix each line with ( ◕ ◡ ◕ ) as the R2 mascot."
+        "prompt": "FIRST: Check if any AutoCMO runs happened this session by looking for new timestamped folders in results/ created today. If NO new folders exist, do nothing and stop here — this was not an AutoCMO session.\n\nIF new run folders exist:\n1. Read qa_report.json and script.txt from each new run folder\n2. Check if these folders are already logged in memory.md Run Log (avoid duplicates)\n3. For unlogged runs, append to memory.md:\n   - Run Log entry: date | brand | product | mode | model | pass/fail | one-sentence takeaway\n   - Quality findings under What Works or What Fails (one sentence each)\n4. Prefix output with ( ◕ ◡ ◕ )"
       }
     ]
   }

@@ -102,9 +102,11 @@ Monday 9 AM: auto-cmo-digest
 - **Auto CMO - Scaling** (CBO) — winners get moved here. Meta optimizes budget across all winners.
 
 When the user says "push to Meta" after approving content:
-1. Upload the image to Meta
-2. Create ad set + creative + ad in Testing campaign
-3. Report the ad ID and link
+1. Read config — check `maxDailyAdBudget` and `maxMonthlyAdSpend`
+2. Check memory.md "## Monthly Spend" — if at or over monthly cap, warn and ask to confirm
+3. Upload the image to Meta
+4. Create ad set + creative + ad in Testing campaign with dailyBudget capped at `maxDailyAdBudget`
+5. Report the ad ID, link, and daily budget
 
 When the user says "check Meta performance":
 1. Pull yesterday's insights
@@ -550,30 +552,56 @@ This runs silently during setup — no questions asked. The user sees the result
    - Use `mcp__scheduled-tasks__create_scheduled_task`
    - **taskId**: `auto-cmo`
    - **cronExpression**: `0 9 * * 1-5` (9 AM weekdays)
-   - **description**: `Generate daily content, SEO blog, and fix SEO issues for <brand>`
+   - **description**: `Generate daily content for all brands`
    - **prompt**:
      ```
-     Read memory.md and brand.md. Pick a random product from assets/brands/<brand>/products/ that hasn't been used recently (check memory.md run log).
+     == SETUP ==
+     Read .claude/tools/autocmo-config.json for budget limits and settings.
+     CONFIG = the parsed config JSON. Use it throughout.
 
-     1. Generate a product-showcase image (both formats). Show quality report. Post to Slack if configured.
+     == ERROR HANDLING (applies to ALL steps) ==
+     If the binary returns an error or non-zero exit code:
+       - Log the error to memory.md under "## Errors"
+       - Post to Slack if configured: "( ◕ ◡ ◕ ) AutoCMO error: {error message}"
+       - Skip that step and continue to the next
+       - Do NOT retry failed API calls — they will be retried next cycle
+     If a token/API key error occurs (401, 403, "unauthorized", "expired"):
+       - Log: "⚠ TOKEN EXPIRED: {platform}" to memory.md
+       - Post to Slack: "( ◕ ◡ ◕ ) ⚠ {platform} token expired — re-authenticate to resume"
+       - Skip ALL steps for that platform until the next session
 
-     2. If shopifyStore + shopifyAccessToken are configured in autocmo-config.json:
-        - Write a 600-1000 word SEO blog post about the product (or a related lifestyle topic)
+     == MEMORY ROTATION ==
+     Before starting, check memory.md line count. If over 200 lines:
+       - Summarize entries older than 30 days into 1-2 sentences per section
+       - Archive the full old entries to memory-archive-{date}.md
+       - Keep the last 30 days of detail in memory.md
+
+     == MULTI-BRAND ==
+     Scan assets/brands/ for all brand folders (skip "example").
+     For EACH brand that has products:
+
+     1. Read brand.md + memory.md. Pick a product not used in the last 7 days (check Run Log).
+        If all products were used recently, pick the one with the longest gap.
+
+     2. Generate a product-showcase image (both formats).
+        If quality gate fails after 3 retries, log failure and move on.
+        Post to Slack if configured.
+
+     3. If shopifyStore + shopifyAccessToken are configured:
+        - Write a 600-1000 word SEO blog post about the product
         - Use the brand voice from brand.md
-        - Include the product name as primary keyword, related terms as secondary
-        - Generate a featured image via the image pipeline
-        - Publish via: {"action": "blog-post", "blogTitle": "...", "blogBody": "...", "blogTags": "...", "blogImage": "path"}
-        - Log the blog title + URL in memory.md
+        - Check CONFIG.blogPublishMode:
+          - If "draft": publish as draft via {"action": "blog-post", ..., "draft": true}
+          - If "published" or missing: publish live
+        - Log the blog title + URL + publish status in memory.md
 
-     3. SEO fix queue — read assets/brands/<brand>/seo.md and fix 2-3 AUTO-FIX items:
-        - ONLY fix: images with EMPTY alt text (use seo-fix-alt action)
-        - Write descriptive alt text based on product title + type
-        - Mark each fixed item as [x] in seo.md so we don't repeat it
-        - Only 2-3 fixes per cycle — gradual changes look natural
-        - NEVER touch: product titles, descriptions, prices, pages, theme, navigation
-        - NEVER overwrite existing alt text — only add where currently empty
+     4. SEO fix queue — if assets/brands/<brand>/seo.md exists:
+        - Fix 2-3 images with EMPTY alt text (seo-fix-alt action)
+        - Mark each fixed item as [x] in seo.md
+        - NEVER touch: product titles, descriptions, prices, pages, theme
+        - NEVER overwrite existing alt text
      ```
-   - Tell user: "Daily content is set! I'll generate fresh ads, blog posts, and fix SEO issues every weekday at 9 AM. Type /cmo status anytime."
+   - Tell user: "Daily content is set! I'll generate fresh ads and blog drafts every weekday at 9 AM."
 
 **C) Meta Ads setup (optional):**
 5. "Want to auto-push ads to Meta?" → if yes, ask for:
@@ -582,6 +610,9 @@ This runs silently during setup — no questions asked. The user sees the result
    - Facebook Page ID
    - Pixel ID (optional)
    → Save to config, then run `{"action": "meta-setup"}` to create campaigns
+   → Also ask: "What's your max daily budget per ad? (default: $5)" → save to `maxDailyAdBudget`
+   → Also ask: "What's your max monthly ad spend? (default: $300)" → save to `maxMonthlyAdSpend`
+   → Ask: "Should new ads go live automatically, or wait for your approval? (default: wait for approval)" → save to `autoPublishAds` (true/false)
 
 **D) TikTok Ads setup (optional):**
    "Want to also push to TikTok?" → if yes, ask for:
@@ -589,111 +620,99 @@ This runs silently during setup — no questions asked. The user sees the result
    - Advertiser ID
    - Pixel ID (optional)
    → Save to config, then run `{"action": "tiktok-setup"}` to create campaigns
-   Same two-campaign architecture: Testing + Scaling (the binary sets default budgets)
+   Same budget caps apply (shared maxDailyAdBudget / maxMonthlyAdSpend).
 
 6. If Meta OR TikTok is configured, create a SECOND scheduled task for optimization:
    - Use `mcp__scheduled-tasks__create_scheduled_task`
    - **taskId**: `auto-cmo-optimize`
    - **cronExpression**: `0 10 * * 1-5` (10 AM weekdays -- 1 hour after generation)
-   - **description**: `Review yesterday's ad performance across all platforms, kill losers, scale winners`
+   - **description**: `Review ad performance, kill losers, scale winners (with budget checks)`
    - **prompt**:
      ```
-     Run the full optimization loop across all configured platforms:
+     == SETUP ==
+     Read .claude/tools/autocmo-config.json.
+     CONFIG = the parsed config JSON. Check budget limits before any spend action.
 
-     META (if metaAccessToken configured):
+     == ERROR HANDLING ==
+     Same rules as auto-cmo task: log errors, alert on token expiry, skip and continue.
+
+     == BUDGET CHECK (before ANY ad action) ==
+     Read the current month's total spend from memory.md "## Monthly Spend" section.
+     If total spend >= CONFIG.maxMonthlyAdSpend: STOP. Log "Monthly budget cap reached ($X/$Y)."
+     Post to Slack: "( ◕ ◡ ◕ ) Monthly ad budget reached. Pausing all ad operations."
+     Skip all ad operations. Still run the digest portion.
+
+     == META (if metaAccessToken configured) ==
      1. Run: .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"meta-insights"}'
-        - This queries BOTH Testing AND Scaling campaigns
-     2. The binary's insights action returns each ad with a verdict field.
-        Act on the verdict directly — KILL, WINNER, FATIGUE, MASSIVE_WINNER.
-     3. Kill losers + fatigued ads: run meta-kill for each
-     4. Scale winners: run meta-duplicate to copy into Scaling campaign
-     5. Auto-retarget: for any WINNER being scaled, also run meta-retarget to copy into Retargeting campaign
-     6. Massive winners: run meta-lookalike -- only ONCE per winner (check memory.md)
+        If this fails, log the error and skip Meta entirely.
+     2. The binary returns each ad with a verdict. Act on verdicts:
+        - KILL / FATIGUE → run meta-kill
+        - WINNER → run meta-duplicate to Scaling campaign (only if budget allows)
+        - MASSIVE_WINNER → run meta-lookalike (only ONCE per winner, check memory.md)
+     3. For each new ad being scaled, check: dailyBudget <= CONFIG.maxDailyAdBudget
+     4. Auto-retarget: for any WINNER being scaled, run meta-retarget
 
-     TIKTOK (if tiktokAccessToken configured):
-     7. Run: .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"tiktok-insights"}'
-     8. Same verdict logic: KILL, WINNER, scale, retarget
-     9. Run tiktok-kill / tiktok-duplicate for each
+     == TIKTOK (if tiktokAccessToken configured) ==
+     5. Run tiktok-insights. Same verdict logic. Same budget checks.
 
-     10. Update memory.md with: which ads killed, scaled, retargeted, lookalikes created, and why
+     == WRAP UP ==
+     6. Update memory.md "## Monthly Spend": add today's spend totals
+     7. Update memory.md with: which ads killed, scaled, retargeted, and why
      ```
 
 7. Create a THIRD scheduled task -- weekly digest (always, not just for ads):
    - Use `mcp__scheduled-tasks__create_scheduled_task`
    - **taskId**: `auto-cmo-digest`
    - **cronExpression**: `0 9 * * 1` (Monday 9 AM)
-   - **description**: `Weekly cross-platform performance + SEO digest`
+   - **description**: `Weekly performance digest across all brands and platforms`
    - **prompt**:
      ```
-     Generate a weekly cross-platform performance report:
+     == ERROR HANDLING ==
+     Same rules as other tasks: log errors, skip failed steps, continue.
+
+     == MULTI-BRAND ==
+     Scan assets/brands/ for all brand folders (skip "example"). Report on ALL brands.
 
      == ADS (if Meta or TikTok configured) ==
      1. If Meta configured: Run meta-insights, collect all campaign data
      2. If TikTok configured: Run tiktok-insights, collect all campaign data
+     3. If either fails, note the error in the digest and continue
 
-     == SEO (if Shopify configured) ==
-     3. Run: {"action": "blog-list"} to get posts published this week
-     4. Read assets/brands/<brand>/seo.md — count completed [x] vs remaining [ ] auto-fixes
-     5. Read memory.md for blog post URLs published this week
-     6. For each blog post published, fetch the page via WebFetch and extract the
-        Article JSON-LD schema — use the headline, keywords, and datePublished
-        to build the SEO section of the report
+     == SEO (per brand, if Shopify configured) ==
+     4. Run: {"action": "blog-list"} to get posts published this week
+     5. Read assets/brands/<brand>/seo.md — count completed [x] vs remaining [ ] auto-fixes
+     6. Read memory.md for blog post URLs published this week
 
-     == COMPETITOR INTEL (if competitors.md exists) ==
+     == COMPETITOR INTEL (per brand, if competitors.md exists) ==
      7. Read assets/brands/<brand>/competitors.md for brand names
-     8. If metaAccessToken configured, run the Ad Library scan:
-        .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd-file <json>
-        with: {"action":"competitor-scan","blogBody":"Brand1,Brand2,Brand3","imageCount":3}
-        This pulls actual ad copy, headlines, CTAs, and snapshot URLs from Meta Ad Library.
-        Read the snapshot URLs via WebFetch to analyze visual creatives.
-        If Meta not configured, use WebSearch for competitor news instead.
-     9. Use WebSearch to check for competitor news: "[competitor] new product 2026" or "[competitor] sale"
+     8. If metaAccessToken configured, run competitor-scan for each brand's competitors
+     9. Use WebSearch for competitor news
 
      == COMPILE DIGEST ==
+     ( ◕ ◡ ◕ )  AutoCMO Weekly Digest — [Date Range]
+     ─────────────────────────────────────────────────
+     BUDGET:
+       Monthly spend: $XX / $YY cap (ZZ% used)
+       Remaining this month: $XX
 
-        AutoCMO Weekly Digest -- [Date Range]
-        -----------------------------------------------
-        ADS:
-          META:
-            Spend: $XX.XX | ATC: XX ($X.XX ea) | Purchases: XX | ROAS: X.Xx
-            Best: [ad] -- X.X% CTR | Worst: [ad] -- X.X% CTR
-            Active: X testing, X scaling, X retargeting
-          TIKTOK:
-            Spend: $XX.XX | ATC: XX ($X.XX ea) | Purchases: XX | ROAS: X.Xx
-            Active: X testing, X scaling
-          COMBINED:
-            Total spend: $XX.XX | Total ROAS: X.Xx
-            Fatigued: X killed | Winners: X scaled | Retargeted: X
+     ADS:
+       META: Spend $XX | ATC XX | ROAS X.Xx | Best: [ad] | Worst: [ad]
+       TIKTOK: Spend $XX | ATC XX | Active: X testing, X scaling
+       Actions taken: X killed, X scaled, X retargeted
 
-        SEO:
-          Blog posts published this week: X
-            - "Title 1" (keyword: fishing hoodie)
-            - "Title 2" (keyword: coastal style)
-          Alt text fixes this week: X images
-          SEO queue remaining: X items
-          Total blog posts all-time: X
+     SEO:
+       Blog posts: X published (Y as draft pending review)
+       Alt text fixes: X images
+       Queue remaining: X items
 
-        COMPETITORS:
-          [Competitor 1]: X active ads (up/down from last week)
-            Top hooks: "POV: ...", "This changed..."
-            Formats: X video, X image, X carousel
-            Notable: [new product launch / sale / nothing new]
-          [Competitor 2]: X active ads
-            Top hooks: "..."
-            Notable: [...]
-          [Competitor 3]: X active ads
-            Notable: [...]
-          Takeaway: [1-2 sentence insight for our content strategy]
+     COMPETITORS:
+       [Summary of notable findings]
 
-        CONTENT:
-          Images generated: X | Videos generated: X
-          API spend estimate: ~$X.XX
+     CONTENT:
+       Images generated: X | Videos: X
 
      10. Post to Slack if configured
-     11. Update memory.md with weekly summary + competitor insights
-     12. If competitor analysis reveals a trend worth acting on,
-         note it in memory.md under "## Competitor Signals" so the
-         daily content task can incorporate it into scripts
+     11. Update memory.md with weekly summary
      ```
 
 **E) Shopify SEO Blog setup (optional):**
