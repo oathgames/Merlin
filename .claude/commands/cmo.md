@@ -211,16 +211,16 @@ Rules: Hook in 3 seconds. Sound human. ONE specific detail from reference photos
 ## Step 4: Cost Estimate + Confirmation
 
 ```
-Ready to generate:
+( ◕ ◡ ◕ )  Ready to generate:
+
   Brand:    MadChill
   Product:  cream-set (3 reference photos)
   Mode:     product-showcase
   Model:    Veo (fal.ai)
   Duration: 6s
-  Est cost: varies by model
   Script:   "Wait okay — you need to see this set..."
 
-Run it? (y/n)
+  Run it? (y/n)
 ```
 
 **Scheduled/automated tasks skip confirmation.**
@@ -482,7 +482,7 @@ If Shopify is not configured, save the blog as a `.html` file in results/ for ma
   / ___ \ |_| | || (_) | |___| |  | | |_| |
  /_/   \_\__,_|\__\___/ \____|_|  |_|\___/
 
-  Your AI CMO
+  ( ◕ ◡ ◕ )  Your AI CMO
 
   What I can do:
   ──────────────────────────────────────────

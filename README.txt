@@ -4,10 +4,10 @@
   / ___ \ |_| | || (_) | |___| |  | | |_| |
  /_/   \_\__,_|\__\___/ \____|_|  |_|\___/
 
-  Autonomous AI CMO — v0.2.0
+  ( ◕ ◡ ◕ )  Your AI CMO
 
-Replace your marketing team with an AI-powered Claude Code plugin.
 Generate ads, manage campaigns, write SEO blogs, run competitor intel.
+All from one command.
 
 SETUP
 
