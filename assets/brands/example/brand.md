@@ -20,6 +20,24 @@
 - **Style**: Photo/ad aesthetic
 - **Product details**: Key visual elements to always include
 
+## Brand Colors (auto-extracted from website)
+- **Primary background**: `#FFFFFF`
+- **Primary foreground / text**: `#000000`
+- **Button background**: `#000000`
+- **Button text**: `#FFFFFF`
+- **Secondary background**: `#F5F5F5`
+- **Accent**: `#000000`
+- **Muted text**: `#666666`
+- **Border / divider**: `#E5E5E5`
+
+## Email Design Rules
+- **Button style**: Brand button color, rounded pill, white text
+- **Logo**: `logo/logo.png` (downloaded during setup)
+- **Width**: 600px (Klaviyo standard)
+- **Font**: From website theme (auto-detected)
+- **Product images**: Always use real photos from store CDN, never AI-generated
+- **CTA**: One primary button per email, brand colors, uppercase
+
 ## UGC Guidelines
 - Always mention: key selling points
 - Never mention: competitors, things to avoid

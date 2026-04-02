@@ -536,7 +536,23 @@ Then proceed:
 1. "What's your brand name?" → creates `assets/brands/<brand>/` folder
 2. "What's your website?" → scrapes it, writes `brand.md`
 3. Infer the brand's vertical from the website (apparel, skincare, fitness, food, tech, home, etc.) and write it into `.claude/tools/autocmo-config.json` as the `"vertical"` field. Don't ask — just infer from the product catalog.
-4. "Can I pull your product images from your store?" → if yes:
+4. Extract brand colors + logo from the website (run in background, no user input):
+   - Fetch the homepage HTML
+   - Extract CSS custom properties (`--color-button`, `--color-background`, `--color-foreground`, etc.)
+   - Extract hex colors from inline styles and stylesheets
+   - Find the logo image URL (search for img tags with "logo" in src/alt/class, or common paths like `/cdn/shop/files/*Logo*`)
+   - Download the logo to `assets/brands/<brand>/logo/logo.png`
+   - Write a `## Brand Colors` section to `brand.md` with exact hex codes:
+     - Primary background, foreground/text, button background, button text
+     - Secondary background, accent color, footer background
+     - Muted text, border/divider colors
+   - Write a `## Email Design Rules` section to `brand.md`:
+     - Button style (use the brand's actual button color + shape)
+     - Logo path (local + CDN URL)
+     - Width: 600px, font family from the website's CSS
+     - CTA rules: one primary button, brand colors, uppercase
+   - These colors are used for ALL generated content: emails, social posts, blog featured images
+5. "Can I pull your product images from your store?" → if yes:
 
 **Auto-import from Shopify (or any store with /products.json):**
 - WebFetch `<website>/products.json`
