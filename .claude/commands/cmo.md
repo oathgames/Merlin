@@ -630,15 +630,20 @@ This runs silently during setup — no questions asked. The user sees the result
    - Tell user: "Daily content is set! I'll generate fresh ads and blog drafts every weekday at 9 AM."
 
 **C) Meta Ads setup (optional):**
-5. "Want to auto-push ads to Meta?" → if yes, ask for:
-   - Meta Access Token (System User token from Business Manager)
-   - Ad Account ID (act_XXXXXXXXX)
-   - Facebook Page ID
-   - Pixel ID (optional)
-   → Save to config, then run `{"action": "meta-setup"}` to create campaigns
-   → Also ask: "What's your max daily budget per ad? (default: $5)" → save to `maxDailyAdBudget`
-   → Also ask: "What's your max monthly ad spend? (default: $300)" → save to `maxMonthlyAdSpend`
-   → Ask: "Should new ads go live automatically, or wait for your approval? (default: wait for approval)" → save to `autoPublishAds` (true/false)
+5. "Want to auto-push ads to Meta?" → if yes:
+   - Run `meta-login` — this opens the user's browser for one-click Facebook authorization:
+     ```bash
+     .claude/tools/AutoCMO.exe --config .claude/tools/autocmo-config.json --cmd '{"action":"meta-login"}'
+     ```
+   - The binary handles everything: OAuth flow, token exchange, account discovery
+   - Parse the JSON output. It contains: `metaAccessToken`, `metaAdAccountId`, `metaPageId`, `metaPixelId`, plus `allAccounts` and `allPages` arrays
+   - If `allAccounts` has multiple active accounts, ask the user which one to use
+   - If `allPages` has multiple pages, ask which one to use
+   - Write the selected values into `.claude/tools/autocmo-config.json`
+   - Run `{"action": "meta-setup"}` to create campaigns
+   - Also ask: "What's your max daily budget per ad? (default: $5)" → save to `maxDailyAdBudget`
+   - Also ask: "What's your max monthly ad spend? (default: $300)" → save to `maxMonthlyAdSpend`
+   - Ask: "Should new ads go live automatically, or wait for your approval? (default: wait for approval)" → save to `autoPublishAds` (true/false)
 
 **D) TikTok Ads setup (optional):**
    "Want to also push to TikTok?" → if yes, ask for:
