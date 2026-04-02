@@ -1,5 +1,5 @@
 {
-  "version": "0.2.1",
+  "version": "0.2.2",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,5 +18,5 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "AutoCMO",
   "repo": "oathgames/AutoCMO",
-  "notes": "v0.2.1: Smarter recommendations powered by aggregated performance insights. Bug fixes."
+  "notes": "v0.2.2: Email audit + revenue reporting, marketing calendar, Google Ads scaffolding, production safety fixes."
 }
