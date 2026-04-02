@@ -1,5 +1,5 @@
 {
-  "version": "0.2.2",
+  "version": "0.2.3",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,5 +18,5 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "AutoCMO",
   "repo": "oathgames/AutoCMO",
-  "notes": "v0.2.2: Email audit + revenue reporting, marketing calendar, Google Ads scaffolding, production safety fixes."
+  "notes": "v0.2.3: Meta Ads v22.0 fixes — campaign creation, duplicate prevention, orphan cleanup, better error messages."
 }
