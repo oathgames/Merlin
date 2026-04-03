@@ -294,17 +294,45 @@ merlin.onSdkError((err) => {
 });
 
 // ── Update Toast ────────────────────────────────────────────
-merlin.onUpdateAvailable(({ current, latest, url }) => {
-  document.getElementById('update-text').textContent = `Merlin ${latest} is available (you have ${current})`;
+merlin.onUpdateAvailable(({ current, latest }) => {
+  document.getElementById('update-text').textContent = `Merlin ${latest} is available`;
+  document.getElementById('update-btn').textContent = 'Update now';
   document.getElementById('update-toast').classList.remove('hidden');
 
   document.getElementById('update-btn').onclick = () => {
-    window.open(url, '_blank');
-    document.getElementById('update-toast').classList.add('hidden');
+    document.getElementById('update-btn').disabled = true;
+    document.getElementById('update-btn').textContent = 'Updating...';
+    document.getElementById('update-dismiss').classList.add('hidden');
+    merlin.applyUpdate();
   };
   document.getElementById('update-dismiss').onclick = () => {
     document.getElementById('update-toast').classList.add('hidden');
   };
+});
+
+merlin.onUpdateProgress((msg) => {
+  document.getElementById('update-text').textContent = msg;
+});
+
+merlin.onUpdateReady(({ latest }) => {
+  document.getElementById('update-text').textContent = `Merlin ${latest} installed`;
+  document.getElementById('update-btn').textContent = 'Restart';
+  document.getElementById('update-btn').disabled = false;
+  document.getElementById('update-btn').onclick = () => {
+    merlin.restartApp();
+  };
+});
+
+merlin.onUpdateError((err) => {
+  document.getElementById('update-text').textContent = `Update failed: ${err}`;
+  document.getElementById('update-btn').textContent = 'Retry';
+  document.getElementById('update-btn').disabled = false;
+  document.getElementById('update-btn').onclick = () => {
+    document.getElementById('update-btn').textContent = 'Updating...';
+    document.getElementById('update-btn').disabled = true;
+    merlin.applyUpdate();
+  };
+  document.getElementById('update-dismiss').classList.remove('hidden');
 });
 
 // ── Remote User Messages (from PWA) ─────────────────────────

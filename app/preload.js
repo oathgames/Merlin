@@ -24,5 +24,10 @@ contextBridge.exposeInMainWorld('merlin', {
   onAskUserQuestion: (cb) => ipcRenderer.on('ask-user-question', (_, data) => cb(data)),
   onSdkError: (cb) => ipcRenderer.on('sdk-error', (_, err) => cb(err)),
   onRemoteUserMessage: (cb) => ipcRenderer.on('remote-user-message', (_, text) => cb(text)),
+  applyUpdate: () => ipcRenderer.invoke('apply-update'),
+  restartApp: () => ipcRenderer.invoke('restart-app'),
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_, info) => cb(info)),
+  onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (_, msg) => cb(msg)),
+  onUpdateReady: (cb) => ipcRenderer.on('update-ready', (_, info) => cb(info)),
+  onUpdateError: (cb) => ipcRenderer.on('update-error', (_, err) => cb(err)),
 });

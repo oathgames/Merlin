@@ -300,34 +300,119 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
 
 // ── Auto-Update ─────────────────────────────────────────────
 
+function httpsGet(url) {
+  const https = require('https');
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { 'User-Agent': 'Merlin-Desktop' } }, (res) => {
+      // Follow redirects
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return httpsGet(res.headers.location).then(resolve).catch(reject);
+      }
+      let body = [];
+      res.on('data', (c) => body.push(c));
+      res.on('end', () => resolve(Buffer.concat(body)));
+    }).on('error', reject);
+  });
+}
+
 async function checkForUpdates() {
   try {
-    const https = require('https');
     const currentVersion = require('../package.json').version;
 
-    const data = await new Promise((resolve, reject) => {
-      https.get('https://api.github.com/repos/oathgames/Merlin/releases/latest', {
-        headers: { 'User-Agent': 'Merlin-Desktop' }
-      }, (res) => {
-        let body = '';
-        res.on('data', (c) => body += c);
-        res.on('end', () => resolve(JSON.parse(body)));
-      }).on('error', reject);
-    });
-
+    const data = JSON.parse(await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest'));
     const latestVersion = (data.tag_name || '').replace(/^v/, '');
-    if (latestVersion && latestVersion !== currentVersion) {
-      // Notify renderer
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('update-available', {
-          current: currentVersion,
-          latest: latestVersion,
-          url: data.html_url,
-        });
-      }
+
+    if (!latestVersion || latestVersion === currentVersion) return;
+
+    // Notify renderer — update found
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('update-available', {
+        current: currentVersion,
+        latest: latestVersion,
+        notes: data.body || '',
+      });
     }
-  } catch { /* silent — don't break the app if update check fails */ }
+  } catch { /* silent */ }
 }
+
+async function downloadAndApplyUpdate() {
+  try {
+    const currentVersion = require('../package.json').version;
+    const data = JSON.parse(await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest'));
+    const latestVersion = (data.tag_name || '').replace(/^v/, '');
+
+    if (!latestVersion || latestVersion === currentVersion) return;
+
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('update-progress', 'Downloading...');
+    }
+
+    // Download updated version.json to get the file list
+    const versionJson = JSON.parse(await httpsGet(`https://raw.githubusercontent.com/oathgames/Merlin/${data.tag_name}/version.json`));
+
+    // Download each updatable file
+    for (const filePath of (versionJson.updatable || [])) {
+      try {
+        const content = await httpsGet(`https://raw.githubusercontent.com/oathgames/Merlin/${data.tag_name}/${filePath}`);
+        const fullPath = path.join(appRoot, filePath);
+        const dir = path.dirname(fullPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(fullPath, content);
+      } catch { /* skip files that fail */ }
+    }
+
+    // Download the binary for this platform
+    const platform = process.platform;
+    const arch = process.arch;
+    let binaryName = 'Merlin-linux-amd64';
+    if (platform === 'win32') binaryName = 'Merlin-windows-amd64.exe';
+    else if (platform === 'darwin' && arch === 'arm64') binaryName = 'Merlin-darwin-arm64';
+    else if (platform === 'darwin') binaryName = 'Merlin-darwin-amd64';
+
+    const binaryAsset = (data.assets || []).find(a => a.name === binaryName);
+    if (binaryAsset) {
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('update-progress', 'Downloading binary...');
+      }
+      const binary = await httpsGet(binaryAsset.browser_download_url);
+      const binaryPath = path.join(appRoot, '.claude', 'tools', 'Merlin.exe');
+      const backupPath = binaryPath + '.backup';
+
+      // Backup → replace → verify
+      if (fs.existsSync(binaryPath)) fs.copyFileSync(binaryPath, backupPath);
+      fs.writeFileSync(binaryPath, binary);
+      if (platform !== 'win32') fs.chmodSync(binaryPath, 0o755);
+
+      // Cleanup backup
+      if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+    }
+
+    // Update local version
+    const pkgPath = path.join(appRoot, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      pkg.version = latestVersion;
+      fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
+    }
+
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('update-ready', { latest: latestVersion });
+    }
+  } catch (err) {
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('update-error', err.message || String(err));
+    }
+  }
+}
+
+ipcMain.handle('apply-update', () => {
+  downloadAndApplyUpdate();
+});
+
+ipcMain.handle('restart-app', () => {
+  app.relaunch();
+  app.exit(0);
+});
 
 // ── App Lifecycle ───────────────────────────────────────────
 
