@@ -558,6 +558,26 @@ document.querySelectorAll('.magic-tile').forEach(tile => {
   });
 });
 
+// Request a platform
+document.getElementById('request-toggle').addEventListener('click', () => {
+  document.getElementById('request-form').classList.toggle('hidden');
+});
+document.getElementById('request-send').addEventListener('click', () => {
+  const text = document.getElementById('request-input').value.trim();
+  if (!text) return;
+  // Fire off email silently via mailto
+  const subject = encodeURIComponent('Merlin Platform Request');
+  const body = encodeURIComponent(`Platform request: ${text}`);
+  window.open(`mailto:ryan@tm38.co?subject=${subject}&body=${body}`, '_blank');
+  document.getElementById('request-form').classList.add('hidden');
+  document.getElementById('request-thanks').classList.remove('hidden');
+  document.getElementById('request-input').value = '';
+  setTimeout(() => document.getElementById('request-thanks').classList.add('hidden'), 3000);
+});
+document.getElementById('request-input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') document.getElementById('request-send').click();
+});
+
 // Add scheduled task button
 document.getElementById('add-task-btn').addEventListener('click', () => {
   document.getElementById('magic-panel').classList.add('hidden');

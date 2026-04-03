@@ -67,6 +67,14 @@
       <button class="magic-tile" data-platform="fal" title="Click to ask Merlin to set up image generation"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><circle cx="12" cy="12" r="10" fill="#7C3AED"/><path fill="#fff" d="M8 16l4-10 4 10M9.5 13h5" stroke="#fff" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg></div><div class="tile-name">fal.ai</div></button>
       <button class="magic-tile" data-platform="elevenlabs" title="Click to ask Merlin to set up voice"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#1a1a2e"/><rect x="8" y="5" width="3" height="14" rx="1.5" fill="#fff"/><rect x="13" y="5" width="3" height="14" rx="1.5" fill="#fff"/></svg></div><div class="tile-name">ElevenLabs</div></button>
     </div>
+    <div id="request-platform" class="request-platform">
+      <button id="request-toggle" class="request-toggle">Request a platform</button>
+      <div id="request-form" class="request-form hidden">
+        <input id="request-input" type="text" placeholder="e.g. Snapchat, X, LinkedIn..." maxlength="100">
+        <button id="request-send" class="request-send">Send</button>
+      </div>
+      <div id="request-thanks" class="request-thanks hidden">✦ Sent! We'll look into it.</div>
+    </div>
   </div>
 </div>
 
