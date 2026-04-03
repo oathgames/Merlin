@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+* { margin: 0; padding: 0; }
+html, body {
+  width: 256px; height: 256px;
+  background: #08080a;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden;
+  margin: 0; padding: 0;
+}
+/* 4-point star drawn with CSS clip-path */
+.star {
+  width: 160px; height: 160px;
+  background: linear-gradient(135deg, #a78bfa, #34d399);
+  clip-path: polygon(
+    50% 0%,
+    61% 35%,
+    100% 50%,
+    61% 65%,
+    50% 100%,
+    39% 65%,
+    0% 50%,
+    39% 35%
+  );
+}
+</style>
+</head>
+<body>
+  <div class="star"></div>
+</body>
+</html>
