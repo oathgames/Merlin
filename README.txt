@@ -4,7 +4,7 @@
  | |  | |  __/ |  | | | | | |
  |_|  |_|\___|_|  |_|_|_| |_|
 
-  ✦  Your AI CMO
+  ✦  Your AI CMO Wizard
 
 Download. Run. Done.
 

@@ -1,4 +1,4 @@
-# Merlin — Your AI CMO
+# Merlin — Your AI CMO Wizard
 
 Open in Claude Code. Type `/cmo`. Everything else is automatic.
 

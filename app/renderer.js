@@ -27,16 +27,28 @@ async function init() {
   setup.classList.add('hidden');
 
   const welcomeBubble = addClaudeBubble();
-  textBuffer = '✦ Starting up...';
+  const charms = [
+    '✦ Brewing something up...',
+    '✦ Gathering the ingredients...',
+    '✦ Warming up the cauldron...',
+    '✦ Summoning your CMO...',
+  ];
+  let charmIndex = 0;
+  textBuffer = charms[0];
   welcomeBubble.innerHTML = renderMarkdown(textBuffer);
   welcomeBubble.classList.remove('streaming');
+
+  // Cycle through messages every 3s so it never feels stuck
+  window._charmInterval = setInterval(() => {
+    charmIndex = (charmIndex + 1) % charms.length;
+    welcomeBubble.innerHTML = charms[charmIndex];
+  }, 3000);
 
   // Check + start session in background
   merlin.checkSetup().then((result) => {
     if (result.ready) {
-      // Replace welcome with loading indicator
       welcomeBubble.classList.add('streaming');
-      welcomeBubble.innerHTML = '✦ Connecting to Claude...';
+      welcomeBubble.innerHTML = '✦ Casting spells...';
       merlin.startSession();
     } else {
       setup.classList.remove('hidden');
@@ -173,6 +185,7 @@ let firstMessage = true;
 merlin.onSdkMessage((msg) => {
   // Remove the loading bubble when first real content arrives
   if (firstMessage && msg.type === 'stream_event') {
+    if (window._charmInterval) clearInterval(window._charmInterval);
     const loadingBubble = document.querySelector('.msg-claude');
     if (loadingBubble) loadingBubble.remove();
     firstMessage = false;

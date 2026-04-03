@@ -231,7 +231,7 @@ a:hover{text-decoration:underline}
   flex-shrink:0;
   width:38px;height:38px;
   border:none;
-  background:var(--accent);
+  background:linear-gradient(135deg,#a78bfa,#34d399);
   color:#0a0a0a;
   border-radius:10px;
   cursor:pointer;

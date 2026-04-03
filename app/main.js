@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, safeStorage, protocol, nativeTheme, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, safeStorage, protocol, nativeTheme, Menu, shell, nativeImage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const wsServer = require('./ws-server');
@@ -23,12 +23,17 @@ let activeQuery = null;
 async function createWindow() {
   nativeTheme.themeSource = 'dark';
 
+  // Create app icon from SVG
+  const iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#a78bfa"/><stop offset="100%" stop-color="#34d399"/></linearGradient></defs><rect width="64" height="64" rx="12" fill="#08080a"/><text x="32" y="48" text-anchor="middle" font-size="42" fill="url(#g)">✦</text></svg>`;
+  const iconDataUrl = `data:image/svg+xml;base64,${Buffer.from(iconSvg).toString('base64')}`;
+  const icon = nativeImage.createFromDataURL(iconDataUrl);
+
   win = new BrowserWindow({
     width: 480,
     height: 720,
     minWidth: 380,
     minHeight: 500,
-    // Native OS window controls (close/minimize/maximize)
+    icon: icon,
     backgroundColor: '#08080a',
     show: false,
     webPreferences: {
