@@ -527,12 +527,18 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
    - Write `assets/brands/<brand>/competitors.md`
    - Say: "✦ Found [X] competitors in your space. I'll keep tabs on them."
 
-   **Step 5: Ready**
-   - "Your brand is loaded — [X] products, [Y] images, [Z] competitors. What should we create first?"
+   **Step 5: Set up automation (automatic — don't ask)**
+   - Create all three scheduled tasks automatically. Tell the user what you're doing:
+   - "✦ Setting up your daily autopilot..."
+   - "Content generation — weekdays at 9 AM"
+   - "Performance review — weekdays at 10 AM"
+   - "Weekly digest — Mondays at 9 AM"
 
-**B) Schedule daily generation:**
-4. "Want me to set up daily auto-generation? (default: 9 AM weekdays)"
-   If yes → create a scheduled task:
+   **Step 6: Ready**
+   - "Your brand is loaded — [X] products, [Y] images, [Z] competitors. Autopilot is on. What should we create first?"
+
+**B) Schedule daily generation (created automatically during Step 5):**
+   Create all three scheduled tasks without asking:
    - Use `mcp__scheduled-tasks__create_scheduled_task`
    - **taskId**: `merlin-daily`
    - **cronExpression**: `0 9 * * 1-5` (9 AM weekdays)

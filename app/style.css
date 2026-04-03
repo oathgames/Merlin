@@ -159,7 +159,21 @@ a:hover{text-decoration:underline}
 .msg-bubble ul,.msg-bubble ol{padding-left:20px;margin:6px 0}
 .msg-bubble li{margin:3px 0}
 .msg-bubble h1,.msg-bubble h2,.msg-bubble h3{font-size:15px;font-weight:700;margin:10px 0 4px}
-.msg-bubble img{max-width:100%;border-radius:10px;margin:8px 0;display:block}
+.msg-bubble img{
+  max-width:100%;
+  border-radius:10px;
+  margin:8px 0;
+  display:block;
+  cursor:pointer;
+  transition:opacity .2s;
+  box-shadow:0 2px 8px rgba(0,0,0,.3);
+}
+.msg-bubble img:hover{opacity:.9}
+.msg-bubble hr{border:none;border-top:1px solid var(--border);margin:12px 0}
+.msg-bubble a{color:var(--accent);text-decoration:none}
+.msg-bubble a:hover{text-decoration:underline}
+.msg-bubble pre{position:relative}
+.msg-bubble pre code.lang-text,.msg-bubble pre code.lang-{color:var(--text-muted)}
 
 /* ── Option Chips (AskUserQuestion) ──────────────────────── */
 .question-text{
@@ -430,6 +444,32 @@ a:hover{text-decoration:underline}
   0%,100%{opacity:1}
   50%{opacity:0}
 }
+/* ── Typing Indicator ────────────────────────────────────── */
+.dot-pulse{display:flex;gap:4px;padding:4px 0}
+.dot-pulse span{
+  width:6px;height:6px;
+  border-radius:50%;
+  background:var(--text-dim);
+  animation:dotBounce 1.2s infinite ease-in-out;
+}
+.dot-pulse span:nth-child(2){animation-delay:.2s}
+.dot-pulse span:nth-child(3){animation-delay:.4s}
+@keyframes dotBounce{
+  0%,80%,100%{opacity:.3;transform:scale(.8)}
+  40%{opacity:1;transform:scale(1)}
+}
+
+/* ── Stats Bar ───────────────────────────────────────────── */
+.stats-bar{
+  text-align:center;
+  font-size:.7rem;
+  color:var(--text-dim);
+  padding:.25rem 0;
+  animation:fadeUp .3s ease;
+}
+
+.ticker-live{color:var(--accent);opacity:.6}
+
 /* ── Hint ────────────────────────────────────────────────── */
 .hint{
   text-align:center;

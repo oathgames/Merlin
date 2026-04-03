@@ -202,7 +202,7 @@ async function startSession() {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
   async function* messageGenerator() {
-    yield { type: 'user', message: { role: 'user', content: 'Run /cmo silently — do the preflight checks but do NOT print any banners, ASCII art, setup guides, or feature lists. Once preflight is done, greet me warmly in 2-3 short sentences. You are Merlin, a marketing wizard. Add a very subtle hint of magic/wizard flavor — just a word or two, not over the top. Let me know you\'re ready. End by encouraging me to just talk naturally. Keep it warm, confident, and brief.' } };
+    yield { type: 'user', message: { role: 'user', content: 'Run /cmo silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message. Just wait for my next message. If no brands exist yet, wait — I\'ll give you my website URL and you\'ll start the setup flow from there.' } };
     while (true) {
       const msg = await new Promise((resolve) => { resolveNextMessage = resolve; });
       if (msg === null) return;

@@ -10,6 +10,8 @@ const input = document.getElementById('input');
 const sendBtn = document.getElementById('send-btn');
 const setup = document.getElementById('setup');
 const approval = document.getElementById('approval');
+let turnStartTime = null;
+let turnTokens = 0;
 
 // ── Platform Detection ──────────────────────────────────────
 // (Window controls handled by native OS chrome)
@@ -20,34 +22,44 @@ async function init() {
   setup.classList.add('hidden');
 
   const welcomeBubble = addClaudeBubble();
-  const charms = [
-    '✦ Brewing something up...',
-    '✦ Gathering the ingredients...',
-    '✦ Warming up the cauldron...',
-    '✦ Summoning your wizard...',
-  ];
-  let charmIndex = 0;
-  welcomeBubble.innerHTML = charms[0];
+  // Instant animated welcome — shows before SDK even connects
   welcomeBubble.classList.remove('streaming');
 
-  // Cycle every 2.5s so it never feels stuck
-  window._charmInterval = setInterval(() => {
-    charmIndex = (charmIndex + 1) % charms.length;
-    welcomeBubble.innerHTML = charms[charmIndex];
-  }, 2500);
+  const welcomeLines = [
+    { text: '✦ Hey — I\'m Merlin, your marketing wizard.', delay: 0 },
+    { text: 'Give me your website and I\'ll learn your entire brand in seconds.', delay: 1500 },
+    { text: 'What\'s your URL?', delay: 3000 },
+  ];
 
-  // Check + start session in background
+  let lineIndex = 0;
+  welcomeBubble.innerHTML = welcomeLines[0].text;
+
+  window._welcomeInterval = setInterval(() => {
+    lineIndex++;
+    if (lineIndex < welcomeLines.length) {
+      welcomeBubble.innerHTML += '<br><br>' + welcomeLines[lineIndex].text;
+      scrollToBottom();
+    } else {
+      clearInterval(window._welcomeInterval);
+    }
+  }, 1500);
+
+  // Start session in background — when SDK connects, it takes over
   merlin.checkSetup().then((result) => {
     if (result.ready) {
-      welcomeBubble.classList.add('streaming');
-      welcomeBubble.innerHTML = '✦ Almost ready...';
+      turnStartTime = Date.now();
       merlin.startSession();
     } else {
+      clearInterval(window._welcomeInterval);
       setup.classList.remove('hidden');
       document.getElementById('setup-status').textContent = result.reason || 'Install Claude Desktop to get started.';
       welcomeBubble.parentElement.remove();
     }
   });
+
+  // When SDK sends first real message, DON'T remove the welcome —
+  // let the conversation continue naturally below it
+  window._welcomeShown = true;
 }
 
 
@@ -131,7 +143,7 @@ function scrollToBottom() {
   });
 }
 
-// ── Minimal Markdown Renderer ───────────────────────────────
+// ── Markdown Renderer with Image Support ────────────────────
 function renderMarkdown(text) {
   if (!text) return '';
 
@@ -140,8 +152,13 @@ function renderMarkdown(text) {
 
   let html = escapeHtml(text);
 
-  // Code blocks (triple backtick)
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+  // Code blocks (triple backtick) — preserve content
+  const codeBlocks = [];
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    codeBlocks.push(`<pre><code class="lang-${lang || 'text'}">${code}</code></pre>`);
+    return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
+  });
+
   // Inline code
   html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
   // Bold
@@ -155,13 +172,32 @@ function renderMarkdown(text) {
   // Bullet lists
   html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
   html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+  // Numbered lists
+  html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+  // Horizontal rules
+  html = html.replace(/^---$/gm, '<hr>');
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+
+  // Image file paths — detect common image extensions in the text
+  // Matches paths like: assets/brands/madchill/products/hoodie/references/1.jpg
+  html = html.replace(/((?:assets|results|\.claude)\/[^\s<>"]+\.(?:jpg|jpeg|png|gif|webp))/gi, (match) => {
+    return `<img src="merlin://${match}" alt="Image" loading="lazy">`;
+  });
+
   // Line breaks
   html = html.replace(/\n/g, '<br>');
-  // Clean up double breaks in lists
+  // Clean up
   html = html.replace(/<\/li><br>/g, '</li>');
   html = html.replace(/<\/ul><br>/g, '</ul>');
   html = html.replace(/<\/pre><br>/g, '</pre>');
   html = html.replace(/<\/h[123]><br>/g, (m) => m.replace('<br>', ''));
+  html = html.replace(/<hr><br>/g, '<hr>');
+
+  // Restore code blocks
+  codeBlocks.forEach((block, i) => {
+    html = html.replace(`%%CODEBLOCK_${i}%%`, block);
+  });
 
   return html;
 }
@@ -176,16 +212,25 @@ function escapeHtml(text) {
 let firstMessage = true;
 
 merlin.onSdkMessage((msg) => {
-  // Remove the loading bubble when first real content arrives
+  // When first real SDK content arrives, clean up welcome state
   if (firstMessage && msg.type === 'stream_event') {
-    if (window._charmInterval) clearInterval(window._charmInterval);
-    const loadingBubble = document.querySelector('.msg-claude');
-    if (loadingBubble) loadingBubble.remove();
+    if (window._welcomeInterval) clearInterval(window._welcomeInterval);
     firstMessage = false;
     currentBubble = null;
     textBuffer = '';
   }
 
+  // Remove typing indicator + stop ticker when real content starts
+  if (msg.type === 'stream_event' && msg.event?.type === 'content_block_start') {
+    removeTypingIndicator();
+    stopTickingTimer();
+  }
+
+
+  // Log result messages to help debug token tracking
+  if (msg.type === 'result') {
+    console.log('SDK result:', JSON.stringify(msg).substring(0, 500));
+  }
 
   switch (msg.type) {
     case 'system':
@@ -198,11 +243,41 @@ merlin.onSdkMessage((msg) => {
 
     case 'assistant':
       finalizeBubble();
+      // Check for image content blocks in the assistant message
+      if (msg.message?.content) {
+        for (const block of msg.message.content) {
+          if (block.type === 'image' && block.source?.data) {
+            const imgBubble = addClaudeBubble();
+            imgBubble.innerHTML = `<img src="data:${block.source.media_type || 'image/png'};base64,${block.source.data}" alt="Image">`;
+            imgBubble.classList.remove('streaming');
+            currentBubble = null;
+            textBuffer = '';
+          }
+        }
+      }
       break;
 
     case 'result':
       finalizeBubble();
       isStreaming = false;
+      stopTickingTimer();
+      // Show stats bar like Claude Desktop
+      if (turnStartTime) {
+        const duration = ((Date.now() - turnStartTime) / 1000).toFixed(0);
+        const statsDiv = document.createElement('div');
+        statsDiv.className = 'stats-bar';
+        // Try multiple paths for token count
+        const tokens = msg.usage?.output_tokens
+          || msg.result?.usage?.output_tokens
+          || msg.num_output_tokens
+          || null;
+        let statsText = `${duration}s`;
+        if (tokens) statsText += ` · ↓ ${tokens} tokens`;
+        statsDiv.textContent = statsText;
+        messages.appendChild(statsDiv);
+        scrollToBottom();
+        turnStartTime = null;
+      }
       break;
   }
 });
@@ -389,11 +464,62 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
 });
 
 // ── Input Handling ──────────────────────────────────────────
+// ── Ticking Timer ───────────────────────────────────────────
+let tickerInterval = null;
+let tickerEl = null;
+
+function startTickingTimer() {
+  stopTickingTimer();
+  tickerEl = document.createElement('div');
+  tickerEl.className = 'stats-bar ticker-live';
+  tickerEl.textContent = '0s';
+  messages.appendChild(tickerEl);
+  scrollToBottom();
+  const start = Date.now();
+  tickerInterval = setInterval(() => {
+    const elapsed = Math.floor((Date.now() - start) / 1000);
+    tickerEl.textContent = `${elapsed}s...`;
+    scrollToBottom();
+  }, 1000);
+}
+
+function stopTickingTimer() {
+  if (tickerInterval) { clearInterval(tickerInterval); tickerInterval = null; }
+  if (tickerEl) { tickerEl.remove(); tickerEl = null; }
+}
+
+// ── Typing Indicator ────────────────────────────────────────
+function showTypingIndicator() {
+  // Remove any existing indicator
+  removeTypingIndicator();
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg msg-claude typing-indicator';
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = '✦';
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  bubble.innerHTML = '<div class="dot-pulse"><span></span><span></span><span></span></div>';
+  wrapper.appendChild(avatar);
+  wrapper.appendChild(bubble);
+  messages.appendChild(wrapper);
+  scrollToBottom();
+}
+
+function removeTypingIndicator() {
+  const existing = document.querySelector('.typing-indicator');
+  if (existing) existing.remove();
+}
+
 function sendMessage() {
   const text = input.value.trim();
   if (!text || isStreaming) return;
 
   addUserBubble(text);
+  showTypingIndicator();
+  turnStartTime = Date.now();
+  turnTokens = 0;
+  startTickingTimer();
   merlin.sendMessage(text);
   input.value = '';
   autoResize();
