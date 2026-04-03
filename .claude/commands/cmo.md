@@ -79,18 +79,18 @@ Continue to Step 0. If the user typed just `/cmo` with no arguments and no brand
 When Meta is configured, the full loop is:
 
 ```
-Daily 9 AM: auto-cmo generates content
+Daily 9 AM: merlin-daily generates content
   → Generate 3 variations (batch mode)
   → Visual QA passes all 3
   → Push all 3 into ONE ad set in "Auto CMO - Testing"
   → Meta optimizes across the 3 creatives automatically
 
-Daily 10 AM: auto-cmo-optimize reviews yesterday
+Daily 10 AM: merlin-optimize reviews yesterday
   → Pull CTR, CPC, ATC, Purchases for each ad
   → The binary evaluates each ad against internal performance thresholds
   → Returns verdicts: KILL / WINNER / MASSIVE WINNER — act on these directly
 
-Monday 9 AM: auto-cmo-digest
+Monday 9 AM: merlin-digest
   → Weekly summary: total spend, ATC, purchases, ROAS
   → Best/worst performers, active ad counts
   → Posted to Slack
@@ -277,7 +277,7 @@ For images:
 | List voices | `{"action": "list-voices"}` |
 | List HeyGen avatars | `{"action": "list-avatars"}` |
 | Dry run | `{"action": "dry-run"}` |
-| Check schedule | Use `mcp__scheduled-tasks__list_scheduled_tasks` and report `auto-cmo` state |
+| Check schedule | Use `mcp__scheduled-tasks__list_scheduled_tasks` and report `merlin-daily` state |
 | Pause schedule | Use `mcp__scheduled-tasks__update_scheduled_task` with `enabled: false` |
 | Resume schedule | Use `mcp__scheduled-tasks__update_scheduled_task` with `enabled: true` |
 | Push to Meta | `{"action": "meta-push", "adImagePath": "path/to/image.jpg", "adHeadline": "...", "adBody": "...", "dailyBudget": 5}` |
@@ -484,98 +484,41 @@ If Shopify is not configured, save the blog as a `.html` file in results/ for ma
 
 ## Setup Flow (first-run only)
 
-**Before anything else**, display this welcome screen:
-
-```
-     _         _         ____ __  __  ___
-    / \  _   _| |_ ___  / ___|  \/  |/ _ \
-   / _ \| | | | __/ _ \| |   | |\/| | | | |
-  / ___ \ |_| | || (_) | |___| |  | | |_| |
- /_/   \_\__,_|\__\___/ \____|_|  |_|\___/
-
-  ✦  Your AI CMO
-
-  What I can do:
-  ──────────────────────────────────────────
-  Generate     Product videos, images, voiceovers
-  Optimize     A/B test creatives across Meta + TikTok
-  Scale        Auto-kill losers, scale winners, retarget
-  Automate     Repeat this process daily on autopilot
-  Learn        Every run improves the next via memory
-
-  What you need:
-  ──────────────────────────────────────────
-  Required     fal.ai API key (video + images)
-  Optional     ElevenLabs (voice), HeyGen (talking head)
-  Optional     Meta / TikTok tokens (ad management)
-  Optional     Shopify token (SEO blog posts)
-  Optional     Slack webhook (posting)
-
-  Folders:
-  ──────────────────────────────────────────
-  assets/brands/<brand>/
-    ├── brand.md              Brand voice + audience
-    ├── quality-benchmark/    S-tier ad examples (quality bar)
-    ├── voices/               Audio samples for voice cloning
-    ├── avatars/              Photos or videos for talking heads
-    └── products/<product>/
-        ├── references/       Product photos
-        └── product.md        Auto-generated product details
-
-  results/                    All output (timestamped)
-  memory.md                   Learning memory (grows over time)
-
-  Let's get you set up.
-```
-
-Then proceed:
+DO NOT print any ASCII art, banners, feature lists, or folder structure diagrams. Keep the setup conversational — talk to the user like a person.
 
 **A) Brand + Product setup:**
-(fal.ai key was already configured during preflight — skip straight to brand)
-1. "What's your brand name?" → creates `assets/brands/<brand>/` folder
-2. "What's your website?" → scrapes it, writes `brand.md`
-3. Infer the brand's vertical from the website (apparel, skincare, fitness, food, tech, home, etc.) and write it into `.claude/tools/merlin-config.json` as the `"vertical"` field. Don't ask — just infer from the product catalog.
-4. Extract brand colors + logo from the website (run in background, no user input):
-   - Fetch the homepage HTML
-   - Extract CSS custom properties (`--color-button`, `--color-background`, `--color-foreground`, etc.)
-   - Extract hex colors from inline styles and stylesheets
-   - Find the logo image URL (search for img tags with "logo" in src/alt/class, or common paths like `/cdn/shop/files/*Logo*`)
-   - Download the logo to `assets/brands/<brand>/logo/logo.png`
-   - Write a `## Brand Colors` section to `brand.md` with exact hex codes:
-     - Primary background, foreground/text, button background, button text
-     - Secondary background, accent color, footer background
-     - Muted text, border/divider colors
-   - Write a `## Email Design Rules` section to `brand.md`:
-     - Button style (use the brand's actual button color + shape)
-     - Logo path (local + CDN URL)
-     - Width: 600px, font family from the website's CSS
-     - CTA rules: one primary button, brand colors, uppercase
-   - These colors are used for ALL generated content: emails, social posts, blog featured images
-5. "Can I pull your product images from your store?" → if yes:
+1. Ask: "What's your brand's website?" — that's the only question needed. Everything else is automatic.
+2. From the website URL:
+   - Scrape the site to learn the brand name, voice, audience, products
+   - Write `brand.md` with brand voice, audience, CTA style
+   - Infer the vertical (apparel, skincare, fitness, etc.) and write it to `merlin-config.json`
+   - Extract brand colors from CSS (`--color-button`, `--color-background`, etc.) and hex values
+   - Find and download the logo to `assets/brands/<brand>/logo/logo.png`
+   - Write `## Brand Colors` and `## Email Design Rules` sections to `brand.md`
+3. Auto-import products (no asking — just do it):
+   - Try `<website>/products.json` first (Shopify and many platforms support this)
+   - Download up to **10 products** to start (up to 5 images each)
+   - Create `assets/brands/<brand>/products/<product-handle>/references/` for each
+   - Auto-generate `product.md` from the product data
+   - **Tell the user clearly**: "I pulled your first 10 products with X images. You have [total] products — I can grab the rest anytime, just ask."
+   - If `/products.json` doesn't work, say: "I couldn't auto-pull your products. Just drop product photos into the products folder and I'll handle the rest."
+4. Competitor discovery (automatic, no questions):
+   - Launch a background agent to find 5-8 competitors via WebSearch
+   - Write `assets/brands/<brand>/competitors.md`
+   - Tell the user: "I found X competitors in your space. I'll keep an eye on them."
 
-**Auto-import from Shopify (or any store with /products.json):**
-- WebFetch `<website>/products.json`
-- For each product: create `assets/brands/<brand>/products/<product-handle>/references/`
-- Download up to 5 images per product using Bash curl
-- Auto-generate `product.md` for each from the product data (title, price, description)
-- Report: "Found 13 products, downloaded 47 images. Ready to go!"
-
-If the store doesn't have `/products.json`, ask the user to drop photos manually.
-
-**A2) Competitor Discovery (automatic, no user input needed):**
-After brand setup, launch a background agent to discover competitors:
-1. Read `brand.md` — extract niche, product types, price range, location
-2. Use WebSearch to find 5-8 competing brands (see Competitor Intelligence section above)
-3. Write `assets/brands/<brand>/competitors.md`
-4. Show the user: "I found X competitors in your space. I'll track their ads weekly."
-
-This runs silently during setup — no questions asked. The user sees the result and can edit the list later.
+**The entire setup should feel like one smooth conversation. Communicate progress as you go:**
+- "Checking out your website..."
+- "Nice brand! I'm pulling your colors and logo..."
+- "Downloading your first 10 products..."
+- "Found 8 competitors in your space."
+- "All set! What would you like to create first?"
 
 **B) Schedule daily generation:**
 4. "Want me to set up daily auto-generation? (default: 9 AM weekdays)"
    If yes → create a scheduled task:
    - Use `mcp__scheduled-tasks__create_scheduled_task`
-   - **taskId**: `auto-cmo`
+   - **taskId**: `merlin-daily`
    - **cronExpression**: `0 9 * * 1-5` (9 AM weekdays)
    - **description**: `Generate daily content for all brands`
    - **prompt**:
@@ -628,28 +571,23 @@ This runs silently during setup — no questions asked. The user sees the result
      ```
    - Tell user: "Daily content is set! I'll generate fresh ads and blog drafts every weekday at 9 AM."
 
-**C) Meta Ads setup (optional):**
-5. "Want to auto-push ads to Meta?" → if yes, ask for:
-   - Meta Access Token (System User token from Business Manager)
-   - Ad Account ID (act_XXXXXXXXX)
-   - Facebook Page ID
-   - Pixel ID (optional)
-   → Save to config, then run `{"action": "meta-setup"}` to create campaigns
-   → Also ask: "What's your max daily budget per ad? (default: $5)" → save to `maxDailyAdBudget`
-   → Also ask: "What's your max monthly ad spend? (default: $300)" → save to `maxMonthlyAdSpend`
-   → Ask: "Should new ads go live automatically, or wait for your approval? (default: wait for approval)" → save to `autoPublishAds` (true/false)
+**C) Platform connections (don't ask during setup — connect when needed):**
+When the user later asks to publish ads, connect Shopify, etc., use one-click OAuth:
+   - Meta: `{"action": "meta-login"}` → browser opens, user authorizes, done
+   - TikTok: `{"action": "tiktok-login"}` → same pattern
+   - Shopify: `{"action": "shopify-login"}` → same pattern
+   - All other platforms: same one-click OAuth pattern
 
-**D) TikTok Ads setup (optional):**
-   "Want to also push to TikTok?" → if yes, ask for:
-   - TikTok Access Token (from TikTok Ads Manager → API)
-   - Advertiser ID
-   - Pixel ID (optional)
-   → Save to config, then run `{"action": "tiktok-setup"}` to create campaigns
-   Same budget caps apply (shared maxDailyAdBudget / maxMonthlyAdSpend).
+When connecting any ad platform, also set up budget defaults:
+   - `maxDailyAdBudget`: $5 (default, mention to user)
+   - `maxMonthlyAdSpend`: $300 (default, mention to user)
+   - `autoPublishAds`: false (always ask before spending money)
+
+Never ask for tokens, IDs, or keys manually. If OAuth isn't available for a platform yet, say so clearly.
 
 6. If Meta OR TikTok is configured, create a SECOND scheduled task for optimization:
    - Use `mcp__scheduled-tasks__create_scheduled_task`
-   - **taskId**: `auto-cmo-optimize`
+   - **taskId**: `merlin-optimize`
    - **cronExpression**: `0 10 * * 1-5` (10 AM weekdays -- 1 hour after generation)
    - **description**: `Review ad performance, kill losers, scale winners (with budget checks)`
    - **prompt**:
@@ -659,7 +597,7 @@ This runs silently during setup — no questions asked. The user sees the result
      CONFIG = the parsed config JSON. Check budget limits before any spend action.
 
      == ERROR HANDLING ==
-     Same rules as auto-cmo task: log errors, alert on token expiry, skip and continue.
+     Same rules as merlin-daily task: log errors, alert on token expiry, skip and continue.
 
      == BUDGET CHECK (before ANY ad action) ==
      Read the current month's total spend from memory.md "## Monthly Spend" section.
@@ -687,7 +625,7 @@ This runs silently during setup — no questions asked. The user sees the result
 
 7. Create a THIRD scheduled task -- weekly digest (always, not just for ads):
    - Use `mcp__scheduled-tasks__create_scheduled_task`
-   - **taskId**: `auto-cmo-digest`
+   - **taskId**: `merlin-digest`
    - **cronExpression**: `0 9 * * 1` (Monday 9 AM)
    - **description**: `Weekly performance digest across all brands and platforms`
    - **prompt**:
@@ -1069,4 +1007,4 @@ Channels per piece:
 
 Ask: "Want me to set this up as your daily schedule? I'll generate the right content on the right days automatically."
 
-If yes, update the auto-cmo scheduled task prompt to follow the calendar pattern instead of random product selection.
+If yes, update the merlin-daily scheduled task prompt to follow the calendar pattern instead of random product selection.

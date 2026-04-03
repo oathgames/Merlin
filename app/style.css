@@ -430,6 +430,16 @@ a:hover{text-decoration:underline}
   0%,100%{opacity:1}
   50%{opacity:0}
 }
+/* ── Hint ────────────────────────────────────────────────── */
+.hint{
+  text-align:center;
+  font-size:.8rem;
+  color:var(--text-dim);
+  padding:.5rem 0;
+  animation:fadeUp .4s ease;
+}
+.hint em{font-style:italic;color:var(--text-muted)}
+
 /* ── Update toast ────────────────────────────────────────── */
 #update-toast{
   position:fixed;

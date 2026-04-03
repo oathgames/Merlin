@@ -24,24 +24,23 @@ async function init() {
     '✦ Brewing something up...',
     '✦ Gathering the ingredients...',
     '✦ Warming up the cauldron...',
-    '✦ Summoning your CMO...',
+    '✦ Summoning your wizard...',
   ];
   let charmIndex = 0;
-  textBuffer = charms[0];
-  welcomeBubble.innerHTML = renderMarkdown(textBuffer);
+  welcomeBubble.innerHTML = charms[0];
   welcomeBubble.classList.remove('streaming');
 
-  // Cycle through messages every 3s so it never feels stuck
+  // Cycle every 2.5s so it never feels stuck
   window._charmInterval = setInterval(() => {
     charmIndex = (charmIndex + 1) % charms.length;
     welcomeBubble.innerHTML = charms[charmIndex];
-  }, 3000);
+  }, 2500);
 
   // Check + start session in background
   merlin.checkSetup().then((result) => {
     if (result.ready) {
       welcomeBubble.classList.add('streaming');
-      welcomeBubble.innerHTML = '✦ Casting spells...';
+      welcomeBubble.innerHTML = '✦ Almost ready...';
       merlin.startSession();
     } else {
       setup.classList.remove('hidden');
@@ -50,6 +49,7 @@ async function init() {
     }
   });
 }
+
 
 document.getElementById('setup-install-btn').addEventListener('click', () => {
   merlin.openClaudeDownload();
@@ -185,6 +185,7 @@ merlin.onSdkMessage((msg) => {
     currentBubble = null;
     textBuffer = '';
   }
+
 
   switch (msg.type) {
     case 'system':
