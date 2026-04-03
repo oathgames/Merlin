@@ -293,6 +293,24 @@ merlin.onSdkError((err) => {
   bubble.style.borderColor = 'rgba(239,68,68,.3)';
 });
 
+// ── Mobile QR ───────────────────────────────────────────────
+document.getElementById('mobile-btn').addEventListener('click', async () => {
+  const { qrDataUri, pwaUrl } = await merlin.getMobileQR();
+  document.getElementById('qr-image').src = qrDataUri;
+  document.getElementById('qr-url').textContent = pwaUrl;
+  document.getElementById('qr-modal').classList.remove('hidden');
+});
+
+document.getElementById('qr-close').addEventListener('click', () => {
+  document.getElementById('qr-modal').classList.add('hidden');
+});
+
+document.getElementById('qr-modal').addEventListener('click', (e) => {
+  if (e.target.id === 'qr-modal') {
+    document.getElementById('qr-modal').classList.add('hidden');
+  }
+});
+
 // ── Input Handling ──────────────────────────────────────────
 function sendMessage() {
   const text = input.value.trim();

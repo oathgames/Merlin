@@ -5,6 +5,9 @@ contextBridge.exposeInMainWorld('merlin', {
   checkSetup: () => ipcRenderer.invoke('check-setup'),
   openClaudeDownload: () => ipcRenderer.invoke('open-claude-download'),
 
+  // Mobile
+  getMobileQR: () => ipcRenderer.invoke('get-mobile-qr'),
+
   // Session
   startSession: () => ipcRenderer.invoke('start-session'),
   sendMessage: (text) => ipcRenderer.invoke('send-message', text),

@@ -1,0 +1,16 @@
+{
+  "name": "Merlin",
+  "short_name": "Merlin",
+  "description": "Your AI CMO — mobile access",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#08080a",
+  "theme_color": "#08080a",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🪄</text></svg>",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    }
+  ]
+}

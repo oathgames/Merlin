@@ -1,6 +1,8 @@
 const { app, BrowserWindow, ipcMain, safeStorage, protocol, nativeTheme, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const wsServer = require('./ws-server');
+const { generateQRDataUri } = require('./qr');
 
 // Remove default menu bar
 Menu.setApplicationMenu(null);
@@ -18,7 +20,7 @@ let activeQuery = null;
 
 // ── Window ──────────────────────────────────────────────────
 
-function createWindow() {
+async function createWindow() {
   nativeTheme.themeSource = 'dark';
 
   win = new BrowserWindow({
@@ -47,6 +49,28 @@ function createWindow() {
     win.show();
     win.webContents.send('platform', process.platform);
   });
+
+  // Start WebSocket server for PWA mobile clients
+  await wsServer.startServer();
+  wsServer.setHandlers({
+    onSendMessage: (text) => {
+      if (resolveNextMessage) {
+        resolveNextMessage({ type: 'user', message: { role: 'user', content: text } });
+      }
+    },
+    onApproveTool: (toolUseID) => {
+      const resolve = pendingApprovals.get(toolUseID);
+      if (resolve) { resolve(true); pendingApprovals.delete(toolUseID); }
+    },
+    onDenyTool: (toolUseID) => {
+      const resolve = pendingApprovals.get(toolUseID);
+      if (resolve) { resolve(false); pendingApprovals.delete(toolUseID); }
+    },
+    onAnswerQuestion: (toolUseID, answers) => {
+      const resolve = pendingApprovals.get(toolUseID);
+      if (resolve) { resolve(answers); pendingApprovals.delete(toolUseID); }
+    },
+  });
 }
 
 // ── API Key (encrypted) ─────────────────────────────────────
@@ -71,6 +95,13 @@ function openClaudeDownload() {
 
 ipcMain.handle('open-claude-download', () => {
   openClaudeDownload();
+});
+
+ipcMain.handle('get-mobile-qr', async () => {
+  const info = wsServer.getConnectionInfo();
+  const pwaUrl = `https://merlin-pwa.ryan-fec.workers.dev?host=${info.host}&port=${info.port}&token=${info.token}`;
+  const qrDataUri = await generateQRDataUri(pwaUrl);
+  return { qrDataUri, pwaUrl, ...info };
 });
 
 // ── SDK Integration ─────────────────────────────────────────
@@ -126,10 +157,9 @@ async function handleToolApproval(toolName, input, context) {
   // AskUserQuestion — forward to renderer as interactive chips
   if (toolName === 'AskUserQuestion') {
     const toolUseID = Date.now().toString();
-    win.webContents.send('ask-user-question', {
-      toolUseID,
-      questions: input.questions,
-    });
+    const askPayload = { toolUseID, questions: input.questions };
+    win.webContents.send('ask-user-question', askPayload);
+    wsServer.broadcast('ask-user-question', askPayload);
     return new Promise((resolve) => {
       pendingApprovals.set(toolUseID, (answers) => {
         resolve({ behavior: 'allow', updatedInput: { ...input, answers } });
@@ -141,11 +171,9 @@ async function handleToolApproval(toolName, input, context) {
   const toolUseID = Date.now().toString();
   const translated = translateTool(toolName, input);
 
-  win.webContents.send('approval-request', {
-    toolUseID,
-    label: translated.label,
-    cost: translated.cost,
-  });
+  const approvalPayload = { toolUseID, label: translated.label, cost: translated.cost };
+  win.webContents.send('approval-request', approvalPayload);
+  wsServer.broadcast('approval-request', approvalPayload);
 
   return new Promise((resolve) => {
     pendingApprovals.set(toolUseID, (approved) => {
@@ -197,12 +225,16 @@ async function startSession() {
   try {
     for await (const msg of activeQuery) {
       if (win && !win.isDestroyed()) {
-        win.webContents.send('sdk-message', JSON.parse(JSON.stringify(msg)));
+        const serialized = JSON.parse(JSON.stringify(msg));
+        win.webContents.send('sdk-message', serialized);
+        wsServer.broadcast('sdk-message', serialized);
       }
     }
   } catch (err) {
     if (win && !win.isDestroyed()) {
-      win.webContents.send('sdk-error', err.message || String(err));
+      const errMsg = err.message || String(err);
+      win.webContents.send('sdk-error', errMsg);
+      wsServer.broadcast('sdk-error', errMsg);
     }
   }
 }

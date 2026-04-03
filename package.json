@@ -10,7 +10,9 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.91",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "qrcode": "^1.5.4",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "electron": "^33.0.0",
@@ -20,20 +22,46 @@
     "appId": "com.merlin.desktop",
     "productName": "Merlin",
     "asar": false,
-    "files": ["app/**/*"],
+    "files": [
+      "app/**/*"
+    ],
     "extraResources": [
-      { "from": ".claude", "to": "../.claude", "filter": ["**/*"] },
-      { "from": "assets", "to": "../assets", "filter": ["**/*"] },
-      { "from": "CLAUDE.md", "to": "../CLAUDE.md" },
-      { "from": "memory.md", "to": "../memory.md" },
-      { "from": "version.json", "to": "../version.json" }
+      {
+        "from": ".claude",
+        "to": "../.claude",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "assets",
+        "to": "../assets",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "CLAUDE.md",
+        "to": "../CLAUDE.md"
+      },
+      {
+        "from": "memory.md",
+        "to": "../memory.md"
+      },
+      {
+        "from": "version.json",
+        "to": "../version.json"
+      }
     ],
     "win": {
       "target": "nsis",
       "icon": "app/icon.ico"
     },
     "mac": {
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "icon": "app/icon.icns"
     },
     "linux": {
