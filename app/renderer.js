@@ -624,6 +624,15 @@ document.getElementById('magic-close').addEventListener('click', () => {
   document.getElementById('magic-panel').classList.add('hidden');
 });
 
+// Close panel when clicking outside it
+document.addEventListener('click', (e) => {
+  const panel = document.getElementById('magic-panel');
+  const btn = document.getElementById('magic-btn');
+  if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== btn) {
+    panel.classList.add('hidden');
+  }
+});
+
 // Connect platform tiles — clicking sends a natural language message
 document.querySelectorAll('.magic-tile').forEach(tile => {
   tile.addEventListener('click', () => {
