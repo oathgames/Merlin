@@ -1,0 +1,47 @@
+{
+  "name": "r2-desktop",
+  "version": "0.1.0",
+  "description": "R2 — Your AI CMO",
+  "main": "app/main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.2.91",
+    "dotenv": "^16.4.7"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.r2.desktop",
+    "productName": "R2",
+    "asar": false,
+    "files": ["app/**/*"],
+    "extraResources": [
+      { "from": ".claude", "to": "../.claude", "filter": ["**/*"] },
+      { "from": "assets", "to": "../assets", "filter": ["**/*"] },
+      { "from": "CLAUDE.md", "to": "../CLAUDE.md" },
+      { "from": "memory.md", "to": "../memory.md" },
+      { "from": "version.json", "to": "../version.json" }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "app/icon.ico"
+    },
+    "mac": {
+      "target": ["dmg", "zip"],
+      "icon": "app/icon.icns"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    }
+  }
+}

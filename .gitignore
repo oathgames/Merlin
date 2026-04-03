@@ -1,5 +1,5 @@
 # Source code
-autocmo/
+r2/
 *.go
 go.mod
 go.sum
@@ -8,23 +8,23 @@ build.ps1
 # Binaries
 *.exe
 *.exe~
-.claude/tools/AutoCMO*
+.claude/tools/R2*
 .claude/tools/ffmpeg*
 .claude/tools/ffprobe*
 
 # Config with secrets (example template IS tracked)
-.claude/tools/autocmo-config.json
-!.claude/tools/autocmo-config.example.json
+.claude/tools/r2-config.json
+!.claude/tools/r2-config.example.json
 
 # Output
 results/
 
 # Temp files
 tmp_cmd*.json
-autocmo-music-pack.zip
+r2-music-pack.zip
 *.update
 *.backup
-.autocmo-backup/
+.r2-backup/
 
 # Brand-specific assets (users bring their own)
 assets/brands/*/
@@ -37,6 +37,13 @@ assets/music/*.zip
 
 # Quality benchmarks (brand-specific)
 extract_colors.ps1
+
+# Node/Electron
+node_modules/
+dist/
+package-lock.json
+.r2-key
+.env
 
 # OS
 .DS_Store

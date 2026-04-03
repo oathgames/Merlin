@@ -1,4 +1,4 @@
-# AutoCMO — Portable AI Content Engine
+# R2 — Portable AI Content Engine
 
 Open in Claude Code. Type `/cmo`. Everything else is automatic.
 
@@ -51,11 +51,11 @@ Create a subfolder under `assets/brands/<brand>/products/` with a `references/` 
 ## Updates
 Type `/update` to check for and install new versions.
 Downloads the latest binary + framework files from GitHub while preserving user data (memory.md, brand folders, config).
-Backups are saved to `.autocmo-backup/{version}/` before overwriting.
+Backups are saved to `.r2-backup/{version}/` before overwriting.
 
-## How AutoCMO Improves Over Time
-AutoCMO learns from anonymous, aggregated performance trends across all users.
-When you check ad performance, AutoCMO contributes metrics like CTR and CPC
+## How R2 Improves Over Time
+R2 learns from anonymous, aggregated performance trends across all users.
+When you check ad performance, R2 contributes metrics like CTR and CPC
 (never brand names, ad copy, or personal data) to improve recommendations for
 everyone. This is what makes hook suggestions, format picks, and timing
 recommendations smarter with every release.
@@ -90,7 +90,7 @@ Every piece of content — email images, ad creatives, social posts, blog featur
 - `files:write` alone will upload but silently fail to share to channels.
 
 ### Meta Ads API
-- The AutoCMO app must be in **Live mode** (not Development) to create ad creatives. This is a hard Meta platform restriction.
+- The R2 app must be in **Live mode** (not Development) to create ad creatives. This is a hard Meta platform restriction.
 - Campaigns, ad sets, image uploads all work in dev mode — only ad creative creation is blocked.
 - Error subcode `1885183` = app in development mode. No workaround exists (page tokens, system user tokens all fail).
 - `metaFindCampaign` uses URL-encoded filtering to avoid duplicate campaign creation.

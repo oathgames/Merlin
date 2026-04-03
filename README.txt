@@ -1,8 +1,8 @@
-     _         _         ____ __  __  ___
-    / \  _   _| |_ ___  / ___|  \/  |/ _ \
-   / _ \| | | | __/ _ \| |   | |\/| | | | |
-  / ___ \ |_| | || (_) | |___| |  | | |_| |
- /_/   \_\__,_|\__\___/ \____|_|  |_|\___/
+  ____  ____
+ |  _ \|___ \
+ | |_) | __) |
+ |  _ < / __/
+ |_| \_\_____|
 
   ( ◕ ◡ ◕ )  Your AI CMO
 
@@ -12,7 +12,7 @@ All from one command.
 SETUP
 
   1. Download this repo (or ask Claude to do it):
-     https://github.com/oathgames/AutoCMO
+     https://github.com/oathgames/R2
   2. Open the folder in Claude Code
   3. Type: /cmo
 

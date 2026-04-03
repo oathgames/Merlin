@@ -3,7 +3,7 @@
     "Stop": [
       {
         "type": "prompt",
-        "prompt": "FIRST: Check if any AutoCMO runs happened this session by looking for new timestamped folders in results/ created today. If NO new folders exist, do nothing and stop here — this was not an AutoCMO session.\n\nIF new run folders exist:\n1. Read qa_report.json and script.txt from each new run folder\n2. Check if these folders are already logged in memory.md Run Log (avoid duplicates)\n3. For unlogged runs, append to memory.md:\n   - Run Log entry: date | brand | product | mode | model | pass/fail | one-sentence takeaway\n   - Quality findings under What Works or What Fails (one sentence each)\n4. Prefix output with ( ◕ ◡ ◕ )"
+        "prompt": "FIRST: Check if any R2 runs happened this session by looking for new timestamped folders in results/ created today. If NO new folders exist, do nothing and stop here — this was not an R2 session.\n\nIF new run folders exist:\n1. Read qa_report.json and script.txt from each new run folder\n2. Check if these folders are already logged in memory.md Run Log (avoid duplicates)\n3. For unlogged runs, append to memory.md:\n   - Run Log entry: date | brand | product | mode | model | pass/fail | one-sentence takeaway\n   - Quality findings under What Works or What Fails (one sentence each)\n4. Prefix output with ( ◕ ◡ ◕ )"
       }
     ]
   }

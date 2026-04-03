@@ -1,4 +1,4 @@
-# AutoCMO Memory
+# R2 Memory
 
 Accumulated learnings from every run. Claude reads this before generating content and updates it after every run.
 
