@@ -562,6 +562,7 @@ a:hover{text-decoration:underline}
 .magic-tile:hover{border-color:var(--accent-border);background:var(--surface-hover)}
 .tile-icon{font-size:20px}
 .tile-name{font-size:10px;color:var(--text-muted);font-weight:500}
+.tile-credits{font-size:8px;color:var(--success);font-weight:500;margin-top:1px}
 
 .magic-tile.connected{border-color:var(--success-border);background:var(--success-bg)}
 .magic-tile.connected .tile-name{color:var(--success)}

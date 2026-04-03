@@ -525,7 +525,26 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
 
 // ── Magic Panel ─────────────────────────────────────────────
 document.getElementById('magic-btn').addEventListener('click', () => {
-  document.getElementById('magic-panel').classList.toggle('hidden');
+  const panel = document.getElementById('magic-panel');
+  panel.classList.toggle('hidden');
+  // Fetch credits when panel opens
+  if (!panel.classList.contains('hidden')) {
+    merlin.getCredits().then((credits) => {
+      if (!credits) return;
+      // Update tiles with credit info
+      document.querySelectorAll('.magic-tile').forEach(tile => {
+        const platform = tile.dataset.platform;
+        const existing = tile.querySelector('.tile-credits');
+        if (existing) existing.remove();
+        if (credits[platform]) {
+          const span = document.createElement('div');
+          span.className = 'tile-credits';
+          span.textContent = credits[platform];
+          tile.appendChild(span);
+        }
+      });
+    }).catch(() => {});
+  }
 });
 document.getElementById('magic-close').addEventListener('click', () => {
   document.getElementById('magic-panel').classList.add('hidden');
@@ -544,6 +563,7 @@ document.querySelectorAll('.magic-tile').forEach(tile => {
       pinterest: 'Connect my Pinterest Ads account',
       fal: 'Set up fal.ai for image generation',
       elevenlabs: 'Set up ElevenLabs for voice',
+      heygen: 'Set up HeyGen for video avatars',
     };
     if (names[platform]) {
       document.getElementById('magic-panel').classList.add('hidden');

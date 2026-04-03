@@ -301,6 +301,48 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
 });
 
 ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
+
+// Fetch credit balances for connected platforms
+ipcMain.handle('get-credits', async () => {
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { return {}; }
+
+  const credits = {};
+  const https = require('https');
+
+  function fetchJSON(url, headers) {
+    return new Promise((resolve) => {
+      const req = https.get(url, { headers: { ...headers, 'User-Agent': 'Merlin' } }, (res) => {
+        let body = '';
+        res.on('data', c => body += c);
+        res.on('end', () => { try { resolve(JSON.parse(body)); } catch { resolve(null); } });
+      });
+      req.on('error', () => resolve(null));
+      req.setTimeout(5000, () => { req.destroy(); resolve(null); });
+    });
+  }
+
+  // HeyGen
+  if (cfg.heygenApiKey) {
+    const data = await fetchJSON('https://api.heygen.com/v2/user/remaining_quota', { 'X-Api-Key': cfg.heygenApiKey });
+    if (data?.data?.remaining_quota != null) credits.heygen = `${data.data.remaining_quota} credits`;
+  }
+
+  // ElevenLabs
+  if (cfg.elevenLabsApiKey) {
+    const data = await fetchJSON('https://api.elevenlabs.io/v1/user', { 'xi-api-key': cfg.elevenLabsApiKey });
+    if (data?.subscription) {
+      const s = data.subscription;
+      const used = s.character_count || 0;
+      const limit = s.character_limit || 0;
+      const pct = limit > 0 ? Math.round((used / limit) * 100) : 0;
+      credits.elevenlabs = `${pct}% used`;
+    }
+  }
+
+  return credits;
+});
 ipcMain.handle('win-minimize', () => { if (win) win.minimize(); });
 ipcMain.handle('win-maximize', () => { if (win) { win.isMaximized() ? win.unmaximize() : win.maximize(); } });
 ipcMain.handle('win-close', () => { if (win) win.close(); });

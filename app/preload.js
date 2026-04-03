@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('merlin', {
   // Session
   startSession: () => ipcRenderer.invoke('start-session'),
   getAccountInfo: () => ipcRenderer.invoke('get-account-info'),
+  getCredits: () => ipcRenderer.invoke('get-credits'),
   sendMessage: (text) => ipcRenderer.invoke('send-message', text),
 
   // Approvals
