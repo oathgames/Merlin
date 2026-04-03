@@ -1,79 +1,63 @@
-     _         _         ____ __  __  ___
-    / \  _   _| |_ ___  / ___|  \/  |/ _ \
-   / _ \| | | | __/ _ \| |   | |\/| | | | |
-  / ___ \ |_| | || (_) | |___| |  | | |_| |
- /_/   \_\__,_|\__\___/ \____|_|  |_|\___/
+  __  __           _ _
+ |  \/  | ___ _ __| (_)_ __
+ | |\/| |/ _ \ '__| | | '_ \
+ | |  | |  __/ |  | | | | | |
+ |_|  |_|\___|_|  |_|_|_| |_|
 
-  ( ◕ ◡ ◕ )  Your AI CMO
+  🪄  Your AI CMO
 
-Generate ads, manage campaigns, write SEO blogs, run competitor intel.
-All from one command.
+Download. Run. Done.
 
-SETUP
+Merlin handles your entire marketing pipeline — ad creation,
+campaign management, performance optimization, email, SEO —
+all automatically, every day.
 
-  1. Download this repo (or ask Claude to do it):
-     https://github.com/oathgames/AutoCMO
-  2. Open the folder in Claude Code
-  3. Type: /cmo
 
-  That's it. /cmo handles everything else — downloads the binary,
-  sets up your config, walks you through brand setup. The only thing
-  you need is a fal.ai API key (free tier: https://fal.ai).
+GET STARTED
 
-WHAT YOU CAN DO
-  Just talk naturally:
+  1. Download Merlin
+  2. Open it
+  3. Start talking
 
-    /cmo cream-set product video
-    /cmo pink-set make 3 image variations
-    /cmo clone my voice
-    /cmo check Meta performance
-    /cmo write a blog post about the bonefish hoodie
-    /cmo push to Meta
-    /cmo check TikTok performance
-    /cmo archive old results
+  That's it. Merlin walks you through everything.
+  Requires a Claude Pro or Max subscription (claude.ai).
+
+
+WHAT MERLIN DOES
+
+  Create    →  AI image ads, UGC videos, email campaigns, SEO blogs
+  Publish   →  Meta, TikTok, Google, Pinterest, Snapchat, X
+  Analyze   →  CTR, ROAS, CPA — kills losers, flags winners
+  Scale     →  Boosts winners, builds lookalikes, retargets
+  Revenue   →  More sales, lower CPA, compounding growth
+
+  This runs every day, automatically.
+
+
+TALK NATURALLY
+
+  "Make 5 image ads for the sweatpants"
+  "Check yesterday's Meta performance"
+  "Write a blog post about the new hoodie"
+  "Push the winners to scaling"
+  "Connect my Shopify store"
+  "Set up TikTok ads"
+
+
+CONNECT YOUR ACCOUNTS
+
+  Every platform connects with one click — Merlin opens
+  your browser, you authorize, done.
+
+  Meta · TikTok · Google · Pinterest · Snapchat · Shopify · Klaviyo
+
 
 UPDATES
-  Type: /update
-  Downloads the latest binary + framework files from GitHub.
-  Your brand data, config, and memory are never touched.
 
-ADDING PRODUCTS
-  Create a folder under assets/brands/<brand>/products/ with a references/ subfolder.
-  Drop product photos in it. Claude handles the rest.
+  Merlin updates itself. New features ship automatically.
 
-    assets/brands/mybrand/products/new-jacket/references/photo1.jpg
 
-  Next time you run /cmo new-jacket, it just works.
+LINKS
 
-QUALITY BENCHMARKS
-  Drop 3-5 high-quality ad examples into assets/brands/<brand>/quality-benchmark/.
-  Claude scores every generated image/video against these.
-
-VOICE CLONING
-  Drop 1-3 audio recordings (.mp3/.wav) into assets/brands/<brand>/voices/.
-  Then: /cmo clone my voice
-
-AVATARS
-  Drop a photo (.jpg/.png) or video (.mp4) into assets/brands/<brand>/avatars/.
-  Photos use HeyGen talking-head mode. Videos use Kling lip-sync.
-
-SEO BLOGS
-  /cmo write a blog post — auto-generates and publishes to Shopify.
-  Runs daily if Shopify is configured.
-
-META ADS
-  /cmo push to Meta          — uploads to Testing campaign ($5/day)
-  /cmo check Meta performance — CTR, CPC, ROAS, winner/loser flags
-
-TIKTOK ADS
-  /cmo push to TikTok          — uploads to Testing campaign ($5/day)
-  /cmo check TikTok performance — CTR, CPC, ATC, winner/loser flags
-
-API KEYS
-  fal.ai is the only required key (configured during /cmo setup).
-  Everything else is optional and configured when you need it:
-
-    /cmo push to Meta       → asks for Meta token
-    /cmo push to TikTok     → asks for TikTok token
-    /cmo write a blog post  → asks for Shopify token
-    /cmo clone my voice     → asks for ElevenLabs key
+  Landing page:  https://merlin-landing.ryan-fec.workers.dev
+  GitHub:        https://github.com/oathgames/Merlin
