@@ -521,6 +521,41 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
   }
 });
 
+// ── Magic Panel ─────────────────────────────────────────────
+document.getElementById('magic-btn').addEventListener('click', () => {
+  document.getElementById('magic-panel').classList.toggle('hidden');
+});
+document.getElementById('magic-close').addEventListener('click', () => {
+  document.getElementById('magic-panel').classList.add('hidden');
+});
+
+// Connect platform tiles — clicking sends a natural language message
+document.querySelectorAll('.magic-tile').forEach(tile => {
+  tile.addEventListener('click', () => {
+    const platform = tile.dataset.platform;
+    const names = {
+      meta: 'Connect my Meta Ads account',
+      tiktok: 'Connect my TikTok Ads account',
+      shopify: 'Connect my Shopify store',
+      klaviyo: 'Connect my Klaviyo account',
+      google: 'Connect my Google Ads account',
+      pinterest: 'Connect my Pinterest Ads account',
+      fal: 'Set up fal.ai for image generation',
+      elevenlabs: 'Set up ElevenLabs for voice',
+    };
+    if (names[platform]) {
+      document.getElementById('magic-panel').classList.add('hidden');
+      addUserBubble(names[platform]);
+      showTypingIndicator();
+      turnStartTime = Date.now();
+      turnTokens = 0;
+      sessionActive = true;
+      startTickingTimer();
+      merlin.sendMessage(names[platform]);
+    }
+  });
+});
+
 // ── Input Handling ──────────────────────────────────────────
 // ── Ticking Timer ───────────────────────────────────────────
 let tickerInterval = null;

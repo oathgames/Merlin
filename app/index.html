@@ -13,9 +13,50 @@
 <body>
 
 
+<!-- Magic button (top right) -->
+<button id="magic-btn" class="magic-btn" aria-label="Merlin's Magic">✦</button>
+
 <!-- Chat -->
 <div id="chat">
   <div id="messages"></div>
+</div>
+
+<!-- Merlin's Magic Panel -->
+<div id="magic-panel" class="magic-panel hidden">
+  <div class="magic-header">
+    <span class="magic-title">✦ Merlin's Magic</span>
+    <button id="magic-close" class="magic-close">&times;</button>
+  </div>
+
+  <div class="magic-section">
+    <div class="magic-section-label">Connected</div>
+    <div id="connected-tiles" class="magic-tiles"></div>
+    <div id="no-connections" class="magic-empty">No platforms connected yet</div>
+  </div>
+
+  <div class="magic-section">
+    <div class="magic-section-label">Available</div>
+    <div id="available-tiles" class="magic-tiles">
+      <button class="magic-tile" data-platform="meta"><div class="tile-icon">📘</div><div class="tile-name">Meta Ads</div></button>
+      <button class="magic-tile" data-platform="tiktok"><div class="tile-icon">🎵</div><div class="tile-name">TikTok</div></button>
+      <button class="magic-tile" data-platform="shopify"><div class="tile-icon">🛍</div><div class="tile-name">Shopify</div></button>
+      <button class="magic-tile" data-platform="klaviyo"><div class="tile-icon">✉</div><div class="tile-name">Klaviyo</div></button>
+      <button class="magic-tile" data-platform="google"><div class="tile-icon">📊</div><div class="tile-name">Google</div></button>
+      <button class="magic-tile" data-platform="pinterest"><div class="tile-icon">📌</div><div class="tile-name">Pinterest</div></button>
+      <button class="magic-tile" data-platform="fal"><div class="tile-icon">🎨</div><div class="tile-name">fal.ai</div></button>
+      <button class="magic-tile" data-platform="elevenlabs"><div class="tile-icon">🎙</div><div class="tile-name">ElevenLabs</div></button>
+    </div>
+  </div>
+
+  <div class="magic-section">
+    <div class="magic-section-label">Autopilot</div>
+    <div id="autopilot-status" class="autopilot-status">
+      <div class="autopilot-row"><span class="autopilot-dot dot-pending"></span> Daily content <span class="autopilot-time">9 AM</span></div>
+      <div class="autopilot-row"><span class="autopilot-dot dot-pending"></span> Performance review <span class="autopilot-time">10 AM</span></div>
+      <div class="autopilot-row"><span class="autopilot-dot dot-pending"></span> Weekly digest <span class="autopilot-time">Mon 9 AM</span></div>
+    </div>
+    <div id="autopilot-last" class="autopilot-last"></div>
+  </div>
 </div>
 
 <!-- Input bar -->
