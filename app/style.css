@@ -465,8 +465,10 @@ a:hover{text-decoration:underline}
 .titlebar-title{
   font-size:12px;
   font-weight:600;
-  color:var(--text-dim);
   letter-spacing:.02em;
+  background:linear-gradient(135deg,#a78bfa,#34d399);
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
 }
 .titlebar-controls{
   display:flex;
