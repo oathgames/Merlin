@@ -54,6 +54,15 @@ async function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'index.html'));
+
+  // Enable DevTools in dev mode (Ctrl+Shift+I)
+  if (!app.isPackaged) {
+    win.webContents.on('before-input-event', (event, input) => {
+      if (input.control && input.shift && input.key === 'I') {
+        win.webContents.toggleDevTools();
+      }
+    });
+  }
   win.once('ready-to-show', () => {
     win.show();
     win.webContents.send('platform', process.platform);
@@ -202,7 +211,7 @@ async function startSession() {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
   async function* messageGenerator() {
-    yield { type: 'user', message: { role: 'user', content: 'Run /cmo silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message. Just wait for my next message. If no brands exist yet, wait — I\'ll give you my website URL and you\'ll start the setup flow from there.' } };
+    yield { type: 'user', message: { role: 'user', content: 'Run /cmo silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message asking for a URL. Check assets/brands/ for existing brand folders (ignore "example"). If a brand ALREADY exists, skip setup entirely — just say "✦ [Brand] is ready — [X] products loaded. What would you like to create?" and wait. If NO brands exist, wait for my next message with a URL.' } };
     while (true) {
       const msg = await new Promise((resolve) => { resolveNextMessage = resolve; });
       if (msg === null) return;

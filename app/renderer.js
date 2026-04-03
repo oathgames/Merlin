@@ -12,6 +12,7 @@ const setup = document.getElementById('setup');
 const approval = document.getElementById('approval');
 let turnStartTime = null;
 let turnTokens = 0;
+let sessionTotalTokens = 0;
 
 // ── Platform Detection ──────────────────────────────────────
 // (Window controls handled by native OS chrome)
@@ -26,9 +27,8 @@ async function init() {
   welcomeBubble.classList.remove('streaming');
 
   const welcomeLines = [
-    { text: '✦ Hey — I\'m Merlin, your marketing wizard.', delay: 0 },
-    { text: 'Give me your website and I\'ll learn your entire brand in seconds.', delay: 1500 },
-    { text: 'What\'s your URL?', delay: 3000 },
+    { text: '✦ Hey — I\'m Merlin, your marketing wizard.' },
+    { text: 'One moment while I check things out...' },
   ];
 
   let lineIndex = 0;
@@ -129,6 +129,8 @@ function appendText(text) {
 
 let sessionActive = false;
 
+let typingTimeout = null;
+
 function finalizeBubble() {
   if (currentBubble) {
     currentBubble.classList.remove('streaming');
@@ -138,14 +140,20 @@ function finalizeBubble() {
   textBuffer = '';
   isStreaming = false;
   scrollToBottom();
-  // If session is still active (no result yet), show typing indicator
-  // because Claude is likely doing tool calls
+  // If session is still active, show typing indicator after a pause
+  // Long delay prevents flickering during rapid stream events
+  scheduleTypingIndicator();
+}
+
+function scheduleTypingIndicator() {
+  if (typingTimeout) clearTimeout(typingTimeout);
+  typingTimeout = null;
   if (sessionActive) {
-    setTimeout(() => {
-      if (sessionActive && !currentBubble) {
+    typingTimeout = setTimeout(() => {
+      if (sessionActive && !currentBubble && !isStreaming) {
         showTypingIndicator();
       }
-    }, 300);
+    }, 1500);
   }
 }
 
@@ -232,17 +240,16 @@ merlin.onSdkMessage((msg) => {
     textBuffer = '';
   }
 
-  // Remove typing indicator + stop ticker when real content starts
+  // Remove typing indicator + cancel pending when real content starts
   if (msg.type === 'stream_event' && msg.event?.type === 'content_block_start') {
+    if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
     removeTypingIndicator();
     stopTickingTimer();
   }
 
 
-  // Log result messages to help debug token tracking
-  if (msg.type === 'result') {
-    console.log('SDK result:', JSON.stringify(msg).substring(0, 500));
-  }
+  // Debug: log ALL message types to understand image delivery
+  console.log('SDK:', msg.type, msg.event?.type || msg.subtype || '', JSON.stringify(msg).substring(0, 300));
 
   switch (msg.type) {
     case 'system':
@@ -271,6 +278,7 @@ merlin.onSdkMessage((msg) => {
 
     case 'result':
       sessionActive = false;
+      if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
       finalizeBubble();
       removeTypingIndicator();
       isStreaming = false;
@@ -285,8 +293,15 @@ merlin.onSdkMessage((msg) => {
           || msg.result?.usage?.output_tokens
           || msg.num_output_tokens
           || null;
+        if (tokens) sessionTotalTokens += tokens;
         let statsText = `${duration}s`;
         if (tokens) statsText += ` · ↓ ${tokens} tokens`;
+        if (sessionTotalTokens > 0) {
+          const formatted = sessionTotalTokens >= 1000
+            ? `${(sessionTotalTokens / 1000).toFixed(1)}k`
+            : `${sessionTotalTokens}`;
+          statsText += ` · session: ${formatted}`;
+        }
         statsDiv.textContent = statsText;
         messages.appendChild(statsDiv);
         scrollToBottom();
