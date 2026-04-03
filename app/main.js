@@ -379,6 +379,15 @@ ipcMain.handle('get-mobile-qr', async () => {
   return { qrDataUri, pwaUrl, ...info };
 });
 
+ipcMain.handle('save-pasted-media', (_, dataUrl, filename) => {
+  const resultsDir = path.join(appRoot, 'results');
+  if (!fs.existsSync(resultsDir)) fs.mkdirSync(resultsDir, { recursive: true });
+  const filePath = path.join(resultsDir, filename);
+  const base64 = dataUrl.replace(/^data:[^;]+;base64,/, '');
+  fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
+  return `results/${filename}`;
+});
+
 ipcMain.handle('apply-update', () => { downloadAndApplyUpdate(); });
 ipcMain.handle('restart-app', () => { app.relaunch(); app.exit(0); });
 

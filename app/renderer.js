@@ -791,5 +791,63 @@ function autoResize() {
 }
 input.addEventListener('input', autoResize);
 
+// ── Image/Video Paste + Drag-Drop ───────────────────────────
+function savePastedMedia(file) {
+  if (!file) return;
+  const isImage = file.type.startsWith('image/');
+  const isVideo = file.type.startsWith('video/');
+  if (!isImage && !isVideo) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const ext = file.type.split('/')[1] === 'jpeg' ? 'jpg' : (file.type.split('/')[1] || 'png');
+    const filename = `pasted_${Date.now()}.${ext}`;
+    merlin.savePastedMedia(reader.result, filename).then((savedPath) => {
+      // Show preview inline
+      addUserBubble(`📎 ${file.name || filename}`);
+      const mediaDiv = document.createElement('div');
+      mediaDiv.className = 'msg msg-user';
+      if (isImage) {
+        mediaDiv.innerHTML = `<img src="${reader.result}" alt="Pasted" style="max-width:100%;border-radius:10px">`;
+      } else {
+        mediaDiv.innerHTML = `<video src="${reader.result}" controls playsinline style="max-width:100%;border-radius:10px"></video>`;
+      }
+      messages.appendChild(mediaDiv);
+      scrollToBottom();
+      // Tell Claude
+      showTypingIndicator();
+      turnStartTime = Date.now();
+      turnTokens = 0;
+      sessionActive = true;
+      startTickingTimer();
+      const type = isImage ? 'image' : 'video';
+      merlin.sendMessage(`I just pasted a ${type} — saved at ${savedPath}. Take a look.`);
+    });
+  };
+  reader.readAsDataURL(file);
+}
+
+input.addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type.startsWith('image/') || item.type.startsWith('video/')) {
+      e.preventDefault();
+      savePastedMedia(item.getAsFile());
+      return;
+    }
+  }
+});
+
+const chatEl = document.getElementById('chat');
+chatEl.addEventListener('dragover', (e) => { e.preventDefault(); chatEl.classList.add('drag-over'); });
+chatEl.addEventListener('dragleave', () => { chatEl.classList.remove('drag-over'); });
+chatEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  chatEl.classList.remove('drag-over');
+  const file = e.dataTransfer?.files?.[0];
+  if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) savePastedMedia(file);
+});
+
 // ── Init ────────────────────────────────────────────────────
 init();

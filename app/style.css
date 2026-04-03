@@ -688,6 +688,13 @@ a:hover{text-decoration:underline}
 .add-task-btn:hover{border-color:var(--accent-border);color:var(--accent);background:var(--surface-hover)}
 .autopilot-last:empty{display:none}
 
+/* ── Drag-Drop ───────────────────────────────────────────── */
+#chat.drag-over{
+  outline:2px dashed var(--accent);
+  outline-offset:-4px;
+  border-radius:8px;
+}
+
 /* ── Typing Indicator ────────────────────────────────────── */
 .dot-pulse{display:flex;gap:4px;padding:4px 0}
 .dot-pulse span{
