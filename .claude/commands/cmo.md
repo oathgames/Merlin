@@ -517,8 +517,8 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
      - **READ the downloaded image so it appears inline in the chat**
      - Say: "✦ **[Product Name]** — $[price]" with the image visible
    - Download remaining images (up to 5 per product) in the background
-   - Auto-generate `product.md` for each
    - After all 10: "That's your first 10 of [total] products. I can grab the rest anytime — just ask."
+   - Launch a **background Agent** to generate `product.md` for each product — do NOT make the user wait for this. It happens silently while they continue chatting.
 
    **The user should see their own product photos streaming into the chat one by one.** This is the moment they realize the AI just learned their entire brand.
 
