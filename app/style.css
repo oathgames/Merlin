@@ -1,11 +1,12 @@
 /* ── Reset & Base ─────────────────────────────────────────── */
 *{margin:0;padding:0;box-sizing:border-box}
 :root{
-  --bg:#08080a;
-  --surface:rgba(255,255,255,.04);
-  --surface-hover:rgba(255,255,255,.07);
-  --border:rgba(255,255,255,.08);
-  --text:#f4f4f5;
+  --bg:#1a1a1c;
+  --bg-deep:#141416;
+  --surface:#242428;
+  --surface-hover:#2c2c30;
+  --border:#333338;
+  --text:#e4e4e7;
   --text-muted:#a1a1aa;
   --text-dim:#71717a;
   --accent:#a78bfa;
@@ -202,7 +203,7 @@ a:hover{text-decoration:underline}
   gap:8px;
   padding:10px 16px 14px;
   border-top:1px solid var(--border);
-  background:var(--bg);
+  background:var(--bg-deep);
 }
 #input{
   flex:1;

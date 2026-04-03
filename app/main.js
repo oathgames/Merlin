@@ -29,7 +29,7 @@ async function createWindow() {
     minWidth: 380,
     minHeight: 500,
     icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
-    backgroundColor: '#08080a',
+    backgroundColor: '#1a1a1c',
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
