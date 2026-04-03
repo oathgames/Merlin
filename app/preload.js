@@ -17,15 +17,17 @@ contextBridge.exposeInMainWorld('merlin', {
   denyTool: (id) => ipcRenderer.invoke('deny-tool', id),
   answerQuestion: (id, answers) => ipcRenderer.invoke('answer-question', id, answers),
 
-  // Events from main process
+  // Auto-update
+  applyUpdate: () => ipcRenderer.invoke('apply-update'),
+  restartApp: () => ipcRenderer.invoke('restart-app'),
+
+  // Events
   onPlatform: (cb) => ipcRenderer.on('platform', (_, p) => cb(p)),
   onSdkMessage: (cb) => ipcRenderer.on('sdk-message', (_, msg) => cb(msg)),
   onApprovalRequest: (cb) => ipcRenderer.on('approval-request', (_, data) => cb(data)),
   onAskUserQuestion: (cb) => ipcRenderer.on('ask-user-question', (_, data) => cb(data)),
   onSdkError: (cb) => ipcRenderer.on('sdk-error', (_, err) => cb(err)),
   onRemoteUserMessage: (cb) => ipcRenderer.on('remote-user-message', (_, text) => cb(text)),
-  applyUpdate: () => ipcRenderer.invoke('apply-update'),
-  restartApp: () => ipcRenderer.invoke('restart-app'),
   onUpdateAvailable: (cb) => ipcRenderer.on('update-available', (_, info) => cb(info)),
   onUpdateProgress: (cb) => ipcRenderer.on('update-progress', (_, msg) => cb(msg)),
   onUpdateReady: (cb) => ipcRenderer.on('update-ready', (_, info) => cb(info)),

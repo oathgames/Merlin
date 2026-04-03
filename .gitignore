@@ -48,3 +48,5 @@ package-lock.json
 # OS
 .DS_Store
 Thumbs.db
+.merlin-icon.png
+.r2-key

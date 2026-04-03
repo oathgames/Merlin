@@ -1,22 +1,22 @@
-const { app, BrowserWindow, ipcMain, safeStorage, protocol, nativeTheme, Menu, shell, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const wsServer = require('./ws-server');
 const { generateQRDataUri } = require('./qr');
 
-// Remove default menu bar
 Menu.setApplicationMenu(null);
 
-// App root — the folder containing CLAUDE.md, .claude/, assets/, etc.
 const appRoot = app.isPackaged
   ? path.dirname(app.getPath('exe'))
   : path.join(__dirname, '..');
 
-const keyFile = path.join(appRoot, '.merlin-key');
 let win = null;
 let resolveNextMessage = null;
-let pendingApprovals = new Map(); // toolUseID → resolve function
+let pendingApprovals = new Map();
 let activeQuery = null;
+
+// Auto-expire pending approvals after 5 minutes to prevent memory leaks
+const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ── Window ──────────────────────────────────────────────────
 
@@ -38,10 +38,19 @@ async function createWindow() {
     },
   });
 
-  // Register protocol for inline images
+  // Register protocol for inline images — with path traversal protection
   protocol.handle('merlin', (request) => {
-    const filePath = path.join(appRoot, decodeURIComponent(request.url.replace('merlin://', '')));
-    return new Response(fs.readFileSync(filePath));
+    const requested = decodeURIComponent(request.url.replace('merlin://', ''));
+    const filePath = path.resolve(appRoot, requested);
+    const resolvedRoot = path.resolve(appRoot);
+    if (!filePath.startsWith(resolvedRoot)) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    try {
+      return new Response(fs.readFileSync(filePath));
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
   });
 
   win.loadFile(path.join(__dirname, 'index.html'));
@@ -54,134 +63,106 @@ async function createWindow() {
   await wsServer.startServer();
   wsServer.setHandlers({
     onSendMessage: (text) => {
+      if (typeof text !== 'string' || text.length > 50000) return; // validate input
       if (resolveNextMessage) {
         resolveNextMessage({ type: 'user', message: { role: 'user', content: text } });
       }
-      // Show PWA user's message on desktop
       if (win && !win.isDestroyed()) {
         win.webContents.send('remote-user-message', text);
       }
     },
     onApproveTool: (toolUseID) => {
       const resolve = pendingApprovals.get(toolUseID);
-      if (resolve) { resolve(true); pendingApprovals.delete(toolUseID); }
+      if (resolve) { resolve.fn(true); pendingApprovals.delete(toolUseID); }
     },
     onDenyTool: (toolUseID) => {
       const resolve = pendingApprovals.get(toolUseID);
-      if (resolve) { resolve(false); pendingApprovals.delete(toolUseID); }
+      if (resolve) { resolve.fn(false); pendingApprovals.delete(toolUseID); }
     },
     onAnswerQuestion: (toolUseID, answers) => {
       const resolve = pendingApprovals.get(toolUseID);
-      if (resolve) { resolve(answers); pendingApprovals.delete(toolUseID); }
+      if (resolve) { resolve.fn(answers); pendingApprovals.delete(toolUseID); }
     },
   });
 }
 
-// ── API Key (encrypted) ─────────────────────────────────────
-
-function getApiKey() {
-  try {
-    if (!fs.existsSync(keyFile)) return null;
-    const encrypted = fs.readFileSync(keyFile);
-    return safeStorage.decryptString(encrypted);
-  } catch { return null; }
+// Store a pending approval with auto-expiry timeout
+function setPendingApproval(toolUseID, fn) {
+  const timer = setTimeout(() => {
+    const entry = pendingApprovals.get(toolUseID);
+    if (entry) {
+      entry.fn(false); // auto-deny on timeout
+      pendingApprovals.delete(toolUseID);
+    }
+  }, APPROVAL_TIMEOUT_MS);
+  pendingApprovals.set(toolUseID, { fn, timer });
 }
-
-function saveApiKey(key) {
-  const encrypted = safeStorage.encryptString(key);
-  fs.writeFileSync(keyFile, encrypted);
-}
-
-// Open Claude Desktop download page in user's default browser
-function openClaudeDownload() {
-  shell.openExternal('https://claude.ai/download');
-}
-
-ipcMain.handle('open-claude-download', () => {
-  openClaudeDownload();
-});
-
-ipcMain.handle('get-mobile-qr', async () => {
-  const info = wsServer.getConnectionInfo();
-  // PWA served from the same HTTP server as WebSocket — no mixed-content issues
-  const pwaUrl = `http://${info.host}:${info.port}?token=${info.token}`;
-  const qrDataUri = await generateQRDataUri(pwaUrl);
-  return { qrDataUri, pwaUrl, ...info };
-});
 
 // ── SDK Integration ─────────────────────────────────────────
 
-// Tools that never need user approval
 const autoApproveTools = new Set([
   'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch', 'TodoWrite',
   'Skill', 'Edit', 'Write', 'NotebookEdit', 'Agent',
 ]);
 
-// Translate tool calls to plain English for approvals
+// Translate tool calls to plain English for approval cards
 function translateTool(toolName, input) {
-  // Parse Merlin binary commands
   if (toolName === 'Bash' && input.command && input.command.includes('Merlin')) {
     const cmdMatch = input.command.match(/"action"\s*:\s*"([^"]+)"/);
     const action = cmdMatch ? cmdMatch[1] : null;
     const translations = {
-      'meta-push':    { label: 'Publish this ad to Facebook', cost: '$5/day budget' },
-      'meta-setup':   { label: 'Set up your ad campaigns on Facebook', cost: 'Free' },
-      'meta-kill':    { label: 'Pause this ad', cost: 'Free' },
-      'meta-duplicate': { label: 'Scale this winning ad', cost: 'Increases budget' },
-      'meta-login':   { label: 'Connect to your Facebook Ads account', cost: 'Free' },
+      'meta-push':     { label: 'Publish this ad to Facebook', cost: '$5/day budget' },
+      'meta-setup':    { label: 'Set up your ad campaigns on Facebook', cost: 'Free' },
+      'meta-kill':     { label: 'Pause this ad', cost: 'Free' },
+      'meta-duplicate':{ label: 'Scale this winning ad', cost: 'Increases budget' },
+      'meta-login':    { label: 'Connect to your Facebook Ads account', cost: 'Free' },
       'meta-discover': { label: 'Find your ad accounts', cost: 'Free' },
-      'image':        { label: 'Generate an ad image', cost: '~$0.04' },
-      'generate':     { label: 'Create a video ad', cost: '~$0.50' },
-      'batch':        { label: 'Generate multiple ad variations', cost: '~$0.04 each' },
-      'blog-post':    { label: 'Publish a blog post to Shopify', cost: 'Free' },
-      'seo-audit':    { label: 'Run an SEO audit on your store', cost: 'Free' },
-      'tiktok-push':  { label: 'Publish this ad to TikTok', cost: '$5/day budget' },
-      'tiktok-login': { label: 'Connect to your TikTok Ads account', cost: 'Free' },
-      'shopify-login':{ label: 'Connect to your Shopify store', cost: 'Free' },
-      'api-key-setup':{ label: 'Set up an image generation account', cost: 'Free' },
-      'verify-key':   { label: 'Verify your API connection', cost: 'Free' },
+      'image':         { label: 'Generate an ad image', cost: '~$0.04' },
+      'generate':      { label: 'Create a video ad', cost: '~$0.50' },
+      'batch':         { label: 'Generate multiple ad variations', cost: '~$0.04 each' },
+      'blog-post':     { label: 'Publish a blog post to Shopify', cost: 'Free' },
+      'seo-audit':     { label: 'Run an SEO audit on your store', cost: 'Free' },
+      'tiktok-push':   { label: 'Publish this ad to TikTok', cost: '$5/day budget' },
+      'tiktok-login':  { label: 'Connect to your TikTok Ads account', cost: 'Free' },
+      'shopify-login': { label: 'Connect to your Shopify store', cost: 'Free' },
+      'api-key-setup': { label: 'Set up an image generation account', cost: 'Free' },
+      'verify-key':    { label: 'Verify your API connection', cost: 'Free' },
     };
     if (action && translations[action]) return translations[action];
   }
 
-  // Generic bash commands
   if (toolName === 'Bash') {
-    const desc = input.description || input.command;
-    return { label: desc, cost: null };
+    return { label: input.description || input.command || 'Run a command', cost: null };
   }
 
-  return { label: `${toolName}: ${JSON.stringify(input).substring(0, 100)}`, cost: null };
+  return { label: `${toolName}`, cost: null };
 }
 
-async function handleToolApproval(toolName, input, context) {
-  // Auto-approve safe tools
+async function handleToolApproval(toolName, input) {
   if (autoApproveTools.has(toolName)) {
     return { behavior: 'allow', updatedInput: input };
   }
 
-  // AskUserQuestion — forward to renderer as interactive chips
   if (toolName === 'AskUserQuestion') {
     const toolUseID = Date.now().toString();
-    const askPayload = { toolUseID, questions: input.questions };
-    win.webContents.send('ask-user-question', askPayload);
-    wsServer.broadcast('ask-user-question', askPayload);
+    const payload = { toolUseID, questions: input.questions };
+    win.webContents.send('ask-user-question', payload);
+    wsServer.broadcast('ask-user-question', payload);
     return new Promise((resolve) => {
-      pendingApprovals.set(toolUseID, (answers) => {
+      setPendingApproval(toolUseID, (answers) => {
         resolve({ behavior: 'allow', updatedInput: { ...input, answers } });
       });
     });
   }
 
-  // Everything else — show translated approval card
   const toolUseID = Date.now().toString();
   const translated = translateTool(toolName, input);
-
-  const approvalPayload = { toolUseID, label: translated.label, cost: translated.cost };
-  win.webContents.send('approval-request', approvalPayload);
-  wsServer.broadcast('approval-request', approvalPayload);
+  const payload = { toolUseID, label: translated.label, cost: translated.cost };
+  win.webContents.send('approval-request', payload);
+  wsServer.broadcast('approval-request', payload);
 
   return new Promise((resolve) => {
-    pendingApprovals.set(toolUseID, (approved) => {
+    setPendingApproval(toolUseID, (approved) => {
       if (approved) {
         resolve({ behavior: 'allow', updatedInput: input });
       } else {
@@ -192,21 +173,10 @@ async function handleToolApproval(toolName, input, context) {
 }
 
 async function startSession() {
-  // Dynamic import (ESM module)
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
-  // Streaming input — async generator that yields user messages on demand
   async function* messageGenerator() {
-    // Fire /cmo immediately — get right into the value
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: '/cmo',
-      },
-    };
-
-    // Subsequent messages from the renderer
+    yield { type: 'user', message: { role: 'user', content: '/cmo' } };
     while (true) {
       const msg = await new Promise((resolve) => { resolveNextMessage = resolve; });
       if (msg === null) return;
@@ -214,8 +184,6 @@ async function startSession() {
     }
   }
 
-  // No API key needed — uses the user's existing Claude Pro/Max auth
-  // via the Claude Code CLI that's already installed and authenticated
   activeQuery = query({
     prompt: messageGenerator(),
     options: {
@@ -247,13 +215,13 @@ async function startSession() {
 // ── IPC Handlers ────────────────────────────────────────────
 
 ipcMain.handle('check-setup', async () => {
-  // Async check — doesn't block the main process
   const { exec } = require('child_process');
   return new Promise((resolve) => {
     const child = exec('claude --version', { timeout: 3000 });
     child.on('close', (code) => {
-      if (code === 0) resolve({ ready: true });
-      else resolve({ ready: false, reason: 'Claude Desktop not found. Install it from claude.ai/download' });
+      resolve(code === 0
+        ? { ready: true }
+        : { ready: false, reason: 'Claude Desktop not found. Install it from claude.ai/download' });
     });
     child.on('error', () => {
       resolve({ ready: false, reason: 'Claude Desktop not found. Install it from claude.ai/download' });
@@ -261,46 +229,43 @@ ipcMain.handle('check-setup', async () => {
   });
 });
 
-ipcMain.handle('start-session', () => {
-  startSession(); // No API key — uses existing Claude auth
-  return { success: true };
-});
+ipcMain.handle('start-session', () => { startSession(); return { success: true }; });
 
 ipcMain.handle('send-message', (_, text) => {
+  if (typeof text !== 'string' || text.length > 50000) return { success: false };
   if (resolveNextMessage) {
-    resolveNextMessage({
-      type: 'user',
-      message: { role: 'user', content: text },
-    });
+    resolveNextMessage({ type: 'user', message: { role: 'user', content: text } });
   }
-  // Show desktop user's message on PWA
   wsServer.broadcast('user-message', { text });
   return { success: true };
 });
 
 ipcMain.handle('approve-tool', (_, toolUseID) => {
-  const resolve = pendingApprovals.get(toolUseID);
-  if (resolve) {
-    resolve(true);
-    pendingApprovals.delete(toolUseID);
-  }
+  const entry = pendingApprovals.get(toolUseID);
+  if (entry) { clearTimeout(entry.timer); entry.fn(true); pendingApprovals.delete(toolUseID); }
 });
 
 ipcMain.handle('deny-tool', (_, toolUseID) => {
-  const resolve = pendingApprovals.get(toolUseID);
-  if (resolve) {
-    resolve(false);
-    pendingApprovals.delete(toolUseID);
-  }
+  const entry = pendingApprovals.get(toolUseID);
+  if (entry) { clearTimeout(entry.timer); entry.fn(false); pendingApprovals.delete(toolUseID); }
 });
 
 ipcMain.handle('answer-question', (_, toolUseID, answers) => {
-  const resolve = pendingApprovals.get(toolUseID);
-  if (resolve) {
-    resolve(answers);
-    pendingApprovals.delete(toolUseID);
-  }
+  const entry = pendingApprovals.get(toolUseID);
+  if (entry) { clearTimeout(entry.timer); entry.fn(answers); pendingApprovals.delete(toolUseID); }
 });
+
+ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
+
+ipcMain.handle('get-mobile-qr', async () => {
+  const info = wsServer.getConnectionInfo();
+  const pwaUrl = `http://${info.host}:${info.port}?token=${info.token}`;
+  const qrDataUri = await generateQRDataUri(pwaUrl);
+  return { qrDataUri, pwaUrl, ...info };
+});
+
+ipcMain.handle('apply-update', () => { downloadAndApplyUpdate(); });
+ipcMain.handle('restart-app', () => { app.relaunch(); app.exit(0); });
 
 // ── Auto-Update ─────────────────────────────────────────────
 
@@ -308,7 +273,6 @@ function httpsGet(url) {
   const https = require('https');
   return new Promise((resolve, reject) => {
     https.get(url, { headers: { 'User-Agent': 'Merlin-Desktop' } }, (res) => {
-      // Follow redirects
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         return httpsGet(res.headers.location).then(resolve).catch(reject);
       }
@@ -322,76 +286,55 @@ function httpsGet(url) {
 async function checkForUpdates() {
   try {
     const currentVersion = require('../package.json').version;
-
-    const data = JSON.parse(await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest'));
-    const latestVersion = (data.tag_name || '').replace(/^v/, '');
-
+    const raw = await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest');
+    const data = JSON.parse(raw);
+    if (!data || !data.tag_name) return; // validate response
+    const latestVersion = data.tag_name.replace(/^v/, '');
     if (!latestVersion || latestVersion === currentVersion) return;
-
-    // Notify renderer — update found
     if (win && !win.isDestroyed()) {
-      win.webContents.send('update-available', {
-        current: currentVersion,
-        latest: latestVersion,
-        notes: data.body || '',
-      });
+      win.webContents.send('update-available', { current: currentVersion, latest: latestVersion });
     }
-  } catch { /* silent */ }
+  } catch { /* silent — don't break app if update check fails */ }
 }
 
 async function downloadAndApplyUpdate() {
   try {
     const currentVersion = require('../package.json').version;
-    const data = JSON.parse(await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest'));
-    const latestVersion = (data.tag_name || '').replace(/^v/, '');
-
+    const raw = await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest');
+    const data = JSON.parse(raw);
+    if (!data || !data.tag_name) throw new Error('Invalid release data');
+    const latestVersion = data.tag_name.replace(/^v/, '');
     if (!latestVersion || latestVersion === currentVersion) return;
 
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('update-progress', 'Downloading...');
-    }
+    if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading...');
 
-    // Download updated version.json to get the file list
     const versionJson = JSON.parse(await httpsGet(`https://raw.githubusercontent.com/oathgames/Merlin/${data.tag_name}/version.json`));
 
-    // Download each updatable file
     for (const filePath of (versionJson.updatable || [])) {
       try {
         const content = await httpsGet(`https://raw.githubusercontent.com/oathgames/Merlin/${data.tag_name}/${filePath}`);
         const fullPath = path.join(appRoot, filePath);
-        const dir = path.dirname(fullPath);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.mkdirSync(path.dirname(fullPath), { recursive: true });
         fs.writeFileSync(fullPath, content);
-      } catch { /* skip files that fail */ }
+      } catch { /* skip individual file failures */ }
     }
 
-    // Download the binary for this platform
-    const platform = process.platform;
-    const arch = process.arch;
-    let binaryName = 'Merlin-linux-amd64';
-    if (platform === 'win32') binaryName = 'Merlin-windows-amd64.exe';
-    else if (platform === 'darwin' && arch === 'arm64') binaryName = 'Merlin-darwin-arm64';
-    else if (platform === 'darwin') binaryName = 'Merlin-darwin-amd64';
+    const binaryName = process.platform === 'win32' ? 'Merlin-windows-amd64.exe'
+      : (process.platform === 'darwin' && process.arch === 'arm64') ? 'Merlin-darwin-arm64'
+      : process.platform === 'darwin' ? 'Merlin-darwin-amd64'
+      : 'Merlin-linux-amd64';
 
     const binaryAsset = (data.assets || []).find(a => a.name === binaryName);
     if (binaryAsset) {
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('update-progress', 'Downloading binary...');
-      }
+      if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading binary...');
       const binary = await httpsGet(binaryAsset.browser_download_url);
-      const binaryPath = path.join(appRoot, '.claude', 'tools', 'Merlin.exe');
-      const backupPath = binaryPath + '.backup';
-
-      // Backup → replace → verify
-      if (fs.existsSync(binaryPath)) fs.copyFileSync(binaryPath, backupPath);
+      const binaryPath = path.join(appRoot, '.claude', 'tools', process.platform === 'win32' ? 'Merlin.exe' : 'Merlin');
+      if (fs.existsSync(binaryPath)) fs.copyFileSync(binaryPath, binaryPath + '.backup');
       fs.writeFileSync(binaryPath, binary);
-      if (platform !== 'win32') fs.chmodSync(binaryPath, 0o755);
-
-      // Cleanup backup
-      if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+      if (process.platform !== 'win32') fs.chmodSync(binaryPath, 0o755);
+      try { fs.unlinkSync(binaryPath + '.backup'); } catch {}
     }
 
-    // Update local version
     const pkgPath = path.join(appRoot, 'package.json');
     if (fs.existsSync(pkgPath)) {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
@@ -399,36 +342,18 @@ async function downloadAndApplyUpdate() {
       fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
     }
 
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('update-ready', { latest: latestVersion });
-    }
+    if (win && !win.isDestroyed()) win.webContents.send('update-ready', { latest: latestVersion });
   } catch (err) {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('update-error', err.message || String(err));
-    }
+    if (win && !win.isDestroyed()) win.webContents.send('update-error', err.message || String(err));
   }
 }
-
-ipcMain.handle('apply-update', () => {
-  downloadAndApplyUpdate();
-});
-
-ipcMain.handle('restart-app', () => {
-  app.relaunch();
-  app.exit(0);
-});
 
 // ── App Lifecycle ───────────────────────────────────────────
 
 app.whenReady().then(async () => {
   await createWindow();
-  // Check for updates after 10s (don't compete with session startup) + every 4 hours
   setTimeout(checkForUpdates, 10000);
   setInterval(checkForUpdates, 4 * 60 * 60 * 1000);
 });
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) createWindow();
-});
+app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

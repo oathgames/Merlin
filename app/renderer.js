@@ -12,14 +12,7 @@ const setup = document.getElementById('setup');
 const approval = document.getElementById('approval');
 
 // ── Platform Detection ──────────────────────────────────────
-merlin.onPlatform((platform) => {
-  if (platform === 'win32') {
-    document.getElementById('win-controls').classList.remove('hidden');
-    document.getElementById('btn-min').onclick = () => merlin.invoke?.('win-minimize');
-    document.getElementById('btn-max').onclick = () => merlin.invoke?.('win-maximize');
-    document.getElementById('btn-close').onclick = () => merlin.invoke?.('win-close');
-  }
-});
+// (Window controls handled by native OS chrome)
 
 // ── Setup Flow ──────────────────────────────────────────────
 async function init() {
