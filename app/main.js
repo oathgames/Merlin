@@ -298,9 +298,45 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
   }
 });
 
+// ── Auto-Update ─────────────────────────────────────────────
+
+async function checkForUpdates() {
+  try {
+    const https = require('https');
+    const currentVersion = require('../package.json').version;
+
+    const data = await new Promise((resolve, reject) => {
+      https.get('https://api.github.com/repos/oathgames/Merlin/releases/latest', {
+        headers: { 'User-Agent': 'Merlin-Desktop' }
+      }, (res) => {
+        let body = '';
+        res.on('data', (c) => body += c);
+        res.on('end', () => resolve(JSON.parse(body)));
+      }).on('error', reject);
+    });
+
+    const latestVersion = (data.tag_name || '').replace(/^v/, '');
+    if (latestVersion && latestVersion !== currentVersion) {
+      // Notify renderer
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('update-available', {
+          current: currentVersion,
+          latest: latestVersion,
+          url: data.html_url,
+        });
+      }
+    }
+  } catch { /* silent — don't break the app if update check fails */ }
+}
+
 // ── App Lifecycle ───────────────────────────────────────────
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  await createWindow();
+  // Check for updates on launch + every 4 hours
+  checkForUpdates();
+  setInterval(checkForUpdates, 4 * 60 * 60 * 1000);
+});
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });

@@ -293,6 +293,20 @@ merlin.onSdkError((err) => {
   bubble.style.borderColor = 'rgba(239,68,68,.3)';
 });
 
+// ── Update Toast ────────────────────────────────────────────
+merlin.onUpdateAvailable(({ current, latest, url }) => {
+  document.getElementById('update-text').textContent = `Merlin ${latest} is available (you have ${current})`;
+  document.getElementById('update-toast').classList.remove('hidden');
+
+  document.getElementById('update-btn').onclick = () => {
+    window.open(url, '_blank');
+    document.getElementById('update-toast').classList.add('hidden');
+  };
+  document.getElementById('update-dismiss').onclick = () => {
+    document.getElementById('update-toast').classList.add('hidden');
+  };
+});
+
 // ── Remote User Messages (from PWA) ─────────────────────────
 merlin.onRemoteUserMessage((text) => {
   addUserBubble('📱 ' + text);

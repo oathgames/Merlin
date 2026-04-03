@@ -423,6 +423,25 @@ a:hover{text-decoration:underline}
   0%,100%{opacity:1}
   50%{opacity:0}
 }
+/* ── Update toast ────────────────────────────────────────── */
+#update-toast{
+  position:fixed;
+  top:12px;right:12px;
+  background:rgba(14,14,16,.96);
+  backdrop-filter:blur(16px);
+  border:1px solid var(--accent-border);
+  border-radius:14px;
+  padding:14px 18px;
+  z-index:100;
+  max-width:280px;
+  animation:fadeUp .3s ease;
+}
+#update-text{
+  font-size:13px;
+  color:var(--text);
+  line-height:1.4;
+}
+
 /* ── Phone icon button (stubbed — hidden until tunnel security is ready) ── */
 .icon-btn{display:none}
 
