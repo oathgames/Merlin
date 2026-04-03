@@ -105,8 +105,22 @@ const autoApproveTools = new Set([
   'Skill', 'Edit', 'Write', 'NotebookEdit', 'Agent',
 ]);
 
+// Safe Bash patterns that can be auto-approved (read-only or setup operations)
+const safeBashPatterns = [
+  /^ls\b/, /^cat\b/, /^head\b/, /^tail\b/, /^wc\b/, /^find\b/, /^grep\b/,
+  /^mkdir\b/, /^cp\b/, /^mv\b/, /^echo\b/, /^pwd\b/, /^cd\b/, /^test\b/,
+  /^curl\s.*-[sS]/, /^curl\s.*download/, /^chmod\b/, /^xattr\b/, /^codesign\b/,
+  /^node\s+-e\b/, /^npx\b/,
+];
+
+function isSafeBash(command) {
+  const cmd = (command || '').trim();
+  return safeBashPatterns.some(p => p.test(cmd));
+}
+
 // Translate tool calls to plain English for approval cards
 function translateTool(toolName, input) {
+  // Merlin binary commands — always translate to friendly text
   if (toolName === 'Bash' && input.command && input.command.includes('Merlin')) {
     const cmdMatch = input.command.match(/"action"\s*:\s*"([^"]+)"/);
     const action = cmdMatch ? cmdMatch[1] : null;
@@ -131,15 +145,27 @@ function translateTool(toolName, input) {
     if (action && translations[action]) return translations[action];
   }
 
+  // Generic Bash — use friendly description, never show raw command
   if (toolName === 'Bash') {
-    return { label: input.description || input.command || 'Run a command', cost: null };
+    // Use Claude's description if it provided one, otherwise generic
+    const desc = input.description;
+    if (desc) {
+      // Clean up technical jargon for non-technical users
+      return { label: desc, cost: null };
+    }
+    return { label: 'Merlin needs to run a setup step', cost: null };
   }
 
-  return { label: `${toolName}`, cost: null };
+  return { label: 'Merlin needs your permission to continue', cost: null };
 }
 
 async function handleToolApproval(toolName, input) {
   if (autoApproveTools.has(toolName)) {
+    return { behavior: 'allow', updatedInput: input };
+  }
+
+  // Auto-approve safe Bash commands (read-only, setup, file management)
+  if (toolName === 'Bash' && isSafeBash(input.command)) {
     return { behavior: 'allow', updatedInput: input };
   }
 
