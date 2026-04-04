@@ -20,6 +20,7 @@ let sessionTotalTokens = 0;
   const btn = document.getElementById('subscribe-btn');
   if (sub?.subscribed) {
     btn.classList.add('hidden-sub');
+    btn.parentElement.classList.add('hidden-sub');
   } else {
     const days = sub?.daysLeft ?? 7;
     document.getElementById('trial-text').textContent = days === 0 ? 'Trial ended' : `${days} day${days === 1 ? '' : 's'} left`;
