@@ -477,7 +477,7 @@ merlin.onSdkError((err) => {
 // ── Update Toast ────────────────────────────────────────────
 merlin.onUpdateAvailable(({ current, latest }) => {
   document.getElementById('update-text').textContent = `Merlin ${latest} is available`;
-  document.getElementById('update-btn').textContent = 'Update now';
+  document.getElementById('update-btn').textContent = 'Update';
   document.getElementById('update-toast').classList.remove('hidden');
 
   document.getElementById('update-btn').onclick = () => {
