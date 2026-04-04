@@ -61,7 +61,12 @@
         "dmg",
         "zip"
       ],
-      "icon": "app/icon.icns"
+      "icon": "app/icon-1024.png",
+      "identity": null,
+      "hardenedRuntime": false
+    },
+    "dmg": {
+      "writeUpdateInfo": false
     },
     "linux": {
       "target": "AppImage"
