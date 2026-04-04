@@ -388,6 +388,32 @@ ipcMain.handle('save-pasted-media', (_, dataUrl, filename) => {
   return `results/${filename}`;
 });
 
+ipcMain.handle('get-subscription', () => {
+  // Check for subscription file
+  const subFile = path.join(appRoot, '.merlin-subscription');
+  try {
+    if (fs.existsSync(subFile)) {
+      const data = JSON.parse(fs.readFileSync(subFile, 'utf8'));
+      return data; // { subscribed: true } or { trialStart: timestamp }
+    }
+  } catch {}
+  // Default: 7-day trial from first launch
+  const trialFile = path.join(appRoot, '.merlin-trial');
+  let trialStart;
+  if (fs.existsSync(trialFile)) {
+    trialStart = parseInt(fs.readFileSync(trialFile, 'utf8'));
+  } else {
+    trialStart = Date.now();
+    fs.writeFileSync(trialFile, String(trialStart));
+  }
+  const daysLeft = Math.max(0, 7 - Math.floor((Date.now() - trialStart) / (1000 * 60 * 60 * 24)));
+  return { subscribed: false, daysLeft, trialStart };
+});
+
+ipcMain.handle('open-subscribe', () => {
+  shell.openExternal('https://buy.stripe.com/5kQfZggqt73f7MMca85wI00');
+});
+
 ipcMain.handle('apply-update', () => { downloadAndApplyUpdate(); });
 ipcMain.handle('restart-app', () => { app.relaunch(); app.exit(0); });
 
