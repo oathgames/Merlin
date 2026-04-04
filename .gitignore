@@ -41,7 +41,6 @@ extract_colors.ps1
 # Node/Electron
 node_modules/
 dist/
-package-lock.json
 .merlin-key
 .env
 
