@@ -49,3 +49,8 @@ dist/
 Thumbs.db
 .merlin-icon.png
 .r2-key
+.merlin-machine-id
+.merlin-key-usage.json
+.merlin-trial
+.merlin-subscription
+.merlin-wisdom.json
