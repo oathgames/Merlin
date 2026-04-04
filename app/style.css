@@ -543,7 +543,9 @@ a:hover{text-decoration:underline}
   position:sticky;top:0;
   background:var(--bg-deep);
   z-index:1;
+  -webkit-app-region:drag;
 }
+.magic-close{-webkit-app-region:no-drag}
 .magic-title{
   font-size:15px;font-weight:700;
   background:linear-gradient(135deg,#a78bfa,#34d399);
