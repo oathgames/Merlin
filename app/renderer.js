@@ -526,14 +526,14 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
 // ── Magic Panel ─────────────────────────────────────────────
 // ── Brand + Integration Filtering ────────────────────────────
 const verticalIntegrations = {
-  ecom:    ['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','heygen','attentive','ga4','slack'],
-  apparel: ['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','heygen','attentive','ga4','slack'],
-  skincare:['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','attentive','ga4','slack'],
-  fitness: ['meta','tiktok','google','fal','elevenlabs','heygen','ga4','slack'],
-  food:    ['meta','tiktok','shopify','klaviyo','google','fal','attentive','ga4','slack'],
-  tech:    ['meta','google','tiktok','fal','elevenlabs','ga4','slack'],
-  gaming:  ['meta','tiktok','google','fal','heygen','discord','ga4','slack'],
-  saas:    ['meta','google','klaviyo','fal','ga4','slack'],
+  ecom:    ['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','heygen','attentive','slack'],
+  apparel: ['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','heygen','attentive','slack'],
+  skincare:['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','attentive','slack'],
+  fitness: ['meta','tiktok','google','fal','elevenlabs','heygen','slack'],
+  food:    ['meta','tiktok','shopify','klaviyo','google','fal','attentive','slack'],
+  tech:    ['meta','google','tiktok','fal','elevenlabs','slack'],
+  gaming:  ['meta','tiktok','google','fal','heygen','discord','slack'],
+  saas:    ['meta','google','klaviyo','fal','slack'],
 };
 
 function loadBrands() {
@@ -647,7 +647,6 @@ document.querySelectorAll('.magic-tile').forEach(tile => {
       elevenlabs: 'Set up ElevenLabs for voice',
       heygen: 'Set up HeyGen for video avatars',
       attentive: 'Connect Attentive for SMS marketing',
-      ga4: 'Connect Google Analytics 4',
       discord: 'Connect Discord for community management',
       slack: 'Connect Slack for notifications',
     };
