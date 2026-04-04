@@ -719,21 +719,23 @@ Never ask for tokens, IDs, or keys manually. If OAuth isn't available for a plat
      11. Update memory.md with weekly summary
      ```
 
-**E) Shopify SEO Blog setup (optional):**
-8. "Want me to auto-publish SEO blog posts to your Shopify store? (skip if you want to set this up later — just run /cmo again anytime)"
+**E) Shopify connection (optional):**
+When the user wants to connect Shopify (for SEO blogs, product data, analytics):
 
-If they say skip/no/later → move on. If yes, walk them through it step by step:
+**One-click OAuth — no manual tokens:**
+Run the binary's shopify-login action. It handles everything:
+```bash
+.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"shopify-login"}'
+```
+- The binary auto-resolves the store name from the brand's website URL
+- Opens the browser to Shopify's OAuth approval screen
+- User clicks "Install" — one click
+- Token is exchanged automatically
+- Parse the JSON output, save `shopifyStore` and `shopifyAccessToken` to config
 
-**Step 1 — Store name:**
-"What's your Shopify store URL?"
-Extract the store name from whatever they give you:
-- `shopnorthswell.myshopify.com` → `shopnorthswell`
-- `https://shopnorthswell.com` → `shopnorthswell` (strip custom domain, ask to confirm the .myshopify.com name)
-- Just `shopnorthswell` → use as-is
+**NEVER ask users to create custom apps, copy tokens, or navigate Shopify admin settings.** The OAuth flow handles everything.
 
-**Step 2 — Run SEO audit in background while they get the token:**
-
-IMMEDIATELY after getting the store URL (before they paste the token), launch a background agent to audit their site. The user will be busy clicking through Shopify admin for 60-90 seconds — use that time.
+After connecting, launch a background SEO audit:
 
 **Background SEO Audit** (run via Agent tool while displaying the token instructions):
 
@@ -803,52 +805,7 @@ Keywords/topics with no blog coverage (opportunities for new posts):
 - "mystic ct clothing" — local SEO opportunity
 ```
 
-**While the audit runs, display the token instructions:**
-
-```
-While you get your API token, I'm running a free SEO audit
-of your store in the background...
-
-To connect your Shopify blog, you need an Admin API token.
-Here's how to create one (takes ~60 seconds):
-
-  1. Go to your Shopify admin:
-     https://<store>.myshopify.com/admin/settings/apps
-
-  2. Click "Develop apps" (top right)
-     → If you see "Allow custom app development", click it first
-
-  3. Click "Create an app"
-     → Name it "Merlin" (or anything)
-
-  4. Click "Configure Admin API scopes"
-     → Check these boxes:
-        ✓ write_content  (publish blog posts)
-        ✓ read_content   (list existing posts)
-        ✓ read_products  (audit product images for missing alt text)
-        ✓ write_products (add alt text to images with none)
-     → Click Save
-
-  5. Click "Install app" → "Install"
-
-  6. Click "Reveal token once"
-     → Copy the token (starts with "shpat_")
-     → Paste it here
-
-  ⚠ This token is shown ONCE. Save it somewhere safe.
-```
-
-Wait for them to paste the token.
-
-**Step 3 — Verify connection + show audit results:**
-Save `shopifyStore` and `shopifyAccessToken` to config, then run:
-```json
-{"action": "blog-list"}
-```
-If it succeeds → "Connected! I can see your blog."
-If it fails → show the error, ask them to double-check the token and scopes.
-
-Then show the SEO audit results (the background agent should be done by now):
+**After Shopify connects, verify + show audit results:**
 
 ```
   SEO Audit Complete

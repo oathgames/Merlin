@@ -302,6 +302,26 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
 
 ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
 
+// Check which platforms are connected by reading the config
+ipcMain.handle('get-connected-platforms', () => {
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try {
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const connected = [];
+    if (cfg.metaAccessToken) connected.push('meta');
+    if (cfg.tiktokAccessToken) connected.push('tiktok');
+    if (cfg.shopifyAccessToken && cfg.shopifyStore) connected.push('shopify');
+    if (cfg.klaviyoApiKey || cfg.klaviyoAccessToken) connected.push('klaviyo');
+    if (cfg.googleAccessToken || cfg.googleAdsCustomerId) connected.push('google');
+    if (cfg.pinterestAccessToken) connected.push('pinterest');
+    if (cfg.falApiKey) connected.push('fal');
+    if (cfg.elevenLabsApiKey) connected.push('elevenlabs');
+    if (cfg.heygenApiKey) connected.push('heygen');
+    if (cfg.slackBotToken || cfg.slackWebhookUrl) connected.push('slack');
+    return connected;
+  } catch { return []; }
+});
+
 // Read brands from filesystem
 ipcMain.handle('get-brands', () => {
   const brandsDir = path.join(appRoot, 'assets', 'brands');

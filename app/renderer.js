@@ -612,12 +612,45 @@ document.getElementById('add-brand-btn').addEventListener('click', () => {
   merlin.sendMessage(msg);
 });
 
+function loadConnections() {
+  merlin.getConnectedPlatforms().then((connected) => {
+    const connectedSection = document.getElementById('connected-tiles');
+    const noConnections = document.getElementById('no-connections');
+    connectedSection.innerHTML = '';
+
+    if (!connected || connected.length === 0) {
+      noConnections.style.display = 'block';
+      // Reset all tiles to available
+      document.querySelectorAll('.magic-tile').forEach(t => {
+        t.classList.remove('connected');
+        t.style.display = '';
+      });
+      return;
+    }
+
+    noConnections.style.display = 'none';
+
+    connected.forEach(platform => {
+      const tile = document.querySelector(`.magic-tile[data-platform="${platform}"]`);
+      if (tile) {
+        // Clone the tile into connected section with green styling
+        const clone = tile.cloneNode(true);
+        clone.classList.add('connected');
+        connectedSection.appendChild(clone);
+        // Hide from available section
+        tile.style.display = 'none';
+      }
+    });
+  }).catch(() => {});
+}
+
 document.getElementById('magic-btn').addEventListener('click', () => {
   const panel = document.getElementById('magic-panel');
   panel.classList.toggle('hidden');
-  // Load brands + fetch credits when panel opens
+  // Load brands, connections, + fetch credits when panel opens
   if (!panel.classList.contains('hidden')) {
     loadBrands();
+    loadConnections();
     merlin.getCredits().then((credits) => {
       if (!credits) return;
       // Update tiles with credit info

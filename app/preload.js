@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('merlin', {
   startSession: () => ipcRenderer.invoke('start-session'),
   getAccountInfo: () => ipcRenderer.invoke('get-account-info'),
   getCredits: () => ipcRenderer.invoke('get-credits'),
+  getConnectedPlatforms: () => ipcRenderer.invoke('get-connected-platforms'),
   getBrands: () => ipcRenderer.invoke('get-brands'),
   savePastedMedia: (dataUrl, filename) => ipcRenderer.invoke('save-pasted-media', dataUrl, filename),
   sendMessage: (text) => ipcRenderer.invoke('send-message', text),
