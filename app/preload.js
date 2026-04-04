@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('merlin', {
+  // Platform
+  platform: process.platform,
+
   // Window controls
   winMinimize: () => ipcRenderer.invoke('win-minimize'),
   winMaximize: () => ipcRenderer.invoke('win-maximize'),

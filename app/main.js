@@ -8,7 +8,9 @@ const { generateQRDataUri } = require('./qr');
 Menu.setApplicationMenu(null);
 
 const appRoot = app.isPackaged
-  ? path.dirname(app.getPath('exe'))
+  ? (process.platform === 'darwin'
+    ? path.join(path.dirname(app.getPath('exe')), '..', 'Resources')
+    : path.dirname(app.getPath('exe')))
   : path.join(__dirname, '..');
 
 let win = null;
@@ -32,7 +34,8 @@ async function createWindow() {
     icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     backgroundColor: '#1a1a1c',
     frame: false,
-    titleBarStyle: 'hidden',
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    trafficLightPosition: process.platform === 'darwin' ? { x: 12, y: 12 } : undefined,
     show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -58,12 +61,13 @@ async function createWindow() {
 
   win.loadFile(path.join(__dirname, 'index.html'));
 
-  // Enable DevTools in dev mode (Ctrl+Shift+I)
+  // Enable DevTools in dev mode (Ctrl+Shift+I on Windows, Cmd+Option+I on Mac)
   if (!app.isPackaged) {
     win.webContents.on('before-input-event', (event, input) => {
-      if (input.control && input.shift && input.key === 'I') {
-        win.webContents.toggleDevTools();
-      }
+      const devToolsTriggered = process.platform === 'darwin'
+        ? (input.meta && input.alt && input.key.toLowerCase() === 'i')
+        : (input.control && input.shift && input.key === 'I');
+      if (devToolsTriggered) win.webContents.toggleDevTools();
     });
   }
   win.once('ready-to-show', () => {
@@ -222,6 +226,12 @@ async function startSession() {
     }
   }
 
+  // Guard against concurrent sessions
+  if (activeQuery) {
+    console.warn('[SDK] Session already active, skipping duplicate start');
+    return;
+  }
+
   activeQuery = query({
     prompt: messageGenerator(),
     options: {
@@ -247,6 +257,10 @@ async function startSession() {
       win.webContents.send('sdk-error', errMsg);
       wsServer.broadcast('sdk-error', errMsg);
     }
+  } finally {
+    // Always reset so session can be restarted after error or completion
+    activeQuery = null;
+    resolveNextMessage = null;
   }
 }
 

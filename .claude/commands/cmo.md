@@ -38,11 +38,15 @@ Check these in order. If everything passes, skip to Step 0 silently — the user
 
 ### A) Binary installed?
 
-Check if `.claude/tools/Merlin.exe` exists (any platform — the binary is always named Merlin.exe).
+The binary name is platform-specific:
+- **Windows**: `.claude/tools/Merlin.exe`
+- **macOS/Linux**: `.claude/tools/Merlin`
+
+Check if the correct one exists. Throughout this document, when you see `.claude/tools/Merlin.exe`, use `.claude/tools/Merlin` on macOS/Linux instead.
 
 If missing, **download it automatically**:
 
-1. Detect platform:
+1. Detect platform and pick the right asset:
    - Windows → `Merlin-windows-amd64.exe`
    - macOS ARM64 → `Merlin-darwin-arm64`
    - macOS Intel → `Merlin-darwin-amd64`
@@ -50,16 +54,18 @@ If missing, **download it automatically**:
 
 2. Create `.claude/tools/` if it doesn't exist
 
-3. Download:
+3. Download (adjust binary name per platform):
 ```bash
+# Windows:
 curl -L -o .claude/tools/Merlin.exe "https://github.com/oathgames/Merlin/releases/latest/download/{platform-binary}"
-chmod +x .claude/tools/Merlin.exe
+# macOS/Linux:
+curl -L -o .claude/tools/Merlin "https://github.com/oathgames/Merlin/releases/latest/download/{platform-binary}"
+chmod +x .claude/tools/Merlin
 ```
 
 4. macOS only — remove Gatekeeper block:
 ```bash
-xattr -d com.apple.quarantine .claude/tools/Merlin.exe
-codesign --force --sign - .claude/tools/Merlin.exe
+xattr -cr .claude/tools/Merlin
 ```
 
 5. Show one line: `Downloaded Merlin binary.`

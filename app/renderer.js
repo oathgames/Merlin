@@ -10,6 +10,15 @@ const input = document.getElementById('input');
 const sendBtn = document.getElementById('send-btn');
 const setup = document.getElementById('setup');
 const approval = document.getElementById('approval');
+
+// Platform-specific UI adjustments
+if (merlin.platform === 'darwin') {
+  // Hide Windows-style controls on Mac (traffic lights are native)
+  document.querySelectorAll('.win-ctrl').forEach(el => el.style.display = 'none');
+  // Add left padding for traffic lights
+  document.getElementById('titlebar').style.paddingLeft = '72px';
+  document.body.classList.add('platform-mac');
+}
 let turnStartTime = null;
 let turnTokens = 0;
 let sessionTotalTokens = 0;
