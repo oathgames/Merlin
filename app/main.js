@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const wsServer = require('./ws-server');
 const { generateQRDataUri } = require('./qr');
 
@@ -253,17 +254,30 @@ async function startSession() {
 
 ipcMain.handle('check-setup', async () => {
   const { exec } = require('child_process');
-  return new Promise((resolve) => {
-    const child = exec('claude --version', { timeout: 10000 });
-    child.on('close', (code) => {
-      resolve(code === 0
-        ? { ready: true }
-        : { ready: false, reason: 'Claude Desktop not found. Install it from claude.ai/download' });
+
+  // On macOS, Claude CLI may not be on PATH — check common locations
+  const candidates = ['claude'];
+  if (process.platform === 'darwin') {
+    candidates.push(
+      '/usr/local/bin/claude',
+      path.join(os.homedir(), '.claude', 'bin', 'claude'),
+      path.join(os.homedir(), '.local', 'bin', 'claude')
+    );
+  }
+
+  for (const cmd of candidates) {
+    const found = await new Promise((resolve) => {
+      const child = exec(`"${cmd}" --version`, { timeout: 10000 });
+      child.on('close', (code) => resolve(code === 0));
+      child.on('error', () => resolve(false));
     });
-    child.on('error', () => {
-      resolve({ ready: false, reason: 'Claude Desktop not found. Install it from claude.ai/download' });
-    });
-  });
+    if (found) return { ready: true };
+  }
+
+  const macTip = process.platform === 'darwin'
+    ? '\n\nIf you have Claude Desktop, open it → Settings → Developer → "Install Claude Code CLI"'
+    : '';
+  return { ready: false, reason: 'Claude not found. Install it from claude.ai/download' + macTip };
 });
 
 ipcMain.handle('start-session', () => { startSession(); return { success: true }; });
@@ -455,9 +469,18 @@ function httpsGet(url, _depth = 0) {
   });
 }
 
+function getCurrentVersion() {
+  // Read fresh from disk every time — require() caches the old version
+  try {
+    return JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8')).version;
+  } catch {
+    return require('../package.json').version;
+  }
+}
+
 async function checkForUpdates() {
   try {
-    const currentVersion = require('../package.json').version;
+    const currentVersion = getCurrentVersion();
     const raw = await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest');
     const data = JSON.parse(raw);
     if (!data || !data.tag_name) return; // validate response
@@ -471,7 +494,7 @@ async function checkForUpdates() {
 
 async function downloadAndApplyUpdate() {
   try {
-    const currentVersion = require('../package.json').version;
+    const currentVersion = getCurrentVersion();
     const raw = await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest');
     const data = JSON.parse(raw);
     if (!data || !data.tag_name) throw new Error('Invalid release data');
