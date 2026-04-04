@@ -176,9 +176,10 @@ function finalizeBubble() {
 function scheduleTypingIndicator() {
   if (typingTimeout) clearTimeout(typingTimeout);
   typingTimeout = null;
-  if (sessionActive) {
+  const wasActive = sessionActive;
+  if (wasActive) {
     typingTimeout = setTimeout(() => {
-      if (sessionActive && !currentBubble && !isStreaming) {
+      if (wasActive && sessionActive && !currentBubble && !isStreaming) {
         showTypingIndicator();
       }
     }, 1500);
@@ -241,7 +242,12 @@ function renderMarkdown(text) {
   // Horizontal rules
   html = html.replace(/^---$/gm, '<hr>');
   // Links
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, url) => {
+    if (/^(https?:\/\/|mailto:)/i.test(url)) {
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>`;
+    }
+    return match;
+  });
 
   // Image file paths → inline <img>
   html = html.replace(/(?:\.\/)?([a-zA-Z0-9_\-\.\/]+\.(?:jpg|jpeg|png|gif|webp))/gi, (match, p1) => {
@@ -569,7 +575,7 @@ function loadBrands() {
     });
     // Set vertical tag + filter integrations
     if (brands[0]?.vertical) updateVertical(brands[0].vertical);
-  }).catch(() => {});
+  }).catch((err) => { console.warn('[brands]', err); });
 }
 
 function updateVertical(vertical) {
@@ -597,7 +603,7 @@ document.getElementById('brand-select').addEventListener('change', (e) => {
     const brand = brands.find(b => b.name === e.target.value);
     if (brand?.vertical) updateVertical(brand.vertical);
     else updateVertical('');
-  });
+  }).catch((err) => { console.warn('[brands]', err); });
 });
 
 document.getElementById('add-brand-btn').addEventListener('click', () => {
@@ -643,7 +649,7 @@ function loadConnections() {
         tile.style.display = 'none';
       }
     });
-  }).catch(() => {});
+  }).catch((err) => { console.warn('[connections]', err); });
 }
 
 document.getElementById('magic-btn').addEventListener('click', () => {
@@ -666,7 +672,7 @@ document.getElementById('magic-btn').addEventListener('click', () => {
           tile.appendChild(span);
         }
       });
-    }).catch(() => {});
+    }).catch((err) => { console.warn('[credits]', err); });
   }
 });
 document.getElementById('magic-close').addEventListener('click', () => {
@@ -682,35 +688,35 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Connect platform tiles — clicking sends a natural language message
-document.querySelectorAll('.magic-tile').forEach(tile => {
-  tile.addEventListener('click', () => {
-    const platform = tile.dataset.platform;
-    const names = {
-      meta: 'Connect my Meta Ads account',
-      tiktok: 'Connect my TikTok Ads account',
-      shopify: 'Connect my Shopify store',
-      klaviyo: 'Connect my Klaviyo account',
-      google: 'Connect my Google Ads account',
-      pinterest: 'Connect my Pinterest Ads account',
-      fal: 'Set up fal.ai for image generation',
-      elevenlabs: 'Set up ElevenLabs for voice',
-      heygen: 'Set up HeyGen for video avatars',
-      attentive: 'Connect Attentive for SMS marketing',
-      discord: 'Connect Discord for community management',
-      slack: 'Connect Slack for notifications',
-    };
-    if (names[platform]) {
-      document.getElementById('magic-panel').classList.add('hidden');
-      addUserBubble(names[platform]);
-      showTypingIndicator();
-      turnStartTime = Date.now();
-      turnTokens = 0;
-      sessionActive = true;
-      startTickingTimer();
-      merlin.sendMessage(names[platform]);
-    }
-  });
+// Connect platform tiles — use event delegation for original AND cloned tiles
+document.addEventListener('click', (e) => {
+  const tile = e.target.closest('.magic-tile');
+  if (!tile) return;
+  const platform = tile.dataset.platform;
+  const names = {
+    meta: 'Connect my Meta Ads account',
+    tiktok: 'Connect my TikTok Ads account',
+    shopify: 'Connect my Shopify store',
+    klaviyo: 'Connect my Klaviyo account',
+    google: 'Connect my Google Ads account',
+    pinterest: 'Connect my Pinterest Ads account',
+    fal: 'Set up fal.ai for image generation',
+    elevenlabs: 'Set up ElevenLabs for voice',
+    heygen: 'Set up HeyGen for video avatars',
+    attentive: 'Connect Attentive for SMS marketing',
+    discord: 'Connect Discord for community management',
+    slack: 'Connect Slack for notifications',
+  };
+  if (names[platform]) {
+    document.getElementById('magic-panel').classList.add('hidden');
+    addUserBubble(names[platform]);
+    showTypingIndicator();
+    turnStartTime = Date.now();
+    turnTokens = 0;
+    sessionActive = true;
+    startTickingTimer();
+    merlin.sendMessage(names[platform]);
+  }
 });
 
 // Request a platform

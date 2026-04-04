@@ -1,22 +1,22 @@
 {
-  "version": "0.3.3",
+  "version": "0.3.4",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
     ".claude/commands/cmo.md",
     ".claude/commands/update.md",
     ".claude/settings.json",
-    ".claude/tools/autocmo-config.example.json",
+    ".claude/tools/merlin-config.example.json",
     "assets/brands/example/",
     "version.json"
   ],
   "preserve": [
     "memory.md",
-    ".claude/tools/autocmo-config.json",
+    ".claude/tools/merlin-config.json",
     "results/"
   ],
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
-  "binaryName": "AutoCMO",
-  "repo": "oathgames/AutoCMO",
-  "notes": "v0.3.3: Meta Login for Business, Shopify Partners OAuth, merlingotme.com, connection tracking."
+  "binaryName": "Merlin",
+  "repo": "oathgames/Merlin",
+  "notes": "v0.3.4: Meta Login for Business config_id, Shopify Partners credentials, connected tiles fix, TikTok OAuth, expanded platform integrations."
 }

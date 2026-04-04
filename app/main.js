@@ -16,7 +16,7 @@ let pendingApprovals = new Map();
 let activeQuery = null;
 
 // Auto-expire pending approvals after 5 minutes to prevent memory leaks
-const APPROVAL_TIMEOUT_MS = 5 * 60 * 1000;
+const APPROVAL_TIMEOUT_MS = 15 * 60 * 1000;
 
 // ── Window ──────────────────────────────────────────────────
 
@@ -254,7 +254,7 @@ async function startSession() {
 ipcMain.handle('check-setup', async () => {
   const { exec } = require('child_process');
   return new Promise((resolve) => {
-    const child = exec('claude --version', { timeout: 3000 });
+    const child = exec('claude --version', { timeout: 10000 });
     child.on('close', (code) => {
       resolve(code === 0
         ? { ready: true }
@@ -394,8 +394,9 @@ ipcMain.handle('win-close', () => { if (win) win.close(); });
 
 ipcMain.handle('get-mobile-qr', async () => {
   const info = wsServer.getConnectionInfo();
-  const pwaUrl = `http://${info.host}:${info.port}?token=${info.token}`;
-  const qrDataUri = await generateQRDataUri(pwaUrl);
+  const protocol = info.secure ? 'https' : 'http';
+  const pwaUrl = `${protocol}://${info.host}:${info.port}`;
+  const qrDataUri = await generateQRDataUri(`${pwaUrl}#${info.token}`);
   return { qrDataUri, pwaUrl, ...info };
 });
 
@@ -439,12 +440,13 @@ ipcMain.handle('restart-app', () => { app.relaunch(); app.exit(0); });
 
 // ── Auto-Update ─────────────────────────────────────────────
 
-function httpsGet(url) {
+function httpsGet(url, _depth = 0) {
+  if (_depth > 10) return Promise.reject(new Error('Too many redirects'));
   const https = require('https');
   return new Promise((resolve, reject) => {
     https.get(url, { headers: { 'User-Agent': 'Merlin-Desktop' } }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        return httpsGet(res.headers.location).then(resolve).catch(reject);
+        return httpsGet(res.headers.location, _depth + 1).then(resolve).catch(reject);
       }
       let body = [];
       res.on('data', (c) => body.push(c));
@@ -498,6 +500,30 @@ async function downloadAndApplyUpdate() {
     if (binaryAsset) {
       if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading binary...');
       const binary = await httpsGet(binaryAsset.browser_download_url);
+      // Verify binary is valid (at least 1MB, not an error page)
+      if (binary.length < 1024 * 1024) {
+        throw new Error('Downloaded binary too small — possible corrupted download');
+      }
+      // Check for SHA256 checksum if published in release
+      const checksumAsset = (data.assets || []).find(a => a.name === 'checksums.txt');
+      if (checksumAsset) {
+        try {
+          const checksumFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
+          const expectedHash = checksumFile.split('\n')
+            .map(l => l.trim().split(/\s+/))
+            .find(parts => parts[1] === binaryName)?.[0];
+          if (expectedHash) {
+            const crypto = require('crypto');
+            const actualHash = crypto.createHash('sha256').update(binary).digest('hex');
+            if (actualHash !== expectedHash) {
+              throw new Error(`Binary checksum mismatch: expected ${expectedHash.slice(0,12)}..., got ${actualHash.slice(0,12)}...`);
+            }
+          }
+        } catch (e) {
+          if (e.message.includes('checksum mismatch')) throw e;
+          // Checksum file couldn't be fetched — continue without verification
+        }
+      }
       const binaryPath = path.join(appRoot, '.claude', 'tools', process.platform === 'win32' ? 'Merlin.exe' : 'Merlin');
       if (fs.existsSync(binaryPath)) fs.copyFileSync(binaryPath, binaryPath + '.backup');
       fs.writeFileSync(binaryPath, binary);
