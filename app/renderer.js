@@ -616,28 +616,30 @@ function loadConnections() {
   merlin.getConnectedPlatforms().then((connected) => {
     const connectedSection = document.getElementById('connected-tiles');
     const noConnections = document.getElementById('no-connections');
+    const availableTiles = document.getElementById('available-tiles');
+
+    // Always reset: show all available tiles, clear connected section
     connectedSection.innerHTML = '';
+    availableTiles.querySelectorAll('.magic-tile').forEach(t => {
+      t.style.display = '';
+      t.classList.remove('connected');
+    });
 
     if (!connected || connected.length === 0) {
       noConnections.style.display = 'block';
-      // Reset all tiles to available
-      document.querySelectorAll('.magic-tile').forEach(t => {
-        t.classList.remove('connected');
-        t.style.display = '';
-      });
       return;
     }
 
     noConnections.style.display = 'none';
 
     connected.forEach(platform => {
-      const tile = document.querySelector(`.magic-tile[data-platform="${platform}"]`);
+      const tile = availableTiles.querySelector(`.magic-tile[data-platform="${platform}"]`);
       if (tile) {
-        // Clone the tile into connected section with green styling
+        // Clone into connected section
         const clone = tile.cloneNode(true);
         clone.classList.add('connected');
         connectedSection.appendChild(clone);
-        // Hide from available section
+        // Hide the original in available
         tile.style.display = 'none';
       }
     });
