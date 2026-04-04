@@ -619,12 +619,19 @@ When the user later asks to publish ads, connect Shopify, etc., use one-click OA
    - Shopify: `{"action": "shopify-login"}` → same pattern
    - All other platforms: same one-click OAuth pattern
 
+**CRITICAL: OAuth timeout.** The binary waits up to 5 minutes for the user to authorize in-browser. You MUST set `timeout: 300000` (5 minutes) on any Bash call that runs an OAuth action (`meta-login`, `shopify-login`, `tiktok-login`, `google-login`, or any `*-login` action). The default 120s timeout will kill the process before the user finishes authorizing.
+
+Example:
+```
+Bash({ command: '.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd \'{"action":"meta-login"}\'', timeout: 300000 })
+```
+
 When connecting any ad platform, also set up budget defaults:
    - `maxDailyAdBudget`: $5 (default, mention to user)
    - `maxMonthlyAdSpend`: $300 (default, mention to user)
    - `autoPublishAds`: false (always ask before spending money)
 
-Never ask for tokens, IDs, or keys manually. If OAuth isn't available for a platform yet, say so clearly.
+**NEVER ask for tokens, IDs, or keys manually.** NEVER fall back to manual steps like "go to Business Settings → System Users → Generate Token". If OAuth fails, tell the user to try again — do NOT switch to manual token instructions. If OAuth isn't available for a platform yet, say so clearly.
 
 6. If Meta OR TikTok is configured, create a SECOND scheduled task for optimization:
    - Use `mcp__scheduled-tasks__create_scheduled_task`
@@ -723,9 +730,9 @@ Never ask for tokens, IDs, or keys manually. If OAuth isn't available for a plat
 When the user wants to connect Shopify (for SEO blogs, product data, analytics):
 
 **One-click OAuth — no manual tokens:**
-Run the binary's shopify-login action. It handles everything:
-```bash
-.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"shopify-login"}'
+Run the binary's shopify-login action. It handles everything (use 5-minute timeout!):
+```
+Bash({ command: '.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd \'{"action":"shopify-login"}\'', timeout: 300000 })
 ```
 - The binary auto-resolves the store name from the brand's website URL
 - Opens the browser to Shopify's OAuth approval screen

@@ -1,6 +1,6 @@
 {
   "name": "merlin-desktop",
-  "version": "0.3.4",
+  "version": "0.3.5",
   "description": "Merlin — Your AI CMO",
   "main": "app/main.js",
   "scripts": {
@@ -68,7 +68,10 @@
     },
     "nsis": {
       "oneClick": true,
-      "perMachine": false
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Merlin"
     }
   }
 }

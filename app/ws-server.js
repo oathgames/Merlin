@@ -76,7 +76,7 @@ function startServer() {
 
     wss = new WebSocketServer({ server: httpServer });
 
-    httpServer.listen(0, '0.0.0.0', () => {
+    httpServer.listen(0, '127.0.0.1', () => {
       wsPort = httpServer.address().port;
       const protocol = useTLS ? 'WSS+HTTPS' : 'WS+HTTP';
       console.log(`[${protocol}] Server listening on port ${wsPort}`);

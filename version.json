@@ -1,5 +1,5 @@
 {
-  "version": "0.3.4",
+  "version": "0.3.5",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,5 +18,5 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.3.4: Meta Login for Business config_id, Shopify Partners credentials, connected tiles fix, TikTok OAuth, expanded platform integrations."
+  "notes": "v0.3.5: Meta OAuth fully working (implicit flow + config_id), browser launch fix, Autopilot UI, live connection refresh, installer shortcuts."
 }

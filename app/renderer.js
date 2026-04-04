@@ -168,6 +168,11 @@ function finalizeBubble() {
   textBuffer = '';
   isStreaming = false;
   scrollToBottom();
+  // Refresh connections if panel is open (picks up newly connected platforms)
+  const panel = document.getElementById('magic-panel');
+  if (panel && !panel.classList.contains('hidden')) {
+    loadConnections();
+  }
   // If session is still active, show typing indicator after a pause
   // Long delay prevents flickering during rapid stream events
   scheduleTypingIndicator();
@@ -549,13 +554,10 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
 // ── Brand + Integration Filtering ────────────────────────────
 const verticalIntegrations = {
   ecom:    ['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','heygen','attentive','slack'],
-  apparel: ['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','heygen','attentive','slack'],
-  skincare:['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','attentive','slack'],
-  fitness: ['meta','tiktok','google','fal','elevenlabs','heygen','slack'],
-  food:    ['meta','tiktok','shopify','klaviyo','google','fal','attentive','slack'],
-  tech:    ['meta','google','tiktok','fal','elevenlabs','slack'],
-  gaming:  ['meta','tiktok','google','fal','heygen','discord','slack'],
-  saas:    ['meta','google','klaviyo','fal','slack'],
+  game:    ['meta','tiktok','google','fal','heygen','elevenlabs','slack'],
+  saas:    ['meta','google','klaviyo','fal','elevenlabs','slack'],
+  local:   ['meta','google','fal','slack'],
+  agency:  ['meta','tiktok','shopify','klaviyo','google','pinterest','fal','elevenlabs','heygen','attentive','slack'],
 };
 
 function loadBrands() {
