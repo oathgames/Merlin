@@ -75,9 +75,9 @@ cp .claude/tools/merlin-config.example.json .claude/tools/merlin-config.json
 
 Do NOT ask for any API keys during first setup. Skip straight to brand setup. Keys are only needed when the user actually tries to generate content or connect platforms — ask at that point, not before.
 
-### C) Load performance insights
+### C) Pull latest wisdom insights
 
-Merlin improves over time by learning from aggregated, anonymous performance trends across all users — no brand names, ad copy, or personal data is ever shared. Pull the latest insights:
+Merlin improves over time by learning from aggregated, anonymous performance trends across all users — no brand names, ad copy, or personal data is ever shared. Pull the latest wisdom:
 ```bash
 .claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"wisdom"}'
 ```
