@@ -495,24 +495,25 @@ a:hover{text-decoration:underline}
   height:100%;
   -webkit-app-region:no-drag;
 }
-/* ── Subscribe Button (in Magic panel) ────────────────────── */
-.subscribe-section{border-top:1px solid var(--border);border-bottom:none;padding:16px 20px}
-.subscribe-panel-btn{
-  width:100%;
-  padding:10px;
-  background:linear-gradient(135deg,rgba(167,139,250,.1),rgba(52,211,153,.1));
+/* ── Subscribe Button (in header) ─────────────────────────── */
+.magic-header-right{display:flex;align-items:center;gap:6px;-webkit-app-region:no-drag}
+.subscribe-header-btn{
+  height:24px;
+  padding:0 8px;
+  background:linear-gradient(135deg,rgba(167,139,250,.12),rgba(52,211,153,.12));
   border:1px solid rgba(167,139,250,.2);
-  border-radius:10px;
-  color:var(--text-muted);
-  font-size:12px;
+  border-radius:6px;
+  color:var(--text-dim);
+  font-size:10px;
   font-weight:500;
   font-family:var(--font);
   cursor:pointer;
   transition:all .2s;
-  text-align:center;
+  white-space:nowrap;
+  display:flex;align-items:center;
 }
-.subscribe-panel-btn:hover{
-  background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(52,211,153,.2));
+.subscribe-header-btn:hover{
+  background:linear-gradient(135deg,rgba(167,139,250,.22),rgba(52,211,153,.22));
   border-color:rgba(167,139,250,.4);
 }
 .subscribe-cta{
@@ -521,7 +522,7 @@ a:hover{text-decoration:underline}
   -webkit-text-fill-color:transparent;
   font-weight:700;
 }
-.subscribe-panel-btn.hidden-sub{display:none}
+.subscribe-header-btn.hidden-sub{display:none}
 
 .magic-btn-inline{
   width:32px;height:32px;
