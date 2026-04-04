@@ -6,6 +6,10 @@ contextBridge.exposeInMainWorld('merlin', {
   winMaximize: () => ipcRenderer.invoke('win-maximize'),
   winClose: () => ipcRenderer.invoke('win-close'),
 
+  // Subscription
+  getSubscription: () => ipcRenderer.invoke('get-subscription'),
+  openSubscribe: () => ipcRenderer.invoke('open-subscribe'),
+
   // Setup
   checkSetup: () => ipcRenderer.invoke('check-setup'),
   openClaudeDownload: () => ipcRenderer.invoke('open-claude-download'),

@@ -495,6 +495,36 @@ a:hover{text-decoration:underline}
   height:100%;
   -webkit-app-region:no-drag;
 }
+/* ── Subscribe Button ─────────────────────────────────────── */
+.subscribe-btn{
+  height:26px;
+  border:none;
+  background:linear-gradient(135deg,rgba(167,139,250,.15),rgba(52,211,153,.15));
+  border-radius:6px;
+  color:var(--text-muted);
+  font-size:10px;
+  font-weight:500;
+  font-family:var(--font);
+  padding:0 10px;
+  cursor:pointer;
+  margin-right:6px;
+  transition:all .2s;
+  display:flex;align-items:center;gap:0;
+  -webkit-app-region:no-drag;
+  white-space:nowrap;
+}
+.subscribe-btn:hover{
+  background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(52,211,153,.25));
+  color:var(--text);
+}
+.subscribe-cta{
+  background:linear-gradient(135deg,#a78bfa,#34d399);
+  -webkit-background-clip:text;
+  -webkit-text-fill-color:transparent;
+  font-weight:700;
+}
+.subscribe-btn.hidden-sub{display:none}
+
 .magic-btn-inline{
   width:32px;height:32px;
   border:none;

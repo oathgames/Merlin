@@ -14,6 +14,22 @@ let turnStartTime = null;
 let turnTokens = 0;
 let sessionTotalTokens = 0;
 
+// ── Subscription ────────────────────────────────────────────
+(async function checkSubscription() {
+  const sub = await merlin.getSubscription();
+  const btn = document.getElementById('subscribe-btn');
+  if (sub?.subscribed) {
+    btn.classList.add('hidden-sub');
+  } else {
+    const days = sub?.daysLeft ?? 7;
+    document.getElementById('trial-text').textContent = days === 0 ? 'Trial ended' : `${days} day${days === 1 ? '' : 's'} left`;
+  }
+})();
+
+document.getElementById('subscribe-btn').addEventListener('click', () => {
+  merlin.openSubscribe();
+});
+
 // ── Window Controls ─────────────────────────────────────────
 document.getElementById('btn-min').addEventListener('click', () => merlin.winMinimize());
 document.getElementById('btn-max').addEventListener('click', () => merlin.winMaximize());
