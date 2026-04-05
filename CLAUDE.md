@@ -1,13 +1,46 @@
 # Merlin — Your AI CMO Wizard
 
-Open in Claude Code. Type `/cmo`. Everything else is automatic.
+Open in Claude Code. Type `/merlin`. Everything else is automatic.
 
-The `/cmo` command handles all setup on first run:
-- Downloads the binary if missing
+The `/merlin` command handles all setup on first run:
+- Downloads the Merlin engine if missing
 - Creates the config file if missing
 - Asks for a fal.ai API key (the only requirement)
 - Walks through brand + product setup
 - Sets up daily automation if wanted
+
+## Merlin Engine — What It Does
+
+The Merlin app is a tool you invoke via Bash for platform API calls. If it's unavailable, you can still help with strategy, copywriting, and analysis — but for the actions below, use the app.
+
+**CRITICAL — detect platform before invoking:** Use `.claude/tools/Merlin.exe` on Windows, `.claude/tools/Merlin` on Mac/Linux. Check which exists with `ls`. All examples in documentation show `.exe` — **always substitute the correct name for the user's platform.**
+
+**Invoke pattern:** `.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"ACTION_NAME", ...}'` (substitute `Merlin` for `Merlin.exe` on Mac)
+
+| Action | What it does | When to use |
+|---|---|---|
+| `meta-login` | OAuth connect to Meta Ads | User says "connect Meta/Facebook" |
+| `meta-push` | Create + publish ad to Meta | User says "run/publish/push an ad" |
+| `meta-insights` | Pull yesterday's ad performance | User says "how are my ads doing" |
+| `meta-kill` | Pause an ad | User says "stop/pause/kill this ad" |
+| `meta-duplicate` | Scale winner to scaling campaign | User says "scale this ad" |
+| `google-login` | OAuth connect to Google Ads | User says "connect Google" |
+| `google-ads-push` | Create Google Performance Max ad | User wants Google ads |
+| `google-ads-insights` | Google ad performance | User asks about Google performance |
+| `amazon-login` | OAuth connect to Amazon | User says "connect Amazon" |
+| `amazon-ads-push` | Create Sponsored Products ad | User wants Amazon ads |
+| `amazon-products` | List Amazon catalog | User asks about their products |
+| `shopify-login` | OAuth connect to Shopify | User says "connect Shopify" |
+| `shopify-products` | List Shopify products | User asks about inventory |
+| `shopify-orders` | Revenue + order metrics | User asks about sales |
+| `shopify-import` | Auto-pull all products + images | After connecting Shopify |
+| `dashboard` | Unified MER/ROAS across all platforms | User says "how's my marketing" |
+| `image` | Generate AI ad image | User wants a creative/image |
+| `seo-audit` | Audit store SEO | User asks about SEO |
+| `email-audit` | Audit email flows | User asks about email |
+| `wisdom` | Pull collective intelligence trends | Internal — better recommendations |
+
+For OAuth actions, always use `timeout: 300000` (5 minutes) so the user has time to authorize in-browser.
 
 ## Session Protocol
 
@@ -43,14 +76,14 @@ memory.md                       ← Learning memory (grows over time)
 ```
 
 ### Adding a new brand
-Run `/cmo` — setup flow asks for website + writes brand.md.
+Run `/merlin` — setup flow asks for website + writes brand.md.
 
 ### Adding a new product
 Create a subfolder under `assets/brands/<brand>/products/` with a `references/` folder inside. Drop photos in it. Claude auto-generates `product.md` on first use.
 
 ## Updates
 Type `/update` to check for and install new versions.
-Downloads the latest binary + framework files from GitHub while preserving user data (memory.md, brand folders, config).
+Downloads the latest engine + framework files from GitHub while preserving user data (memory.md, brand folders, config).
 Backups are saved to `.merlin-backup/{version}/` before overwriting.
 
 ## How Merlin Improves Over Time

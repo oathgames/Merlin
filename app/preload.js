@@ -32,6 +32,18 @@ contextBridge.exposeInMainWorld('merlin', {
   getConnectedPlatforms: () => ipcRenderer.invoke('get-connected-platforms'),
   getBrands: () => ipcRenderer.invoke('get-brands'),
 
+  // State persistence
+  saveState: (data) => ipcRenderer.invoke('save-state', data),
+  loadState: () => ipcRenderer.invoke('load-state'),
+
+  // Morning briefing
+  getBriefing: () => ipcRenderer.invoke('get-briefing'),
+  dismissBriefing: () => ipcRenderer.invoke('dismiss-briefing'),
+
+  // Referral
+  getReferralInfo: () => ipcRenderer.invoke('get-referral-info'),
+  applyReferralCode: (code) => ipcRenderer.invoke('apply-referral-code', code),
+
   // Spellbook
   checkClaudeRunning: () => ipcRenderer.invoke('check-claude-running'),
   listSpells: () => ipcRenderer.invoke('list-spells'),

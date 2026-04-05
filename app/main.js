@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -41,6 +41,7 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
@@ -60,6 +61,12 @@ async function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'index.html'));
+
+  // Grant microphone permission for voice input (Web Speech API)
+  win.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    if (permission === 'media') { callback(true); return; }
+    callback(false);
+  });
 
   // Enable DevTools in dev mode (Ctrl+Shift+I on Windows, Cmd+Option+I on Mac)
   if (!app.isPackaged) {
@@ -226,11 +233,35 @@ async function handleToolApproval(toolName, input) {
   });
 }
 
+// Personal email domains — if user's email is on one of these, we can't infer their brand
+const PERSONAL_EMAIL_DOMAINS = new Set([
+  'gmail.com','yahoo.com','hotmail.com','outlook.com','aol.com','icloud.com',
+  'mail.com','protonmail.com','proton.me','zoho.com','yandex.com','live.com',
+  'msn.com','me.com','mac.com','hey.com','fastmail.com','tutanota.com',
+]);
+
+function inferBrandDomain() {
+  try {
+    const cfg = readConfig();
+    const email = cfg._userEmail;
+    if (!email || !email.includes('@')) return null;
+    const domain = email.split('@')[1].toLowerCase();
+    if (PERSONAL_EMAIL_DOMAINS.has(domain)) return null;
+    return domain;
+  } catch { return null; }
+}
+
 async function startSession() {
   const { query } = await import('@anthropic-ai/claude-agent-sdk');
 
+  // Try to infer brand domain from cached Claude account email
+  const inferredDomain = inferBrandDomain();
+  const domainHint = inferredDomain
+    ? ` DOMAIN HINT: The user's email domain is "${inferredDomain}". When asking for their website, pre-fill the first AskUserQuestion option as: label: "${inferredDomain}", description: "Is this your brand? We'll scan it automatically". Add a second option: label: "Different website", description: "Enter a different URL". And a third: label: "Just exploring", description: "See what Merlin can do — no setup needed".`
+    : '';
+
   async function* messageGenerator() {
-    yield { type: 'user', message: { role: 'user', content: 'Run /cmo silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message. Check assets/brands/ for existing brand folders (ignore "example"). If a brand ALREADY exists, skip setup — just say "✦ [Brand] is ready — [X] products loaded. What would you like to create?" If NO brands exist, wait for my URL. IMPORTANT RULE: When showing images, include the full file path in your response text like this: results/img_20260403_164511/image_1_portrait.jpg — the app will render it inline automatically. Always include the path, never just describe the image.' } };
+    yield { type: 'user', message: { role: 'user', content: `Run /merlin silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message. Check assets/brands/ for existing brand folders (ignore "example"). If a brand ALREADY exists, skip setup — just say "✦ [Brand] is ready — [X] products loaded. What would you like to create?" If NO brands exist, use the AskUserQuestion tool to ask "What's your website?" with these options: (1) label: "Set up my brand", description: "Enter your website URL and we'll auto-detect your brand, products, and colors" (2) label: "Just exploring", description: "See what Merlin can do — no setup needed".${domainHint} IMPORTANT: When the user provides their website URL (or picks their domain from the options), start working IMMEDIATELY — scrape the site with WebFetch, extract brand colors, find products, identify competitors with WebSearch. Do ALL of this in parallel with the binary download. Don't wait for the binary. Show results as you find them: "Found your brand colors: #xxx, #yyy", "Spotted 12 products", "Your top competitors look like X, Y, Z". This gives the user instant value. The binary download and config setup happen in the background via preflight. If the user selects "Just exploring", give a 3-sentence pitch of what Merlin does and ask what they'd like to try. IMPORTANT RULE: When showing images, include the full file path in your response text like this: results/img_20260403_164511/image_1_portrait.jpg — the app will render it inline automatically. Always include the path, never just describe the image.` } };
     while (true) {
       const msg = await new Promise((resolve) => { resolveNextMessage = resolve; });
       if (msg === null) return;
@@ -255,14 +286,31 @@ async function startSession() {
     },
   });
 
-  // Capture user email from Claude account (for telemetry + Stripe pre-fill)
+  // Capture user email from Claude account (for telemetry + Stripe pre-fill + domain inference)
   try {
     const acctInfo = await activeQuery.accountInfo();
     if (acctInfo?.email) {
       const cfg = readConfig();
-      if (!cfg._userEmail || cfg._userEmail !== acctInfo.email) {
+      const isNewEmail = !cfg._userEmail || cfg._userEmail !== acctInfo.email;
+      if (isNewEmail) {
         cfg._userEmail = acctInfo.email;
         writeConfig(cfg);
+        // First-time user: if we can infer a brand domain and no brands exist yet,
+        // send a hint so Claude can suggest it mid-conversation
+        const domain = acctInfo.email.split('@')[1]?.toLowerCase();
+        if (domain && !PERSONAL_EMAIL_DOMAINS.has(domain) && !inferredDomain) {
+          const brandsDir = path.join(appRoot, 'assets', 'brands');
+          let hasBrands = false;
+          try {
+            hasBrands = fs.readdirSync(brandsDir, { withFileTypes: true })
+              .some(d => d.isDirectory() && d.name !== 'example');
+          } catch {}
+          if (!hasBrands && resolveNextMessage) {
+            resolveNextMessage({ type: 'user', message: { role: 'user', content:
+              `(System note: I just detected the user's email domain is "${domain}". If you haven't already asked for their website, suggest this domain as their brand. If you already asked, ignore this.)`
+            }});
+          }
+        }
       }
     }
   } catch {}
@@ -279,10 +327,27 @@ async function startSession() {
           win.webContents.send('spell-activity', { tool: msg.tool_name, input: msg.input });
         }
         if (msg.type === 'system' && msg.subtype === 'task_notification') {
+          const taskId = msg.task_id || '';
+          const status = msg.status || '';
           win.webContents.send('spell-completed', {
-            taskId: msg.task_id, status: msg.status,
+            taskId, status,
             summary: msg.summary, timestamp: Date.now()
           });
+          // Report spell completion to wisdom API for aggregate insights
+          try {
+            const https = require('https');
+            const req = https.request('https://api.merlingotme.com/api/ping', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 5000,
+            });
+            req.write(JSON.stringify({
+              id: getMachineId(), v: getCurrentVersion(), p: process.platform,
+              e: `spell-${status}`, vt: readConfig().vertical || '',
+              t: getSubscriptionState().subscribed ? 'pro' : 'trial',
+              spell: taskId.replace(/^merlin-/, ''),
+            }));
+            req.end();
+            req.on('error', () => {});
+          } catch {}
         }
       }
     }
@@ -324,12 +389,44 @@ ipcMain.handle('check-setup', async () => {
   }
 
   const macTip = process.platform === 'darwin'
-    ? '\n\nIf you have Claude Desktop, open it → Settings → Developer → "Install Claude Code CLI"'
+    ? '\n\nAlready have Claude Desktop? Open it → Settings → Developer → "Install Claude Code CLI"'
     : '';
-  return { ready: false, reason: 'Claude not found. Install it from claude.ai/download' + macTip };
+  return { ready: false, reason: 'Merlin\'s AI engine isn\'t installed yet.' + macTip };
 });
 
 ipcMain.handle('start-session', () => { startSession(); return { success: true }; });
+
+// Morning briefing — reads cached briefing generated by scheduled spells
+ipcMain.handle('get-briefing', () => {
+  const briefingFile = path.join(appRoot, '.merlin-briefing.json');
+  try {
+    if (!fs.existsSync(briefingFile)) return null;
+    const data = JSON.parse(fs.readFileSync(briefingFile, 'utf8'));
+    // Only show if briefing is from today or yesterday (not stale)
+    const briefingDate = new Date(data.date);
+    const now = new Date();
+    const ageHours = (now - briefingDate) / (1000 * 60 * 60);
+    if (ageHours > 36) return null; // stale — more than 36 hours old
+    // Only show once per day — check if already dismissed today
+    const stateFile = path.join(appRoot, '.merlin-state.json');
+    try {
+      const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+      if (state.lastBriefingDismissed === now.toISOString().slice(0, 10)) return null;
+    } catch {}
+    return data;
+  } catch { return null; }
+});
+
+ipcMain.handle('dismiss-briefing', () => {
+  const stateFile = path.join(appRoot, '.merlin-state.json');
+  try {
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
+    state.lastBriefingDismissed = new Date().toISOString().slice(0, 10);
+    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+  } catch {}
+  return { success: true };
+});
 
 ipcMain.handle('get-account-info', async () => {
   try {
@@ -391,6 +488,23 @@ ipcMain.handle('check-claude-running', async () => {
   });
 });
 
+// ── Session State Persistence ───────────────────────────────
+const stateFile = path.join(appRoot, '.merlin-state.json');
+
+ipcMain.handle('save-state', (_, data) => {
+  try {
+    let state = {};
+    try { state = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch {}
+    Object.assign(state, data);
+    fs.writeFileSync(stateFile, JSON.stringify(state, null, 2));
+    return { success: true };
+  } catch { return { success: false }; }
+});
+
+ipcMain.handle('load-state', () => {
+  try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
+});
+
 // ── Config helpers ──────────────────────────────────────────
 function readConfig() {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
@@ -400,8 +514,33 @@ function writeConfig(cfg) {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    fs.writeFileSync(configPath, JSON.stringify(cfg, null, 2));
+    // Atomic write: write to temp file, then rename (prevents corruption on crash)
+    const tmpPath = configPath + '.tmp';
+    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
+    fs.renameSync(tmpPath, configPath);
   } catch (err) { console.error('[config] write failed:', err.message); }
+}
+
+// Encrypted read/write for sensitive local state (subscription, machine ID)
+// Uses OS keychain via Electron safeStorage — not readable by other processes
+function readSecureFile(filePath) {
+  try {
+    const buf = fs.readFileSync(filePath);
+    if (safeStorage.isEncryptionAvailable()) {
+      return safeStorage.decryptString(buf);
+    }
+    return buf.toString('utf8'); // fallback if encryption unavailable
+  } catch { return null; }
+}
+function writeSecureFile(filePath, data) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    if (safeStorage.isEncryptionAvailable()) {
+      fs.writeFileSync(filePath, safeStorage.encryptString(data));
+    } else {
+      fs.writeFileSync(filePath, data);
+    }
+  } catch {}
 }
 
 // Check which platforms are connected by reading the config
@@ -513,7 +652,27 @@ ipcMain.handle('get-brands', () => {
         const productsDir = path.join(brandPath, 'products');
         let productCount = 0;
         try { productCount = fs.readdirSync(productsDir, { withFileTypes: true }).filter(d => d.isDirectory()).length; } catch {}
-        return { name: d.name, vertical, productCount };
+
+        // Human-readable display name from brand.md, fall back to smart title case
+        let displayName = d.name;
+        if (fs.existsSync(brandMd)) {
+          const content = fs.readFileSync(brandMd, 'utf8');
+          // Try: "# BrandName" (markdown heading, most common)
+          const h1Match = content.match(/^#\s+(.+)$/m);
+          if (h1Match) {
+            displayName = h1Match[1].trim();
+          } else {
+            // Try: "Brand: X" or "Name: X"
+            const fieldMatch = content.match(/^(?:Brand|Name)[:\s]+["']?([^\n"']+)/im);
+            if (fieldMatch) displayName = fieldMatch[1].trim();
+          }
+        }
+        if (displayName === d.name) {
+          // Smart title case: "ivory-ella" → "Ivory Ella", "mad-chill" → "Mad Chill"
+          displayName = d.name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+        }
+
+        return { name: d.name, displayName, vertical, productCount };
       });
     return dirs;
   } catch { return []; }
@@ -575,12 +734,15 @@ ipcMain.handle('get-mobile-qr', async () => {
 
 ipcMain.handle('save-pasted-media', (_, dataUrl, filename) => {
   try {
+    // Sanitize filename — strip path traversal, keep only the basename
+    const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    if (!safeName || safeName.startsWith('.')) return null;
     const resultsDir = path.join(appRoot, 'results');
     if (!fs.existsSync(resultsDir)) fs.mkdirSync(resultsDir, { recursive: true });
-    const filePath = path.join(resultsDir, filename);
+    const filePath = path.join(resultsDir, safeName);
     const base64 = dataUrl.replace(/^data:[^;]+;base64,/, '');
     fs.writeFileSync(filePath, Buffer.from(base64, 'base64'));
-    return `results/${filename}`;
+    return `results/${safeName}`;
   } catch (err) {
     console.error('[media-save]', err.message);
     return null;
@@ -623,8 +785,11 @@ function getSubscriptionState() {
   const subFile = path.join(appRoot, '.merlin-subscription');
   try {
     if (fs.existsSync(subFile)) {
-      const data = JSON.parse(fs.readFileSync(subFile, 'utf8'));
-      if (data.subscribed) return { subscribed: true, tier: data.tier || 'sage', key: data.key || '' };
+      // Try encrypted read first, fallback to plaintext for migration
+      let raw = readSecureFile(subFile);
+      if (!raw) raw = fs.readFileSync(subFile, 'utf8');
+      const data = JSON.parse(raw);
+      if (data.subscribed) return { subscribed: true, tier: data.tier || 'pro', key: data.key || '' };
     }
   } catch {}
 
@@ -637,8 +802,13 @@ function getSubscriptionState() {
     trialStart = Date.now();
     try { fs.writeFileSync(trialFile, String(trialStart)); } catch {}
   }
-  const daysLeft = Math.max(0, 7 - Math.floor((Date.now() - trialStart) / (1000 * 60 * 60 * 24)));
-  return { subscribed: false, daysLeft, trialStart, expired: daysLeft === 0 };
+  // Add referral bonus days (max 70 = 10 referrals)
+  let bonusDays = 0;
+  try { bonusDays = parseInt(fs.readFileSync(path.join(appRoot, '.merlin-referral-bonus'), 'utf8')) || 0; } catch {}
+  bonusDays = Math.min(Math.max(bonusDays, 0), 70);
+  const totalTrialDays = 7 + bonusDays;
+  const daysLeft = Math.max(0, totalTrialDays - Math.floor((Date.now() - trialStart) / (1000 * 60 * 60 * 24)));
+  return { subscribed: false, daysLeft, bonusDays, trialStart, expired: daysLeft === 0 };
 }
 
 ipcMain.handle('get-subscription', () => getSubscriptionState());
@@ -664,8 +834,7 @@ ipcMain.handle('activate-key', (_, key) => {
 
     const subFile = path.join(appRoot, '.merlin-subscription');
     try {
-      fs.mkdirSync(path.dirname(subFile), { recursive: true });
-      fs.writeFileSync(subFile, JSON.stringify({ subscribed: true, tier: 'pro', activatedAt: Date.now() }, null, 2));
+      writeSecureFile(subFile, JSON.stringify({ subscribed: true, tier: 'pro', activatedAt: Date.now() }));
     } catch (err) {
       return { success: false, error: 'Could not save activation' };
     }
@@ -687,7 +856,18 @@ ipcMain.handle('open-subscribe', async () => {
       if (info?.email) emailParam = `&prefilled_email=${encodeURIComponent(info.email)}`;
     }
   } catch {}
-  shell.openExternal(`https://buy.stripe.com/5kQfZggqt73f7MMca85wI00?client_reference_id=${machineId}${emailParam}`);
+  // Append attribution if present
+  let attrSuffix = '';
+  try {
+    const attrFile = path.join(appRoot, '.merlin-attribution');
+    if (fs.existsSync(attrFile)) {
+      const attr = JSON.parse(fs.readFileSync(attrFile, 'utf8'));
+      const safeCode = encodeURIComponent(attr.code || '');
+      if (attr.type === 'affiliate') attrSuffix = `__aff_${safeCode}`;
+      else if (attr.type === 'referral') attrSuffix = `__ref_${safeCode}`;
+    }
+  } catch {}
+  shell.openExternal(`https://buy.stripe.com/5kQfZggqt73f7MMca85wI00?client_reference_id=${machineId}${attrSuffix}${emailParam}`);
 
   // Poll for activation every 10s for 10 minutes after opening checkout
   if (_activationPoller) clearInterval(_activationPoller);
@@ -702,10 +882,9 @@ ipcMain.handle('open-subscribe', async () => {
       if (data.activated) {
         clearInterval(_activationPoller);
         _activationPoller = null;
-        // Write subscription file
+        // Write encrypted subscription file
         const subFile = path.join(appRoot, '.merlin-subscription');
-        fs.mkdirSync(path.dirname(subFile), { recursive: true });
-        fs.writeFileSync(subFile, JSON.stringify({ subscribed: true, tier: 'pro', activatedAt: Date.now(), via: 'stripe' }, null, 2));
+        writeSecureFile(subFile, JSON.stringify({ subscribed: true, tier: 'pro', activatedAt: Date.now(), via: 'stripe' }));
         // Notify renderer
         if (win && !win.isDestroyed()) {
           win.webContents.send('subscription-activated', { tier: 'pro' });
@@ -716,8 +895,49 @@ ipcMain.handle('open-subscribe', async () => {
 });
 
 ipcMain.handle('open-manage', () => {
-  // Stripe Customer Portal — users manage billing, cancel, update payment
   shell.openExternal('https://billing.stripe.com/p/login/5kQfZggqt73f7MMca85wI00');
+});
+
+// ── Referral System ────────────────────────────────────────
+ipcMain.handle('get-referral-info', async () => {
+  try {
+    const machineId = getMachineId();
+    const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${machineId}`);
+    return JSON.parse(raw.toString());
+  } catch { return { referralCode: getMachineId().slice(0, 8), referralCount: 0, trialExtensionDays: 0 }; }
+});
+
+ipcMain.handle('apply-referral-code', async (_, code) => {
+  if (!code || typeof code !== 'string') return { success: false, error: 'Invalid code' };
+  const trimmed = code.trim().toLowerCase().slice(0, 8);
+  if (!/^[0-9a-f]{8}$/.test(trimmed)) return { success: false, error: 'Invalid referral code format' };
+
+  const machineId = getMachineId();
+  try {
+    const https = require('https');
+    const payload = JSON.stringify({ referrer: trimmed, referred: machineId });
+    const raw = await new Promise((resolve, reject) => {
+      const req = https.request('https://merlingotme.com/api/register-referral', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 10000,
+      }, (res) => {
+        let body = []; res.on('data', c => body.push(c)); res.on('end', () => resolve(Buffer.concat(body)));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      req.write(payload);
+      req.end();
+    });
+    const result = JSON.parse(raw.toString());
+    if (result.ok) {
+      // Save attribution for Stripe checkout
+      const attrFile = path.join(appRoot, '.merlin-attribution');
+      fs.writeFileSync(attrFile, JSON.stringify({ type: 'referral', code: trimmed }));
+      return { success: true, bonus: result.bonus };
+    }
+    return { success: false, error: result.error || 'Could not register referral' };
+  } catch (err) {
+    return { success: false, error: 'Network error — try again' };
+  }
 });
 
 ipcMain.handle('apply-update', () => { downloadAndApplyUpdate(); });
@@ -845,6 +1065,16 @@ async function downloadAndApplyUpdate() {
 
 // ── App Lifecycle ───────────────────────────────────────────
 
+// Single instance lock — prevent multiple windows
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) { app.quit(); }
+app.on('second-instance', () => {
+  if (win) {
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  }
+});
+
 app.whenReady().then(async () => {
   await createWindow();
   setTimeout(checkForUpdates, 10000);
@@ -864,7 +1094,7 @@ app.whenReady().then(async () => {
         t: sub.subscribed ? 'pro' : 'trial',
       });
       const https = require('https');
-      const req = https.request('https://merlin-wisdom.ryan-fec.workers.dev/api/ping', {
+      const req = https.request('https://api.merlingotme.com/api/ping', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 5000,
       });
       req.write(payload);
@@ -872,6 +1102,39 @@ app.whenReady().then(async () => {
       req.on('error', () => {});
     } catch {}
   }, 5000);
+
+  // Register referral code on startup + hourly bonus check
+  setTimeout(async () => {
+    try {
+      const machineId = getMachineId();
+      const https = require('https');
+      // Register our referral code
+      const req = https.request('https://merlingotme.com/api/register-referral-code', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 5000,
+      });
+      req.write(JSON.stringify({ machineId }));
+      req.end();
+      req.on('error', () => {});
+
+      // Check for bonus days
+      const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${machineId}`);
+      const data = JSON.parse(raw.toString());
+      if (data.trialExtensionDays > 0) {
+        fs.writeFileSync(path.join(appRoot, '.merlin-referral-bonus'), String(data.trialExtensionDays));
+      }
+    } catch {}
+  }, 8000);
+
+  // Hourly referral bonus refresh
+  setInterval(async () => {
+    try {
+      const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${getMachineId()}`);
+      const data = JSON.parse(raw.toString());
+      if (data.trialExtensionDays > 0) {
+        fs.writeFileSync(path.join(appRoot, '.merlin-referral-bonus'), String(data.trialExtensionDays));
+      }
+    } catch {}
+  }, 60 * 60 * 1000);
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

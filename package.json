@@ -20,7 +20,7 @@
   "build": {
     "appId": "com.merlin.desktop",
     "productName": "Merlin",
-    "asar": false,
+    "asar": true,
     "files": [
       "app/**/*"
     ],

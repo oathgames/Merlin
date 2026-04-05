@@ -23,6 +23,67 @@ let turnStartTime = null;
 let turnTokens = 0;
 let sessionTotalTokens = 0;
 
+// ── Inline Modal (replaces native prompt/alert) ────────────
+function showModal({ title, body, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel }) {
+  const modal = document.getElementById('merlin-modal');
+  const titleEl = document.getElementById('merlin-modal-title');
+  const bodyEl = document.getElementById('merlin-modal-body');
+  const inputEl = document.getElementById('merlin-modal-input');
+  const errorEl = document.getElementById('merlin-modal-error');
+  const confirmBtn = document.getElementById('merlin-modal-confirm');
+  const cancelBtn = document.getElementById('merlin-modal-cancel');
+  const closeBtn = document.getElementById('merlin-modal-close');
+
+  titleEl.textContent = title || '';
+  bodyEl.textContent = body || '';
+  errorEl.textContent = '';
+  confirmBtn.textContent = confirmLabel || 'OK';
+  cancelBtn.textContent = cancelLabel || 'Cancel';
+
+  if (inputPlaceholder !== undefined) {
+    inputEl.classList.remove('hidden');
+    inputEl.value = '';
+    inputEl.placeholder = inputPlaceholder;
+    setTimeout(() => inputEl.focus(), 50);
+  } else {
+    inputEl.classList.add('hidden');
+  }
+
+  modal.classList.remove('hidden');
+
+  function cleanup() {
+    modal.classList.add('hidden');
+    confirmBtn.onclick = null;
+    cancelBtn.onclick = null;
+    closeBtn.onclick = null;
+    inputEl.onkeydown = null;
+    document.removeEventListener('keydown', escHandler);
+  }
+
+  function escHandler(e) {
+    if (e.key === 'Escape') { cleanup(); }
+  }
+  document.addEventListener('keydown', escHandler);
+
+  confirmBtn.onclick = () => {
+    const value = inputPlaceholder !== undefined ? inputEl.value.trim() : true;
+    cleanup();
+    if (onConfirm) onConfirm(value);
+  };
+  cancelBtn.onclick = () => {
+    cleanup();
+    if (onCancel) onCancel();
+  };
+  closeBtn.onclick = () => { cleanup(); };
+  if (inputPlaceholder !== undefined) {
+    inputEl.onkeydown = (e) => { if (e.key === 'Enter') confirmBtn.click(); };
+  }
+}
+
+function showModalError(text) {
+  document.getElementById('merlin-modal-error').textContent = text;
+}
+
 // ── Subscription ────────────────────────────────────────────
 let _trialExpired = false;
 
@@ -36,34 +97,43 @@ let _trialExpired = false;
     btn.classList.add('subscribed');
   } else {
     const days = sub?.daysLeft ?? 7;
+    const bonus = sub?.bonusDays || 0;
     _trialExpired = days === 0;
-    document.getElementById('trial-text').textContent = _trialExpired ? 'Expired' : `${days}D Left`;
+    const dayText = _trialExpired ? 'Expired' : `${days}D Left`;
+    document.getElementById('trial-text').textContent = bonus > 0 && !_trialExpired ? `${dayText} (+${bonus})` : dayText;
   }
 })();
 
 document.getElementById('subscribe-btn').addEventListener('click', async () => {
   const sub = await merlin.getSubscription();
   if (sub?.subscribed) {
-    // Subscribed user → open Stripe Customer Portal to manage billing
     merlin.openManage();
     return;
   }
-  // Trial/expired user → show activation prompt
-  const key = prompt('Enter your license key, or click OK to subscribe:');
-  if (key && key.trim().length > 0) {
-    merlin.activateKey(key).then((result) => {
-      if (result.success) {
-        document.getElementById('trial-text').textContent = '✦ Pro';
-        document.querySelector('.subscribe-cta').textContent = 'Manage';
-        document.getElementById('subscribe-btn').classList.add('subscribed');
-        _trialExpired = false;
+  showModal({
+    title: 'Unlock Merlin Pro',
+    body: 'Enter a license key to activate, or subscribe for full access.',
+    inputPlaceholder: 'License key (e.g. XXXX-XXXX)',
+    confirmLabel: 'Activate',
+    cancelLabel: 'Subscribe',
+    onConfirm: (key) => {
+      if (key && key.length > 0) {
+        merlin.activateKey(key).then((result) => {
+          if (result.success) {
+            document.getElementById('trial-text').textContent = '✦ Pro';
+            document.querySelector('.subscribe-cta').textContent = 'Manage';
+            document.getElementById('subscribe-btn').classList.add('subscribed');
+            _trialExpired = false;
+          } else {
+            showModal({ title: 'Invalid Key', body: result.error || 'That key didn\'t work. Check for typos and try again.', confirmLabel: 'OK', onConfirm: () => {} });
+          }
+        });
       } else {
-        alert(result.error || 'Invalid key.');
+        merlin.openSubscribe();
       }
-    });
-  } else if (key !== null) {
-    merlin.openSubscribe();
-  }
+    },
+    onCancel: () => { merlin.openSubscribe(); },
+  });
 });
 
 // Auto-activate when Stripe payment completes (polled from main.js)
@@ -95,27 +165,88 @@ async function init() {
   // Instant animated welcome — shows before SDK even connects
   welcomeBubble.classList.remove('streaming');
 
-  const welcomeLines = [
-    '✦ Hey — I\'m Merlin, your marketing wizard.',
-    'Brewing up your workspace...',
-    'Scanning for brands and products...',
-    'Checking your connected platforms...',
-    'Almost ready — summoning the magic...',
-  ];
+  // Personalize welcome based on whether the user has brands set up
+  const existingBrands = await merlin.getBrands().catch(() => []);
+  const savedState = await merlin.loadState().catch(() => ({}));
+  const isReturning = existingBrands && existingBrands.length > 0;
+  const activeBrand = savedState?.activeBrand || (isReturning ? existingBrands[0].name : null);
+  const activeBrandObj = existingBrands?.find(b => b.name === activeBrand) || existingBrands?.[0];
+  const brandName = activeBrandObj?.displayName || activeBrand || (isReturning ? existingBrands[0].name : null);
+  const productCount = isReturning ? existingBrands.reduce((sum, b) => sum + (b.productCount || 0), 0) : 0;
 
-  let lineIndex = 0;
-  welcomeBubble.innerHTML = welcomeLines[0];
-
-  window._welcomeInterval = setInterval(() => {
-    lineIndex++;
-    if (lineIndex < welcomeLines.length) {
-      // Replace the status line (keep the greeting, update the progress)
-      welcomeBubble.innerHTML = welcomeLines[0] + '<br><br>' + welcomeLines[lineIndex];
-      scrollToBottom();
+  if (isReturning) {
+    // Check for morning briefing FIRST (cached, instant)
+    const briefing = await merlin.getBriefing().catch(() => null);
+    if (briefing) {
+      welcomeBubble.classList.remove('streaming');
+      let briefingHtml = `<div class="briefing-card"><div class="briefing-header">✦ While you were away</div>`;
+      if (briefing.ads) briefingHtml += `<div class="briefing-section"><div class="briefing-label">Ad Performance</div><div class="briefing-content">${escapeHtml(briefing.ads)}</div></div>`;
+      if (briefing.content) briefingHtml += `<div class="briefing-section"><div class="briefing-label">Content Published</div><div class="briefing-content">${escapeHtml(briefing.content)}</div></div>`;
+      if (briefing.revenue) briefingHtml += `<div class="briefing-section"><div class="briefing-label">Revenue</div><div class="briefing-content">${escapeHtml(briefing.revenue)}</div></div>`;
+      if (briefing.recommendation) briefingHtml += `<div class="briefing-section"><div class="briefing-label">💡 Recommendation</div><div class="briefing-content">${escapeHtml(briefing.recommendation)}</div></div>`;
+      briefingHtml += `<button class="briefing-dismiss" onclick="this.closest('.msg').remove();merlin.dismissBriefing()">Got it</button></div>`;
+      welcomeBubble.innerHTML = briefingHtml;
+      currentBubble = null;
+      textBuffer = '';
+      // Add a second bubble for the normal welcome
+      const wb2 = addClaudeBubble();
+      wb2.classList.remove('streaming');
+      wb2.innerHTML = `Welcome back — loading ${escapeHtml(brandName)}...`;
+      currentBubble = null;
+      textBuffer = '';
     } else {
-      clearInterval(window._welcomeInterval);
+      welcomeBubble.innerHTML = `Welcome back — loading ${escapeHtml(brandName)}...`;
     }
-  }, 2000);
+    // No interval needed — SDK takes over quickly for returning users
+    window._welcomeInterval = null;
+  } else {
+    // New user — calm slide reveal, no flickering status lines
+    const demoSlides = [
+      { icon: '🎨', text: '<strong>Ad creatives</strong> from your product photos', stat: '~$0.04 each' },
+      { icon: '📣', text: '<strong>Meta, TikTok, Google, Amazon</strong> ads — launched and optimized', stat: 'all platforms' },
+      { icon: '🔍', text: '<strong>SEO audits</strong> and blog posts that rank on Google', stat: 'auto-published' },
+      { icon: '⚡', text: '<strong>Daily autopilot</strong> — new content every morning, losers killed, winners scaled', stat: 'runs while you sleep' },
+      { icon: '📊', text: '<strong>One dashboard</strong> for spend, ROAS, and what\'s actually working', stat: 'all channels' },
+    ];
+
+    // Build the bubble once — slides reveal in place, nothing flickers
+    let slidesHtml = '<div class="demo-slides">';
+    demoSlides.forEach((s, i) => {
+      slidesHtml += `<div class="demo-slide" id="demo-${i}"><span class="demo-icon">${s.icon}</span>${s.text}<span class="demo-stat">${s.stat}</span></div>`;
+    });
+    slidesHtml += '</div><div class="status-line" id="welcome-status">Setting up your workspace...</div>';
+    welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Drop your website below and I\'ll work some magic.' + slidesHtml;
+
+    // Gentle reveal: status fades in, then one slide every 3s
+    setTimeout(() => {
+      const statusEl = document.getElementById('welcome-status');
+      if (statusEl) statusEl.classList.add('visible');
+    }, 500);
+
+    let slideIndex = 0;
+    window._welcomeInterval = setInterval(() => {
+      const el = document.getElementById(`demo-${slideIndex}`);
+      if (el) {
+        el.classList.add('visible');
+        scrollToBottom();
+        slideIndex++;
+      }
+      if (slideIndex >= demoSlides.length) {
+        clearInterval(window._welcomeInterval);
+        window._welcomeInterval = null;
+      }
+    }, 3000);
+
+    // First slide a bit sooner
+    setTimeout(() => {
+      const el = document.getElementById('demo-0');
+      if (el && !el.classList.contains('visible')) {
+        el.classList.add('visible');
+        scrollToBottom();
+        slideIndex = 1;
+      }
+    }, 2000);
+  }
 
   // Start session in background — when SDK connects, it takes over
   merlin.checkSetup().then((result) => {
@@ -199,15 +330,9 @@ function appendText(text) {
   if (!rafPending) {
     rafPending = true;
     requestAnimationFrame(() => {
-      if (currentBubble) {
-        // Only re-render if buffer grew significantly (reduces layout thrashing)
-        if (textBuffer.length - lastRenderedLength > 20 || textBuffer.includes('\n')) {
-          currentBubble.innerHTML = renderMarkdown(textBuffer);
-          lastRenderedLength = textBuffer.length;
-        } else {
-          // For small deltas, just update textContent of last text node
-          currentBubble.innerHTML = renderMarkdown(textBuffer);
-        }
+      if (currentBubble && textBuffer.length - lastRenderedLength > 20) {
+        currentBubble.innerHTML = renderMarkdown(textBuffer);
+        lastRenderedLength = textBuffer.length;
       }
       scrollToBottom();
       rafPending = false;
@@ -216,6 +341,19 @@ function appendText(text) {
 }
 
 let sessionActive = false;
+
+function setInputDisabled(disabled) {
+  const bar = document.getElementById('input-bar');
+  if (disabled) {
+    bar.classList.add('input-disabled');
+    input.setAttribute('readonly', '');
+    sendBtn.disabled = true;
+  } else {
+    bar.classList.remove('input-disabled');
+    input.removeAttribute('readonly');
+    sendBtn.disabled = false;
+  }
+}
 
 let typingTimeout = null;
 let typingStuckTimeout = null;
@@ -228,21 +366,23 @@ function finalizeBubble() {
   currentBubble = null;
   textBuffer = '';
   isStreaming = false;
+  setInputDisabled(false);
   scrollToBottom();
-  // First-time sparkle menu hint — show once after Claude's first response
+  // Sparkle hint — show after the user has sent a few messages (past initial setup)
+  // This avoids overwhelming new users during their first interaction
   if (!hasShownSparkleHint) {
-    hasShownSparkleHint = true;
-    setTimeout(() => {
-      // Pulse the sparkle button
-      const sparkle = document.getElementById('magic-btn');
-      sparkle.classList.add('sparkle-hint');
-      // Show hint bubble
-      const hint = addClaudeBubble();
-      textBuffer = '✦ **Tip:** Your spells, connections, and brand settings live behind the ✦ button up top. Click it anytime to manage your marketing autopilot.';
-      finalizeBubble();
-      // Remove pulse after 8 seconds
-      setTimeout(() => sparkle.classList.remove('sparkle-hint'), 8000);
-    }, 1500);
+    _userMessageCount = (_userMessageCount || 0);
+    if (_userMessageCount >= 3) {
+      hasShownSparkleHint = true;
+      setTimeout(() => {
+        const sparkle = document.getElementById('magic-btn');
+        sparkle.classList.add('sparkle-hint');
+        const hint = addClaudeBubble();
+        textBuffer = '✦ **Tip:** Your connections, spells, and brand settings live behind the ✦ button up top.';
+        finalizeBubble();
+        setTimeout(() => sparkle.classList.remove('sparkle-hint'), 8000);
+      }, 1500);
+    }
   }
 
   // Refresh connections if panel is open (picks up newly connected platforms)
@@ -256,16 +396,17 @@ function finalizeBubble() {
 }
 
 function scheduleTypingIndicator() {
+  // Don't flicker — if typing indicator is already showing, leave it.
+  // Only schedule if it's not already visible and session is active.
   if (typingTimeout) clearTimeout(typingTimeout);
   typingTimeout = null;
-  const wasActive = sessionActive;
-  if (wasActive) {
-    typingTimeout = setTimeout(() => {
-      if (wasActive && sessionActive && !currentBubble && !isStreaming) {
-        showTypingIndicator();
-      }
-    }, 1500);
-  }
+  if (!sessionActive) return;
+  if (document.querySelector('.typing-indicator')) return; // already showing
+  typingTimeout = setTimeout(() => {
+    if (sessionActive && !currentBubble && !isStreaming) {
+      showTypingIndicator();
+    }
+  }, 2000); // 2s delay — calm, no rush
 }
 
 function scrollToBottom() {
@@ -299,15 +440,34 @@ function renderMarkdown(text) {
 
   let html = escapeHtml(text);
 
-  // Code blocks (triple backtick) — preserve content
+  // HTML artifacts (```html blocks rendered as iframes)
+  const artifacts = [];
+  html = html.replace(/```html\n([\s\S]*?)```/g, (_, code) => {
+    const id = `artifact-${Date.now()}-${artifacts.length}`;
+    artifacts.push({ id, code });
+    return `%%ARTIFACT_${artifacts.length - 1}%%`;
+  });
+
+  // Code blocks (triple backtick) — with copy button + language label
   const codeBlocks = [];
   html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    codeBlocks.push(`<pre><code class="lang-${lang || 'text'}">${code}</code></pre>`);
+    const langLabel = lang || 'text';
+    const blockId = `cb-${Date.now()}-${codeBlocks.length}`;
+    codeBlocks.push(
+      `<div class="code-block"><div class="code-block-header"><span>${langLabel}</span><button class="copy-btn" onclick="navigator.clipboard.writeText(decodeURIComponent('${encodeURIComponent(code.replace(/\n$/, ''))}')).then(()=>{this.textContent='Copied!';this.classList.add('copied');setTimeout(()=>{this.textContent='Copy';this.classList.remove('copied')},2000)})">Copy</button></div><pre><code class="lang-${langLabel}">${code}</code></pre></div>`
+    );
     return `%%CODEBLOCK_${codeBlocks.length - 1}%%`;
   });
 
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Inline code — add copy button for long or actionable content (URLs, commands, keys)
+  html = html.replace(/`([^`]+)`/g, (match, content) => {
+    const isActionable = content.length > 20 || /^(https?:|\/|npm |curl |pip |brew |apt |git |cd |mkdir |xattr )/.test(content);
+    if (isActionable) {
+      const encoded = encodeURIComponent(content);
+      return `<code>${content}</code><button class="copy-btn inline-copy" onclick="navigator.clipboard.writeText(decodeURIComponent('${encoded}')).then(()=>{this.textContent='✓';setTimeout(()=>{this.textContent='⧉'},1500)})">⧉</button>`;
+    }
+    return `<code>${content}</code>`;
+  });
   // Bold
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   // Italic
@@ -346,6 +506,25 @@ function renderMarkdown(text) {
     return match;
   });
 
+  // Tables (markdown pipe tables)
+  html = html.replace(/((?:^\|.+\|$\n?){2,})/gm, (table) => {
+    const rows = table.trim().split('\n').filter(r => r.trim());
+    if (rows.length < 2) return table;
+    // Check if row 2 is a separator (|---|---|)
+    const isSep = /^\|[\s\-:]+\|/.test(rows[1]);
+    let thead = '', tbody = '';
+    const parseRow = (row) => row.split('|').slice(1, -1).map(c => c.trim());
+    if (isSep && rows.length >= 2) {
+      const headers = parseRow(rows[0]);
+      thead = '<thead><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead>';
+      const bodyRows = rows.slice(2);
+      tbody = '<tbody>' + bodyRows.map(r => '<tr>' + parseRow(r).map(c => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody>';
+    } else {
+      tbody = '<tbody>' + rows.map(r => '<tr>' + parseRow(r).map(c => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody>';
+    }
+    return `<table>${thead}${tbody}</table>`;
+  });
+
   // Line breaks
   html = html.replace(/\n/g, '<br>');
   // Clean up
@@ -354,10 +533,22 @@ function renderMarkdown(text) {
   html = html.replace(/<\/pre><br>/g, '</pre>');
   html = html.replace(/<\/h[123]><br>/g, (m) => m.replace('<br>', ''));
   html = html.replace(/<hr><br>/g, '<hr>');
+  html = html.replace(/<\/table><br>/g, '</table>');
+  html = html.replace(/<\/tr><br>/g, '</tr>');
+  html = html.replace(/<\/td><br>/g, '</td>');
+  html = html.replace(/<\/th><br>/g, '</th>');
 
   // Restore code blocks
   codeBlocks.forEach((block, i) => {
     html = html.replace(`%%CODEBLOCK_${i}%%`, block);
+  });
+
+  // Restore HTML artifacts as sandboxed iframes
+  artifacts.forEach((art, i) => {
+    const encoded = encodeURIComponent(art.code);
+    html = html.replace(`%%ARTIFACT_${i}%%`,
+      `<div class="artifact"><div class="code-block-header"><span>preview</span><button class="copy-btn" onclick="navigator.clipboard.writeText(decodeURIComponent('${encoded}')).then(()=>{this.textContent='Copied!';this.classList.add('copied');setTimeout(()=>{this.textContent='Copy HTML';this.classList.remove('copied')},2000)})">Copy HTML</button></div><iframe sandbox="allow-scripts" srcdoc="${art.code.replace(/"/g, '&quot;').replace(/'/g, '&#39;')}" style="width:100%;min-height:200px;border:1px solid var(--border);border-radius:0 0 8px 8px;background:#fff"></iframe></div>`
+    );
   });
 
   return html;
@@ -372,12 +563,14 @@ function escapeHtml(text) {
 // ── SDK Message Handling ────────────────────────────────────
 let firstMessage = true;
 let hasShownSparkleHint = false;
+let _userMessageCount = 0;
 
 merlin.onSdkMessage((msg) => {
   // When first real SDK content arrives, clean up welcome state
   if (firstMessage && msg.type === 'stream_event') {
     if (window._welcomeInterval) clearInterval(window._welcomeInterval);
     firstMessage = false;
+    _restartAttempts = 0; // session connected successfully — reset circuit breaker
     currentBubble = null;
     textBuffer = '';
   }
@@ -426,6 +619,7 @@ merlin.onSdkMessage((msg) => {
       finalizeBubble();
       removeTypingIndicator();
       isStreaming = false;
+      setInputDisabled(false);
       stopTickingTimer();
       // Show stats bar like Claude Desktop
       if (turnStartTime) {
@@ -459,10 +653,34 @@ function handleStreamEvent(msg) {
 
   if (event.type === 'content_block_start') {
     if (event.content_block && event.content_block.type === 'text') {
+      // Remove tool status when text starts
+      const toolStatus = document.querySelector('.tool-status');
+      if (toolStatus) toolStatus.remove();
       if (!currentBubble) {
         addClaudeBubble();
         isStreaming = true;
+        setInputDisabled(true);
       }
+    }
+    // Show tool activity status (like Claude Code)
+    if (event.content_block && event.content_block.type === 'tool_use') {
+      const toolName = event.content_block.name || '';
+      const friendlyNames = {
+        'Bash': 'Running command', 'Read': 'Reading file', 'Write': 'Writing file',
+        'Edit': 'Editing file', 'Glob': 'Searching files', 'Grep': 'Searching code',
+        'WebSearch': 'Searching the web', 'WebFetch': 'Fetching page',
+        'Agent': 'Working on it', 'TodoWrite': 'Planning',
+        'AskUserQuestion': 'Asking you',
+      };
+      const label = friendlyNames[toolName] || 'Thinking';
+      removeTypingIndicator();
+      const existing = document.querySelector('.tool-status');
+      if (existing) existing.remove();
+      const status = document.createElement('div');
+      status.className = 'msg msg-claude';
+      status.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-bubble tool-status">${label}</div>`;
+      messages.appendChild(status);
+      scrollToBottom();
     }
   }
 
@@ -473,6 +691,8 @@ function handleStreamEvent(msg) {
   }
 
   if (event.type === 'message_stop') {
+    const toolStatus = document.querySelector('.tool-status');
+    if (toolStatus) toolStatus.closest('.msg')?.remove();
     finalizeBubble();
   }
 }
@@ -527,6 +747,16 @@ merlin.onApprovalRequest(({ toolUseID, label, cost }) => {
   // Replace handlers cleanly (onclick= replaces previous, no stacking)
   approveBtn.onclick = () => { merlin.approveTool(toolUseID); clearApproval(); };
   denyBtn.onclick = () => { merlin.denyTool(toolUseID); clearApproval(); };
+
+  // Enter = approve, Escape = deny
+  const keyHandler = (e) => {
+    if (approval.classList.contains('hidden')) return;
+    if (e.key === 'Enter') { e.preventDefault(); approveBtn.click(); }
+    if (e.key === 'Escape') { e.preventDefault(); denyBtn.click(); }
+  };
+  document.removeEventListener('keydown', window._approvalKeyHandler);
+  window._approvalKeyHandler = keyHandler;
+  document.addEventListener('keydown', keyHandler);
 });
 
 // ── AskUserQuestion (Option Chips) ──────────────────────────
@@ -583,29 +813,65 @@ merlin.onAskUserQuestion(({ toolUseID, questions }) => {
 });
 
 // ── Error Handling ──────────────────────────────────────────
+let _restartAttempts = 0;
+const MAX_RESTART_ATTEMPTS = 3;
+
 merlin.onSdkError((err) => {
   removeTypingIndicator();
   sessionActive = false;
+  _errorCount++;
+  checkFrustration('');
   isStreaming = false;
+  setInputDisabled(false);
+
+  _restartAttempts++;
 
   const errLower = (err || '').toLowerCase();
   let userMsg = 'Something went wrong. ';
+  let isAuthError = false;
   if (errLower.includes('enotfound') || errLower.includes('econnrefused') || errLower.includes('etimedout') || errLower.includes('network')) {
     userMsg = 'Lost connection — check your internet. ';
   } else if (errLower.includes('401') || errLower.includes('unauthorized') || errLower.includes('auth')) {
     userMsg = 'Session expired. ';
+    isAuthError = true;
   }
 
   const bubble = addClaudeBubble();
-  textBuffer = `${userMsg}Restarting session...\n\nIf this keeps happening, try restarting the app.`;
+
+  if (_restartAttempts > MAX_RESTART_ATTEMPTS) {
+    // Stop retrying — show manual recovery
+    const reason = isAuthError
+      ? 'Please open Claude Desktop and make sure you\'re logged in, then click Retry.'
+      : 'Check your internet connection and click Retry when ready.';
+    textBuffer = `${userMsg}Merlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}`;
+    finalizeBubble();
+    bubble.style.borderColor = 'rgba(239,68,68,.3)';
+
+    // Add a retry button inline
+    const retryBtn = document.createElement('button');
+    retryBtn.textContent = 'Retry Connection';
+    retryBtn.className = 'btn-action btn-approve-style';
+    retryBtn.style.cssText = 'margin-top:12px;width:auto;padding:8px 20px;font-size:13px';
+    retryBtn.onclick = () => {
+      _restartAttempts = 0;
+      retryBtn.remove();
+      sessionActive = true;
+      merlin.startSession();
+    };
+    bubble.appendChild(retryBtn);
+    return;
+  }
+
+  // Exponential backoff: 2s, 4s, 8s
+  const delay = Math.min(2000 * Math.pow(2, _restartAttempts - 1), 8000);
+  textBuffer = `${userMsg}Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
   finalizeBubble();
   bubble.style.borderColor = 'rgba(239,68,68,.3)';
 
-  // Auto-restart session after a brief pause
   setTimeout(() => {
     sessionActive = true;
     merlin.startSession();
-  }, 2000);
+  }, delay);
 });
 
 // ── Update Toast ────────────────────────────────────────────
@@ -683,24 +949,28 @@ const verticalIntegrations = {
   agency:  ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','fal','elevenlabs','heygen'],
 };
 
-function loadBrands() {
-  return merlin.getBrands().then((brands) => {
+async function loadBrands() {
+  try {
+    const brands = await merlin.getBrands();
     const select = document.getElementById('brand-select');
+    const state = await merlin.loadState();
     select.innerHTML = '';
     if (!brands || brands.length === 0) {
       select.innerHTML = '<option value="">No brand loaded</option>';
       return;
     }
-    brands.forEach((b, i) => {
+    const savedBrand = state?.activeBrand || '';
+    let selectedBrand = brands[0];
+    brands.forEach((b) => {
       const opt = document.createElement('option');
       opt.value = b.name;
-      opt.textContent = `${b.name} (${b.productCount} products)`;
-      if (i === 0) opt.selected = true;
+      opt.textContent = b.displayName || b.name;
+      if (b.name === savedBrand) { opt.selected = true; selectedBrand = b; }
       select.appendChild(opt);
     });
-    // Set vertical tag + filter integrations
-    if (brands[0]?.vertical) updateVertical(brands[0].vertical);
-  }).catch((err) => { console.warn('[brands]', err); });
+    if (!savedBrand && brands[0]) select.querySelector('option').selected = true;
+    if (selectedBrand?.vertical) updateVertical(selectedBrand.vertical);
+  } catch (err) { console.warn('[brands]', err); }
 }
 
 function updateVertical(vertical) {
@@ -724,6 +994,8 @@ function updateVertical(vertical) {
 }
 
 document.getElementById('brand-select').addEventListener('change', (e) => {
+  // Persist active brand selection
+  merlin.saveState({ activeBrand: e.target.value });
   merlin.getBrands().then((brands) => {
     const brand = brands.find(b => b.name === e.target.value);
     if (brand?.vertical) updateVertical(brand.vertical);
@@ -732,15 +1004,7 @@ document.getElementById('brand-select').addEventListener('change', (e) => {
 });
 
 document.getElementById('add-brand-btn').addEventListener('click', () => {
-  document.getElementById('magic-panel').classList.add('hidden');
-  const msg = 'Set up a new brand for me';
-  addUserBubble(msg);
-  showTypingIndicator();
-  turnStartTime = Date.now();
-  turnTokens = 0;
-  sessionActive = true;
-  startTickingTimer();
-  merlin.sendMessage(msg);
+  sendChatFromPanel('Set up a new brand for me');
 });
 
 function loadConnections() {
@@ -784,6 +1048,7 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   if (!panel.classList.contains('hidden')) {
     loadBrands().then(() => loadConnections());
     loadSpells();
+    loadReferralInfo();
     merlin.getCredits().then((credits) => {
       if (!credits) return;
       // Update tiles with credit info
@@ -805,11 +1070,13 @@ document.getElementById('magic-close').addEventListener('click', () => {
   document.getElementById('magic-panel').classList.add('hidden');
 });
 
-// Close panel when clicking outside it
+// Close panel when clicking outside it (but not when interacting with approval cards or modals)
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('magic-panel');
   const btn = document.getElementById('magic-btn');
   if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== btn) {
+    // Don't close if clicking approval card, modal, or tooltip
+    if (e.target.closest('#approval') || e.target.closest('.merlin-modal-card') || e.target.closest('.merlin-tooltip')) return;
     panel.classList.add('hidden');
   }
 });
@@ -835,14 +1102,7 @@ document.addEventListener('click', (e) => {
     slack: 'Connect Slack for notifications',
   };
   if (names[platform]) {
-    document.getElementById('magic-panel').classList.add('hidden');
-    addUserBubble(names[platform]);
-    showTypingIndicator();
-    turnStartTime = Date.now();
-    turnTokens = 0;
-    sessionActive = true;
-    startTickingTimer();
-    merlin.sendMessage(names[platform]);
+    sendChatFromPanel(names[platform]);
   }
 });
 
@@ -868,6 +1128,31 @@ document.getElementById('request-input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') document.getElementById('request-send').click();
 });
 
+// ── Share Merlin (Referrals) ────────────────────────────────
+async function loadReferralInfo() {
+  try {
+    const info = await merlin.getReferralInfo();
+    const linkInput = document.getElementById('referral-link');
+    const stats = document.getElementById('referral-stats');
+    linkInput.value = `merlingotme.com?ref=${info.referralCode || ''}`;
+    if (info.referralCount > 0) {
+      stats.textContent = `${info.referralCount} friend${info.referralCount > 1 ? 's' : ''} referred · +${info.trialExtensionDays || 0} bonus days`;
+    } else {
+      stats.textContent = '';
+    }
+  } catch {}
+}
+
+document.getElementById('referral-copy').addEventListener('click', () => {
+  const linkInput = document.getElementById('referral-link');
+  navigator.clipboard.writeText('https://' + linkInput.value).then(() => {
+    const btn = document.getElementById('referral-copy');
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
+  });
+});
+
 // ── Spellbook ──────────────────────────────────────────────
 function formatCron(cron) {
   if (!cron) return '';
@@ -882,6 +1167,19 @@ function formatCron(cron) {
   const dayMap = { '*': '', '1-5': 'Weekdays', '0,6': 'Weekends', '1': 'Mon', '2': 'Tue', '3': 'Wed', '4': 'Thu', '5': 'Fri', '6': 'Sat', '0': 'Sun' };
   const dayStr = dayMap[dow] || '';
   return dayStr ? `${dayStr} ${timeStr}` : timeStr;
+}
+
+function formatTimeAgo(timestamp) {
+  const now = Date.now();
+  const diff = now - timestamp;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  return `${days}d ago`;
 }
 
 function sendChatFromPanel(msg) {
@@ -913,8 +1211,11 @@ async function loadSpells() {
   }
   list.innerHTML = '';
 
+  const templates = document.getElementById('spell-templates');
   if (!spells || spells.length === 0) {
-    empty.style.display = 'block';
+    empty.style.display = 'none';
+    // Show templates by default when no spells exist
+    if (templates) templates.style.display = '';
     return;
   }
   empty.style.display = 'none';
@@ -927,13 +1228,25 @@ async function loadSpells() {
     const dot = document.createElement('span');
     dot.className = `spell-dot ${spell.enabled ? 'dot-active' : 'dot-pending'}`;
 
-    const name = document.createElement('span');
-    name.className = 'spell-name';
-    name.textContent = spell.description || spell.name;
+    const info = document.createElement('div');
+    info.className = 'spell-info';
 
-    const time = document.createElement('span');
-    time.className = 'spell-time';
-    time.textContent = formatCron(spell.cron);
+    const nameRow = document.createElement('div');
+    nameRow.className = 'spell-name';
+    nameRow.textContent = spell.description || spell.name;
+
+    const meta = document.createElement('div');
+    meta.className = 'spell-meta';
+    const parts = [];
+    if (spell.cron) parts.push(formatCron(spell.cron));
+    if (spell.lastRun) {
+      const ago = formatTimeAgo(spell.lastRun);
+      parts.push(`Last: ${ago}`);
+    }
+    meta.textContent = parts.join(' · ');
+
+    info.appendChild(nameRow);
+    info.appendChild(meta);
 
     const toggle = document.createElement('button');
     toggle.className = `spell-toggle ${spell.enabled ? 'spell-on' : ''}`;
@@ -941,12 +1254,11 @@ async function loadSpells() {
     toggle.onclick = (e) => {
       e.stopPropagation();
       merlin.toggleSpell(spell.id, !spell.enabled);
-      setTimeout(loadSpells, 500); // refresh after toggle
+      setTimeout(loadSpells, 500);
     };
 
     row.appendChild(dot);
-    row.appendChild(name);
-    row.appendChild(time);
+    row.appendChild(info);
     row.appendChild(toggle);
 
     row.addEventListener('click', () => {
@@ -955,11 +1267,38 @@ async function loadSpells() {
 
     list.appendChild(row);
   });
+
+  // Update templates — dim ones that are already active
+  document.querySelectorAll('.spell-template').forEach(tmpl => {
+    const spellId = 'merlin-' + tmpl.dataset.spell;
+    const isActive = spells.some(s => s.id === spellId);
+    tmpl.classList.toggle('spell-template-active', isActive);
+    tmpl.disabled = isActive;
+  });
 }
 
-// Cast a new spell
+// Spell templates — toggle visibility on "Cast a new spell" click
 document.getElementById('add-task-btn').addEventListener('click', () => {
-  sendChatFromPanel('I want to cast a new spell — a new scheduled marketing task. What would be useful for my brand?');
+  const templates = document.getElementById('spell-templates');
+  if (templates.style.display === 'none') {
+    templates.style.display = 'flex';
+    document.getElementById('add-task-btn').textContent = '− Cancel';
+  } else {
+    templates.style.display = 'none';
+    document.getElementById('add-task-btn').textContent = '+ Cast a new spell';
+  }
+});
+
+// Template click — one-click spell activation
+document.querySelectorAll('.spell-template').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const spell = btn.dataset.spell;
+    const cron = btn.dataset.cron;
+    const desc = btn.dataset.desc;
+    document.getElementById('spell-templates').style.display = 'none';
+    document.getElementById('add-task-btn').textContent = '+ Cast a new spell';
+    sendChatFromPanel(`Set up a "${desc}" spell for me. Use task ID "merlin-${spell}" with schedule "${cron}". Create it now — don't ask me questions, just set it up and confirm.`);
+  });
 });
 
 // Real-time spell updates
@@ -1027,7 +1366,11 @@ function showTypingIndicator() {
 function removeTypingIndicator() {
   if (typingStuckTimeout) { clearTimeout(typingStuckTimeout); typingStuckTimeout = null; }
   const existing = document.querySelector('.typing-indicator');
-  if (existing) existing.remove();
+  if (existing) {
+    existing.style.transition = 'opacity .2s';
+    existing.style.opacity = '0';
+    setTimeout(() => existing.remove(), 200);
+  }
 }
 
 function sendMessage() {
@@ -1036,24 +1379,37 @@ function sendMessage() {
 
   // Trial expiry gate — soft block, allow key activation
   if (_trialExpired) {
-    const key = prompt('Your free trial has ended. Enter a license key to continue, or click OK to subscribe:');
-    if (key && key.trim().length > 0) {
-      merlin.activateKey(key).then((result) => {
-        if (result.success) {
-          document.getElementById('subscribe-btn').classList.add('hidden-sub');
-          _trialExpired = false;
-          alert('Activated! Welcome to Merlin Pro.');
-          sendMessage(); // retry the message
+    showModal({
+      title: 'Free Trial Ended',
+      body: 'Your 7-day trial is up. Enter a license key or subscribe to keep using Merlin.',
+      inputPlaceholder: 'License key (e.g. XXXX-XXXX)',
+      confirmLabel: 'Activate',
+      cancelLabel: 'Subscribe',
+      onConfirm: (key) => {
+        if (key && key.length > 0) {
+          merlin.activateKey(key).then((result) => {
+            if (result.success) {
+              document.getElementById('subscribe-btn').classList.add('hidden-sub');
+              _trialExpired = false;
+              const bubble = addClaudeBubble();
+              textBuffer = '✦ Welcome to Merlin Pro! All features are unlocked.';
+              finalizeBubble();
+              sendMessage();
+            } else {
+              showModal({ title: 'Invalid Key', body: result.error || 'That key didn\'t work. Check for typos and try again.', confirmLabel: 'OK', onConfirm: () => {} });
+            }
+          });
         } else {
-          alert(result.error || 'Invalid key.');
+          merlin.openSubscribe();
         }
-      });
-    } else if (key !== null) {
-      merlin.openSubscribe();
-    }
+      },
+      onCancel: () => { merlin.openSubscribe(); },
+    });
     return;
   }
 
+  checkFrustration(text);
+  _userMessageCount = (_userMessageCount || 0) + 1;
   addUserBubble(text);
   showTypingIndicator();
   turnStartTime = Date.now();
@@ -1073,6 +1429,12 @@ input.addEventListener('keydown', (e) => {
 });
 
 sendBtn.addEventListener('click', sendMessage);
+
+// ── Voice Input (stubbed) ────────────────────────────────────
+// TODO: Integrate local speech-to-text via Go binary (Whisper.cpp or Vosk).
+// Flow: mic click → Web Audio API records → save temp WAV → binary transcribes → text in input
+// Web Speech API doesn't work in Electron (requires Google's servers).
+// Mic button hidden via CSS (.mic-btn{display:none}) until this is built.
 
 // Auto-resize textarea
 function autoResize() {
@@ -1138,6 +1500,100 @@ chatEl.addEventListener('drop', (e) => {
   const file = e.dataTransfer?.files?.[0];
   if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) savePastedMedia(file);
 });
+
+// ── Help Nudge (frustration detection) ──────────────────────
+let _nudgeShown = false;
+let _errorCount = 0;
+let _rapidMessageCount = 0;
+let _lastMessageTime = 0;
+
+function checkFrustration(text) {
+  if (_nudgeShown) return;
+
+  const t = (text || '').toLowerCase();
+  const now = Date.now();
+
+  // Detect rapid repeated messages (3+ messages within 15 seconds)
+  if (now - _lastMessageTime < 15000) {
+    _rapidMessageCount++;
+  } else {
+    _rapidMessageCount = 0;
+  }
+  _lastMessageTime = now;
+
+  // Frustration signals
+  const frustrated =
+    _rapidMessageCount >= 3 ||
+    _errorCount >= 2 ||
+    /\b(help|stuck|broken|not working|doesn'?t work|error|why won'?t|can'?t|wtf|wrong)\b/i.test(t);
+
+  if (frustrated) showHelpNudge();
+}
+
+function showHelpNudge() {
+  if (_nudgeShown) return;
+  _nudgeShown = true;
+  const nudge = document.getElementById('help-nudge');
+  nudge.classList.remove('hidden');
+  // Auto-hide after 15 seconds
+  setTimeout(() => nudge.classList.add('hidden'), 15000);
+}
+
+document.getElementById('help-nudge-close').addEventListener('click', () => {
+  document.getElementById('help-nudge').classList.add('hidden');
+});
+
+// ── Image Lightbox (click to zoom, click/Esc to close) ──────
+document.addEventListener('click', (e) => {
+  const img = e.target.closest('.msg-bubble img');
+  if (!img) return;
+  const lb = document.createElement('div');
+  lb.className = 'lightbox';
+  const lbImg = document.createElement('img');
+  lbImg.src = img.src;
+  lb.appendChild(lbImg);
+  document.body.appendChild(lb);
+  lb.addEventListener('click', () => lb.remove());
+  const escHandler = (ev) => { if (ev.key === 'Escape') { lb.remove(); document.removeEventListener('keydown', escHandler); } };
+  document.addEventListener('keydown', escHandler);
+});
+
+// ── Tooltips (fixed position, never clipped by overflow) ────
+(function() {
+  let tip = null;
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest('[data-tip]');
+    if (!el) return;
+    if (tip) tip.remove();
+    tip = document.createElement('div');
+    tip.className = 'merlin-tooltip';
+    tip.textContent = el.getAttribute('data-tip');
+    document.body.appendChild(tip);
+
+    const rect = el.getBoundingClientRect();
+    const pos = el.getAttribute('data-tip-pos');
+    const tipW = tip.offsetWidth;
+    let left = rect.left + rect.width / 2 - tipW / 2;
+    // Clamp to viewport
+    if (left < 4) left = 4;
+    if (left + tipW > window.innerWidth - 4) left = window.innerWidth - tipW - 4;
+
+    const tipH = tip.offsetHeight;
+    const spaceAbove = rect.top;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    // Auto-flip: prefer requested position, but flip if not enough room
+    const showBelow = pos === 'bottom' || (spaceAbove < tipH + 10 && spaceBelow > tipH + 10);
+    if (showBelow) {
+      tip.style.top = (rect.bottom + 6) + 'px';
+    } else {
+      tip.style.top = (rect.top - tipH - 6) + 'px';
+    }
+    tip.style.left = left + 'px';
+  });
+  document.addEventListener('mouseout', (e) => {
+    if (e.target.closest('[data-tip]') && tip) { tip.remove(); tip = null; }
+  });
+})();
 
 // ── Init ────────────────────────────────────────────────────
 init();
