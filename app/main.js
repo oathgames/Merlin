@@ -974,6 +974,17 @@ function getCurrentVersion() {
   }
 }
 
+// Semver comparison: returns true if a > b (e.g. "0.4.0" > "0.3.8")
+function isNewerVersion(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
 async function checkForUpdates() {
   try {
     const currentVersion = getCurrentVersion();
@@ -981,7 +992,7 @@ async function checkForUpdates() {
     const data = JSON.parse(raw.toString());
     if (!data || !data.tag_name) return; // validate response
     const latestVersion = data.tag_name.replace(/^v/, '');
-    if (!latestVersion || latestVersion === currentVersion) return;
+    if (!latestVersion || !isNewerVersion(latestVersion, currentVersion)) return;
     if (win && !win.isDestroyed()) {
       win.webContents.send('update-available', { current: currentVersion, latest: latestVersion });
     }
@@ -995,7 +1006,7 @@ async function downloadAndApplyUpdate() {
     const data = JSON.parse(raw.toString());
     if (!data || !data.tag_name) throw new Error('Invalid release data');
     const latestVersion = data.tag_name.replace(/^v/, '');
-    if (!latestVersion || latestVersion === currentVersion) return;
+    if (!latestVersion || !isNewerVersion(latestVersion, currentVersion)) return;
 
     if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading...');
 
