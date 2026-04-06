@@ -19,7 +19,7 @@
     <span class="titlebar-title">✦ Merlin</span>
   </div>
   <div class="titlebar-controls">
-    <span id="version-label" class="version-label"></span>
+    <span id="version-label" class="version-label" data-tip="" data-tip-pos="bottom"></span>
     <button id="archive-btn" class="magic-btn-inline" aria-label="Archive" data-tip="Archive" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
     <button id="magic-btn" class="magic-btn-inline" aria-label="Merlin's Magic" data-tip="Merlin's Magic" data-tip-pos="bottom">✦</button>
     <button id="btn-min" class="win-ctrl" aria-label="Minimize">&#x2013;</button>
@@ -31,6 +31,9 @@
 <!-- Performance Status Bar -->
 <div id="perf-bar" class="perf-bar">
   <div class="perf-bar-content" id="perf-bar-content">
+    <select id="brand-select" class="brand-select-perf">
+      <option value="">No brand</option>
+    </select>
     <span id="perf-text" class="perf-text">Loading...</span>
     <div class="perf-period-group">
       <button class="perf-period-btn active" data-days="7">7D</button>
@@ -38,6 +41,7 @@
       <button class="perf-period-btn" data-days="90">3M</button>
       <button class="perf-period-btn" data-days="365">12M</button>
     </div>
+    <button id="agency-report-btn" class="agency-report-btn">Agency</button>
   </div>
 </div>
 
@@ -57,19 +61,8 @@
   </div>
 
   <div class="magic-panel-scroll">
-  <!-- Brand Selector -->
-  <div class="magic-section brand-selector-section">
-    <div class="brand-selector">
-      <select id="brand-select" class="brand-select">
-        <option value="">No brand loaded</option>
-      </select>
-      <button id="brand-stats-btn" class="brand-stats-btn" data-tip="Revenue tracker">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 16l4-5 4 3 5-6"/></svg>
-      </button>
-      <button id="add-brand-btn" class="add-brand-btn" data-tip="Add a new brand">+</button>
-    </div>
-    <div id="brand-vertical" class="brand-vertical"></div>
-  </div>
+  <!-- Brand vertical tag (brand selector moved to perf bar) -->
+  <div id="brand-vertical" class="brand-vertical" style="display:none"></div>
 
   <!-- Spellbook (Scheduled Tasks) -->
   <div class="magic-section">
@@ -156,7 +149,7 @@
   <div class="magic-section">
     <a href="https://discord.gg/k3zav72dqA" target="_blank" rel="noopener" class="discord-link">
       <svg viewBox="0 0 24 24" width="18" height="18" class="discord-icon"><path fill="currentColor" d="M20.317 4.369a19.791 19.791 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.037A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 00-.041-.106 13.107 13.107 0 01-1.872-.892.077.077 0 01-.008-.128 10.2 10.2 0 00.372-.292.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.01c.12.098.246.198.373.292a.077.077 0 01-.006.127 12.299 12.299 0 01-1.873.892.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.03zM8.02 15.331c-1.183 0-2.157-1.086-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.332-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.086-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.095 2.157 2.42 0 1.332-.946 2.418-2.157 2.418z"/></svg>
-      <span>Join the community</span>
+      <span>Talk to us on Discord</span>
     </a>
   </div>
 
@@ -168,6 +161,7 @@
   <div class="magic-header">
     <span class="magic-title">✦ Archive</span>
     <div class="magic-header-right">
+      <button id="archive-expand" class="magic-close" aria-label="Expand" data-tip="Expand" data-tip-pos="bottom">←</button>
       <button id="activity-btn" class="subscribe-header-btn"><span class="subscribe-cta">Activity</span></button>
       <button id="archive-close" class="magic-close">&times;</button>
     </div>
@@ -176,6 +170,7 @@
     <div class="archive-filters">
       <div class="archive-filter-row">
         <button class="archive-filter active" data-filter="all">All</button>
+        <button class="archive-filter" data-filter="live">Live</button>
         <button class="archive-filter" data-filter="image">Images</button>
         <button class="archive-filter" data-filter="video">Videos</button>
       </div>
@@ -312,21 +307,29 @@
   </div>
 </div>
 
-<!-- Setup overlay (only shown if Claude Desktop not installed) -->
+<!-- Setup overlay (only shown if Claude not installed) -->
 <div id="setup" class="overlay">
   <div class="setup-card">
     <div class="setup-mascot">✦</div>
     <h1>Merlin</h1>
     <p class="setup-sub">Your AI CMO Wizard</p>
-    <p id="setup-status" class="setup-desc" style="white-space:pre-line">Checking for Claude...</p>
-    <p class="setup-explain">Merlin creates ads, runs campaigns, writes blogs, and grows your sales &mdash; automatically.<br><br>It's powered by <strong style="color:var(--text)">Claude</strong>, the world's most capable AI from Anthropic. We recommend the <strong style="color:var(--text)">Pro</strong> or <strong style="color:var(--text)">Max</strong> plan &mdash; they're a tremendous value for what Merlin can do with them.</p>
-    <div class="setup-steps">
-      <div class="setup-step">1. Get Claude Desktop (free download, 30 seconds)</div>
-      <div class="setup-step">2. Sign up for a Claude plan &mdash; Pro ($20/mo) or Max for heavy use</div>
-      <div class="setup-step">3. Come back and click Retry &mdash; Merlin takes it from there</div>
+    <p id="setup-status" class="setup-desc" style="white-space:pre-line">Setting up...</p>
+    <div id="setup-main">
+      <p class="setup-explain">Merlin is powered by <strong style="color:var(--text)">Claude</strong> from Anthropic.<br>We'll set everything up automatically.</p>
+      <button id="setup-auto-btn" class="btn-primary">Install Claude &amp; Get Started</button>
+      <p style="font-size:10px;color:var(--text-dim);margin-top:8px;text-align:center">Requires a Claude account (Pro or Max recommended)</p>
+      <div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--border)">
+        <button id="setup-manual-btn" class="btn-secondary" style="width:100%;margin-bottom:6px">I already have Claude &mdash; retry</button>
+        <button id="setup-apikey-btn" class="btn-secondary" style="width:100%;opacity:.6">Use API key instead</button>
+      </div>
     </div>
-    <button id="setup-install-btn" class="btn-primary">Get Claude Desktop</button>
-    <button id="setup-retry-btn" class="btn-secondary">Claude is active &mdash; Retry</button>
+    <div id="setup-apikey-form" style="display:none">
+      <p class="setup-explain">Paste your Anthropic API key. Get one at <a href="#" onclick="require('electron').shell.openExternal('https://console.anthropic.com/settings/keys');return false" style="color:var(--accent)">console.anthropic.com</a></p>
+      <input id="setup-apikey-input" type="password" placeholder="sk-ant-..." style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px 14px;color:var(--text);font-size:13px;font-family:monospace;outline:none;margin-bottom:8px">
+      <div id="setup-apikey-error" style="color:#ef4444;font-size:11px;margin-bottom:8px"></div>
+      <button id="setup-apikey-save" class="btn-primary">Connect</button>
+      <button id="setup-apikey-back" class="btn-secondary" style="width:100%;margin-top:6px">Back</button>
+    </div>
   </div>
 </div>
 

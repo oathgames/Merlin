@@ -14,6 +14,8 @@ build.ps1
 
 # Config with secrets (example template IS tracked)
 .claude/tools/merlin-config.json
+.claude/tools/.merlin-tokens
+.claude/tools/.merlin-tokens-*
 !.claude/tools/merlin-config.example.json
 
 # Output
@@ -54,3 +56,5 @@ Thumbs.db
 .merlin-trial
 .merlin-subscription
 .merlin-wisdom.json
+.merlin-state.json
+.merlin-briefing.json

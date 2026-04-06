@@ -20,6 +20,25 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
    - Analyze homepage copy to detect voice tone (casual, professional, playful, luxury, edgy, etc.)
    - Identify target audience from product descriptions, pricing, and about page
    - Write `brand.md` with: brand name, URL, vertical, brand colors (exact hex), voice tone, audience demographics, CTA style, tagline
+   - Write `memory.md` in the same brand folder with this template:
+     ```
+     # [Brand Name] — Memory
+
+     ## Run Log
+     <!-- Format: YYYY-MM-DD | product | mode | model | pass/fail | takeaway -->
+
+     ## What Works
+
+     ## What Fails
+
+     ## Monthly Spend
+
+     ## MER Trend
+
+     ## Competitor Signals
+
+     ## Errors
+     ```
    - Say: "Captured your brand colors and voice — [describe tone in 3 words, e.g. 'casual, confident, youthful']."
 
    **Step 3: Products — THE WOW MOMENT (next 20 seconds)**
@@ -189,6 +208,14 @@ When connecting any ad platform, ask the user ONE question:
        RETARGETING_BUDGET = DAILY_BUDGET × 0.10 (10% for retargeting warm audiences)
        PER_AD_TEST_BUDGET = max($5, TESTING_BUDGET ÷ active_test_count)
 
+     == TOKEN VALIDATION ==
+     Before any platform action, verify tokens work:
+     For each configured platform (Meta, TikTok, Google, Amazon):
+       - Try a lightweight read call (e.g., meta-insights with batchCount:1)
+       - If 401/403: Log "⚠ TOKEN EXPIRED: {platform}" to activity.jsonl
+       - Skip ALL actions for that platform in this run
+       - Do NOT retry — user must re-authenticate
+
      == ERROR HANDLING ==
      Same rules as merlin-daily task: log errors, alert on token expiry, skip and continue.
 
@@ -214,13 +241,26 @@ When connecting any ad platform, ask the user ONE question:
      == STEP 3: TRIAGE EVERY AD (agency decision framework) ==
      For EACH active ad, apply these rules IN ORDER:
 
+     SAFETY RULE — AGGREGATE KILL CAP:
+       Count total active ads before triage. In a single optimization run,
+       NEVER kill more than 50% of active ads. If triage rules would kill
+       more than 50%, only kill the worst performers up to the 50% cap.
+       Log: "Kill cap reached: {killed}/{total} ads (50% limit). Spared {N} borderline ads."
+
+     SAFETY RULE — DUPLICATE PREVENTION:
+       Before creating any new test ad, check ads-live.json for the same brand.
+       If an ad already exists for the same product with the same hook style,
+       do NOT create a duplicate. Log: "Skipped duplicate: {product} already has {hook_style} ad running."
+
      RULE 1 — DEAD ON ARRIVAL (kill fast, save money):
        If spent >= 2× PER_AD_TEST_BUDGET AND purchases == 0 AND CTR < 1.0%:
        → KILL immediately. This ad will never convert. Don't waste another dollar.
+       → Include kill reason: "Dead on arrival: ${spent} spent, 0 purchases, {CTR}% CTR after {days} days"
 
      RULE 2 — LOW PERFORMER (give it a chance, but not much):
        If spent >= PER_AD_TEST_BUDGET AND ROAS < 0.5 AND days_running >= 2:
        → KILL. It had a fair shot and underperformed.
+       → Include kill reason: "Low performer: ROAS {X}x below 0.5x threshold after {days} days, ${spent} spent"
 
      RULE 3 — CREATIVE FATIGUE (was good, now declining):
        If days_running >= 5 AND ctr_trend is declining 30%+ from peak:
@@ -268,6 +308,72 @@ When connecting any ad platform, ask the user ONE question:
        → Log: "Reallocating budget: {product} performs 2× better on Meta."
        If a creative works well on one platform, note it for cross-posting.
 
+     == STEP 5b: PREDICTIVE BUDGET REALLOCATION ==
+     Compare this week's ROAS per platform to last week's (read from memory.md MER Trend entries).
+     If any platform's ROAS dropped 30%+ week-over-week:
+       → Log: "⚠ {platform} ROAS dropped from {old}x to {new}x"
+       → Calculate optimal reallocation:
+         - Reduce underperformer's daily budget by 30%
+         - Increase best performer's budget by the same amount
+         - Never reduce below $5/day minimum
+         - Never exceed DAILY_BUDGET cap total
+       → Apply via platform's budget update (meta-setup / google-ads-setup with new budget)
+       → Log: "Reallocated: ${amount}/day from {platform_a} to {platform_b}"
+
+     == STEP 5c: INVENTORY-AWARE AD PAUSING ==
+     If Shopify is connected:
+       1. Run: .claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"shopify-products"}'
+       2. For each product, check inventory count
+       3. If any product has inventory <= 0 (out of stock):
+          → Find all active ads promoting that product (match by product name in ad name)
+          → Pause those ads: run meta-kill / tiktok-kill for each
+          → Log: "⚠ {product} out of stock — paused {N} ads"
+       4. If a previously paused product is back in stock (inventory > 0):
+          → Check memory.md for "paused for stock: {product}" entries
+          → Re-enable those ads if they were performing well before pausing
+          → Log: "✓ {product} restocked — re-enabled {N} ads"
+
+     == STEP 5d: WINNER FORMULA DETECTION ==
+     After 4+ creative tests for the same brand, analyze all ad performance data:
+       - Read assets/brands/<brand>/memory.md "## What Works" section
+       - Read the latest meta-insights / tiktok-insights results
+       - Identify the combination of (hook style + format + audience + time of day) that consistently outperforms
+       - If a clear winning formula emerges (2x+ better than average):
+         → Log to memory.md "## What Works": "WINNING FORMULA: {hook_style} + {format} + {audience} + {launch_time} = {avg_roas}x ROAS (vs {overall_avg}x average)"
+         → Future ad creation should prioritize this formula
+         → Log: "Winner formula detected: {description} — {roas}x vs {avg}x average"
+
+     == STEP 5e: FATIGUE CURVE PREDICTION ==
+     For each active ad running 3+ days:
+       - Calculate CTR trend: compare day 1-2 CTR to current CTR
+       - If CTR dropped 20%+ from peak: ad is entering fatigue
+       - Estimate days remaining before kill threshold:
+         - Daily CTR decay rate = (peak_ctr - current_ctr) / days_since_peak
+         - Predict when CTR hits 50% of peak
+         - If predicted fatigue within 3 days:
+           → Queue a replacement creative NOW (don't wait for fatigue)
+           → Log: "Fatigue predicted: {ad_name} will fatigue in ~{days} days. Replacement queued."
+       - Add to memory.md: "Ad lifespan for {hook_style} in {vertical}: avg {days} days before fatigue"
+
+     == STEP 5f: CROSS-PLATFORM ARBITRAGE ==
+     Compare ROAS across all active platforms this week vs last week:
+       - If any platform's ROAS dropped 30%+ while another increased:
+         → This is an arbitrage opportunity
+         → Log: "{platform_a} ROAS dropped {old}x→{new}x while {platform_b} rose {old}x→{new}x"
+         → Check .merlin-wisdom.json: are other users in this vertical seeing the same pattern?
+         → If vertical-wide trend:
+           → Log: "VERTICAL TREND: {vertical} users seeing {platform_a} CPM spike. Recommend shifting budget to {platform_b}."
+         → If brand-specific: recommend creative refresh on the declining platform
+
+     == STEP 5g: COMPETITOR ACTIVITY SURGE ==
+     If Meta connected and competitors.md exists:
+       - Run competitor-scan for top 3 competitors (max 3/day for rate limits)
+       - Compare active ad count to last scan (stored in memory.md "## Competitor Signals")
+       - If any competitor launched 3x+ their normal volume in 72 hours:
+         → Log: "⚠ COMPETITOR SURGE: {competitor} launched {N} new ads (normal: {avg}). Possible sale/launch."
+         → Recommend: preemptive creative refresh or increased budget
+       - Update memory.md "## Competitor Signals" with latest counts
+
      == STEP 6: DAILY DASHBOARD SNAPSHOT ==
      Run the unified dashboard to capture today's cross-platform metrics:
        .claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"dashboard","batchCount":1}'
@@ -294,6 +400,14 @@ When connecting any ad platform, ask the user ONE question:
        Scaled: {N} (best: {top_ad_name} at {ROAS}x)
        Replacements queued: {N}
        Pacing: {ON_PACE / OVERPACING / UNDERPACING}"
+
+     Save morning briefing for instant display on next app open:
+     Write to .merlin-briefing.json in the project root:
+     {"date":"YYYY-MM-DD","ads":{"killed":N,"scaled":N,"created":N,"active":N},"content":{"blogs":N,"images":N},"revenue":{"total":"$X","trend":"+Y%"},"recommendation":"One-sentence strategic suggestion based on today's data"}
+
+     If no actions were taken (no kills, no scales, no creates):
+       Log to activity: "✓ All ads performing normally — no changes needed"
+       Set briefing recommendation to: "All ads are on track. No intervention needed today."
      ```
 
 7. Create a THIRD scheduled task -- weekly digest (always, not just for ads):

@@ -155,7 +155,12 @@ async function init() {
   // Show version in titlebar
   const vLabel = document.getElementById('version-label');
   if (vLabel && merlin.getVersion) {
-    try { vLabel.textContent = 'v' + await merlin.getVersion(); } catch {}
+    try {
+      const ver = await merlin.getVersion();
+      vLabel.textContent = 'v' + ver;
+      // News tooltip — update these with each release
+      vLabel.dataset.tip = '✦ What\'s New\n• Per-brand connections & spells\n• Live Ads tab in Archive\n• Agency report generator';
+    } catch {}
   }
 
   // Show chat immediately with a welcome message — no blank screen
@@ -252,19 +257,49 @@ async function init() {
     }, 2000);
   }
 
-  // Start session in background — when SDK connects, it takes over
-  merlin.checkSetup().then((result) => {
+  // Auto-detect Claude — poll every 3 seconds until found
+  async function detectClaude() {
+    const result = await merlin.checkSetup();
     if (result.ready) {
+      // Found! Clear polling and start session
+      if (window._claudePoller) { clearInterval(window._claudePoller); window._claudePoller = null; }
+      setup.classList.add('hidden');
       turnStartTime = Date.now();
       sessionActive = true;
       merlin.startSession();
-    } else {
-      clearInterval(window._welcomeInterval);
-      setup.classList.remove('hidden');
-      document.getElementById('setup-status').textContent = result.reason || 'Install Claude Desktop to get started.';
-      welcomeBubble.parentElement.remove();
+      return true;
     }
-  });
+    return false;
+  }
+
+  // Check for API key fallback first — skip Claude check if key exists
+  const apiKeyCheck = await merlin.hasApiKey().catch(() => ({ hasKey: false }));
+  if (apiKeyCheck.hasKey) {
+    setup.classList.add('hidden');
+    turnStartTime = Date.now();
+    sessionActive = true;
+    merlin.startSession();
+    return;
+  }
+
+  const found = await detectClaude();
+  if (!found) {
+    // Not found on first check — show setup screen and keep polling
+    clearInterval(window._welcomeInterval);
+    setup.classList.remove('hidden');
+    document.getElementById('setup-status').textContent = 'Looking for Claude...';
+    welcomeBubble.parentElement.remove();
+
+    // Poll every 3 seconds — auto-continue when Claude is detected
+    window._claudePoller = setInterval(async () => {
+      document.getElementById('setup-status').textContent = 'Looking for Claude...';
+      const detected = await detectClaude();
+      if (detected) {
+        setup.style.animation = 'fadeOut .3s ease forwards';
+        setTimeout(() => { setup.classList.add('hidden'); setup.style.animation = ''; }, 300);
+      }
+    }, 3000);
+  }
 
   // When SDK sends first real message, DON'T remove the welcome —
   // let the conversation continue naturally below it
@@ -272,28 +307,82 @@ async function init() {
 }
 
 
-document.getElementById('setup-install-btn').addEventListener('click', () => {
-  merlin.openClaudeDownload();
+// Setup: Auto-install Claude
+document.getElementById('setup-auto-btn')?.addEventListener('click', async () => {
+  const status = document.getElementById('setup-status');
+  const btn = document.getElementById('setup-auto-btn');
+  btn.disabled = true;
+  btn.textContent = 'Installing...';
+  status.textContent = 'Downloading Claude CLI...';
+
+  const result = await merlin.installClaude();
+  if (result.success) {
+    status.textContent = 'Installed! Starting Merlin...';
+    setTimeout(async () => {
+      const check = await merlin.checkSetup();
+      if (check.ready) {
+        setup.style.animation = 'fadeOut .3s ease forwards';
+        setTimeout(() => { setup.classList.add('hidden'); merlin.startSession(); }, 300);
+      } else {
+        status.textContent = 'Installed, but Claude needs to be signed in. Open Claude Desktop and sign in, then click retry.';
+        btn.disabled = false;
+        btn.textContent = 'Install Claude & Get Started';
+      }
+    }, 1000);
+  } else {
+    status.textContent = result.reason || 'Auto-install failed.';
+    btn.disabled = false;
+    btn.textContent = 'Install Claude & Get Started';
+    // Open manual download as fallback
+    merlin.openClaudeDownload();
+  }
 });
 
-document.getElementById('setup-retry-btn').addEventListener('click', async () => {
+// Setup: Manual retry
+document.getElementById('setup-manual-btn')?.addEventListener('click', async () => {
   document.getElementById('setup-status').textContent = 'Checking...';
-  try {
-    const result = await merlin.checkSetup();
-    if (result.ready) {
-      setup.style.animation = 'fadeOut .3s ease forwards';
-      setTimeout(async () => {
-        setup.classList.add('hidden');
-        setup.style.animation = '';
-        sessionActive = true;
-        await merlin.startSession();
-      }, 300);
-    } else {
-      document.getElementById('setup-status').textContent = result.reason || 'Claude not found.';
-    }
-  } catch (err) {
-    document.getElementById('setup-status').textContent = 'Check failed — make sure you\'re connected to the internet.';
+  const result = await merlin.checkSetup();
+  if (result.ready) {
+    setup.style.animation = 'fadeOut .3s ease forwards';
+    setTimeout(() => { setup.classList.add('hidden'); merlin.startSession(); }, 300);
+  } else {
+    document.getElementById('setup-status').textContent = 'Claude not found. Make sure Claude Desktop is installed and running.';
   }
+});
+
+// Setup: API key fallback
+document.getElementById('setup-apikey-btn')?.addEventListener('click', () => {
+  document.getElementById('setup-main').style.display = 'none';
+  document.getElementById('setup-apikey-form').style.display = 'block';
+  document.getElementById('setup-status').textContent = 'API key mode (advanced)';
+});
+
+document.getElementById('setup-apikey-back')?.addEventListener('click', () => {
+  document.getElementById('setup-main').style.display = 'block';
+  document.getElementById('setup-apikey-form').style.display = 'none';
+  document.getElementById('setup-status').textContent = '';
+});
+
+document.getElementById('setup-apikey-save')?.addEventListener('click', async () => {
+  const key = document.getElementById('setup-apikey-input').value.trim();
+  const err = document.getElementById('setup-apikey-error');
+  err.textContent = '';
+  if (!key || !key.startsWith('sk-ant-')) {
+    err.textContent = 'Key must start with sk-ant-';
+    return;
+  }
+  const result = await merlin.setApiKey(key);
+  if (result.success) {
+    setup.style.animation = 'fadeOut .3s ease forwards';
+    setTimeout(() => { setup.classList.add('hidden'); merlin.startSession(); }, 300);
+  } else {
+    err.textContent = result.error || 'Invalid key.';
+  }
+});
+
+// Legacy fallback
+document.getElementById('setup-install-btn')?.addEventListener('click', () => {
+  merlin.openClaudeDownload();
 });
 
 // ── Message Rendering ───────────────────────────────────────
@@ -1007,7 +1096,7 @@ async function loadBrands() {
     const state = await merlin.loadState();
     select.innerHTML = '';
     if (!brands || brands.length === 0) {
-      select.innerHTML = '<option value="">No brand loaded</option>';
+      select.innerHTML = '<option value="">No brand</option>';
       return;
     }
     const savedBrand = state?.activeBrand || '';
@@ -1019,6 +1108,12 @@ async function loadBrands() {
       if (b.name === savedBrand) { opt.selected = true; selectedBrand = b; }
       select.appendChild(opt);
     });
+    // "+ New Brand" at the bottom
+    const addOpt = document.createElement('option');
+    addOpt.value = '__add__';
+    addOpt.textContent = '+ New Brand';
+    select.appendChild(addOpt);
+
     if (!savedBrand && brands[0]) select.querySelector('option').selected = true;
     if (selectedBrand?.vertical) updateVertical(selectedBrand.vertical);
   } catch (err) { console.warn('[brands]', err); }
@@ -1045,6 +1140,20 @@ function updateVertical(vertical) {
 }
 
 document.getElementById('brand-select').addEventListener('change', (e) => {
+  // Handle "+ New Brand" option
+  if (e.target.value === '__add__') {
+    // Reset to previous selection
+    e.target.value = '';
+    addUserBubble('Set up a new brand for me');
+    showTypingIndicator();
+    turnStartTime = Date.now();
+    turnTokens = 0;
+    sessionActive = true;
+    startTickingTimer();
+    merlin.sendMessage('Set up a new brand for me');
+    return;
+  }
+
   // Persist active brand selection
   merlin.saveState({ activeBrand: e.target.value });
   merlin.getBrands().then((brands) => {
@@ -1052,11 +1161,15 @@ document.getElementById('brand-select').addEventListener('change', (e) => {
     if (brand?.vertical) updateVertical(brand.vertical);
     else updateVertical('');
   }).catch((err) => { console.warn('[brands]', err); });
+  // Reload connections and spells for the selected brand
+  loadConnections();
+  loadSpells();
+  // Reload perf bar with brand-specific budget
+  const activePeriod = document.querySelector('.perf-period-btn.active')?.dataset.days || '7';
+  loadPerfBar(parseInt(activePeriod));
 });
 
-document.getElementById('add-brand-btn').addEventListener('click', () => {
-  sendChatFromPanel('Set up a new brand for me');
-});
+// add-brand-btn moved into brand dropdown as "+ New Brand" option
 
 // ── Revenue Tracker (Merlin Made Me) ────────────────────────
 function fmtMoney(n) {
@@ -1130,20 +1243,7 @@ function populateStatsCard(cache) {
   }
 }
 
-document.getElementById('brand-stats-btn').addEventListener('click', async () => {
-  const brand = document.getElementById('brand-select').value;
-  if (!brand) return;
-  const overlay = document.getElementById('stats-overlay');
-  overlay.classList.remove('hidden');
-
-  // Convert slug to clean brand name: "ivory-ella" → "Ivory Ella", "madchill" → "Madchill"
-  const cleanBrand = brand.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  document.getElementById('stats-brand-name').textContent = cleanBrand;
-
-  // Read from cache — instant, no API call
-  const cache = await merlin.getStatsCache();
-  populateStatsCard(cache);
-});
+// brand-stats-btn removed — revenue tracker opens via perf bar click
 
 document.getElementById('stats-close').addEventListener('click', () => {
   document.getElementById('stats-overlay').classList.add('hidden');
@@ -1168,7 +1268,8 @@ document.getElementById('stats-share').addEventListener('click', async () => {
 });
 
 function loadConnections() {
-  merlin.getConnectedPlatforms().then((connected) => {
+  const brand = document.getElementById('brand-select')?.value;
+  merlin.getConnectedPlatforms(brand).then((connected) => {
     const connectedSection = document.getElementById('connected-tiles');
     const noConnections = document.getElementById('no-connections');
     const availableTiles = document.getElementById('available-tiles');
@@ -1210,7 +1311,8 @@ document.getElementById('magic-btn').addEventListener('click', () => {
     loadBrands().then(() => loadConnections());
     loadSpells();
     loadReferralInfo();
-    merlin.getCredits().then((credits) => {
+    const creditBrand = document.getElementById('brand-select')?.value || '';
+    merlin.getCredits(creditBrand).then((credits) => {
       if (!credits) return;
       // Update tiles with credit info
       document.querySelectorAll('.magic-tile').forEach(tile => {
@@ -1231,13 +1333,13 @@ document.getElementById('magic-close').addEventListener('click', () => {
   document.getElementById('magic-panel').classList.add('hidden');
 });
 
-// Close panel when clicking outside it (but not when interacting with approval cards or modals)
+// Close panel ONLY when clicking into the chat area (not overlays, previews, menus, perf bar)
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('magic-panel');
   const btn = document.getElementById('magic-btn');
   if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== btn) {
-    // Don't close if clicking approval card, modal, or tooltip
-    if (e.target.closest('#approval') || e.target.closest('.merlin-modal-card') || e.target.closest('.merlin-tooltip')) return;
+    // Only close if clicking in chat or input area — nowhere else
+    if (!e.target.closest('#chat') && !e.target.closest('#input-bar')) return;
     panel.classList.add('hidden');
   }
 });
@@ -1356,7 +1458,8 @@ function sendChatFromPanel(msg) {
 
 async function loadSpells() {
   let spells;
-  try { spells = await merlin.listSpells(); } catch { spells = []; }
+  const activeBrand = document.getElementById('brand-select')?.value || '';
+  try { spells = await merlin.listSpells(activeBrand); } catch { spells = []; }
   const list = document.getElementById('spellbook-list');
   const warning = document.getElementById('spellbook-warning');
 
@@ -1453,8 +1556,19 @@ async function loadSpells() {
     showMore.textContent = `Show ${hiddenCount} more`;
     showMore.addEventListener('click', (e) => {
       e.stopPropagation();
-      list.querySelectorAll('.spell-collapsed').forEach(r => r.classList.remove('spell-collapsed'));
-      showMore.remove();
+      if (showMore.dataset.expanded === 'true') {
+        // Collapse back
+        allRows.forEach((row, i) => {
+          if (i >= visibleLimit) row.classList.add('spell-collapsed');
+        });
+        showMore.textContent = `Show ${hiddenCount} more`;
+        showMore.dataset.expanded = 'false';
+      } else {
+        // Expand
+        list.querySelectorAll('.spell-collapsed').forEach(r => r.classList.remove('spell-collapsed'));
+        showMore.textContent = 'Show less';
+        showMore.dataset.expanded = 'true';
+      }
     });
     list.appendChild(showMore);
   }
@@ -1517,16 +1631,24 @@ function activateSpell(template, row) {
   row.querySelector('.spell-meta').textContent = 'Setting up...';
   row.style.pointerEvents = 'none';
 
-  merlin.createSpell(`merlin-${template.spell}`, template.cron, template.name, template.prompt).then(result => {
+  const spellBrand = document.getElementById('brand-select')?.value || '';
+  merlin.createSpell(`merlin-${template.spell}`, template.cron, template.name, template.prompt, spellBrand).then(result => {
     if (result.success) {
       row.querySelector('.spell-dot').className = 'spell-dot dot-active';
       row.querySelector('.spell-meta').textContent = 'Active ✓';
-      setTimeout(() => loadSpells(), 1000);
+      // Delay refresh to avoid race with filesystem write
+      setTimeout(() => loadSpells(), 2000);
     } else {
       row.querySelector('.spell-dot').className = 'spell-dot dot-error';
-      row.querySelector('.spell-meta').textContent = 'Failed — tap to retry';
+      row.querySelector('.spell-meta').textContent = `Failed — ${result.error || 'tap to retry'}`;
       row.style.pointerEvents = '';
+      console.warn('[spell] Creation failed:', result.error);
     }
+  }).catch(err => {
+    row.querySelector('.spell-dot').className = 'spell-dot dot-error';
+    row.querySelector('.spell-meta').textContent = 'Error — tap to retry';
+    row.style.pointerEvents = '';
+    console.error('[spell] Creation error:', err);
   });
 }
 
@@ -1859,6 +1981,11 @@ document.addEventListener('keydown', (e) => {
 });
 
 document.addEventListener('contextmenu', (e) => {
+  // Skip if this is a Live tab ad card (has its own context menu)
+  if (e.target.closest('.archive-card') && document.querySelector('.archive-filter[data-filter="live"].active')) {
+    return; // Let the Live tab's own contextmenu handler handle it
+  }
+
   const media = e.target.closest('.video-wrap')
     || e.target.closest('img[src^="merlin://"]')
     || e.target.closest('video[src^="merlin://"]')
@@ -1939,7 +2066,8 @@ document.addEventListener('contextmenu', (e) => {
     if (tip) tip.remove();
     tip = document.createElement('div');
     tip.className = 'merlin-tooltip';
-    tip.textContent = el.getAttribute('data-tip');
+    const tipText = el.getAttribute('data-tip');
+    tip.innerHTML = escapeHtml(tipText).replace(/\n/g, '<br>');
     document.body.appendChild(tip);
 
     const rect = el.getBoundingClientRect();
@@ -1992,13 +2120,48 @@ async function loadPerfBar(days) {
       trendHtml = ` · <span class="${cls}">${arrow} ${Math.abs(perf.trend)}%</span>`;
     }
 
-    text.innerHTML = parts + trendHtml;
+    // Daily budget cap indicator (simple, clear)
+    let budgetHtml = '';
+    if (perf.dailyBudget > 0) {
+      budgetHtml = ` · <span id="budget-indicator" class="budget-indicator">Budget: $${perf.dailyBudget}/day</span>`;
+    }
+
+    text.innerHTML = parts + trendHtml + budgetHtml;
+
+    // Platform spend hover dropdown on budget indicator
+    if (perf.platformBreakdown && perf.platformBreakdown.length > 0) {
+      setTimeout(() => {
+        const indicator = document.getElementById('budget-indicator');
+        if (!indicator) return;
+        indicator.addEventListener('mouseenter', () => {
+          let existing = document.getElementById('platform-dropdown');
+          if (existing) existing.remove();
+          const dd = document.createElement('div');
+          dd.id = 'platform-dropdown';
+          dd.className = 'platform-dropdown';
+          let rows = perf.platformBreakdown.map(p =>
+            `<div class="platform-dd-row"><span class="platform-badge platform-${p.name.split(' ')[0].toLowerCase()}">${p.name}</span><span>$${Math.round(p.spend)}</span><span>${p.roas > 0 ? p.roas.toFixed(1) + 'x' : '—'}</span></div>`
+          ).join('');
+          dd.innerHTML = `<div class="platform-dd-header">Spend by Platform</div>${rows}`;
+          const rect = indicator.getBoundingClientRect();
+          dd.style.top = (rect.bottom + 4) + 'px';
+          dd.style.left = Math.max(4, rect.left - 40) + 'px';
+          document.body.appendChild(dd);
+          indicator.addEventListener('mouseleave', () => {
+            setTimeout(() => { const el = document.getElementById('platform-dropdown'); if (el && !el.matches(':hover')) el.remove(); }, 200);
+          }, { once: true });
+          dd.addEventListener('mouseleave', () => dd.remove());
+        });
+      }, 100);
+    }
+    text.title = '';
   } catch {
     text.innerHTML = 'No data yet — connect an ad platform to start tracking';
   }
 }
 
-// Load on startup
+// Load on startup — preload everything so sidebar opens instantly
+loadBrands().then(() => { loadConnections(); loadSpells(); });
 loadPerfBar(7);
 
 // Period selector buttons
@@ -2011,9 +2174,138 @@ document.querySelectorAll('.perf-period-btn').forEach(btn => {
   });
 });
 
+// Agency Report
+document.getElementById('agency-report-btn').addEventListener('click', async (e) => {
+  e.stopPropagation();
+
+  // Get brands
+  let brands = [];
+  try { brands = await merlin.getBrands(); } catch {}
+
+  const period = document.querySelector('.perf-period-btn.active')?.dataset.days || '7';
+  const periodLabel = { '7': 'Last 7 Days', '30': 'Last 30 Days', '90': 'Last 90 Days', '365': 'Last 12 Months' }[period] || `Last ${period} Days`;
+
+  // Build overlay
+  const overlay = document.createElement('div');
+  overlay.className = 'overlay';
+  overlay.id = 'agency-overlay';
+  overlay.innerHTML = `
+    <div class="setup-card" style="max-width:420px;text-align:left;position:relative">
+      <button id="agency-close" class="magic-close" style="position:absolute;top:12px;right:12px">&times;</button>
+      <h2 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px">Agency Report</h2>
+      <p style="font-size:12px;color:var(--text-dim);margin-bottom:16px">${periodLabel} — select brands to include</p>
+
+      <div id="agency-brands" style="margin-bottom:16px">
+        ${brands.map(b => `
+          <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;color:var(--text-muted)">
+            <input type="checkbox" checked data-brand="${b.name.replace(/"/g, '&quot;')}" style="accent-color:var(--accent)">
+            ${escapeHtml(b.displayName || b.name)}
+          </label>
+        `).join('')}
+        ${brands.length === 0 ? '<p style="color:var(--text-dim);font-size:12px">No brands found</p>' : ''}
+      </div>
+
+      <button id="agency-generate" class="btn-primary" style="width:100%">Generate Report</button>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  document.getElementById('agency-close').addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+  document.getElementById('agency-generate').addEventListener('click', async () => {
+    const selectedBrands = [...document.querySelectorAll('#agency-brands input:checked')].map(cb => cb.dataset.brand);
+    if (selectedBrands.length === 0) return;
+
+    const btn = document.getElementById('agency-generate');
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+
+    // Get perf data
+    const perf = await merlin.getPerfSummary(parseInt(period));
+
+    // Build the report as a new window
+    const reportHtml = buildAgencyReport(selectedBrands, perf, periodLabel, brands);
+
+    // Open in new window for print/save as PDF
+    const reportWindow = window.open('', 'Agency Report', 'width=800,height=1000');
+    reportWindow.document.write(reportHtml);
+    reportWindow.document.close();
+
+    overlay.remove();
+  });
+});
+
+function buildAgencyReport(selectedBrands, perf, periodLabel, allBrands) {
+  const revenue = perf?.revenue || 0;
+  const spend = perf?.spend || 0;
+  const mer = perf?.mer || 0;
+
+  let brandPages = selectedBrands.map(brandName => {
+    const brand = allBrands.find(b => b.name === brandName) || { name: brandName, displayName: brandName };
+    const displayName = brand.displayName || brand.name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+    return `
+      <div class="page-break">
+        <h2>${escapeHtml(displayName)}</h2>
+        <p class="subtitle">${escapeHtml(periodLabel)}</p>
+        <div class="kpi-grid">
+          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">Revenue</span></div>
+          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">Ad Spend</span></div>
+          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">ROAS</span></div>
+          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">New Customers</span></div>
+        </div>
+        <p class="note">Detailed per-brand metrics require running "dashboard" for this brand.</p>
+      </div>
+    `;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html><head><title>Performance Report — ${periodLabel}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1a1a1a; padding: 40px; max-width: 800px; margin: 0 auto; }
+  h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+  h2 { font-size: 20px; font-weight: 700; margin-bottom: 4px; border-bottom: 2px solid #e5e5e5; padding-bottom: 8px; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
+  .summary { background: #f8f8f8; border-radius: 12px; padding: 24px; margin-bottom: 32px; }
+  .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 20px 0; }
+  .kpi { text-align: center; }
+  .kpi-value { display: block; font-size: 24px; font-weight: 700; color: #1a1a1a; }
+  .kpi-label { display: block; font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .05em; margin-top: 4px; }
+  .page-break { page-break-before: always; margin-top: 40px; }
+  .page-break:first-of-type { page-break-before: auto; }
+  .note { font-size: 12px; color: #aaa; margin-top: 16px; font-style: italic; }
+  .footer { margin-top: 40px; text-align: center; font-size: 11px; color: #ccc; }
+  @media print { .no-print { display: none; } body { padding: 20px; } }
+</style></head><body>
+  <div class="no-print" style="margin-bottom:20px;text-align:right">
+    <button onclick="window.print()" style="padding:8px 16px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer;font-size:13px">Print / Save as PDF</button>
+  </div>
+
+  <h1>Performance Report</h1>
+  <p class="subtitle">${periodLabel} — Generated ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>
+
+  <div class="summary">
+    <h2 style="border:none;padding:0;margin-bottom:16px">Summary — All Brands</h2>
+    <div class="kpi-grid">
+      <div class="kpi"><span class="kpi-value">$${revenue.toLocaleString()}</span><span class="kpi-label">Revenue</span></div>
+      <div class="kpi"><span class="kpi-value">$${Math.round(spend).toLocaleString()}</span><span class="kpi-label">Total Spend</span></div>
+      <div class="kpi"><span class="kpi-value">${mer > 0 ? mer.toFixed(1) + 'x' : '--'}</span><span class="kpi-label">MER</span></div>
+      <div class="kpi"><span class="kpi-value">${selectedBrands.length}</span><span class="kpi-label">Active Brands</span></div>
+    </div>
+  </div>
+
+  ${brandPages}
+
+  <div class="footer">Generated ${new Date().toISOString().slice(0, 10)}</div>
+</body></html>`;
+}
+
 // Click bar to open revenue tracker (load brands first if needed)
 document.getElementById('perf-bar').addEventListener('click', async (e) => {
-  if (e.target.closest('.perf-period-group')) return; // don't trigger on period buttons
+  if (e.target.closest('.perf-period-group') || e.target.closest('#agency-report-btn') || e.target.closest('#brand-select') || e.target.id === 'brand-select') return;
   const overlay = document.getElementById('stats-overlay');
   if (!overlay) return;
 
@@ -2073,7 +2365,9 @@ async function loadActivityFeed() {
   if (existing) existing.remove();
 
   try {
-    const items = await merlin.getActivityFeed(null, 50);
+    const activityBrand = document.getElementById('brand-select')?.value || null;
+    let items = await merlin.getActivityFeed(activityBrand, 50);
+    if (!Array.isArray(items)) items = [];
 
     const section = document.createElement('div');
     section.id = 'activity-feed-section';
@@ -2110,14 +2404,21 @@ async function loadActivityFeed() {
 
       let desc = '';
       switch (action) {
-        case 'video': desc = `Created video${product}`; break;
-        case 'image': desc = `Generated image${product}`; break;
-        case 'blog': desc = `Published blog post`; break;
-        case 'kill': desc = `Paused ad: ${detail}`; break;
-        case 'scale': desc = `Scaled winner: ${detail}`; break;
-        case 'meta-push': desc = `Published ad to Meta`; break;
-        case 'dashboard': desc = `Dashboard: ${detail}`; break;
-        default: desc = `${action}${detail ? ': ' + detail : ''}`;
+        case 'video': desc = `New video${product}`; break;
+        case 'image': desc = `New ad image${product}`; break;
+        case 'blog': desc = `Blog post published`; break;
+        case 'kill': desc = `Ad paused${detail ? ' — ' + detail : ''}`; break;
+        case 'scale': desc = `Winner scaled${detail ? ' — ' + detail : ''}`; break;
+        case 'meta-push': desc = `Ad live on Meta`; break;
+        case 'dashboard': desc = `Performance check`; break;
+        default:
+          // Clean up technical strings for non-technical users
+          if (action.startsWith('spell-')) {
+            const spellName = action.replace('spell-', '').replace(/-/g, ' ');
+            desc = detail?.includes('failed') ? `⚠ ${spellName} failed` : `✓ ${spellName} completed`;
+          } else {
+            desc = action.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+          }
       }
 
       const time = item.ts ? new Date(item.ts).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }) : '';
@@ -2138,7 +2439,19 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   if (!panel.classList.contains('hidden')) { showArchiveView(); }
 });
 document.getElementById('archive-close').addEventListener('click', () => {
-  document.getElementById('archive-panel').classList.add('hidden');
+  const panel = document.getElementById('archive-panel');
+  panel.classList.remove('expanded');
+  document.getElementById('archive-expand').textContent = '←';
+  panel.classList.add('hidden');
+});
+
+// Expand/collapse archive to full width
+document.getElementById('archive-expand').addEventListener('click', (e) => {
+  e.stopPropagation();
+  const panel = document.getElementById('archive-panel');
+  const btn = document.getElementById('archive-expand');
+  panel.classList.toggle('expanded');
+  btn.textContent = panel.classList.contains('expanded') ? '→' : '←';
 });
 
 // Archive filter buttons
@@ -2168,6 +2481,127 @@ async function loadArchive() {
 
   const typeFilter = document.querySelector('.archive-filter.active')?.dataset.filter || 'all';
   const search = document.getElementById('archive-search').value.trim();
+
+  if (typeFilter === 'live') {
+    // Show live ads instead of archive items
+    const brand = document.getElementById('brand-select')?.value;
+    const activeBrand = brand || null;
+    const ads = await merlin.getLiveAds(activeBrand);
+    loading.style.display = 'none';
+
+    if (!ads || ads.length === 0) {
+      empty.querySelector('p').textContent = 'No live ads';
+      empty.querySelector('.archive-empty-sub').textContent = 'Publish an ad to see it here';
+      empty.style.display = 'block';
+      return;
+    }
+
+    ads.forEach(ad => {
+      const card = document.createElement('div');
+      card.className = 'archive-card';
+
+      const statusClass = ad.status === 'live' ? 'status-live' : ad.status === 'paused' ? 'status-paused' : 'status-pending';
+      const statusText = ad.status === 'live' ? '● Live' : ad.status === 'paused' ? '○ Paused' : '◐ Pending';
+      const roasText = ad.lastRoas ? `${ad.lastRoas.toFixed(1)}x` : 'Collecting...';
+      const budgetText = ad.budget ? `$${ad.budget}/day` : '';
+
+      if (ad.creativePath) {
+        card.innerHTML = `<img class="archive-card-thumb" src="merlin://${ad.creativePath}" alt="" loading="lazy">`;
+      } else {
+        card.innerHTML = `<div class="archive-card-thumb" style="display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-dim)">📢</div>`;
+      }
+
+      card.innerHTML += `
+        <div class="archive-card-info">
+          <div class="archive-card-title">${escapeHtml(ad.product || ad.platform || 'Ad')}</div>
+          <div class="archive-card-meta">
+            <span class="archive-card-badge ${statusClass}">${statusText}</span>
+            <span>${budgetText}</span>
+          </div>
+          <div class="archive-card-meta" style="margin-top:1px">
+            <span class="platform-badge platform-${(ad.platform || '').toLowerCase()}">${escapeHtml(ad.platform || '')}</span>
+            <span>${roasText}</span>
+          </div>
+        </div>`;
+
+      // Left click: preview the creative
+      card.addEventListener('click', () => {
+        if (ad.creativePath) {
+          openArchivePreview({ type: 'image', thumbnail: ad.creativePath, folder: '', files: [] });
+        }
+      });
+      card.style.cursor = 'pointer';
+
+      // Right click: context menu with Pause option
+      card.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        // Remove any existing context menu
+        document.querySelectorAll('.merlin-context-menu').forEach(m => m.remove());
+
+        const menu = document.createElement('div');
+        menu.className = 'merlin-context-menu';
+        menu.style.left = e.clientX + 'px';
+        menu.style.top = e.clientY + 'px';
+
+        if (ad.status === 'live') {
+          const pauseItem = document.createElement('div');
+          pauseItem.className = 'context-menu-item';
+          pauseItem.textContent = '⏸ Pause this ad';
+          pauseItem.addEventListener('click', () => {
+            menu.remove();
+            document.getElementById('archive-panel').classList.add('hidden');
+            addUserBubble(`Pause ${ad.product || 'ad'} on ${ad.platform}`);
+            showTypingIndicator();
+            turnStartTime = Date.now();
+            turnTokens = 0;
+            sessionActive = true;
+            startTickingTimer();
+            merlin.sendMessage(`Pause the ad "${ad.product || 'ad'}" on ${ad.platform} (Ad ID: ${ad.adId}). Use meta-kill with adId "${ad.adId}".`);
+          });
+          menu.appendChild(pauseItem);
+        }
+
+        if (ad.status === 'paused') {
+          const resumeItem = document.createElement('div');
+          resumeItem.className = 'context-menu-item';
+          resumeItem.textContent = '▶ Resume this ad';
+          resumeItem.addEventListener('click', () => {
+            menu.remove();
+            document.getElementById('archive-panel').classList.add('hidden');
+            addUserBubble(`Resume ${ad.product || 'ad'} on ${ad.platform}`);
+            showTypingIndicator();
+            turnStartTime = Date.now();
+            turnTokens = 0;
+            sessionActive = true;
+            startTickingTimer();
+            merlin.sendMessage(`Resume the paused ad "${ad.product || 'ad'}" on ${ad.platform} (Ad ID: ${ad.adId}). Re-enable it with the same budget.`);
+          });
+          menu.appendChild(resumeItem);
+        }
+
+        const detailsItem = document.createElement('div');
+        detailsItem.className = 'context-menu-item';
+        detailsItem.textContent = '📋 View details';
+        detailsItem.addEventListener('click', () => {
+          menu.remove();
+          if (ad.creativePath) openArchivePreview({ type: 'image', thumbnail: ad.creativePath, folder: '', files: [] });
+        });
+        menu.appendChild(detailsItem);
+
+        document.body.appendChild(menu);
+        // Close on click outside
+        setTimeout(() => {
+          document.addEventListener('click', function dismiss() {
+            menu.remove();
+            document.removeEventListener('click', dismiss);
+          }, { once: true });
+        }, 0);
+      });
+
+      grid.appendChild(card);
+    });
+    return;
+  }
 
   try {
     const items = await merlin.getArchiveItems({
@@ -2291,12 +2725,13 @@ function openArchivePreview(item) {
   document.body.appendChild(overlay);
 }
 
-// Close archive on click outside
+// Close archive ONLY when clicking into the chat area (not overlays, previews, menus, perf bar)
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('archive-panel');
   const btn = document.getElementById('archive-btn');
   if (panel && !panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== btn && !e.target.closest('#archive-btn')) {
-    if (e.target.closest('#approval') || e.target.closest('.merlin-modal-card') || e.target.closest('.merlin-tooltip') || e.target.closest('.archive-preview')) return;
+    // Only close if clicking in chat or input area — nowhere else
+    if (!e.target.closest('#chat') && !e.target.closest('#input-bar')) return;
     panel.classList.add('hidden');
   }
 });

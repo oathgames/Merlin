@@ -1,5 +1,5 @@
 {
-  "version": "0.5.1",
+  "version": "0.6.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,5 +18,5 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.5.0: Archive panel, performance status bar, activity logging, Spellbook overhaul (unified list, direct creation, health dots, custom spells), agency-tier ad optimization, NSIS installer, download redirects, legal hardening."
+  "notes": "v0.6.0: Per-brand connections + spells, brand selector in perf bar, test harness (--test-all), preloaded sidebar data, agency report UX, archive scroll stability, input validation hardening, security headers on WS server."
 }

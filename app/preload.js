@@ -18,8 +18,11 @@ contextBridge.exposeInMainWorld('merlin', {
   openManage: () => ipcRenderer.invoke('open-manage'),
   activateKey: (key) => ipcRenderer.invoke('activate-key', key),
 
-  // Setup + Legal
+  // Setup + Install
   checkSetup: () => ipcRenderer.invoke('check-setup'),
+  installClaude: () => ipcRenderer.invoke('install-claude'),
+  setApiKey: (key) => ipcRenderer.invoke('set-api-key', key),
+  hasApiKey: () => ipcRenderer.invoke('has-api-key'),
   openClaudeDownload: () => ipcRenderer.invoke('open-claude-download'),
   openMerlinFolder: () => ipcRenderer.invoke('open-merlin-folder'),
   checkTosAccepted: () => ipcRenderer.invoke('check-tos-accepted'),
@@ -32,8 +35,8 @@ contextBridge.exposeInMainWorld('merlin', {
   startSession: () => ipcRenderer.invoke('start-session'),
   stopGeneration: () => ipcRenderer.invoke('stop-generation'),
   getAccountInfo: () => ipcRenderer.invoke('get-account-info'),
-  getCredits: () => ipcRenderer.invoke('get-credits'),
-  getConnectedPlatforms: () => ipcRenderer.invoke('get-connected-platforms'),
+  getCredits: (brand) => ipcRenderer.invoke('get-credits', brand),
+  getConnectedPlatforms: (brand) => ipcRenderer.invoke('get-connected-platforms', brand),
   getBrands: () => ipcRenderer.invoke('get-brands'),
 
   // State persistence
@@ -49,6 +52,7 @@ contextBridge.exposeInMainWorld('merlin', {
 
   // Archive
   getArchiveItems: (filters) => ipcRenderer.invoke('get-archive-items', filters),
+  getLiveAds: (brand) => ipcRenderer.invoke('get-live-ads', brand),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', folderPath),
   copyImage: (filePath) => ipcRenderer.invoke('copy-image', filePath),
   deleteFile: (folderPath) => ipcRenderer.invoke('delete-file', folderPath),
@@ -63,13 +67,14 @@ contextBridge.exposeInMainWorld('merlin', {
 
   // Spellbook
   checkClaudeRunning: () => ipcRenderer.invoke('check-claude-running'),
-  listSpells: () => ipcRenderer.invoke('list-spells'),
+  // listSpells moved below with brand param
   toggleSpell: (id, enabled) => ipcRenderer.invoke('toggle-spell', id, enabled),
   updateSpellMeta: (id, meta) => ipcRenderer.invoke('update-spell-meta', id, meta),
   savePastedMedia: (dataUrl, filename) => ipcRenderer.invoke('save-pasted-media', dataUrl, filename),
   sendMessage: (text, options) => ipcRenderer.invoke('send-message', text, options),
   sendSilent: (text) => ipcRenderer.invoke('send-message', text, { silent: true }),
-  createSpell: (taskId, cron, desc, prompt) => ipcRenderer.invoke('create-spell', taskId, cron, desc, prompt),
+  createSpell: (taskId, cron, desc, prompt, brand) => ipcRenderer.invoke('create-spell', taskId, cron, desc, prompt, brand),
+  listSpells: (brand) => ipcRenderer.invoke('list-spells', brand),
 
   // Approvals
   approveTool: (id) => ipcRenderer.invoke('approve-tool', id),

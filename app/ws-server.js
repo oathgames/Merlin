@@ -55,11 +55,12 @@ function startServer() {
       if (filePath === '/') filePath = '/index.html';
       const fullPath = path.join(pwaDir, filePath);
       const ext = path.extname(fullPath);
+      const secHeaders = { 'Access-Control-Allow-Origin': allowedOrigin, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' };
       if (fs.existsSync(fullPath)) {
-        res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain', 'Access-Control-Allow-Origin': allowedOrigin });
+        res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain', ...secHeaders });
         res.end(fs.readFileSync(fullPath));
       } else {
-        res.writeHead(200, { 'Content-Type': 'text/html', 'Access-Control-Allow-Origin': allowedOrigin });
+        res.writeHead(200, { 'Content-Type': 'text/html', ...secHeaders });
         res.end(fs.readFileSync(path.join(pwaDir, 'index.html')));
       }
     };

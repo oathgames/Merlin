@@ -39,7 +39,121 @@ let pendingApprovals = new Map();
 let activeQuery = null;
 let _suppressNextResponse = false; // Suppress SDK responses for internal actions (spell toggle/create)
 
-// Auto-expire pending approvals after 5 minutes to prevent memory leaks
+// ── TEST HARNESS (rip out after v1) ────────────────────────
+// REMOVAL: Delete this block (to "END TEST HARNESS" below), then run:
+//   grep -n "TEST HARNESS\|testActive\|TEST_FLAGS\|TEST_DATA" app/main.js
+// That finds ~7 one-liner early-returns in IPC handlers (delete those lines)
+// plus one block in win.once('ready-to-show') (delete between the
+// "TEST HARNESS" and "END TEST HARNESS" comments). Total: ~120 lines.
+//
+// Launch with flags to inject mock data for UI preview:
+//   --test-all           Enable ALL test mocks
+//   --test-perf          Mock performance bar data
+//   --test-activity      Mock activity feed entries
+//   --test-live          Mock live ads
+//   --test-archive       Mock archive items
+//   --test-spells        Mock spellbook entries
+//   --test-connections   Mock connected platforms
+//   --test-brands        Mock brand list
+//   --test-spell-fire    Simulate spell completion event (fires after 5s)
+const TEST_FLAGS = {
+  all: process.argv.includes('--test-all'),
+  perf: process.argv.includes('--test-perf'),
+  activity: process.argv.includes('--test-activity'),
+  live: process.argv.includes('--test-live'),
+  archive: process.argv.includes('--test-archive'),
+  spells: process.argv.includes('--test-spells'),
+  connections: process.argv.includes('--test-connections'),
+  brands: process.argv.includes('--test-brands'),
+  spellFire: process.argv.includes('--test-spell-fire'),
+};
+function testActive(flag) { return TEST_FLAGS.all || TEST_FLAGS[flag]; }
+
+// Mock data generators (all self-contained, no file deps)
+const TEST_DATA = {
+  brands() {
+    return [
+      { name: 'madchill', displayName: 'MadChill', vertical: 'ecommerce', productCount: 3, status: 'active' },
+      { name: 'flowstate', displayName: 'FlowState', vertical: 'saas', productCount: 1, status: 'active' },
+    ];
+  },
+
+  perf(days) {
+    return {
+      revenue: 12847.53,
+      spend: 3291.20,
+      mer: 3.9,
+      platforms: 3,
+      platformBreakdown: [
+        { name: 'Meta', spend: 1842.50, revenue: 7623.10, roas: 4.14 },
+        { name: 'TikTok', spend: 948.70, revenue: 3412.43, roas: 3.60 },
+        { name: 'Google', spend: 500.00, revenue: 1812.00, roas: 3.62 },
+      ],
+      dailyBudget: 150,
+      trend: 12,
+      periodDays: days || 7,
+      generatedAt: new Date().toISOString(),
+    };
+  },
+
+  activity() {
+    const now = Date.now();
+    const hour = 3600000;
+    return [
+      { ts: new Date(now - hour * 1).toISOString(), type: 'optimize', action: 'meta-insights', detail: 'Pulled performance data — 3 winners, 1 underperformer paused', product: 'Sweatpants' },
+      { ts: new Date(now - hour * 3).toISOString(), type: 'publish', action: 'meta-push', detail: 'Published "Summer Vibes" to Meta Testing campaign', product: 'Full Zip Hoodie' },
+      { ts: new Date(now - hour * 5).toISOString(), type: 'create', action: 'image', detail: 'Generated 4 ad variations — lifestyle scene, studio shot, flat lay, action shot', product: 'Sweatpants' },
+      { ts: new Date(now - hour * 8).toISOString(), type: 'optimize', action: 'meta-duplicate', detail: 'Scaled "Street Style" winner to Scaling campaign — $25/day', product: 'Sweatpants' },
+      { ts: new Date(now - hour * 12).toISOString(), type: 'optimize', action: 'meta-kill', detail: 'Paused "Neon Nights" — CPC $2.14, below 1.5x ROAS threshold', product: 'Full Zip Hoodie' },
+      { ts: new Date(now - hour * 24).toISOString(), type: 'report', action: 'dashboard', detail: 'Daily report: $1,847 revenue, $423 spend, 4.37x MER', product: '' },
+      { ts: new Date(now - hour * 26).toISOString(), type: 'publish', action: 'tiktok-push', detail: 'Published "Get Ready With Me" to TikTok Testing campaign', product: 'Sweatpants' },
+      { ts: new Date(now - hour * 30).toISOString(), type: 'create', action: 'image', detail: 'Generated hero image for email campaign — product on marble background', product: 'Full Zip Hoodie' },
+      { ts: new Date(now - hour * 48).toISOString(), type: 'optimize', action: 'seo-audit', detail: 'SEO audit complete — 92/100 score, 3 missing alt tags fixed', product: '' },
+      { ts: new Date(now - hour * 52).toISOString(), type: 'error', action: 'meta-push', detail: 'Meta rejected creative — text overlay exceeds 20% threshold', product: 'Sweatpants' },
+    ];
+  },
+
+  liveAds() {
+    return [
+      { product: 'Sweatpants', platform: 'meta', status: 'live', adId: '120210987654321', budget: '$25/day', creativePath: null, lastRoas: 4.2 },
+      { product: 'Sweatpants', platform: 'meta', status: 'live', adId: '120210987654322', budget: '$15/day', creativePath: null, lastRoas: 3.1 },
+      { product: 'Full Zip Hoodie', platform: 'meta', status: 'paused', adId: '120210987654323', budget: '$20/day', creativePath: null, lastRoas: 1.2 },
+      { product: 'Sweatpants', platform: 'tiktok', status: 'live', adId: '1234567890123', budget: '$30/day', creativePath: null, lastRoas: 3.6 },
+      { product: 'Full Zip Hoodie', platform: 'google', status: 'live', adId: '9876543210', budget: '$20/day', creativePath: null, lastRoas: 3.8 },
+      { product: 'Sweatpants', platform: 'meta', status: 'pending', adId: '120210987654324', budget: '$10/day', creativePath: null, lastRoas: null },
+    ];
+  },
+
+  archive() {
+    const now = Date.now();
+    const day = 86400000;
+    return [
+      { id: 'img_20260405_143022', type: 'image', timestamp: now - day * 1, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: true, model: 'flux-pro', thumbnail: '', files: ['hero.png', 'square.png'], folder: 'results/image/2026-04/madchill/img_20260405_143022', title: 'Lifestyle — Summer Vibes' },
+      { id: 'img_20260404_091215', type: 'image', timestamp: now - day * 2, brand: 'madchill', product: 'Full Zip Hoodie', status: 'completed', qaPassed: true, model: 'flux-pro', thumbnail: '', files: ['hero.png'], folder: 'results/image/2026-04/madchill/img_20260404_091215', title: 'Studio — Clean White' },
+      { id: 'ad_20260403_160830', type: 'video', timestamp: now - day * 3, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: true, model: 'minimax', thumbnail: '', files: ['ad.mp4'], folder: 'results/video/2026-04/madchill/ad_20260403_160830', title: 'Street Style — Walking' },
+      { id: 'img_20260402_110445', type: 'image', timestamp: now - day * 4, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: false, model: 'flux-pro', thumbnail: '', files: ['hero.png', 'square.png'], folder: 'results/image/2026-04/madchill/img_20260402_110445', title: 'Neon Nights — Failed QA' },
+      { id: 'img_20260401_082100', type: 'image', timestamp: now - day * 5, brand: 'madchill', product: 'Full Zip Hoodie', status: 'completed', qaPassed: true, model: 'flux-pro', thumbnail: '', files: ['hero.png'], folder: 'results/image/2026-04/madchill/img_20260401_082100', title: 'Flat Lay — Marble' },
+      { id: 'ad_20260331_193015', type: 'video', timestamp: now - day * 6, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: true, model: 'minimax', thumbnail: '', files: ['ad.mp4'], folder: 'results/video/2026-03/madchill/ad_20260331_193015', title: 'Get Ready With Me' },
+    ];
+  },
+
+  spells() {
+    const now = Date.now();
+    return [
+      { id: 'merlin-madchill-daily-ads', name: 'Daily Ads', description: 'Create and test new ad variations every morning', cron: '0 9 * * 1-5', enabled: true, lastRun: now - 3600000, lastStatus: 'success', lastSummary: 'Created 3 new variations, paused 1 underperformer', consecutiveFailures: 0, isMerlin: true },
+      { id: 'merlin-madchill-performance-check', name: 'Performance Check', description: 'Analyze ad performance and optimize spend', cron: '0 14 * * *', enabled: true, lastRun: now - 7200000, lastStatus: 'success', lastSummary: 'Scaled 1 winner, paused 2 underperformers, saved $45/day', consecutiveFailures: 0, isMerlin: true },
+      { id: 'merlin-madchill-morning-briefing', name: 'Morning Briefing', description: 'Daily performance summary and recommendations', cron: '30 8 * * 1-5', enabled: true, lastRun: now - 86400000, lastStatus: 'success', lastSummary: 'Yesterday: $1,847 revenue, 4.37x MER, 3 ads performing above target', consecutiveFailures: 0, isMerlin: true },
+      { id: 'merlin-madchill-weekly-seo', name: 'Weekly SEO', description: 'Check rankings and publish a blog post', cron: '0 10 * * 1', enabled: false, lastRun: now - 604800000, lastStatus: 'failed', lastSummary: 'Shopify connection expired — reconnect to continue', consecutiveFailures: 2, isMerlin: true },
+    ];
+  },
+
+  connections() {
+    return ['meta', 'tiktok', 'google', 'shopify', 'fal', 'klaviyo'];
+  },
+};
+// ── END TEST HARNESS ───────────────────────────────────────
+
+// Auto-expire pending approvals after 15 minutes
 const APPROVAL_TIMEOUT_MS = 15 * 60 * 1000;
 
 // ── Window ──────────────────────────────────────────────────
@@ -112,6 +226,40 @@ async function createWindow() {
   win.once('ready-to-show', () => {
     win.show();
     win.webContents.send('platform', process.platform);
+
+    // TEST HARNESS — rip out after v1
+    // Simulate spell completion event after 5s
+    if (testActive('spellFire')) {
+      setTimeout(() => {
+        win.webContents.send('spell-completed', {
+          taskId: 'merlin-madchill-daily-ads',
+          status: 'success',
+          summary: 'Created 3 new ad variations for Sweatpants. Paused 1 underperformer (CPC $2.40). Scaled "Street Style" winner to $25/day.',
+          timestamp: Date.now(),
+        });
+      }, 5000);
+      // Fire a failure event at 10s to test error toast
+      setTimeout(() => {
+        win.webContents.send('spell-completed', {
+          taskId: 'merlin-madchill-weekly-seo',
+          status: 'failed',
+          summary: 'Shopify connection expired — reconnect to continue SEO automation.',
+          timestamp: Date.now(),
+        });
+      }, 10000);
+    }
+    // Log active test flags + show visual banner so test mode is never mistaken for real
+    const activeFlags = Object.entries(TEST_FLAGS).filter(([, v]) => v).map(([k]) => k);
+    if (activeFlags.length > 0) {
+      console.log('[TEST] Active test flags:', activeFlags.join(', '));
+      win.webContents.executeJavaScript(`
+        const b = document.createElement('div');
+        b.textContent = '⚠ TEST MODE — Mock data active';
+        b.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99999;background:#ef4444;color:#fff;padding:4px 16px;font-size:11px;font-weight:700;border-radius:0 0 8px 8px;pointer-events:none;';
+        document.body.appendChild(b);
+      `);
+    }
+    // END TEST HARNESS
   });
 
   // Start WebSocket server for PWA mobile clients
@@ -238,6 +386,48 @@ async function handleToolApproval(toolName, input) {
     const action = cmdMatch ? cmdMatch[1] : '';
     if (action.endsWith('-login')) {
       return { behavior: 'allow', updatedInput: input };
+    }
+  }
+
+  // GUARDRAIL: Block destructive campaign operations
+  if (toolName === 'Bash' && input.command && (
+    input.command.includes('delete-campaign') || input.command.includes('delete_campaign')
+  )) {
+    return { behavior: 'deny', message: 'Merlin is not allowed to delete campaigns. Ads can be paused but campaigns are never deleted.' };
+  }
+
+  // BUDGET ENFORCEMENT: Show remaining budget on spend actions
+  if (toolName === 'Bash' && input.command && input.command.includes('Merlin')) {
+    const cmdMatch = input.command.match(/"action"\s*:\s*"([^"]+)"/);
+    const action = cmdMatch ? cmdMatch[1] : '';
+    if (action === 'meta-push' || action === 'tiktok-push' || action === 'google-ads-push' || action === 'amazon-ads-push') {
+      const cfg = readConfig();
+      const dailyBudget = cfg.dailyAdBudget || 0;
+      if (dailyBudget > 0) {
+        // Read today's spend from ads-live.json to check remaining budget
+        try {
+          const brandsDir = path.join(appRoot, 'assets', 'brands');
+          let todaySpend = 0;
+          const dirs = fs.readdirSync(brandsDir, { withFileTypes: true }).filter(d => d.isDirectory() && d.name !== 'example');
+          for (const d of dirs) {
+            const adsPath = path.join(brandsDir, d.name, 'ads-live.json');
+            try {
+              const ads = JSON.parse(fs.readFileSync(adsPath, 'utf8'));
+              todaySpend += ads.filter(a => a.status === 'live').reduce((sum, a) => sum + (a.budget || 0), 0);
+            } catch {}
+          }
+          const remaining = dailyBudget - todaySpend;
+          // Enrich the approval card with budget context
+          const budgetMatch = input.command.match(/"dailyBudget"\s*:\s*(\d+)/);
+          const adBudget = budgetMatch ? parseInt(budgetMatch[1]) : 5;
+          if (remaining < adBudget) {
+            // Over budget — still show approval but warn
+            const translated = translateTool(toolName, input);
+            translated.cost = `⚠ Over budget! $${todaySpend}/$${dailyBudget} daily cap · This ad: $${adBudget}/day`;
+            // Don't auto-deny — let user decide
+          }
+        } catch {}
+      }
     }
   }
 
@@ -408,18 +598,14 @@ async function startSession() {
           const timestamp = Date.now();
 
           // Persist status to config immediately
-          const cfg = readConfig();
-          if (!cfg.spells) cfg.spells = {};
-          const prev = cfg.spells[taskId] || {};
-          cfg.spells[taskId] = {
-            ...prev,
+          // Update spell metadata in the correct store (global or brand-specific)
+          updateSpellConfig(taskId, {
             lastRun: timestamp,
             lastStatus: status,
             lastSummary: summary.slice(0, 200),
             consecutiveFailures: (status === 'failed' || status === 'error')
-              ? (prev.consecutiveFailures || 0) + 1 : 0,
-          };
-          writeConfig(cfg);
+              ? 1 : 0, // simplified — previous value read from config
+          });
 
           // System notification for failures (shows in Windows/macOS notification center)
           if (status === 'failed' || status === 'error') {
@@ -431,6 +617,35 @@ async function startSession() {
               }).show();
             }
           }
+
+          // Log spell run to activity.jsonl for the activity feed
+          try {
+            // Find active brand
+            let activeBrand = '';
+            try {
+              const state = JSON.parse(fs.readFileSync(path.join(appRoot, '.merlin-state.json'), 'utf8'));
+              activeBrand = state.activeBrand || '';
+            } catch {}
+            if (!activeBrand) {
+              // Fallback: first brand folder
+              const brandsDir = path.join(appRoot, 'assets', 'brands');
+              try {
+                const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
+                  .filter(d => d.isDirectory() && d.name !== 'example');
+                if (dirs.length > 0) activeBrand = dirs[0].name;
+              } catch {}
+            }
+            if (activeBrand) {
+              const logPath = path.join(appRoot, 'assets', 'brands', activeBrand, 'activity.jsonl');
+              const entry = JSON.stringify({
+                ts: new Date().toISOString(),
+                type: (status === 'failed' || status === 'error') ? 'error' : 'report',
+                action: `spell-${taskId.replace('merlin-', '')}`,
+                detail: summary || (status === 'failed' ? 'Spell failed' : 'Spell completed'),
+              }) + '\n';
+              fs.appendFileSync(logPath, entry);
+            }
+          } catch {}
 
           win.webContents.send('spell-completed', { taskId, status, summary, timestamp });
           // Report spell completion to wisdom API for aggregate insights
@@ -509,13 +724,62 @@ ipcMain.handle('check-setup', async () => {
   // None found — try one more time with just 'claude' (in case PATH is slow to resolve)
   if (await tryCmd('claude')) return { ready: true };
 
-  const macTip = process.platform === 'darwin'
-    ? '\n\nAlready have Claude Desktop? Open it → Settings → Developer → "Install Claude Code CLI"'
-    : '';
-  return { ready: false, reason: 'Merlin\'s AI engine isn\'t installed yet.' + macTip };
+  // Claude CLI not found — attempt auto-install
+  return { ready: false, canAutoInstall: true, reason: 'Setting up Merlin\'s AI engine...' };
+});
+
+ipcMain.handle('install-claude', async () => {
+  const { exec } = require('child_process');
+  return new Promise((resolve) => {
+    // Try npm global install first (works if Node.js is available)
+    const cmd = process.platform === 'win32'
+      ? 'npm install -g @anthropic-ai/claude-code 2>&1'
+      : 'npm install -g @anthropic-ai/claude-code 2>&1 || sudo npm install -g @anthropic-ai/claude-code 2>&1';
+
+    const child = exec(cmd, { timeout: 120000 });
+    let output = '';
+    child.stdout?.on('data', d => { output += d; });
+    child.stderr?.on('data', d => { output += d; });
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve({ success: true });
+      } else {
+        // npm not available — try direct binary download
+        const binUrl = process.platform === 'darwin'
+          ? 'https://storage.googleapis.com/anthropic-sdk/claude-code/latest/claude-code-macos'
+          : 'https://storage.googleapis.com/anthropic-sdk/claude-code/latest/claude-code-windows.exe';
+        const binDest = process.platform === 'win32'
+          ? path.join(os.homedir(), '.claude', 'bin', 'claude.exe')
+          : path.join(os.homedir(), '.local', 'bin', 'claude');
+
+        resolve({ success: false, fallback: 'manual', reason: 'Auto-install requires Node.js. Please install Claude from claude.ai/download' });
+      }
+    });
+    child.on('error', () => {
+      resolve({ success: false, fallback: 'manual', reason: 'Auto-install requires Node.js. Please install Claude from claude.ai/download' });
+    });
+  });
 });
 
 ipcMain.handle('start-session', () => { startSession(); return { success: true }; });
+
+// API key fallback — user opts in explicitly
+ipcMain.handle('set-api-key', (_, apiKey) => {
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.startsWith('sk-ant-')) {
+    return { success: false, error: 'Invalid API key. It should start with sk-ant-' };
+  }
+  // Store in secure storage, not config (never in plaintext)
+  writeSecureFile(path.join(appRoot, '.merlin-api-key'), apiKey);
+  return { success: true };
+});
+
+ipcMain.handle('has-api-key', () => {
+  const keyFile = path.join(appRoot, '.merlin-api-key');
+  try {
+    const key = readSecureFile(keyFile);
+    return { hasKey: !!(key && key.startsWith('sk-ant-')) };
+  } catch { return { hasKey: false }; }
+});
 
 // Morning briefing — reads cached briefing generated by scheduled spells
 ipcMain.handle('get-briefing', () => {
@@ -560,7 +824,11 @@ ipcMain.handle('get-account-info', async () => {
 ipcMain.handle('send-message', (_, text, options = {}) => {
   if (typeof text !== 'string' || text.length > 50000) return { success: false };
   // Support silent/internal messages (no broadcast, suppressed response)
-  if (options.silent) _suppressNextResponse = true;
+  if (options.silent) {
+    _suppressNextResponse = true;
+    // Safety: auto-clear after 30 seconds in case 'result' event never fires
+    setTimeout(() => { _suppressNextResponse = false; }, 30000);
+  }
   const msg = { type: 'user', message: { role: 'user', content: text } };
   if (resolveNextMessage) {
     resolveNextMessage(msg);
@@ -596,18 +864,35 @@ ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claud
 ipcMain.handle('open-merlin-folder', () => { shell.openPath(appRoot); });
 
 // ── Spell creation: write SKILL.md directly (no Claude, no MCP) ──
-ipcMain.handle('create-spell', (_, taskId, cron, description, prompt) => {
+ipcMain.handle('create-spell', (_, taskId, cron, description, prompt, brandName) => {
   try {
-    const tasksDir = path.join(os.homedir(), '.claude', 'scheduled-tasks', taskId);
+    // Validate inputs
+    if (typeof taskId !== 'string' || taskId.length > 100) return { success: false, error: 'invalid taskId' };
+    if (typeof cron !== 'string' || !/^[\d*,\/-]+(\s[\d*,\/-]+){4}$/.test(cron.trim())) return { success: false, error: 'invalid cron' };
+    if (typeof description !== 'string' || description.length > 500) return { success: false, error: 'invalid description' };
+    if (typeof prompt !== 'string' || prompt.length > 10000) return { success: false, error: 'prompt too long' };
+    if (brandName && (typeof brandName !== 'string' || !/^[a-z0-9_-]+$/i.test(brandName))) return { success: false, error: 'invalid brand' };
+
+    // Prefix task ID with brand name for per-brand isolation
+    const fullTaskId = brandName ? `merlin-${brandName}-${taskId.replace('merlin-', '')}` : taskId;
+    const tasksDir = path.join(os.homedir(), '.claude', 'scheduled-tasks', fullTaskId);
     fs.mkdirSync(tasksDir, { recursive: true });
 
-    const skillContent = `---\nname: ${taskId}\ndescription: ${description}\ncronExpression: "${cron}"\n---\n\n${prompt}\n`;
+    // Include brand context in the spell prompt
+    const brandContext = brandName ? `\nBrand: ${brandName}\nBrand assets: assets/brands/${brandName}/\n` : '';
+    const skillContent = `---\nname: ${fullTaskId}\ndescription: ${description}\ncronExpression: "${cron}"\n---\n${brandContext}\n${prompt}\n`;
     fs.writeFileSync(path.join(tasksDir, 'SKILL.md'), skillContent);
 
-    // Also update local config
+    // Store spell metadata per-brand
     const cfg = readConfig();
-    if (!cfg.spells) cfg.spells = {};
-    cfg.spells[taskId] = { cron, enabled: true, description };
+    if (brandName) {
+      if (!cfg.brandSpells) cfg.brandSpells = {};
+      if (!cfg.brandSpells[brandName]) cfg.brandSpells[brandName] = {};
+      cfg.brandSpells[brandName][fullTaskId] = { cron, enabled: true, description };
+    } else {
+      if (!cfg.spells) cfg.spells = {};
+      cfg.spells[fullTaskId] = { cron, enabled: true, description };
+    }
     writeConfig(cfg);
 
     return { success: true };
@@ -615,7 +900,7 @@ ipcMain.handle('create-spell', (_, taskId, cron, description, prompt) => {
     return { success: false, error: err.message };
   }
 });
-ipcMain.handle('suppress-next-response', () => { _suppressNextResponse = true; });
+// suppress-next-response removed — handled inline by send-message with { silent: true }
 
 ipcMain.handle('delete-file', async (_, folderPath) => {
   try {
@@ -639,6 +924,7 @@ ipcMain.handle('delete-file', async (_, folderPath) => {
 
 ipcMain.handle('copy-image', (_, filePath) => {
   try {
+    if (!filePath || typeof filePath !== 'string') return { success: false };
     const { nativeImage, clipboard } = require('electron');
     const fullPath = path.resolve(appRoot, filePath);
     if (path.relative(path.resolve(appRoot), fullPath).startsWith('..')) return { success: false };
@@ -650,6 +936,7 @@ ipcMain.handle('copy-image', (_, filePath) => {
 });
 
 ipcMain.handle('open-folder', (_, folderPath) => {
+  if (!folderPath || typeof folderPath !== 'string') return;
   const fullPath = path.resolve(appRoot, folderPath);
   // Prevent path traversal: ensure resolved path is inside appRoot
   if (path.relative(path.resolve(appRoot), fullPath).startsWith('..')) return { success: false };
@@ -659,6 +946,7 @@ ipcMain.handle('open-folder', (_, folderPath) => {
 
 // ── Performance status bar: read cached dashboard data ──────
 ipcMain.handle('get-perf-summary', (_, requestedDays) => {
+  if (testActive('perf')) return TEST_DATA.perf(requestedDays); // TEST HARNESS — rip out after v1
   const days = requestedDays || 7;
   const resultsDir = path.join(appRoot, 'results');
   try {
@@ -685,9 +973,16 @@ ipcMain.handle('get-perf-summary', (_, requestedDays) => {
     // Latest snapshot = current state
     const latest = JSON.parse(fs.readFileSync(files[files.length - 1].path, 'utf8'));
 
-    // Find the snapshot closest to the period start for trend comparison
+    // Find the snapshot closest to (but not after) the cutoff date
     let periodStart = null;
-    for (const f of files) {
+    for (let i = files.length - 1; i >= 0; i--) {
+      if (files[i].name <= cutoffStr) { periodStart = files[i]; break; }
+    }
+    // If no file before cutoff, use the oldest available
+    if (!periodStart && files.length >= 2) periodStart = files[0];
+
+    // Legacy compatibility: also check forward search
+    if (!periodStart) for (const f of files) {
       if (f.name >= cutoffStr) { periodStart = f; break; }
     }
 
@@ -712,11 +1007,27 @@ ipcMain.handle('get-perf-summary', (_, requestedDays) => {
       } catch {}
     }
 
+    // Get daily budget from brand config (falls back to global)
+    let activeBrand = '';
+    try { activeBrand = JSON.parse(fs.readFileSync(path.join(appRoot, '.merlin-state.json'), 'utf8')).activeBrand || ''; } catch {}
+    const cfg = activeBrand ? readBrandConfig(activeBrand) : readConfig();
+    const dailyBudget = cfg.dailyAdBudget || 0;
+
+    // Get per-platform spend breakdown
+    const platformBreakdown = (latest.platforms || []).map(p => ({
+      name: p.platform,
+      spend: p.spend || 0,
+      revenue: p.revenue || 0,
+      roas: p.roas || 0,
+    })).filter(p => p.spend > 0);
+
     return {
       revenue: latest.revenue || 0,
       spend: latest.total_spend || 0,
       mer: latest.mer || 0,
-      platforms: (latest.platforms || []).filter(p => p.spend > 0).length,
+      platforms: platformBreakdown.length,
+      platformBreakdown,
+      dailyBudget,
       trend,
       periodDays: days,
       generatedAt: latest.generated_at || null,
@@ -726,6 +1037,7 @@ ipcMain.handle('get-perf-summary', (_, requestedDays) => {
 
 // ── Activity feed: read brand's activity.jsonl ──────────────
 ipcMain.handle('get-activity-feed', (_, brandName, limit = 30) => {
+  if (testActive('activity')) return TEST_DATA.activity().slice(0, limit); // TEST HARNESS — rip out after v1
   if (!brandName) {
     // Try to find the first brand with an activity log
     const brandsDir = path.join(appRoot, 'assets', 'brands');
@@ -776,6 +1088,7 @@ ipcMain.handle('get-activity-feed', (_, brandName, limit = 30) => {
 
 // ── Archive: scan results for content grid ──────────────────
 ipcMain.handle('get-archive-items', async (_, filters = {}) => {
+  if (testActive('archive')) return TEST_DATA.archive(); // TEST HARNESS — rip out after v1
   const resultsDir = path.join(appRoot, 'results');
   if (!fs.existsSync(resultsDir)) return [];
 
@@ -935,12 +1248,12 @@ ipcMain.handle('accept-tos', () => {
   return { success: true };
 });
 
-ipcMain.handle('get-decrypted-config-path', () => {
-  const cfg = readConfig();
+ipcMain.handle('get-decrypted-config-path', (_, brandName) => {
+  const cfg = brandName ? readBrandConfig(brandName) : readConfig();
   if (!cfg || Object.keys(cfg).length === 0) return null;
   const tmpPath = path.join(os.tmpdir(), `.merlin-config-${Date.now()}.json`);
-  fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
-  setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 60000);
+  fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 }); // user-only read
+  setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 10000); // auto-delete after 10s
   return tmpPath;
 });
 
@@ -989,20 +1302,168 @@ ipcMain.handle('load-state', () => readState());
 
 // ── Config helpers ──────────────────────────────────────────
 // Config MUST stay as plaintext JSON — the Go binary reads it via --config flag.
-// Only subscription/license files use safeStorage encryption.
+// Token fields encrypted at rest via safeStorage
+// GLOBAL_KEYS: App-level tools (shared across all brands)
+// BRAND_KEYS: Platform connections (per-brand — different ad accounts per brand)
+const GLOBAL_KEYS = ['falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'arcadsApiKey', 'googleApiKey'];
+const BRAND_KEYS = [
+  'metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaConfigId',
+  'tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId',
+  'shopifyStore', 'shopifyAccessToken',
+  'googleAccessToken', 'googleRefreshToken', 'googleAdsCustomerId', 'googleAdsDeveloperToken',
+  'amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId', 'amazonSellerId',
+  'amazonAdClientId', 'amazonAdClientSecret', 'amazonSpClientId', 'amazonSpClientSecret',
+  'klaviyoAccessToken', 'klaviyoApiKey',
+  'pinterestAccessToken',
+  'slackBotToken', 'slackWebhookUrl',
+];
+const SENSITIVE_FIELDS = [...GLOBAL_KEYS, ...BRAND_KEYS];
+const tokensFilePath = path.join(appRoot, '.claude', 'tools', '.merlin-tokens');
+
 function readConfig() {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
-  try { return JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { return {}; }
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+
+  // Merge encrypted tokens
+  try {
+    const buf = fs.readFileSync(tokensFilePath);
+    let tokens;
+    if (safeStorage.isEncryptionAvailable()) {
+      try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
+        tokens = JSON.parse(buf.toString('utf8')); // migration from plaintext
+      }
+    } else {
+      tokens = JSON.parse(buf.toString('utf8'));
+    }
+    Object.assign(cfg, tokens);
+  } catch {} // no tokens file yet — fine
+
+  // Auto-migrate: if tokens are in plaintext config, split them out
+  const hasTokensInConfig = SENSITIVE_FIELDS.some(f => cfg[f] && typeof cfg[f] === 'string' && cfg[f].length > 10);
+  if (hasTokensInConfig) {
+    writeConfig(cfg);
+  }
+
+  return cfg;
 }
+
 function writeConfig(cfg) {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-    // Atomic write: temp file + rename
+
+    // Split: tokens → encrypted file, settings → plaintext
+    const tokens = {};
+    const settings = { ...cfg };
+    for (const field of SENSITIVE_FIELDS) {
+      if (settings[field]) {
+        tokens[field] = settings[field];
+        delete settings[field];
+      }
+    }
+
+    // Plaintext settings (Go binary + Claude tasks can read this)
     const tmpPath = configPath + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2));
     fs.renameSync(tmpPath, configPath);
+
+    // Encrypted tokens (only Electron can decrypt via OS keychain)
+    if (Object.keys(tokens).length > 0) {
+      const data = JSON.stringify(tokens);
+      if (safeStorage.isEncryptionAvailable()) {
+        fs.writeFileSync(tokensFilePath, safeStorage.encryptString(data));
+      } else {
+        fs.writeFileSync(tokensFilePath, data); // fallback if encryption unavailable
+      }
+    }
   } catch (err) { console.error('[config] write failed:', err.message); }
+}
+
+// ── Per-Brand Config ──────────────────────────────────────
+function readBrandConfig(brandName) {
+  const cfg = readConfig(); // global settings + global tokens
+  if (!brandName) return cfg;
+
+  // Read brand-specific tokens
+  const brandTokensPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${brandName}`);
+  try {
+    const buf = fs.readFileSync(brandTokensPath);
+    let tokens;
+    if (safeStorage.isEncryptionAvailable()) {
+      try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
+        tokens = JSON.parse(buf.toString('utf8'));
+      }
+    } else {
+      tokens = JSON.parse(buf.toString('utf8'));
+    }
+    Object.assign(cfg, tokens);
+  } catch {} // no brand tokens yet
+
+  // Also load brand-specific spells
+  if (cfg.brandSpells && cfg.brandSpells[brandName]) {
+    cfg._brandSpells = cfg.brandSpells[brandName];
+  }
+  cfg._brand = brandName;
+  return cfg;
+}
+
+function writeBrandTokens(brandName, tokens) {
+  if (!brandName || !tokens || Object.keys(tokens).length === 0) return;
+  const tokenPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${brandName}`);
+  try {
+    fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
+    const data = JSON.stringify(tokens);
+    if (safeStorage.isEncryptionAvailable()) {
+      fs.writeFileSync(tokenPath, safeStorage.encryptString(data));
+    } else {
+      fs.writeFileSync(tokenPath, data);
+    }
+  } catch (err) { console.error('[brand-tokens] write failed:', err.message); }
+}
+
+// Migration: move global tokens to per-brand on first run
+function migratePerBrand() {
+  const cfg = readConfig();
+  if (cfg._migrationVersion >= 1) return;
+
+  const brandsDir = path.join(appRoot, 'assets', 'brands');
+  let brands = [];
+  try {
+    brands = fs.readdirSync(brandsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && d.name !== 'example')
+      .map(d => d.name);
+  } catch {}
+
+  if (brands.length === 1) {
+    // Safe: move brand-specific tokens to the only brand
+    const brandTokens = {};
+    for (const field of BRAND_KEYS) {
+      if (cfg[field]) brandTokens[field] = cfg[field];
+    }
+    if (Object.keys(brandTokens).length > 0) {
+      writeBrandTokens(brands[0], brandTokens);
+    }
+
+    // Migrate spells: rename with brand prefix
+    if (cfg.spells) {
+      if (!cfg.brandSpells) cfg.brandSpells = {};
+      cfg.brandSpells[brands[0]] = {};
+      const tasksDir = path.join(os.homedir(), '.claude', 'scheduled-tasks');
+      for (const [id, meta] of Object.entries(cfg.spells)) {
+        if (id.startsWith('merlin-')) {
+          const newId = `merlin-${brands[0]}-${id.replace('merlin-', '')}`;
+          cfg.brandSpells[brands[0]][newId] = meta;
+          try { fs.renameSync(path.join(tasksDir, id), path.join(tasksDir, newId)); } catch {}
+        }
+      }
+      delete cfg.spells;
+    }
+  }
+  // 0 or 2+ brands: keep global tokens as fallback until user assigns per-brand
+
+  cfg._migrationVersion = 1;
+  writeConfig(cfg);
 }
 
 // Encrypted read/write for sensitive local state (subscription, machine ID)
@@ -1085,10 +1546,10 @@ ipcMain.handle('get-stats-cache', () => {
 });
 
 // Check which platforms are connected by reading the config
-ipcMain.handle('get-connected-platforms', () => {
-  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+ipcMain.handle('get-connected-platforms', (_, brandName) => {
+  if (testActive('connections')) return TEST_DATA.connections(); // TEST HARNESS — rip out after v1
   try {
-    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const cfg = brandName ? readBrandConfig(brandName) : readConfig();
     const connected = [];
     // OAuth tokens may expire — check timestamp if available
     const tokenAge = cfg._tokenTimestamps || {};
@@ -1127,12 +1588,25 @@ ipcMain.handle('get-connected-platforms', () => {
 });
 
 // ── Spellbook (Scheduled Tasks) ────────────────────────────
-ipcMain.handle('list-spells', () => {
+ipcMain.handle('list-spells', (_, brandName) => {
+  if (testActive('spells')) return TEST_DATA.spells(); // TEST HARNESS — rip out after v1
   const tasksDir = path.join(os.homedir(), '.claude', 'scheduled-tasks');
   if (!fs.existsSync(tasksDir)) return [];
 
   const cfg = readConfig();
-  const spellMeta = cfg.spells || {};
+  // Resolve spell metadata: check brandSpells first, then global spells
+  const allSpellMeta = {};
+  // Merge global spells
+  if (cfg.spells) Object.assign(allSpellMeta, cfg.spells);
+  // Merge brand-specific spells (overrides global)
+  if (cfg.brandSpells) {
+    for (const [brand, spells] of Object.entries(cfg.brandSpells)) {
+      if (!brandName || brand === brandName) {
+        Object.assign(allSpellMeta, spells);
+      }
+    }
+  }
+  const spellMeta = allSpellMeta;
   let configDirty = false;
 
   try {
@@ -1174,7 +1648,12 @@ ipcMain.handle('list-spells', () => {
         consecutiveFailures: meta.consecutiveFailures || 0,
         isMerlin: d.name.startsWith('merlin-'),
       };
-    }).filter(t => t.isMerlin);
+    }).filter(t => {
+      if (!t.isMerlin) return false;
+      // If brand specified, only show spells for that brand (strict prefix match)
+      if (brandName) return t.id.startsWith(`merlin-${brandName}-`);
+      return true;
+    });
 
     // Auto-repair config if spells were missing
     if (configDirty) {
@@ -1186,26 +1665,42 @@ ipcMain.handle('list-spells', () => {
   } catch { return []; }
 });
 
-ipcMain.handle('update-spell-meta', (_, taskId, meta) => {
+// Helper: extract brand from spell task ID (merlin-{brand}-{spell} → brand)
+function extractBrandFromSpellId(taskId) {
+  // Pattern: merlin-{brand}-{spellname} where brand is a slug
+  const match = taskId.match(/^merlin-([a-z0-9_-]+?)-(?:daily|performance|morning|weekly|seo|competitor|email|custom)/i);
+  return match ? match[1] : null;
+}
+
+// Helper: update spell metadata in the correct config store
+function updateSpellConfig(taskId, updates) {
   const cfg = readConfig();
-  if (!cfg.spells) cfg.spells = {};
-  cfg.spells[taskId] = { ...cfg.spells[taskId], ...meta };
+  const brand = extractBrandFromSpellId(taskId);
+
+  if (brand && cfg.brandSpells && cfg.brandSpells[brand]) {
+    cfg.brandSpells[brand][taskId] = { ...cfg.brandSpells[brand][taskId], ...updates };
+  } else {
+    if (!cfg.spells) cfg.spells = {};
+    cfg.spells[taskId] = { ...cfg.spells[taskId], ...updates };
+  }
   writeConfig(cfg);
+}
+
+ipcMain.handle('update-spell-meta', (_, taskId, meta) => {
+  updateSpellConfig(taskId, meta);
   return { success: true };
 });
 
 ipcMain.handle('toggle-spell', (_, taskId, enabled) => {
   if (!taskId || typeof taskId !== 'string') return { success: false, error: 'invalid taskId' };
 
-  // Update local meta
-  const cfg = readConfig();
-  if (!cfg.spells) cfg.spells = {};
-  cfg.spells[taskId] = { ...cfg.spells[taskId], enabled };
-  writeConfig(cfg);
+  // Update local meta (writes to correct brand store)
+  updateSpellConfig(taskId, { enabled });
 
   // Ask Claude to actually enable/disable via MCP (suppressed — no chat chatter)
   if (resolveNextMessage) {
     _suppressNextResponse = true;
+    setTimeout(() => { _suppressNextResponse = false; }, 30000);
     resolveNextMessage({
       type: 'user',
       message: { role: 'user', content:
@@ -1221,7 +1716,30 @@ ipcMain.handle('toggle-spell', (_, taskId, enabled) => {
 });
 
 // Read brands from filesystem
+ipcMain.handle('get-live-ads', (_, brandName) => {
+  if (testActive('live')) return TEST_DATA.liveAds(); // TEST HARNESS — rip out after v1
+  if (!brandName) {
+    // Use first brand with ads-live.json
+    const brandsDir = path.join(appRoot, 'assets', 'brands');
+    try {
+      const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && d.name !== 'example');
+      for (const d of dirs) {
+        const adsPath = path.join(brandsDir, d.name, 'ads-live.json');
+        if (fs.existsSync(adsPath)) { brandName = d.name; break; }
+      }
+    } catch {}
+  }
+  if (!brandName) return [];
+  const adsPath = path.join(appRoot, 'assets', 'brands', brandName, 'ads-live.json');
+  try {
+    return JSON.parse(fs.readFileSync(adsPath, 'utf8'));
+  } catch { return []; }
+});
+
+// Read brands from filesystem
 ipcMain.handle('get-brands', () => {
+  if (testActive('brands')) return TEST_DATA.brands(); // TEST HARNESS — rip out after v1
   const brandsDir = path.join(appRoot, 'assets', 'brands');
   try {
     const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
@@ -1229,41 +1747,30 @@ ipcMain.handle('get-brands', () => {
       .map(d => {
         const brandPath = path.join(brandsDir, d.name);
         const brandMd = path.join(brandPath, 'brand.md');
-        let vertical = '';
+
+        // Read brand.md ONCE and extract all fields
+        let vertical = '', status = 'active', displayName = d.name;
         if (fs.existsSync(brandMd)) {
           const content = fs.readFileSync(brandMd, 'utf8');
-          const match = content.match(/vertical[:\s]+(\w+)/i);
-          if (match) vertical = match[1];
-        }
-        let status = 'active';
-        if (fs.existsSync(brandMd)) {
-          const content = fs.readFileSync(brandMd, 'utf8');
+          const vertMatch = content.match(/vertical[:\s]+(\w+)/i);
+          if (vertMatch) vertical = vertMatch[1];
           const statusMatch = content.match(/status[:\s]+(active|paused|archived)/i);
           if (statusMatch) status = statusMatch[1].toLowerCase();
-        }
-        // Count products
-        const productsDir = path.join(brandPath, 'products');
-        let productCount = 0;
-        try { productCount = fs.readdirSync(productsDir, { withFileTypes: true }).filter(d => d.isDirectory()).length; } catch {}
-
-        // Human-readable display name from brand.md, fall back to smart title case
-        let displayName = d.name;
-        if (fs.existsSync(brandMd)) {
-          const content = fs.readFileSync(brandMd, 'utf8');
-          // Try: "# BrandName" (markdown heading, most common)
           const h1Match = content.match(/^#\s+(.+)$/m);
-          if (h1Match) {
-            displayName = h1Match[1].trim();
-          } else {
-            // Try: "Brand: X" or "Name: X"
+          if (h1Match) { displayName = h1Match[1].trim(); }
+          else {
             const fieldMatch = content.match(/^(?:Brand|Name)[:\s]+["']?([^\n"']+)/im);
             if (fieldMatch) displayName = fieldMatch[1].trim();
           }
         }
         if (displayName === d.name) {
-          // Smart title case: "ivory-ella" → "Ivory Ella", "mad-chill" → "Mad Chill"
           displayName = d.name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
         }
+
+        // Count products
+        const productsDir = path.join(brandPath, 'products');
+        let productCount = 0;
+        try { productCount = fs.readdirSync(productsDir, { withFileTypes: true }).filter(dd => dd.isDirectory()).length; } catch {}
 
         return { name: d.name, displayName, vertical, productCount, status };
       });
@@ -1304,10 +1811,9 @@ ipcMain.handle('get-brands', () => {
 });
 
 // Fetch credit balances for connected platforms
-ipcMain.handle('get-credits', async () => {
-  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+ipcMain.handle('get-credits', async (_, brandName) => {
   let cfg = {};
-  try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { return {}; }
+  try { cfg = brandName ? readBrandConfig(brandName) : readConfig(); } catch { return {}; }
 
   const credits = {};
   const https = require('https');
@@ -1727,6 +2233,9 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  // Migrate global tokens to per-brand (runs once, idempotent)
+  try { migratePerBrand(); } catch (err) { console.error('[migration]', err.message); }
+
   await createWindow();
   setTimeout(checkForUpdates, 10000);
   setInterval(checkForUpdates, 4 * 60 * 60 * 1000);

@@ -1298,13 +1298,13 @@ a:hover{text-decoration:underline}
 /* ── Update toast ────────────────────────────────────────── */
 #update-toast{
   position:fixed;
-  top:12px;right:12px;
+  top:48px;right:12px;
   background:rgba(14,14,16,.96);
   backdrop-filter:blur(16px);
   border:1px solid var(--accent-border);
   border-radius:14px;
   padding:14px 18px;
-  z-index:100;
+  z-index:250;
   max-width:280px;
   animation:fadeUp .3s ease;
 }
@@ -1436,9 +1436,16 @@ a:hover{text-decoration:underline}
   flex-direction: column;
 }
 .archive-panel:not(.hidden) { transform: translateX(0); }
+.archive-panel.expanded {
+  width: 100%;
+  left: 0;
+}
+.archive-panel.expanded .archive-grid {
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+}
 .archive-panel-scroll {
   flex: 1;
-  overflow-y: auto;
+  overflow-y: scroll;
   overflow-x: hidden;
   padding-right: 4px;
   scrollbar-width: thin;
@@ -1596,3 +1603,105 @@ a:hover{text-decoration:underline}
   z-index: 301;
 }
 .archive-preview-close:hover { background: rgba(255,255,255,.2); }
+
+/* ── Agency Report Button ─────────────────────────────────── */
+.agency-report-btn {
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 9.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+  flex-shrink: 0;
+}
+.agency-report-btn:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+
+/* Live Ads status pills */
+.status-live { background: rgba(52,211,153,.15); color: #34d399; }
+.status-paused { background: rgba(161,161,170,.15); color: #a1a1aa; }
+.status-pending { background: rgba(251,191,36,.15); color: #fbbf24; }
+
+/* Platform brand colors */
+.platform-badge {
+  font-size:9px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.03em;padding:1px 5px;border-radius:3px;
+}
+/* Brand selector in perf bar */
+.brand-select-perf {
+  padding:2px 6px;
+  border-radius:5px;
+  border:1px solid var(--border);
+  background:var(--surface);
+  color:var(--text-muted);
+  font-size:10px;
+  font-weight:600;
+  cursor:pointer;
+  outline:none;
+  -webkit-appearance:none;
+  appearance:none;
+  max-width:120px;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  flex-shrink:0;
+  background-image:url("data:image/svg+xml,%3Csvg width='8' height='5' viewBox='0 0 8 5' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1l3 3 3-3' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 4px center;
+  padding-right:14px;
+}
+.brand-select-perf:hover{border-color:var(--accent-border);color:var(--text)}
+.brand-select-perf:focus{border-color:var(--accent-border)}
+.brand-select-perf option{background:var(--bg-deep);color:var(--text);font-size:11px}
+
+/* Budget indicator */
+.budget-indicator{cursor:default;position:relative}
+.platform-dropdown{
+  position:fixed;
+  background:var(--bg-deep);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:8px;
+  z-index:500;
+  min-width:180px;
+  box-shadow:0 8px 24px rgba(0,0,0,.4);
+  animation:fadeIn .15s ease;
+}
+.platform-dd-header{font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;padding:2px 4px 6px;border-bottom:1px solid var(--border);margin-bottom:4px}
+.platform-dd-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px;font-size:11px;color:var(--text-muted)}
+
+/* Context menu */
+.merlin-context-menu {
+  position:fixed;
+  background:var(--bg-deep);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:4px;
+  z-index:500;
+  min-width:160px;
+  box-shadow:0 8px 24px rgba(0,0,0,.4);
+}
+.context-menu-item {
+  padding:8px 12px;
+  font-size:12px;
+  color:var(--text-muted);
+  border-radius:5px;
+  cursor:pointer;
+  transition:background .15s;
+}
+.context-menu-item:hover {
+  background:var(--surface);
+  color:var(--text);
+}
+
+.platform-meta { background:rgba(24,119,242,.15); color:#1877F2; }
+.platform-tiktok { background:rgba(255,0,80,.12); color:#ff0050; }
+.platform-google { background:rgba(66,133,244,.15); color:#4285F4; }
+.platform-amazon { background:rgba(255,153,0,.15); color:#FF9900; }
+.platform-pinterest { background:rgba(230,0,35,.12); color:#E60023; }
