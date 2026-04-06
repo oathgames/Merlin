@@ -212,84 +212,10 @@ async function init() {
       welcomeBubble.innerHTML = `Welcome back — loading ${escapeHtml(brandName)}...`;
     }
 
-    // Onboarding progress tracker — show if setup incomplete
-    const connections = await merlin.getConnectedPlatforms(activeBrand).catch(() => []);
-    const spells = await merlin.listSpells(activeBrand).catch(() => []);
-    const hasAdPlatform = connections.some(c => ['meta', 'tiktok', 'google'].includes(c));
-    const hasSpells = spells.length > 0;
-    const hasProducts = productCount > 0;
-
-    const steps = [
-      { done: true, label: 'Brand created' },
-      { done: hasProducts, label: 'Products added' },
-      { done: hasAdPlatform, label: 'Ad platform connected' },
-      { done: hasSpells, label: 'Automation active' },
-    ];
-    const completed = steps.filter(s => s.done).length;
-
-    if (completed < steps.length) {
-      const progressBubble = addClaudeBubble();
-      progressBubble.classList.remove('streaming');
-      const nextStep = steps.find(s => !s.done);
-      const pct = Math.round((completed / steps.length) * 100);
-      progressBubble.innerHTML = `<div class="onboarding-progress">
-        <div class="onboarding-bar-track"><div class="onboarding-bar-fill" style="width:${pct}%"></div></div>
-        <div class="onboarding-steps">${steps.map(s => `<span class="onboarding-step ${s.done ? 'done' : ''}">${s.done ? '✓' : '○'} ${escapeHtml(s.label)}</span>`).join('')}</div>
-        <div class="onboarding-next">Next: <strong>${escapeHtml(nextStep.label)}</strong> — just ask and I'll walk you through it.</div>
-      </div>`;
-      currentBubble = null;
-      textBuffer = '';
-    }
-
-    // No interval needed — SDK takes over quickly for returning users
-    window._welcomeInterval = null;
+    // Native progress bar handles onboarding status — no duplicate in chat
   } else {
-    // New user — calm slide reveal, no flickering status lines
-    const demoSlides = [
-      { icon: '🎨', text: '<strong>Ad creatives</strong> from your product photos', stat: '~$0.04 each' },
-      { icon: '📣', text: '<strong>Meta, TikTok, Google, Amazon</strong> ads — launched and optimized', stat: 'all platforms' },
-      { icon: '🔍', text: '<strong>SEO audits</strong> and blog posts that rank on Google', stat: 'auto-published' },
-      { icon: '⚡', text: '<strong>Daily autopilot</strong> — new content every morning, losers killed, winners scaled', stat: 'runs while you sleep' },
-      { icon: '📊', text: '<strong>One dashboard</strong> for spend, ROAS, and what\'s actually working', stat: 'all channels' },
-    ];
-
-    // Build the bubble once — slides reveal in place, nothing flickers
-    let slidesHtml = '<div class="demo-slides">';
-    demoSlides.forEach((s, i) => {
-      slidesHtml += `<div class="demo-slide" id="demo-${i}"><span class="demo-icon">${s.icon}</span>${s.text}<span class="demo-stat">${s.stat}</span></div>`;
-    });
-    slidesHtml += '</div><div class="status-line" id="welcome-status">Setting up your workspace...</div>';
-    welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Drop your website below and I\'ll work some magic.' + slidesHtml;
-
-    // Gentle reveal: status fades in, then one slide every 3s
-    setTimeout(() => {
-      const statusEl = document.getElementById('welcome-status');
-      if (statusEl) statusEl.classList.add('visible');
-    }, 500);
-
-    let slideIndex = 0;
-    window._welcomeInterval = setInterval(() => {
-      const el = document.getElementById(`demo-${slideIndex}`);
-      if (el) {
-        el.classList.add('visible');
-        scrollToBottom();
-        slideIndex++;
-      }
-      if (slideIndex >= demoSlides.length) {
-        clearInterval(window._welcomeInterval);
-        window._welcomeInterval = null;
-      }
-    }, 3000);
-
-    // First slide a bit sooner
-    setTimeout(() => {
-      const el = document.getElementById('demo-0');
-      if (el && !el.classList.contains('visible')) {
-        el.classList.add('visible');
-        scrollToBottom();
-        slideIndex = 1;
-      }
-    }, 2000);
+    // New user — clean welcome, native progress bar handles status
+    welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Drop your website below and I\'ll work some magic.';
   }
 
   // Auto-detect Claude — poll every 3 seconds until found
@@ -327,6 +253,7 @@ async function init() {
     welcomeBubble.parentElement.remove();
 
     // Poll every 3 seconds — auto-continue when Claude is detected
+    if (window._claudePoller) clearInterval(window._claudePoller);
     window._claudePoller = setInterval(async () => {
       document.getElementById('setup-status').textContent = 'Looking for Claude...';
       const detected = await detectClaude();
@@ -528,17 +455,16 @@ function finalizeBubble() {
 }
 
 function scheduleTypingIndicator() {
-  // Don't flicker — if typing indicator is already showing, leave it.
-  // Only schedule if it's not already visible and session is active.
   if (typingTimeout) clearTimeout(typingTimeout);
   typingTimeout = null;
   if (!sessionActive) return;
-  if (document.querySelector('.typing-indicator')) return; // already showing
+  // If status is already showing something, don't override it
+  if (document.getElementById('chat-status').innerHTML) return;
   typingTimeout = setTimeout(() => {
     if (sessionActive && !currentBubble && !isStreaming) {
       showTypingIndicator();
     }
-  }, 2000); // 2s delay — calm, no rush
+  }, 2000);
 }
 
 // Only auto-scroll if user is near the bottom (respects scroll-up intent)
@@ -564,7 +490,12 @@ scrollBtn.addEventListener('click', () => {
 function scrollToBottom(force) {
   if (_userScrolledUp && !force) return;
   requestAnimationFrame(() => {
-    chat.scrollTop = chat.scrollHeight;
+    const anchor = document.getElementById('scroll-anchor');
+    if (anchor) {
+      anchor.scrollIntoView({ block: 'end' });
+    } else {
+      chat.scrollTop = chat.scrollHeight;
+    }
     _userScrolledUp = false;
   });
 }
@@ -621,10 +552,12 @@ function renderMarkdown(text) {
     }
     return `<code>${content}</code>`;
   });
-  // Bold
+  // Bold — markdown **text** and escaped <strong> tags from Claude
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // Italic
+  html = html.replace(/&lt;strong&gt;(.*?)&lt;\/strong&gt;/g, '<strong>$1</strong>');
+  // Italic — markdown *text* and escaped <em> tags
   html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/&lt;em&gt;(.*?)&lt;\/em&gt;/g, '<em>$1</em>');
   // Headers
   html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
   html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
@@ -686,11 +619,11 @@ function renderMarkdown(text) {
     const parseRow = (row) => row.split('|').slice(1, -1).map(c => c.trim());
     if (isSep && rows.length >= 2) {
       const headers = parseRow(rows[0]);
-      thead = '<thead><tr>' + headers.map(h => `<th>${h}</th>`).join('') + '</tr></thead>';
+      thead = '<thead><tr>' + headers.map(h => `<th>${escapeHtml(h)}</th>`).join('') + '</tr></thead>';
       const bodyRows = rows.slice(2);
-      tbody = '<tbody>' + bodyRows.map(r => '<tr>' + parseRow(r).map(c => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody>';
+      tbody = '<tbody>' + bodyRows.map(r => '<tr>' + parseRow(r).map(c => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('') + '</tbody>';
     } else {
-      tbody = '<tbody>' + rows.map(r => '<tr>' + parseRow(r).map(c => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody>';
+      tbody = '<tbody>' + rows.map(r => '<tr>' + parseRow(r).map(c => `<td>${escapeHtml(c)}</td>`).join('') + '</tr>').join('') + '</tbody>';
     }
     return `<table>${thead}${tbody}</table>`;
   });
@@ -741,6 +674,24 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// Sanitize raw errors into user-friendly messages
+function friendlyError(raw, platformName) {
+  if (!raw) return `Could not connect to ${platformName || 'the platform'}. Please try again.`;
+  const s = String(raw);
+  // Strip full command paths — never show file paths or JSON to users
+  if (s.includes('Command failed') || s.includes('.exe') || s.includes('--cmd') || s.includes('--config')) {
+    if (s.includes('ENOENT') || s.includes('not found')) return `Merlin engine not found. Try reinstalling or running /update.`;
+    if (s.includes('ETIMEDOUT') || s.includes('timeout')) return `Connection timed out. Check your internet and try again.`;
+    if (s.includes('ECONNREFUSED')) return `${platformName || 'Platform'} refused the connection. The service may be down.`;
+    if (s.includes('401') || s.includes('unauthorized')) return `Authorization failed. Try reconnecting ${platformName || 'the platform'}.`;
+    if (s.includes('403') || s.includes('forbidden')) return `Access denied. You may need additional permissions on ${platformName || 'the platform'}.`;
+    return `Could not connect to ${platformName || 'the platform'}. Please check your internet connection and try again.`;
+  }
+  // Truncate long messages
+  if (s.length > 150) return s.slice(0, 140) + '…';
+  return s;
 }
 
 // ── SDK Message Handling ────────────────────────────────────
@@ -804,6 +755,7 @@ merlin.onSdkMessage((msg) => {
       if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
       finalizeBubble();
       removeTypingIndicator();
+      clearStatusLabel();
       isStreaming = false;
       setInputDisabled(false);
       stopTickingTimer();
@@ -840,8 +792,7 @@ function handleStreamEvent(msg) {
 
   if (event.type === 'content_block_start') {
     if (event.content_block && event.content_block.type === 'text') {
-      // Remove tool status when text starts
-      document.querySelectorAll('.tool-status-row').forEach(el => el.remove());
+      setStatusLabel('Weaving a response'); // Keep status visible — only clear on turn end
       if (!currentBubble) {
         addClaudeBubble();
         isStreaming = true;
@@ -851,25 +802,15 @@ function handleStreamEvent(msg) {
     // Show tool activity status (like Claude Code) — single persistent row, no stacking
     if (event.content_block && event.content_block.type === 'tool_use') {
       const toolName = event.content_block.name || '';
-      const friendlyNames = {
-        'Bash': 'Running command', 'Read': 'Reading file', 'Write': 'Writing file',
-        'Edit': 'Editing file', 'Glob': 'Searching files', 'Grep': 'Searching code',
-        'WebSearch': 'Searching the web', 'WebFetch': 'Fetching page',
-        'Agent': 'Working on it', 'TodoWrite': 'Planning',
-        'AskUserQuestion': 'Asking you',
+      const labels = {
+        'Bash': 'Casting a spell', 'Read': 'Reading the scrolls', 'Write': 'Inscribing',
+        'Edit': 'Refining the formula', 'Glob': 'Scanning the vault', 'Grep': 'Divining patterns',
+        'WebSearch': 'Consulting the oracle', 'WebFetch': 'Summoning knowledge',
+        'Agent': 'Dispatching a familiar', 'TodoWrite': 'Charting the course',
+        'AskUserQuestion': 'Awaiting your wisdom',
       };
-      const label = friendlyNames[toolName] || 'Thinking';
-      removeTypingIndicator();
-      // Reuse existing status row or create one
-      let statusRow = document.querySelector('.tool-status-row');
-      if (!statusRow) {
-        statusRow = document.createElement('div');
-        statusRow.className = 'msg msg-claude tool-status-row';
-        statusRow.innerHTML = `<div class="msg-avatar">✦</div><div class="msg-bubble tool-status"></div>`;
-        messages.appendChild(statusRow);
-      }
-      statusRow.querySelector('.tool-status').textContent = label;
-      scrollToBottom();
+      const label = labels[toolName] || 'Channeling';
+      setStatusLabel(label);
     }
   }
 
@@ -880,7 +821,7 @@ function handleStreamEvent(msg) {
   }
 
   if (event.type === 'message_stop') {
-    document.querySelectorAll('.tool-status-row').forEach(el => el.remove());
+    // Don't clear status — message_stop is not turn-end (more tools may follow)
     finalizeBubble();
   }
 }
@@ -1303,6 +1244,7 @@ document.getElementById('stats-close').addEventListener('click', () => {
 document.getElementById('wisdom-header-btn').addEventListener('click', async () => {
   document.getElementById('magic-panel').classList.add('hidden');
   document.getElementById('archive-panel').classList.add('hidden');
+  closeAgencyOverlay();
   const overlay = document.getElementById('wisdom-overlay');
 
   // Toggle — if already open, just close
@@ -1446,23 +1388,29 @@ function loadConnections() {
 
     noConnections.style.display = 'none';
 
-    connected.forEach(platform => {
+    connected.forEach(conn => {
+      // Support both old format (string) and new format ({ platform, status })
+      const platform = typeof conn === 'string' ? conn : conn.platform;
+      const status = typeof conn === 'string' ? 'connected' : (conn.status || 'connected');
       const tile = availableTiles.querySelector(`.magic-tile[data-platform="${platform}"]`);
       if (tile) {
-        // Clone into connected section
         const clone = tile.cloneNode(true);
         clone.classList.add('connected');
+        if (status === 'expired') clone.classList.add('expired');
         connectedSection.appendChild(clone);
-        // Hide the original in available
         tile.style.display = 'none';
       }
     });
   }).catch((err) => { console.warn('[connections]', err); });
 }
 
+// Auto-refresh connections when tokens change (e.g., OAuth completed in background)
+merlin.onConnectionsChanged(() => loadConnections());
+
 document.getElementById('magic-btn').addEventListener('click', () => {
   document.getElementById('archive-panel').classList.add('hidden');
   document.getElementById('wisdom-overlay').classList.add('hidden');
+  closeAgencyOverlay();
   const panel = document.getElementById('magic-panel');
   panel.classList.toggle('hidden');
   // Load brands first (sets vertical filter), then connections (hides connected from available)
@@ -1503,28 +1451,59 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Connect platform tiles — use event delegation for original AND cloned tiles
-document.addEventListener('click', (e) => {
+// Connect platform tiles — ALL connections handled directly in UI, zero chat involvement
+const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'klaviyo']);
+const API_KEY_PLATFORMS = {
+  fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx...', url: 'https://fal.ai/dashboard/keys' },
+  elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx...', url: 'https://elevenlabs.io/app/settings/api-keys' },
+  heygen:     { key: 'heygenApiKey', label: 'HeyGen', placeholder: 'your-api-key', url: 'https://app.heygen.com/settings?nav=API' },
+  slack:      { key: 'slackWebhookUrl', label: 'Slack', placeholder: 'https://hooks.slack.com/services/...', url: null },
+};
+
+document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
+  if (tile.dataset.stubbed === 'true') return;
   const platform = tile.dataset.platform;
-  const names = {
-    meta: 'Connect my Meta Ads account',
-    tiktok: 'Connect my TikTok Ads account',
-    shopify: 'Connect my Shopify store',
-    klaviyo: 'Connect my Klaviyo account',
-    google: 'Connect my Google Ads account',
-    amazon: 'Connect my Amazon account for ads and product management',
-    pinterest: 'Connect my Pinterest Ads account',
-    fal: 'Set up fal.ai for image generation',
-    elevenlabs: 'Set up ElevenLabs for voice',
-    heygen: 'Set up HeyGen for video avatars',
-    attentive: 'Connect Attentive for SMS marketing',
-    discord: 'Connect Discord for community management',
-    slack: 'Connect Slack for notifications',
-  };
-  if (names[platform]) {
-    sendChatFromPanel(names[platform]);
+  const activeBrand = document.getElementById('brand-select')?.value || '';
+  const displayName = platform.charAt(0).toUpperCase() + platform.slice(1);
+
+  if (OAUTH_PLATFORMS.has(platform)) {
+    // All OAuth platforms — direct launch (Shopify resolves store from brand URL automatically)
+    tile.style.opacity = '0.5';
+    tile.style.pointerEvents = 'none';
+    try {
+      const result = await merlin.runOAuth(platform, activeBrand);
+      if (result.error) {
+        showModal({ title: 'Connection Failed', body: friendlyError(result.error, displayName), confirmLabel: 'OK', onConfirm: () => {} });
+      } else {
+        loadConnections();
+      }
+    } catch (err) {
+      showModal({ title: 'Connection Failed', body: friendlyError(err.message, displayName), confirmLabel: 'OK', onConfirm: () => {} });
+    }
+    tile.style.opacity = '';
+    tile.style.pointerEvents = '';
+    return;
+  }
+
+  const apiDef = API_KEY_PLATFORMS[platform];
+  if (apiDef) {
+    // API key entry via modal — no chat
+    showModal({
+      title: `Connect ${apiDef.label}`,
+      body: apiDef.url ? `Paste your API key below. <a href="${apiDef.url}" target="_blank" style="color:var(--accent)">Get your key here</a>` : 'Paste your API key or webhook URL below.',
+      inputPlaceholder: apiDef.placeholder,
+      confirmLabel: 'Save',
+      cancelLabel: 'Cancel',
+      onConfirm: async (value) => {
+        if (!value || value.trim().length < 5) { showModalError('Key is too short'); return; }
+        const result = await merlin.saveConfigField(apiDef.key, value.trim(), activeBrand);
+        if (result.success) loadConnections();
+        else showModal({ title: 'Error', body: result.error || 'Failed to save', confirmLabel: 'OK', onConfirm: () => {} });
+      },
+    });
+    return;
   }
 });
 
@@ -1960,38 +1939,54 @@ function stopTickingTimer() {
   if (tickerEl) { tickerEl.remove(); tickerEl = null; }
 }
 
+// ── Status Label (persistent, debounced, no layout shift) ───
+let _statusDebounce = null;
+let _currentStatusLabel = '';
+
+function setStatusLabel(label) {
+  if (label === _currentStatusLabel) return; // no-op if same
+  _currentStatusLabel = label;
+  if (_statusDebounce) clearTimeout(_statusDebounce);
+  _statusDebounce = setTimeout(() => {
+    const status = document.getElementById('chat-status');
+    const existing = status.querySelector('.chat-status-label');
+    if (existing) {
+      existing.textContent = label;
+    } else {
+      status.innerHTML = `<div class="chat-status-row"><span class="status-spinner">✦</span> <span class="chat-status-label">${escapeHtml(label)}</span></div>`;
+    }
+    _statusDebounce = null;
+  }, 300); // 300ms debounce — prevents rapid flicker
+}
+
+function closeAgencyOverlay() {
+  const o = document.getElementById('agency-overlay');
+  if (o) o.remove();
+}
+
+function clearStatusLabel() {
+  if (_statusDebounce) { clearTimeout(_statusDebounce); _statusDebounce = null; }
+  _currentStatusLabel = '';
+  document.getElementById('chat-status').innerHTML = '';
+}
+
 // ── Typing Indicator ────────────────────────────────────────
 function showTypingIndicator() {
-  // Remove any existing indicator
-  removeTypingIndicator();
-  const wrapper = document.createElement('div');
-  wrapper.className = 'msg msg-claude typing-indicator';
-  const avatar = document.createElement('div');
-  avatar.className = 'msg-avatar';
-  avatar.textContent = '✦';
-  const bubble = document.createElement('div');
-  bubble.className = 'msg-bubble';
-  bubble.innerHTML = '<div class="dot-pulse"><span></span><span></span><span></span></div>';
-  wrapper.appendChild(avatar);
-  wrapper.appendChild(bubble);
-  messages.appendChild(wrapper);
-  scrollToBottom();
-  // Auto-hide after 2 minutes to prevent stuck indicator
+  // Only set if nothing else is already showing
+  if (!document.getElementById('chat-status').innerHTML) {
+    setStatusLabel('Thinking');
+  }
+  // Auto-clear after 2 minutes to prevent stuck status
   if (typingStuckTimeout) clearTimeout(typingStuckTimeout);
   typingStuckTimeout = setTimeout(() => {
-    removeTypingIndicator();
+    clearStatusLabel();
     typingStuckTimeout = null;
   }, 120000);
 }
 
 function removeTypingIndicator() {
   if (typingStuckTimeout) { clearTimeout(typingStuckTimeout); typingStuckTimeout = null; }
-  const existing = document.querySelector('.typing-indicator');
-  if (existing) {
-    existing.style.transition = 'opacity .2s';
-    existing.style.opacity = '0';
-    setTimeout(() => existing.remove(), 200);
-  }
+  // Don't clear status — let tool status take over. Only clear on session end.
 }
 
 function sendMessage() {
@@ -2347,17 +2342,19 @@ document.addEventListener('contextmenu', (e) => {
 async function loadPerfBar(days) {
   const bar = document.getElementById('perf-bar');
   const text = document.getElementById('perf-text');
+  const activeBrand = document.getElementById('brand-select')?.value || '';
 
   try {
-    const perf = await merlin.getPerfSummary(days);
+    const perf = await merlin.getPerfSummary(days, activeBrand);
 
     if (!perf || (!perf.revenue && !perf.spend)) {
       text.innerHTML = 'No data yet — connect an ad platform to start tracking';
       return;
     }
 
-    const rev = perf.revenue > 0 ? `<strong>$${perf.revenue.toLocaleString()}</strong> revenue` : '';
-    const spend = perf.spend > 0 ? `$${Math.round(perf.spend).toLocaleString()} spent` : '';
+    const fmtMoney = (n) => n >= 1000000 ? '$' + (n/1000000).toFixed(2) + 'M' : n >= 1000 ? '$' + (n/1000).toFixed(1) + 'k' : '$' + Math.round(n);
+    const rev = perf.revenue > 0 ? `<strong>${fmtMoney(perf.revenue)}</strong> revenue` : '';
+    const spend = perf.spend > 0 ? `${fmtMoney(perf.spend)} spent` : '';
     const mer = perf.mer > 0 ? `<strong>${perf.mer.toFixed(1)}x</strong> MER` : '';
 
     const parts = [rev, spend, mer].filter(Boolean).join(' · ');
@@ -2371,10 +2368,26 @@ async function loadPerfBar(days) {
     // Daily budget cap indicator (simple, clear)
     let budgetHtml = '';
     if (perf.dailyBudget > 0) {
-      budgetHtml = ` · <span id="budget-indicator" class="budget-indicator">Budget: $${perf.dailyBudget}/day</span>`;
+      budgetHtml = ` · <span id="budget-indicator" class="budget-indicator">Daily Budget: $${perf.dailyBudget}/day</span>`;
     }
 
-    text.innerHTML = parts + trendHtml + budgetHtml;
+    // Last updated timestamp
+    let updatedHtml = '';
+    try {
+      const updatedAt = await merlin.getPerfUpdated(activeBrand);
+      if (updatedAt) {
+        const ago = Date.now() - new Date(updatedAt).getTime();
+        const mins = Math.floor(ago / 60000);
+        let agoStr;
+        if (mins < 1) agoStr = 'just now';
+        else if (mins < 60) agoStr = `${mins}m ago`;
+        else if (mins < 1440) agoStr = `${Math.floor(mins / 60)}h ago`;
+        else agoStr = `${Math.floor(mins / 1440)}d ago`;
+        updatedHtml = ` · <span class="perf-updated">Updated ${agoStr}</span>`;
+      }
+    } catch {}
+
+    text.innerHTML = parts + trendHtml + budgetHtml + updatedHtml;
 
     // Platform spend hover dropdown on budget indicator
     if (perf.platformBreakdown && perf.platformBreakdown.length > 0) {
@@ -2412,6 +2425,28 @@ async function loadPerfBar(days) {
 loadBrands().then(() => { loadConnections(); loadSpells(); });
 loadPerfBar(7);
 
+// Background perf refresh — pull fresh data on launch + every 4 hours
+(async function refreshPerfOnLaunch() {
+  try {
+    const lastUpdate = await merlin.getPerfUpdated();
+    const stale = !lastUpdate || (Date.now() - new Date(lastUpdate).getTime() > 4 * 60 * 60 * 1000);
+    if (stale) {
+      const activeBrand = document.getElementById('brand-select')?.value || '';
+      await merlin.refreshPerf(activeBrand);
+      const activePeriod = document.querySelector('.perf-period-btn.active')?.dataset.days || '7';
+      loadPerfBar(parseInt(activePeriod));
+    }
+  } catch {}
+})();
+setInterval(async () => {
+  try {
+    const activeBrand = document.getElementById('brand-select')?.value || '';
+    await merlin.refreshPerf(activeBrand);
+    const activePeriod = document.querySelector('.perf-period-btn.active')?.dataset.days || '7';
+    loadPerfBar(parseInt(activePeriod));
+  } catch {}
+}, 4 * 60 * 60 * 1000); // every 4 hours
+
 // Period selector buttons
 document.querySelectorAll('.perf-period-btn').forEach(btn => {
   btn.addEventListener('click', (e) => {
@@ -2425,6 +2460,10 @@ document.querySelectorAll('.perf-period-btn').forEach(btn => {
 // Agency Report
 document.getElementById('agency-report-btn').addEventListener('click', async (e) => {
   e.stopPropagation();
+  // Close other panels
+  document.getElementById('magic-panel').classList.add('hidden');
+  document.getElementById('archive-panel').classList.add('hidden');
+  document.getElementById('wisdom-overlay').classList.add('hidden');
 
   // Get brands
   let brands = [];
@@ -2433,14 +2472,18 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
   const period = document.querySelector('.perf-period-btn.active')?.dataset.days || '7';
   const periodLabel = { '7': 'Last 7 Days', '30': 'Last 30 Days', '90': 'Last 90 Days', '365': 'Last 12 Months' }[period] || `Last ${period} Days`;
 
-  // Build overlay
+  // Remove any existing overlay first (prevents stacking)
+  closeAgencyOverlay();
+
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
   overlay.id = 'agency-overlay';
   overlay.innerHTML = `
-    <div class="setup-card" style="max-width:420px;text-align:left;position:relative">
-      <button id="agency-close" class="magic-close" style="position:absolute;top:12px;right:12px">&times;</button>
-      <h2 style="font-size:18px;font-weight:700;color:var(--text);margin-bottom:4px">Agency Report</h2>
+    <div class="setup-card" style="max-width:420px;text-align:left">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h2 style="font-size:18px;font-weight:700;color:var(--text);margin:0">Agency Report</h2>
+        <button class="agency-x magic-close">&times;</button>
+      </div>
       <p style="font-size:12px;color:var(--text-dim);margin-bottom:16px">${periodLabel} — select brands to include</p>
 
       <div id="agency-brands" style="margin-bottom:16px">
@@ -2453,35 +2496,40 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
         ${brands.length === 0 ? '<p style="color:var(--text-dim);font-size:12px">No brands found</p>' : ''}
       </div>
 
-      <button id="agency-generate" class="btn-primary" style="width:100%">Generate Report</button>
+      <button class="agency-gen btn-primary" style="width:100%">Generate Report</button>
     </div>
   `;
 
   document.body.appendChild(overlay);
 
-  document.getElementById('agency-close').addEventListener('click', () => overlay.remove());
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+  const close = () => closeAgencyOverlay();
 
-  document.getElementById('agency-generate').addEventListener('click', async () => {
-    const selectedBrands = [...document.querySelectorAll('#agency-brands input:checked')].map(cb => cb.dataset.brand);
+  // Close: X button, backdrop click, Escape key
+  overlay.querySelector('.agency-x').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  const escHandler = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escHandler); } };
+  document.addEventListener('keydown', escHandler);
+
+  overlay.querySelector('.agency-gen').addEventListener('click', async () => {
+    const selectedBrands = [...overlay.querySelectorAll('#agency-brands input:checked')].map(cb => cb.dataset.brand);
     if (selectedBrands.length === 0) return;
 
-    const btn = document.getElementById('agency-generate');
+    const btn = overlay.querySelector('.agency-gen');
     btn.disabled = true;
     btn.textContent = 'Generating...';
 
-    // Get perf data
-    const perf = await merlin.getPerfSummary(parseInt(period));
-
-    // Build the report as a new window
-    const reportHtml = buildAgencyReport(selectedBrands, perf, periodLabel, brands);
-
-    // Open in new window for print/save as PDF
-    const reportWindow = window.open('', 'Agency Report', 'width=800,height=1000');
-    reportWindow.document.write(reportHtml);
-    reportWindow.document.close();
-
-    overlay.remove();
+    try {
+      const perf = await merlin.getPerfSummary(parseInt(period));
+      const reportHtml = buildAgencyReport(selectedBrands, perf, periodLabel, brands);
+      const reportWindow = window.open('', 'Agency Report', 'width=800,height=1000');
+      if (reportWindow) {
+        reportWindow.document.write(reportHtml);
+        reportWindow.document.close();
+      }
+    } catch (err) {
+      console.error('[report]', err);
+    }
+    close();
   });
 });
 
@@ -2683,6 +2731,7 @@ async function loadActivityFeed() {
 document.getElementById('archive-btn').addEventListener('click', () => {
   document.getElementById('magic-panel').classList.add('hidden');
   document.getElementById('wisdom-overlay').classList.add('hidden');
+  closeAgencyOverlay();
   const panel = document.getElementById('archive-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) { showArchiveView(); }
@@ -3011,13 +3060,18 @@ merlin.onTrialExpired(() => {
 
 // ── Onboarding Progress Bar ──────────────────────────────────
 async function updateProgressBar() {
+  const bar = document.getElementById('progress-bar');
+  if (!bar) return;
   try {
     const state = await merlin.loadState().catch(() => ({}));
-    if (state.progressDismissed) return;
+    if (state.progressDismissed) { bar.classList.add('hidden'); return; }
 
-    const brands = await merlin.getBrands().catch(() => []);
-    const connected = await merlin.getConnectedPlatforms().catch(() => []);
-    const spells = await merlin.listSpells().catch(() => []);
+    const brands = await merlin.getBrands().catch(() => null);
+    const connected = await merlin.getConnectedPlatforms().catch(() => null);
+    const spells = await merlin.listSpells().catch(() => null);
+
+    // If data hasn't loaded yet, don't hide — wait for next call
+    if (brands === null) return;
 
     const steps = [
       { key: 'brand', done: brands && brands.length > 0 },
@@ -3027,17 +3081,14 @@ async function updateProgressBar() {
     ];
     const doneCount = steps.filter(s => s.done).length;
 
-    if (doneCount === 4 || doneCount === 0) {
-      document.getElementById('progress-bar').classList.add('hidden');
-      return;
-    }
-
-    const bar = document.getElementById('progress-bar');
+    // Hide only when ALL done
+    if (doneCount === 4) { bar.classList.add('hidden'); return; }
+    // Show for any partial progress (including 0 — guides new users)
     bar.classList.remove('hidden');
     document.getElementById('progress-fill').style.width = `${(doneCount / 4) * 100}%`;
 
     steps.forEach(s => {
-      const el = document.querySelector(`.progress-step[data-step="${s.key}"]`);
+      const el = bar.querySelector(`.progress-step[data-step="${s.key}"]`);
       if (el) el.className = `progress-step ${s.done ? 'done' : 'active'}`;
     });
 

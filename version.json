@@ -1,5 +1,5 @@
 {
-  "version": "0.6.5",
+  "version": "0.7.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,10 +18,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.6.5: Wisdom insights (app-exclusive), morning briefing, onboarding progress tracker, first-run showcase, spell error retry, XSS fix (code copy), path validation hardening, installer fixes, empty states, Wisdom caching.",
+  "notes": "v0.7.0: Persistent status indicator, scroll stability, Reports/Wisdom/Archive header buttons, debounced tooltips, bulletproof agency overlay, friendly error messages, file protection hooks, 15-point security hardening, supply chain protection.",
   "whatsNew": [
-    "Wisdom — collective intelligence from the Merlin network",
-    "Morning briefing on app open",
-    "Onboarding progress tracker + first-run showcase"
+    "Persistent status indicator with spinning sparkle",
+    "Reports, Wisdom, Archive in header bar",
+    "15-point security hardening + supply chain protection"
   ]
 }

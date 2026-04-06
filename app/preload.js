@@ -47,7 +47,9 @@ contextBridge.exposeInMainWorld('merlin', {
   getStatsCache: () => ipcRenderer.invoke('get-stats-cache'),
 
   // Performance + Activity
-  getPerfSummary: (days) => ipcRenderer.invoke('get-perf-summary', days),
+  getPerfSummary: (days, brand) => ipcRenderer.invoke('get-perf-summary', days, brand),
+  refreshPerf: (brand) => ipcRenderer.invoke('refresh-perf', brand),
+  getPerfUpdated: (brand) => ipcRenderer.invoke('get-perf-updated', brand),
   getActivityFeed: (brand, limit) => ipcRenderer.invoke('get-activity-feed', brand, limit),
 
   // Archive
@@ -61,8 +63,8 @@ contextBridge.exposeInMainWorld('merlin', {
   getWisdom: () => ipcRenderer.invoke('get-wisdom'),
 
   // Morning briefing
-  getBriefing: () => ipcRenderer.invoke('get-briefing'),
-  dismissBriefing: () => ipcRenderer.invoke('dismiss-briefing'),
+  getBriefing: (brand) => ipcRenderer.invoke('get-briefing', brand),
+  dismissBriefing: (brand) => ipcRenderer.invoke('dismiss-briefing', brand),
 
   // Referral
   getReferralInfo: () => ipcRenderer.invoke('get-referral-info'),
@@ -74,6 +76,9 @@ contextBridge.exposeInMainWorld('merlin', {
   toggleSpell: (id, enabled) => ipcRenderer.invoke('toggle-spell', id, enabled),
   updateSpellMeta: (id, meta) => ipcRenderer.invoke('update-spell-meta', id, meta),
   savePastedMedia: (dataUrl, filename) => ipcRenderer.invoke('save-pasted-media', dataUrl, filename),
+  runOAuth: (platform, brand, extra) => ipcRenderer.invoke('run-oauth', platform, brand, extra),
+  onConnectionsChanged: (cb) => ipcRenderer.on('connections-changed', () => cb()),
+  saveConfigField: (key, value, brand) => ipcRenderer.invoke('save-config-field', key, value, brand),
   sendMessage: (text, options) => ipcRenderer.invoke('send-message', text, options),
   sendSilent: (text) => ipcRenderer.invoke('send-message', text, { silent: true }),
   createSpell: (taskId, cron, desc, prompt, brand) => ipcRenderer.invoke('create-spell', taskId, cron, desc, prompt, brand),

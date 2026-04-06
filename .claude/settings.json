@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const p=(JSON.parse(process.env.TOOL_INPUT||'{}').file_path||'').replace(/\\\\\\\\/g,'/');const blocked=[/\\/app\\/(main|renderer|preload|ws-server)\\.js$/,/\\/app\\/(style\\.css|index\\.html)$/,/\\.claude\\/settings\\.json$/,/\\.claude\\/commands\\//,/\\.(ssh|gnupg)\\//,/\\.(env|bashrc|zshrc|profile)$/,/(etc|Windows[\\\\/]System)/i];if(blocked.some(r=>r.test(p))){console.error('BLOCKED: Cannot modify app source or system files.');process.exit(2)}\""
+            "command": "node -e \"const p=(JSON.parse(process.env.TOOL_INPUT||'{}').file_path||'').replace(/\\\\\\\\/g,'/');const blocked=[/\\/app\\/(main|renderer|preload|ws-server)\\.js$/,/\\/app\\/(style\\.css|index\\.html)$/,/\\.claude\\/settings\\.json$/,/\\.claude\\/commands\\//,/CLAUDE\\.md$/,/version\\.json$/,/package\\.json$/,/package-lock\\.json$/,/\\.(ssh|gnupg)\\//,/\\.(env|bashrc|zshrc|profile)$/,/(etc|Windows[\\\\/]System)/i];if(blocked.some(r=>r.test(p))){console.error('BLOCKED: Cannot modify app source or system files.');process.exit(2)}\""
           }
         ]
       },
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const p=(JSON.parse(process.env.TOOL_INPUT||'{}').file_path||'').replace(/\\\\\\\\/g,'/');const blocked=[/\\/app\\/(main|renderer|preload|ws-server)\\.js$/,/\\/app\\/(style\\.css|index\\.html)$/,/\\.claude\\/settings\\.json$/,/\\.claude\\/commands\\//,/\\.(ssh|gnupg)\\//,/\\.(env|bashrc|zshrc|profile)$/,/(etc|Windows[\\\\/]System)/i];if(blocked.some(r=>r.test(p))){console.error('BLOCKED: Cannot modify app source or system files.');process.exit(2)}\""
+            "command": "node -e \"const p=(JSON.parse(process.env.TOOL_INPUT||'{}').file_path||'').replace(/\\\\\\\\/g,'/');const blocked=[/\\/app\\/(main|renderer|preload|ws-server)\\.js$/,/\\/app\\/(style\\.css|index\\.html)$/,/\\.claude\\/settings\\.json$/,/\\.claude\\/commands\\//,/CLAUDE\\.md$/,/version\\.json$/,/package\\.json$/,/package-lock\\.json$/,/\\.(ssh|gnupg)\\//,/\\.(env|bashrc|zshrc|profile)$/,/(etc|Windows[\\\\/]System)/i];if(blocked.some(r=>r.test(p))){console.error('BLOCKED: Cannot modify app source or system files.');process.exit(2)}\""
           }
         ]
       }

@@ -41,6 +41,7 @@ html,body{
   white-space:nowrap;
   z-index:9999;
   pointer-events:none;
+  pointer-events:none;
   box-shadow:0 4px 12px rgba(0,0,0,.3);
   font-family:var(--font);
   letter-spacing:.01em;
@@ -85,11 +86,34 @@ a:hover{text-decoration:underline}
   overflow-y:auto;
   overflow-x:hidden;
   padding:16px 16px 8px;
-  scroll-behavior:smooth;
 }
 #chat::-webkit-scrollbar{width:5px}
 #chat::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:3px}
 #chat::-webkit-scrollbar-track{background:transparent}
+/* Prevent layout shift: pin scroll to bottom anchor, not reflowing messages */
+#messages .msg{overflow-anchor:none}
+#scroll-anchor{overflow-anchor:auto;height:1px}
+/* Reserved status area — fixed height prevents layout shift */
+.chat-status{
+  min-height:32px;
+  overflow:hidden;overflow-anchor:none;
+  padding:0 16px;
+}
+.chat-status-row{
+  display:flex;align-items:center;gap:6px;
+  font-size:11px;color:var(--text-dim);
+  text-transform:uppercase;letter-spacing:.5px;font-weight:500;
+  padding:6px 0;
+}
+.status-spinner{
+  font-size:12px;animation:statusSpin 2s linear infinite;display:inline-block;
+  opacity:.5;position:relative;top:-1px;
+}
+@keyframes statusSpin{
+  from{transform:rotate(0deg)}
+  to{transform:rotate(360deg)}
+}
+.chat-status-label{opacity:.7}
 
 #messages{
   display:flex;
@@ -373,7 +397,7 @@ a:hover{text-decoration:underline}
   display:flex;
   align-items:flex-end;
   gap:8px;
-  padding:10px 16px 14px;
+  padding:12px 16px;
   border-top:1px solid var(--border);
   background:var(--bg-deep);
 }
@@ -791,6 +815,8 @@ a:hover{text-decoration:underline}
   font-size:10px;
   color:rgba(255,255,255,.25);
   margin-right:6px;
+  position:relative;
+  top:1px;
   user-select:none;
   -webkit-app-region:no-drag;
 }
@@ -1070,14 +1096,16 @@ a:hover{text-decoration:underline}
 
 /* ── Wisdom (full-frame takeover) ───────────────────────── */
 .wisdom-fullframe{
-  position:absolute;top:36px;left:0;right:0;bottom:0;
+  position:absolute;top:40px;left:0;right:0;bottom:0;
   background:var(--bg);z-index:55;
   display:flex;flex-direction:column;
 }
 .wisdom-fullframe.hidden{display:none}
 .wisdom-header{
   display:flex;align-items:center;justify-content:space-between;
-  padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;
+  padding:16px 20px;
+  border-bottom:1px solid rgba(139,92,246,.15);
+  flex-shrink:0;
   background:linear-gradient(135deg,rgba(139,92,246,.08),rgba(52,211,153,.04));
 }
 .wisdom-title-row{display:flex;align-items:baseline}
@@ -1750,6 +1778,7 @@ a:hover{text-decoration:underline}
 
 /* Budget indicator */
 .budget-indicator{cursor:default;position:relative}
+.perf-updated{color:var(--text-dim);font-size:11px}
 .platform-dropdown{
   position:fixed;
   background:var(--bg-deep);

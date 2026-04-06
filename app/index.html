@@ -17,12 +17,13 @@
 <div id="titlebar">
   <div class="titlebar-drag">
     <span class="titlebar-title">✦ Merlin</span>
+    <span id="version-label" class="version-label" style="margin-left:6px" data-tip="" data-tip-pos="bottom"></span>
   </div>
   <div class="titlebar-controls">
-    <span id="version-label" class="version-label" data-tip="" data-tip-pos="bottom"></span>
+    <button id="agency-report-btn" class="magic-btn-inline" aria-label="Reports" data-tip="Reports" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></button>
+    <button id="wisdom-header-btn" class="magic-btn-inline" aria-label="Wisdom" data-tip="Wisdom" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg></button>
     <button id="archive-btn" class="magic-btn-inline" aria-label="Archive" data-tip="Archive" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
-    <button id="wisdom-header-btn" class="magic-btn-inline" aria-label="Wisdom" data-tip="Merlin's Wisdom" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg></button>
-    <button id="magic-btn" class="magic-btn-inline" aria-label="Merlin's Magic" data-tip="Merlin's Magic" data-tip-pos="bottom">✦</button>
+    <button id="magic-btn" class="magic-btn-inline" aria-label="Magic" data-tip="Magic" data-tip-pos="bottom">✦</button>
     <button id="btn-min" class="win-ctrl" aria-label="Minimize">&#x2013;</button>
     <button id="btn-max" class="win-ctrl" aria-label="Maximize">&#x25A1;</button>
     <button id="btn-close" class="win-ctrl win-ctrl-close" aria-label="Close">&#x2715;</button>
@@ -37,12 +38,12 @@
     </select>
     <span id="perf-text" class="perf-text">Loading...</span>
     <div class="perf-period-group">
+      <button class="perf-period-btn" data-days="1">1D</button>
       <button class="perf-period-btn active" data-days="7">7D</button>
       <button class="perf-period-btn" data-days="30">1M</button>
       <button class="perf-period-btn" data-days="90">3M</button>
       <button class="perf-period-btn" data-days="365">12M</button>
     </div>
-    <button id="agency-report-btn" class="agency-report-btn">Agency</button>
   </div>
 </div>
 
@@ -64,6 +65,8 @@
 <!-- Chat -->
 <div id="chat">
   <div id="messages"></div>
+  <div id="chat-status" class="chat-status"></div>
+  <div id="scroll-anchor"></div>
 </div>
 
 <!-- Merlin's Magic Panel -->

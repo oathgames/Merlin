@@ -67,6 +67,10 @@ const TEST_FLAGS = {
   brands: process.argv.includes('--test-brands'),
   spellFire: process.argv.includes('--test-spell-fire'),
 };
+// Block test mode in production builds
+if (app.isPackaged) {
+  Object.keys(TEST_FLAGS).forEach(k => TEST_FLAGS[k] = false);
+}
 function testActive(flag) { return TEST_FLAGS.all || TEST_FLAGS[flag]; }
 
 // Mock data generators (all self-contained, no file deps)
@@ -401,7 +405,9 @@ async function handleToolApproval(toolName, input) {
     const cmdMatch = input.command.match(/"action"\s*:\s*"([^"]+)"/);
     const action = cmdMatch ? cmdMatch[1] : '';
     if (action === 'meta-push' || action === 'tiktok-push' || action === 'google-ads-push' || action === 'amazon-ads-push') {
-      const cfg = readConfig();
+      let activeBrand = '';
+      try { activeBrand = readState().activeBrand || ''; } catch {}
+      const cfg = activeBrand ? readBrandConfig(activeBrand) : readConfig();
       const dailyBudget = cfg.dailyAdBudget || 0;
       if (dailyBudget > 0) {
         // Read today's spend from ads-live.json to check remaining budget
@@ -512,7 +518,10 @@ async function startSession() {
     : '';
 
   async function* messageGenerator() {
-    yield { type: 'user', message: { role: 'user', content: `Run /merlin silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message.${brandHint} Check assets/brands/ for existing brand folders (ignore "example"). If a brand ALREADY exists, skip setup — just say "✦ [Brand] is ready — [X] products loaded. What would you like to create?" If NO brands exist, use the AskUserQuestion tool to ask "What's your website?" with these options: (1) label: "Set up my brand", description: "Enter your website URL and we'll auto-detect your brand, products, and colors" (2) label: "Just exploring", description: "See what Merlin can do — no setup needed".${domainHint} IMPORTANT: When the user provides their website URL (or picks their domain from the options), start working IMMEDIATELY — scrape the site with WebFetch, extract brand colors, find products, identify competitors with WebSearch. Do ALL of this in parallel with the binary download. Don't wait for the binary. Show results as you find them: "Found your brand colors: #xxx, #yyy", "Spotted 12 products", "Your top competitors look like X, Y, Z". This gives the user instant value. The binary download and config setup happen in the background via preflight. If the user selects "Just exploring", give a 3-sentence pitch of what Merlin does and ask what they'd like to try. IMPORTANT RULE: When showing images, include the full file path in your response text like this: results/img_20260403_164511/image_1_portrait.jpg — the app will render it inline automatically. Always include the path, never just describe the image.` } };
+    const setupInstructions = activeBrand
+      ? `A brand already exists: "${activeBrand}". Do NOT ask for a website. Do NOT run setup. Just count the products in assets/brands/${activeBrand}/products/ and say "✦ ${activeBrand.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} is ready — [X] products loaded. What would you like to create?"`
+      : `No brands exist yet. Use the AskUserQuestion tool to ask "What's your website?" with these options: (1) label: "Set up my brand", description: "Enter your website URL and we'll auto-detect your brand, products, and colors" (2) label: "Just exploring", description: "See what Merlin can do — no setup needed".${domainHint} When the user provides their website URL, start working IMMEDIATELY — scrape the site with WebFetch, extract brand colors, find products, identify competitors with WebSearch. Do ALL of this in parallel. Show results as you find them. If the user selects "Just exploring", give a 3-sentence pitch and ask what they'd like to try.`;
+    yield { type: 'user', message: { role: 'user', content: `Run /merlin silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message. ${setupInstructions} NEVER render progress bars, onboarding trackers, or setup checklists in chat — the app has a native progress bar above the chat that handles this automatically. IMPORTANT RULE: When showing images, include the full file path in your response text like this: results/img_20260403_164511/image_1_portrait.jpg — the app will render it inline automatically. Always include the path, never just describe the image.` } };
     // Drain any messages queued before SDK was ready
     while (pendingMessageQueue.length > 0) {
       yield pendingMessageQueue.shift();
@@ -620,21 +629,13 @@ async function startSession() {
 
           // Log spell run to activity.jsonl for the activity feed
           try {
-            // Find active brand
-            let activeBrand = '';
-            try {
-              const state = JSON.parse(fs.readFileSync(path.join(appRoot, '.merlin-state.json'), 'utf8'));
-              activeBrand = state.activeBrand || '';
-            } catch {}
-            if (!activeBrand) {
-              // Fallback: first brand folder
-              const brandsDir = path.join(appRoot, 'assets', 'brands');
+            // Extract brand from spell ID (e.g., "merlin-ivoryella-daily-ads" → "ivoryella")
+            const spellBrand = extractBrandFromSpellId(taskId);
+            const activeBrand = spellBrand || (() => {
               try {
-                const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
-                  .filter(d => d.isDirectory() && d.name !== 'example');
-                if (dirs.length > 0) activeBrand = dirs[0].name;
-              } catch {}
-            }
+                return JSON.parse(fs.readFileSync(path.join(appRoot, '.merlin-state.json'), 'utf8')).activeBrand || '';
+              } catch { return ''; }
+            })();
             if (activeBrand) {
               const logPath = path.join(appRoot, 'assets', 'brands', activeBrand, 'activity.jsonl');
               const entry = JSON.stringify({
@@ -782,7 +783,7 @@ ipcMain.handle('has-api-key', () => {
 });
 
 // Morning briefing — reads cached briefing generated by scheduled spells
-ipcMain.handle('get-briefing', () => {
+ipcMain.handle('get-briefing', (_, brandName) => {
   // TEST HARNESS — rip out after v1
   if (testActive('spells')) return {
     date: new Date().toISOString(),
@@ -791,25 +792,25 @@ ipcMain.handle('get-briefing', () => {
     revenue: '$1,847 yesterday. $12.8K this week. MER trending up 12% vs last week.',
     recommendation: 'Scale "Street Style" to $50/day — it has held 4.2x ROAS for 5 consecutive days.',
   };
-  const briefingFile = path.join(appRoot, '.merlin-briefing.json');
+  const suffix = brandName ? `-${brandName}` : '';
+  const briefingFile = path.join(appRoot, `.merlin-briefing${suffix}.json`);
   try {
     if (!fs.existsSync(briefingFile)) return null;
     const data = JSON.parse(fs.readFileSync(briefingFile, 'utf8'));
-    // Only show if briefing is from today or yesterday (not stale)
     const briefingDate = new Date(data.date);
     const now = new Date();
     const ageHours = (now - briefingDate) / (1000 * 60 * 60);
-    if (ageHours > 36) return null; // stale — more than 36 hours old
-    // Only show once per day — check if already dismissed today
+    if (ageHours > 36) return null;
     const state = readState();
-    if (state.lastBriefingDismissed === now.toISOString().slice(0, 10)) return null;
+    const dismissKey = `lastBriefingDismissed${suffix}`;
+    if (state[dismissKey] === now.toISOString().slice(0, 10)) return null;
     return data;
   } catch { return null; }
 });
 
-ipcMain.handle('dismiss-briefing', () => {
-  const stateFile = path.join(appRoot, '.merlin-state.json');
-  writeState({ lastBriefingDismissed: new Date().toISOString().slice(0, 10) });
+ipcMain.handle('dismiss-briefing', (_, brandName) => {
+  const suffix = brandName ? `-${brandName}` : '';
+  writeState({ [`lastBriefingDismissed${suffix}`]: new Date().toISOString().slice(0, 10) });
   return { success: true };
 });
 
@@ -827,6 +828,103 @@ ipcMain.handle('get-account-info', async () => {
     const info = await activeQuery.accountInfo();
     return info;
   } catch { return null; }
+});
+
+// Direct OAuth — bypasses SDK entirely, runs the binary from main process
+ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
+  const binaryName = process.platform === 'win32' ? 'Merlin.exe' : 'Merlin';
+  const binaryPath = path.join(appRoot, '.claude', 'tools', binaryName);
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(binaryPath); } catch { return { error: 'Binary not found. Run preflight first.' }; }
+  try { fs.accessSync(configPath); } catch { return { error: 'Config not found. Run preflight first.' }; }
+
+  const action = `${platform}-login`;
+  const cmdObj = { action };
+  // For Shopify, pass the store name — check config first (instant), then brand.md, then productUrl
+  if (platform === 'shopify') {
+    const cfg = brandName ? readBrandConfig(brandName) : readConfig();
+    if (cfg.shopifyStore) {
+      // Already resolved and stored — zero latency
+      cmdObj.brand = cfg.shopifyStore;
+    } else if (brandName) {
+      // Fall back to brand website URL (binary will resolve .myshopify.com)
+      try {
+        const brandMd = path.join(appRoot, 'assets', 'brands', brandName, 'brand.md');
+        const content = fs.readFileSync(brandMd, 'utf8');
+        const urlMatch = content.match(/URL:\s*(https?:\/\/[^\s\n]+)/i) || content.match(/website:\s*(https?:\/\/[^\s\n]+)/i);
+        if (urlMatch) cmdObj.brand = urlMatch[1].replace(/^https?:\/\//, '').replace(/\/$/, '');
+      } catch {}
+    }
+    if (!cmdObj.brand && cfg.productUrl) {
+      cmdObj.brand = cfg.productUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    }
+  }
+  if (extra?.store) cmdObj.brand = extra.store;
+  const cmd = JSON.stringify(cmdObj);
+  const { execFile } = require('child_process');
+
+  return new Promise((resolve) => {
+    const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
+      timeout: 300000, // 5 min for user to authorize in browser
+      cwd: appRoot,
+    }, (err, stdout, stderr) => {
+      if (err) {
+        console.error(`[oauth] ${action} failed:`, err.message);
+        return resolve({ error: err.message, stderr });
+      }
+      // Parse the output — binary returns JSON with tokens
+      try {
+        const result = JSON.parse(stdout.trim().split('\n').pop());
+        // Save tokens to config + record timestamp
+        if (brandName) {
+          writeBrandTokens(brandName, result);
+        } else {
+          const cfg = readConfig();
+          Object.assign(cfg, result);
+          if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
+          cfg._tokenTimestamps[platform] = Date.now();
+          writeConfig(cfg);
+        }
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('connections-changed');
+        }
+        resolve({ success: true, platform });
+      } catch {
+        // Binary output wasn't JSON — might have printed status messages
+        // Try to find JSON in the output
+        const lines = (stdout || '').split('\n');
+        for (const line of lines.reverse()) {
+          try {
+            const parsed = JSON.parse(line.trim());
+            if (parsed && typeof parsed === 'object') {
+              const cfg = brandName ? {} : readConfig();
+              Object.assign(cfg, parsed);
+              if (brandName) writeBrandTokens(brandName, parsed);
+              else writeConfig(cfg);
+              if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+              return resolve({ success: true, platform });
+            }
+          } catch {}
+        }
+        resolve({ success: true, stdout }); // Binary ran OK, just no JSON output
+      }
+    });
+  });
+});
+
+// Save a single config field (for API key entry from UI)
+ipcMain.handle('save-config-field', (_, key, value, brandName) => {
+  try {
+    if (brandName) {
+      writeBrandTokens(brandName, { [key]: value });
+    } else {
+      const cfg = readConfig();
+      cfg[key] = value;
+      writeConfig(cfg);
+    }
+    if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+    return { success: true };
+  } catch (err) { return { success: false, error: err.message }; }
 });
 
 ipcMain.handle('send-message', (_, text, options = {}) => {
@@ -850,14 +948,20 @@ ipcMain.handle('send-message', (_, text, options = {}) => {
 ipcMain.handle('approve-tool', (_, toolUseID) => {
   try {
     const entry = pendingApprovals.get(toolUseID);
-    if (entry) { clearTimeout(entry.timer); pendingApprovals.delete(toolUseID); entry.fn(true); }
+    if (!entry) return;
+    if (entry.processed) return { error: 'already processed' };
+    entry.processed = true;
+    clearTimeout(entry.timer); pendingApprovals.delete(toolUseID); entry.fn(true);
   } catch (err) { console.error('[approve]', err.message); }
 });
 
 ipcMain.handle('deny-tool', (_, toolUseID) => {
   try {
     const entry = pendingApprovals.get(toolUseID);
-    if (entry) { clearTimeout(entry.timer); pendingApprovals.delete(toolUseID); entry.fn(false); }
+    if (!entry) return;
+    if (entry.processed) return { error: 'already processed' };
+    entry.processed = true;
+    clearTimeout(entry.timer); pendingApprovals.delete(toolUseID); entry.fn(false);
   } catch (err) { console.error('[deny]', err.message); }
 });
 
@@ -919,6 +1023,10 @@ ipcMain.handle('delete-file', async (_, folderPath) => {
     if (!fullPath.startsWith(resolvedRoot)) return { success: false };
     const resultsDir = path.join(resolvedRoot, 'results');
     if (!fullPath.startsWith(resultsDir) || fullPath === resultsDir) return { success: false };
+    try {
+      const realPath = fs.realpathSync(fullPath);
+      if (!realPath.startsWith(path.resolve(appRoot))) return { success: false };
+    } catch { return { success: false }; }
     if (!fs.existsSync(fullPath)) return { success: false };
     // Use async rm to avoid blocking the main process (prevents "Not Responding")
     await fs.promises.rm(fullPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
@@ -937,6 +1045,10 @@ ipcMain.handle('copy-image', (_, filePath) => {
     const { nativeImage, clipboard } = require('electron');
     const fullPath = path.resolve(appRoot, filePath);
     if (!fullPath.startsWith(path.resolve(appRoot))) return { success: false };
+    try {
+      const realPath = fs.realpathSync(fullPath);
+      if (!realPath.startsWith(path.resolve(appRoot))) return { success: false };
+    } catch { return { success: false }; }
     const img = nativeImage.createFromPath(fullPath);
     if (img.isEmpty()) return { success: false };
     clipboard.writeImage(img);
@@ -948,15 +1060,66 @@ ipcMain.handle('open-folder', (_, folderPath) => {
   if (!folderPath || typeof folderPath !== 'string') return;
   const fullPath = path.resolve(appRoot, folderPath);
   if (!fullPath.startsWith(path.resolve(appRoot))) return { success: false };
+  try {
+    const realPath = fs.realpathSync(fullPath);
+    if (!realPath.startsWith(path.resolve(appRoot))) return { success: false };
+  } catch { return { success: false }; }
   shell.openPath(fullPath);
   return { success: true };
 });
 
 // ── Performance status bar: read cached dashboard data ──────
-ipcMain.handle('get-perf-summary', (_, requestedDays) => {
+// Background dashboard refresh — runs binary to pull fresh data from all platforms
+ipcMain.handle('refresh-perf', async (_, brandName) => {
+  const binaryName = process.platform === 'win32' ? 'Merlin.exe' : 'Merlin';
+  const binaryPath = path.join(appRoot, '.claude', 'tools', binaryName);
+  try { fs.accessSync(binaryPath); } catch { return { error: 'binary missing' }; }
+
+  // Use merged brand config if brand specified (includes brand tokens)
+  let configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(configPath); } catch { return { error: 'config missing' }; }
+  if (brandName) {
+    const merged = brandName ? readBrandConfig(brandName) : readConfig();
+    if (merged && Object.keys(merged).length > 0) {
+      const tmpPath = path.join(os.tmpdir(), `.merlin-config-perf-${Date.now()}.json`);
+      fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2));
+      setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 120000);
+      configPath = tmpPath;
+    }
+  }
+
+  const cmdObj = { action: 'dashboard', batchCount: 1 };
+  if (brandName) cmdObj.brand = brandName;
+  const cmd = JSON.stringify(cmdObj);
+  const { execFile } = require('child_process');
+  return new Promise((resolve) => {
+    execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
+      timeout: 60000, cwd: appRoot,
+    }, (err, stdout) => {
+      if (err) return resolve({ error: err.message });
+      // Cache the timestamp per brand
+      try {
+        const resultsDir = brandName ? path.join(appRoot, 'results', brandName) : path.join(appRoot, 'results');
+        fs.mkdirSync(resultsDir, { recursive: true });
+        fs.writeFileSync(path.join(resultsDir, '.perf-updated'), new Date().toISOString());
+      } catch {}
+      resolve({ success: true });
+    });
+  });
+});
+
+ipcMain.handle('get-perf-updated', (_, brandName) => {
+  try {
+    const resultsDir = brandName ? path.join(appRoot, 'results', brandName) : path.join(appRoot, 'results');
+    return fs.readFileSync(path.join(resultsDir, '.perf-updated'), 'utf8').trim();
+  } catch { return null; }
+});
+
+ipcMain.handle('get-perf-summary', (_, requestedDays, brandName) => {
   if (testActive('perf')) return TEST_DATA.perf(requestedDays); // TEST HARNESS — rip out after v1
   const days = requestedDays || 7;
-  const resultsDir = path.join(appRoot, 'results');
+  // Brand-scoped: read from results/{brand}/ if brand specified, else results/
+  const resultsDir = brandName ? path.join(appRoot, 'results', brandName) : path.join(appRoot, 'results');
   try {
     // Find all dashboard snapshot files
     const files = [];
@@ -1017,7 +1180,10 @@ ipcMain.handle('get-perf-summary', (_, requestedDays) => {
 
     // Get daily budget from brand config (falls back to global)
     let activeBrand = '';
-    try { activeBrand = JSON.parse(fs.readFileSync(path.join(appRoot, '.merlin-state.json'), 'utf8')).activeBrand || ''; } catch {}
+    if (!activeBrand) {
+      try { activeBrand = JSON.parse(fs.readFileSync(path.join(appRoot, '.merlin-state.json'), 'utf8')).activeBrand || ''; } catch {}
+    }
+    if (!activeBrand && brandName) activeBrand = brandName;
     const cfg = activeBrand ? readBrandConfig(activeBrand) : readConfig();
     const dailyBudget = cfg.dailyAdBudget || 0;
 
@@ -1059,6 +1225,7 @@ ipcMain.handle('get-activity-feed', (_, brandName, limit = 30) => {
     } catch {}
   }
   if (!brandName) return [];
+  if (!/^[a-z0-9_-]+$/i.test(brandName)) return [];
 
   const logPath = path.join(appRoot, 'assets', 'brands', brandName, 'activity.jsonl');
   try {
@@ -1257,12 +1424,18 @@ ipcMain.handle('accept-tos', () => {
 });
 
 ipcMain.handle('get-decrypted-config-path', (_, brandName) => {
-  const cfg = brandName ? readBrandConfig(brandName) : readConfig();
-  if (!cfg || Object.keys(cfg).length === 0) return null;
-  const tmpPath = path.join(os.tmpdir(), `.merlin-config-${Date.now()}.json`);
-  fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 }); // user-only read
-  setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 10000); // auto-delete after 10s
-  return tmpPath;
+  // Config is plaintext now — return path directly (no temp file needed)
+  // For brand-specific, still need a merged temp file since brand tokens are in a separate file
+  if (brandName) {
+    const cfg = readBrandConfig(brandName);
+    if (!cfg || Object.keys(cfg).length === 0) return null;
+    const tmpPath = path.join(os.tmpdir(), `.merlin-config-${Date.now()}.json`);
+    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
+    setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 500);
+    return tmpPath;
+  }
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(configPath); return configPath; } catch { return null; }
 });
 
 ipcMain.handle('check-claude-running', async () => {
@@ -1309,11 +1482,7 @@ ipcMain.handle('save-state', (_, data) => {
 ipcMain.handle('load-state', () => readState());
 
 // ── Config helpers ──────────────────────────────────────────
-// Config MUST stay as plaintext JSON — the Go binary reads it via --config flag.
-// Token fields encrypted at rest via safeStorage
-// GLOBAL_KEYS: App-level tools (shared across all brands)
-// BRAND_KEYS: Platform connections (per-brand — different ad accounts per brand)
-const GLOBAL_KEYS = ['falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'arcadsApiKey', 'googleApiKey'];
+// Brand-specific token field names (used by migratePerBrand)
 const BRAND_KEYS = [
   'metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaConfigId',
   'tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId',
@@ -1325,33 +1494,34 @@ const BRAND_KEYS = [
   'pinterestAccessToken',
   'slackBotToken', 'slackWebhookUrl',
 ];
-const SENSITIVE_FIELDS = [...GLOBAL_KEYS, ...BRAND_KEYS];
-const tokensFilePath = path.join(appRoot, '.claude', 'tools', '.merlin-tokens');
+// ALL config is plaintext JSON — the Go binary reads it via --config flag.
+// No encryption. Tokens live alongside settings in the same file.
+// This is a local desktop app on the user's device — encryption added complexity
+// that broke the binary/IPC boundary without meaningful security benefit.
 
 function readConfig() {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   let cfg = {};
   try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
 
-  // Merge encrypted tokens
+  // One-time migration: merge encrypted .merlin-tokens back into plaintext config
+  const tokensFilePath = path.join(appRoot, '.claude', 'tools', '.merlin-tokens');
   try {
     const buf = fs.readFileSync(tokensFilePath);
     let tokens;
     if (safeStorage.isEncryptionAvailable()) {
       try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
-        tokens = JSON.parse(buf.toString('utf8')); // migration from plaintext
+        tokens = JSON.parse(buf.toString('utf8'));
       }
     } else {
       tokens = JSON.parse(buf.toString('utf8'));
     }
     Object.assign(cfg, tokens);
-  } catch {} // no tokens file yet — fine
-
-  // Auto-migrate: if tokens are in plaintext config, split them out
-  const hasTokensInConfig = SENSITIVE_FIELDS.some(f => cfg[f] && typeof cfg[f] === 'string' && cfg[f].length > 10);
-  if (hasTokensInConfig) {
+    // Write merged config and delete the tokens file
     writeConfig(cfg);
-  }
+    try { fs.unlinkSync(tokensFilePath); } catch {}
+    console.log('[config] migrated .merlin-tokens into plaintext config');
+  } catch {} // no tokens file — fine
 
   return cfg;
 }
@@ -1360,40 +1530,25 @@ function writeConfig(cfg) {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
-
-    // Split: tokens → encrypted file, settings → plaintext
-    const tokens = {};
-    const settings = { ...cfg };
-    for (const field of SENSITIVE_FIELDS) {
-      if (settings[field]) {
-        tokens[field] = settings[field];
-        delete settings[field];
-      }
-    }
-
-    // Plaintext settings (Go binary + Claude tasks can read this)
     const tmpPath = configPath + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(settings, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
     fs.renameSync(tmpPath, configPath);
-
-    // Encrypted tokens (only Electron can decrypt via OS keychain)
-    if (Object.keys(tokens).length > 0) {
-      const data = JSON.stringify(tokens);
-      if (safeStorage.isEncryptionAvailable()) {
-        fs.writeFileSync(tokensFilePath, safeStorage.encryptString(data));
-      } else {
-        fs.writeFileSync(tokensFilePath, data); // fallback if encryption unavailable
-      }
-    }
   } catch (err) { console.error('[config] write failed:', err.message); }
 }
 
 // ── Per-Brand Config ──────────────────────────────────────
 function readBrandConfig(brandName) {
-  const cfg = readConfig(); // global settings + global tokens
+  const cfg = readConfig();
   if (!brandName) return cfg;
 
-  // Read brand-specific tokens
+  // Read brand-specific config (plaintext)
+  const brandConfigPath = path.join(appRoot, '.claude', 'tools', `.merlin-config-${brandName}.json`);
+  try {
+    const brandCfg = JSON.parse(fs.readFileSync(brandConfigPath, 'utf8'));
+    Object.assign(cfg, brandCfg);
+  } catch {}
+
+  // One-time migration: merge encrypted brand tokens into plaintext
   const brandTokensPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${brandName}`);
   try {
     const buf = fs.readFileSync(brandTokensPath);
@@ -1406,9 +1561,12 @@ function readBrandConfig(brandName) {
       tokens = JSON.parse(buf.toString('utf8'));
     }
     Object.assign(cfg, tokens);
-  } catch {} // no brand tokens yet
+    // Write merged and delete tokens file
+    writeBrandTokens(brandName, tokens);
+    try { fs.unlinkSync(brandTokensPath); } catch {}
+    console.log(`[config] migrated .merlin-tokens-${brandName} into plaintext`);
+  } catch {}
 
-  // Also load brand-specific spells
   if (cfg.brandSpells && cfg.brandSpells[brandName]) {
     cfg._brandSpells = cfg.brandSpells[brandName];
   }
@@ -1418,16 +1576,15 @@ function readBrandConfig(brandName) {
 
 function writeBrandTokens(brandName, tokens) {
   if (!brandName || !tokens || Object.keys(tokens).length === 0) return;
-  const tokenPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${brandName}`);
+  const tokenPath = path.join(appRoot, '.claude', 'tools', `.merlin-config-${brandName}.json`);
   try {
     fs.mkdirSync(path.dirname(tokenPath), { recursive: true });
-    const data = JSON.stringify(tokens);
-    if (safeStorage.isEncryptionAvailable()) {
-      fs.writeFileSync(tokenPath, safeStorage.encryptString(data));
-    } else {
-      fs.writeFileSync(tokenPath, data);
-    }
-  } catch (err) { console.error('[brand-tokens] write failed:', err.message); }
+    // Merge with existing brand config
+    let existing = {};
+    try { existing = JSON.parse(fs.readFileSync(tokenPath, 'utf8')); } catch {}
+    Object.assign(existing, tokens);
+    fs.writeFileSync(tokenPath, JSON.stringify(existing, null, 2));
+  } catch (err) { console.error('[brand-config] write failed:', err.message); }
 }
 
 // Migration: move global tokens to per-brand on first run
@@ -1554,18 +1711,28 @@ ipcMain.handle('get-stats-cache', () => {
 });
 
 // Check which platforms are connected by reading the config
+// Platform connections (Meta, Shopify, Google, etc.) are per-brand — only show if the brand has them
+// Global tools (fal, ElevenLabs, HeyGen, Slack) are shared across all brands
 ipcMain.handle('get-connected-platforms', (_, brandName) => {
   if (testActive('connections')) return TEST_DATA.connections(); // TEST HARNESS — rip out after v1
   try {
-    const cfg = brandName ? readBrandConfig(brandName) : readConfig();
-    const connected = [];
-    // OAuth tokens may expire — check timestamp if available
-    const tokenAge = cfg._tokenTimestamps || {};
-    const now = Date.now();
-    const EXPIRE_MS = 55 * 24 * 60 * 60 * 1000; // 55 days (Meta tokens last 60)
+    const globalCfg = readConfig();
+    // Brand-specific tokens (NOT merged with global — we check them separately)
+    let brandCfg = {};
+    if (brandName) {
+      const brandConfigPath = path.join(appRoot, '.claude', 'tools', `.merlin-config-${brandName}.json`);
+      try { brandCfg = JSON.parse(fs.readFileSync(brandConfigPath, 'utf8')); } catch {}
+    }
 
-    function check(key, platform) {
-      if (!cfg[key]) return;
+    const connected = [];
+    const tokenAge = { ...(globalCfg._tokenTimestamps || {}), ...(brandCfg._tokenTimestamps || {}) };
+    const now = Date.now();
+    const EXPIRE_MS = 55 * 24 * 60 * 60 * 1000;
+
+    // Per-brand platform connections — only show if THIS brand has the token
+    function checkBrand(key, platform) {
+      const token = brandCfg[key] || (!brandName ? globalCfg[key] : null);
+      if (!token) return;
       const ts = tokenAge[platform];
       if (ts && (now - ts) > EXPIRE_MS) {
         connected.push({ platform, status: 'expired' });
@@ -1574,24 +1741,25 @@ ipcMain.handle('get-connected-platforms', (_, brandName) => {
       }
     }
 
-    // OAuth platforms (tokens can expire)
-    check('metaAccessToken', 'meta');
-    check('tiktokAccessToken', 'tiktok');
-    check('googleAccessToken', 'google');
-    check('pinterestAccessToken', 'pinterest');
-    check('amazonAccessToken', 'amazon');
+    checkBrand('metaAccessToken', 'meta');
+    checkBrand('tiktokAccessToken', 'tiktok');
+    checkBrand('googleAccessToken', 'google');
+    checkBrand('pinterestAccessToken', 'pinterest');
+    checkBrand('amazonAccessToken', 'amazon');
+    if ((brandCfg.shopifyAccessToken && brandCfg.shopifyStore) || (!brandName && globalCfg.shopifyAccessToken && globalCfg.shopifyStore)) {
+      connected.push({ platform: 'shopify', status: 'connected' });
+    }
+    if (brandCfg.klaviyoApiKey || brandCfg.klaviyoAccessToken || (!brandName && (globalCfg.klaviyoApiKey || globalCfg.klaviyoAccessToken))) {
+      connected.push({ platform: 'klaviyo', status: 'connected' });
+    }
 
-    // API key platforms (don't expire unless revoked)
-    if (cfg.shopifyAccessToken && cfg.shopifyStore) connected.push({ platform: 'shopify', status: 'connected' });
-    if (cfg.klaviyoApiKey || cfg.klaviyoAccessToken) connected.push({ platform: 'klaviyo', status: 'connected' });
-    if (cfg.falApiKey) connected.push({ platform: 'fal', status: 'connected' });
-    if (cfg.elevenLabsApiKey) connected.push({ platform: 'elevenlabs', status: 'connected' });
-    if (cfg.heygenApiKey) connected.push({ platform: 'heygen', status: 'connected' });
-    if (cfg.slackBotToken || cfg.slackWebhookUrl) connected.push({ platform: 'slack', status: 'connected' });
+    // Global tools — shared across all brands (always check global config)
+    if (globalCfg.falApiKey) connected.push({ platform: 'fal', status: 'connected' });
+    if (globalCfg.elevenLabsApiKey) connected.push({ platform: 'elevenlabs', status: 'connected' });
+    if (globalCfg.heygenApiKey) connected.push({ platform: 'heygen', status: 'connected' });
+    if (globalCfg.slackBotToken || globalCfg.slackWebhookUrl) connected.push({ platform: 'slack', status: 'connected' });
 
-    // Return flat array for backward compat (renderer expects string[])
-    // but include status for future UI enhancement
-    return connected.map(c => c.platform);
+    return connected;
   } catch { return []; }
 });
 
@@ -1739,6 +1907,7 @@ ipcMain.handle('get-live-ads', (_, brandName) => {
     } catch {}
   }
   if (!brandName) return [];
+  if (!/^[a-z0-9_-]+$/i.test(brandName)) return [];
   const adsPath = path.join(appRoot, 'assets', 'brands', brandName, 'ads-live.json');
   try {
     return JSON.parse(fs.readFileSync(adsPath, 'utf8'));
@@ -1797,9 +1966,7 @@ ipcMain.handle('get-brands', () => {
       try { existingHash = JSON.parse(fs.readFileSync(indexPath, 'utf8')).hash; } catch {}
 
       if (currentHash !== existingHash) {
-        const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
-        let cfg = {};
-        try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+        const cfg = readConfig();
 
         const index = {
           hash: currentHash,
