@@ -7,6 +7,38 @@ const { generateQRDataUri } = require('./qr');
 
 Menu.setApplicationMenu(null);
 
+// ── Fix PATH for Electron launched from installers/shortcuts ──────────
+// Electron doesn't inherit the user's full shell PATH when launched from
+// desktop shortcuts, Start Menu, or installer "Run" buttons. Add common
+// Claude CLI locations so detection and SDK session startup work.
+(function fixPath() {
+  const home = os.homedir();
+  const extra = [];
+  if (process.platform === 'win32') {
+    extra.push(
+      path.join(home, 'AppData', 'Roaming', 'npm'),
+      path.join(home, '.claude', 'bin'),
+      path.join(home, 'AppData', 'Local', 'Programs', 'claude'),
+      path.join(home, 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links'),
+    );
+  } else {
+    extra.push(
+      '/usr/local/bin',
+      '/opt/homebrew/bin',
+      path.join(home, '.local', 'bin'),
+      path.join(home, '.claude', 'bin'),
+      path.join(home, '.claude', 'local', 'bin'),
+      path.join(home, '.nvm', 'current', 'bin'),
+    );
+  }
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const current = process.env.PATH || '';
+  const missing = extra.filter(p => !current.includes(p));
+  if (missing.length > 0) {
+    process.env.PATH = current + sep + missing.join(sep);
+  }
+})();
+
 // Report crashes to Wisdom API for structured error monitoring
 process.on('uncaughtException', (err) => {
   console.error('[CRASH]', err);
@@ -752,29 +784,35 @@ ipcMain.handle('check-setup', async () => {
     });
   }
 
-  // Check common Claude CLI locations
-  const candidates = ['claude'];
-  if (process.platform === 'darwin') {
-    candidates.push(
-      '/usr/local/bin/claude',
-      path.join(os.homedir(), '.claude', 'bin', 'claude'),
-      path.join(os.homedir(), '.local', 'bin', 'claude'),
-      '/opt/homebrew/bin/claude'
-    );
-  } else if (process.platform === 'win32') {
-    candidates.push(
+  // Fast path: check if claude binary exists at known locations (no exec needed)
+  const knownPaths = [];
+  if (process.platform === 'win32') {
+    knownPaths.push(
       path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude.cmd'),
       path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'claude'),
-      path.join(os.homedir(), '.claude', 'bin', 'claude.exe')
+      path.join(os.homedir(), '.claude', 'bin', 'claude.exe'),
+      path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'claude', 'claude.exe'),
+      path.join(os.homedir(), 'AppData', 'Local', 'Microsoft', 'WinGet', 'Links', 'claude.exe'),
+    );
+  } else {
+    knownPaths.push(
+      '/usr/local/bin/claude',
+      '/opt/homebrew/bin/claude',
+      path.join(os.homedir(), '.local', 'bin', 'claude'),
+      path.join(os.homedir(), '.claude', 'bin', 'claude'),
+      path.join(os.homedir(), '.claude', 'local', 'bin', 'claude'),
     );
   }
 
-  // Try ALL candidates in parallel (fast — doesn't block UI)
+  // File-exists check is instant (no child process spawn)
+  for (const p of knownPaths) {
+    try { fs.accessSync(p, fs.constants.X_OK); return { ready: true }; } catch {}
+  }
+
+  // Fallback: try exec (slower, but catches PATH locations we don't know about)
+  const candidates = ['claude'];
   const results = await Promise.all(candidates.map(cmd => tryCmd(cmd)));
   if (results.some(r => r)) return { ready: true };
-
-  // None found — try one more time with just 'claude' (in case PATH is slow to resolve)
-  if (await tryCmd('claude')) return { ready: true };
 
   // Claude CLI not found — attempt auto-install
   return { ready: false, canAutoInstall: true, reason: 'Setting up Merlin\'s AI engine...' };
