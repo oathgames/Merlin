@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, Tray, shell, safeStorage } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -33,7 +33,10 @@ const appRoot = app.isPackaged
   : path.join(__dirname, '..');
 
 let win = null;
+let tray = null;
+let forceQuit = false;
 let resolveNextMessage = null;
+const activeChildProcesses = new Set(); // track spawned Merlin.exe for cleanup
 let pendingMessageQueue = []; // Queue messages sent before SDK is ready
 let pendingApprovals = new Map();
 let activeQuery = null;
@@ -228,7 +231,9 @@ async function createWindow() {
     });
   }
   win.once('ready-to-show', () => {
-    win.show();
+    // If launched hidden at startup (tray mode), stay hidden — spells still fire
+    const launchedHidden = process.argv.includes('--hidden') || app.getLoginItemSettings().wasOpenedAsHidden;
+    if (!launchedHidden) win.show();
     win.webContents.send('platform', process.platform);
 
     // TEST HARNESS — rip out after v1
@@ -265,6 +270,36 @@ async function createWindow() {
     }
     // END TEST HARNESS
   });
+
+  // ── Minimize to tray on close (keeps spells running) ──────
+  win.on('close', (e) => {
+    if (!forceQuit) {
+      e.preventDefault();
+      win.hide();
+    }
+  });
+
+  const showWindow = () => {
+    if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+    else createWindow();
+  };
+
+  try {
+    const trayIcon = path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+    tray = new Tray(trayIcon);
+    tray.setToolTip('Merlin — AI CMO');
+    tray.setContextMenu(Menu.buildFromTemplate([
+      { label: 'Open Merlin', click: showWindow },
+      { type: 'separator' },
+      { label: 'Quit', click: () => { forceQuit = true; app.quit(); } },
+    ]));
+    tray.on('double-click', showWindow);
+  } catch (err) {
+    console.warn('[tray] System tray not available:', err.message);
+    // Linux without tray support — fall back to normal window behavior
+    // Re-enable close-to-quit so the user isn't stuck with a zombie process
+    win.removeAllListeners('close');
+  }
 
   // Start WebSocket server for PWA mobile clients
   await wsServer.startServer();
@@ -347,6 +382,9 @@ function translateTool(toolName, input) {
       'tiktok-login':  { label: 'Connect to your TikTok Ads account', cost: 'Free' },
       'shopify-login': { label: 'Connect to your Shopify store', cost: 'Free' },
       'slack-login':   { label: 'Connect Slack for notifications', cost: 'Free' },
+      'discord-login': { label: 'Connect Discord for notifications', cost: 'Free' },
+      'discord-setup': { label: 'Change Discord notification channel', cost: 'Free' },
+      'discord-post':  { label: 'Send a message to Discord', cost: 'Free' },
       'amazon-login':  { label: 'Connect to your Amazon account', cost: 'Free' },
       'amazon-ads-push': { label: 'Create a Sponsored Products ad on Amazon', cost: '$10/day budget' },
       'amazon-ads-kill': { label: 'Pause this Amazon campaign', cost: 'Free' },
@@ -522,7 +560,7 @@ async function startSession() {
     const setupInstructions = activeBrand
       ? `A brand already exists: "${activeBrand}". Do NOT ask for a website. Do NOT run setup. Just count the products in assets/brands/${activeBrand}/products/ and say "✦ ${activeBrand.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase())} is ready — [X] products loaded. What would you like to create?"`
       : `No brands exist yet. Use the AskUserQuestion tool to ask "What's your website?" with these options: (1) label: "Set up my brand", description: "Enter your website URL and we'll auto-detect your brand, products, and colors" (2) label: "Just exploring", description: "See what Merlin can do — no setup needed".${domainHint} When the user provides their website URL, start working IMMEDIATELY — scrape the site with WebFetch, extract brand colors, find products, identify competitors with WebSearch. Do ALL of this in parallel. Show results as you find them. If the user selects "Just exploring", give a 3-sentence pitch and ask what they'd like to try.`;
-    yield { type: 'user', message: { role: 'user', content: `Run /merlin silently — do the preflight checks but do NOT print anything. No greetings, no banners, no feature lists. The app UI already showed my welcome message. ${setupInstructions} NEVER render progress bars, onboarding trackers, or setup checklists in chat — the app has a native progress bar above the chat that handles this automatically. IMPORTANT RULE: When showing images, include the full file path in your response text like this: results/img_20260403_164511/image_1_portrait.jpg — the app will render it inline automatically. Always include the path, never just describe the image.` } };
+    yield { type: 'user', message: { role: 'user', content: `Run /merlin — silent preflight. ${setupInstructions}` } };
     // Drain any messages queued before SDK was ready
     while (pendingMessageQueue.length > 0) {
       yield pendingMessageQueue.shift();
@@ -540,6 +578,15 @@ async function startSession() {
     return;
   }
 
+  // If user has an API key, pass it via env so Claude Code uses it instead of subscription
+  const sessionEnv = { ...process.env };
+  try {
+    const storedKey = readSecureFile(path.join(appRoot, '.merlin-api-key'));
+    if (storedKey && storedKey.startsWith('sk-ant-')) {
+      sessionEnv.ANTHROPIC_API_KEY = storedKey;
+    }
+  } catch {}
+
   activeQuery = query({
     prompt: messageGenerator(),
     options: {
@@ -548,6 +595,7 @@ async function startSession() {
       includePartialMessages: true,
       settingSources: ['project'],
       canUseTool: handleToolApproval,
+      env: sessionEnv,
     },
   });
 
@@ -677,6 +725,8 @@ async function startSession() {
   } finally {
     // Always reset so session can be restarted after error or completion
     activeQuery = null;
+    // Resolve pending generator promise so it exits cleanly (null = stop signal)
+    if (resolveNextMessage) { resolveNextMessage(null); }
     resolveNextMessage = null;
     pendingMessageQueue = []; // Clear stale messages from failed session
     // Clear any orphaned approval cards
@@ -839,20 +889,17 @@ ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
   try { fs.accessSync(binaryPath); } catch { return { error: 'Binary not found. Run preflight first.' }; }
   try { fs.accessSync(configPath); } catch { return { error: 'Config not found. Run preflight first.' }; }
 
-  // Slack: handle OAuth entirely in Node.js (no binary needed)
+  // Slack requires HTTPS redirect URI — binary handles token exchange (secrets stay in binary)
   if (platform === 'slack') {
-    const https = require('https');
-    const slackClientId = '8988877007078.10822045906036';
-    const slackClientSecret = '13f07838b0a948f865285866d2880ff5';
+    const slackClientId = '8988877007078.10822045906036'; // Public client ID (not a secret)
     const slackRedirect = 'https://merlingotme.com/auth/callback';
-    const net = require('net');
     const srv = require('http').createServer();
     await new Promise(r => srv.listen(0, '127.0.0.1', r));
     const port = srv.address().port;
     const stateHex = require('crypto').randomBytes(16).toString('hex');
     const fullState = `${stateHex}|${port}`;
 
-    const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${slackClientId}&scope=chat:write,files:write,channels:read&redirect_uri=${encodeURIComponent(slackRedirect)}&state=${encodeURIComponent(fullState)}`;
+    const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${slackClientId}&scope=chat:write,files:write,channels:read,channels:join&redirect_uri=${encodeURIComponent(slackRedirect)}&state=${encodeURIComponent(fullState)}`;
     shell.openExternal(authUrl);
 
     return new Promise((resolve) => {
@@ -872,67 +919,40 @@ ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
           return resolve({ error: u.searchParams.get('error') || 'No authorization code' });
         }
         res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<html><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#09090b;color:#e4e4e7"><div style="text-align:center"><h2 style="color:#22c55e">✓ Connected to Slack</h2><p>You can close this tab.</p></div></body></html>');
+        res.end('<html><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#09090b;color:#e4e4e7"><div style="text-align:center"><h2 style="color:#22c55e">&#10003; Connected to Slack</h2><p>You can close this tab.</p></div></body></html>');
+        clearTimeout(timeout);
+        srv.close();
 
-        // Exchange code for token
-        const postData = `client_id=${slackClientId}&client_secret=${slackClientSecret}&code=${code}&redirect_uri=${encodeURIComponent(slackRedirect)}`;
-        const tokenReq = https.request('https://slack.com/api/oauth.v2.access', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(postData) },
-        }, (tokenRes) => {
-          let body = '';
-          tokenRes.on('data', d => body += d);
-          tokenRes.on('end', async () => {
-            clearTimeout(timeout);
-            srv.close();
-            try {
-              // console.log('[slack] token response:', body);
-              const data = JSON.parse(body);
-              if (!data.ok) return resolve({ error: `Slack: ${data.error}` });
-              const botToken = data.access_token || '';
-              const cfg = readConfig();
-              cfg.slackBotToken = botToken;
-              cfg.slackWebhookUrl = (data.incoming_webhook && data.incoming_webhook.url) || '';
-
-              // Auto-detect channel: find channels the bot has been added to
-              let channel = (data.incoming_webhook && data.incoming_webhook.channel_id) || '';
-              if (!channel && botToken) {
-                try {
-                  const chResp = await new Promise((res, rej) => {
-                    https.get(`https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=100`, {
-                      headers: { 'Authorization': `Bearer ${botToken}` },
-                    }, (r) => {
-                      let d = '';
-                      r.on('data', c => d += c);
-                      r.on('end', () => res(d));
-                    }).on('error', rej);
-                  });
-                  const chData = JSON.parse(chResp);
-                  if (chData.ok && chData.channels) {
-                    // Find channels the bot is a member of
-                    const joined = chData.channels.filter(c => c.is_member);
-                    if (joined.length > 0) {
-                      channel = joined[0].id;
-                    }
-                  }
-                } catch {}
-              }
-              cfg.slackChannel = channel;
-
-              if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
-              cfg._tokenTimestamps.slack = Date.now();
-              writeConfig(cfg);
-              if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
-              resolve({ success: true, platform: 'slack' });
-            } catch (e) {
-              console.error('[slack] parse error:', e.message, body);
-              resolve({ error: 'Failed to parse Slack response' });
+        // Binary exchanges code for token (secret stays in binary, never in this file)
+        const { execFile } = require('child_process');
+        const cmd = JSON.stringify({ action: 'slack-exchange', code, redirectUri: slackRedirect });
+        const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
+          timeout: 30000, cwd: appRoot,
+        }, (err, stdout) => {
+          activeChildProcesses.delete(child);
+          if (err) return resolve({ error: err.message });
+          try {
+            const lines = stdout.split('\n');
+            let jsonStart = -1, jsonEnd = -1;
+            for (let i = lines.length - 1; i >= 0; i--) {
+              if (lines[i].trim() === '}' && jsonEnd < 0) jsonEnd = i;
+              if (lines[i].trim() === '{' && jsonEnd >= 0) { jsonStart = i; break; }
             }
-          });
+            const jsonStr = jsonStart >= 0 ? lines.slice(jsonStart, jsonEnd + 1).join('\n') : null;
+            if (!jsonStr) throw new Error('No JSON in output');
+            const result = JSON.parse(jsonStr);
+            const cfg = readConfig();
+            Object.assign(cfg, result);
+            if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
+            cfg._tokenTimestamps.slack = Date.now();
+            writeConfig(cfg);
+            if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+            resolve({ success: true, platform: 'slack' });
+          } catch (e) {
+            resolve({ error: 'Failed to parse Slack token response' });
+          }
         });
-        tokenReq.on('error', (e) => { clearTimeout(timeout); srv.close(); resolve({ error: e.message }); });
-        tokenReq.write(postData);
-        tokenReq.end();
+        activeChildProcesses.add(child);
       });
     });
   }
@@ -964,9 +984,10 @@ ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
 
   return new Promise((resolve) => {
     const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
-      timeout: 300000, // 5 min for user to authorize in browser
+      timeout: 300000,
       cwd: appRoot,
     }, (err, stdout, stderr) => {
+      activeChildProcesses.delete(child);
       // Debug logs removed — uncomment to troubleshoot OAuth issues
       if (err) {
         console.error(`[oauth] ${action} err:`, err.message);
@@ -989,7 +1010,9 @@ ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
         if (!result || Object.keys(result).length === 0) throw new Error('Empty JSON result');
         // console.log(`[oauth] parsed result:`, JSON.stringify(result));
         // Save tokens to config + record timestamp
-        if (brandName) {
+        // Discord/Slack are global (shared across brands) — always write to global config
+        const isGlobalPlatform = platform === 'discord' || platform === 'slack';
+        if (brandName && !isGlobalPlatform) {
           writeBrandTokens(brandName, result);
         } else {
           const cfg = readConfig();
@@ -1024,6 +1047,7 @@ ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
         resolve({ success: true, stdout }); // Binary ran OK, just no JSON output
       }
     });
+    activeChildProcesses.add(child);
   });
 });
 
@@ -1637,14 +1661,19 @@ function readConfig() {
   return cfg;
 }
 
+let _configLock = false;
 function writeConfig(cfg) {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  // Simple lock to prevent concurrent read-modify-write corruption
+  if (_configLock) { console.warn('[config] write skipped — concurrent write in progress'); return; }
+  _configLock = true;
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     const tmpPath = configPath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
     fs.renameSync(tmpPath, configPath);
   } catch (err) { console.error('[config] write failed:', err.message); }
+  finally { _configLock = false; }
 }
 
 // ── Per-Brand Config ──────────────────────────────────────
@@ -1869,6 +1898,7 @@ ipcMain.handle('get-connected-platforms', (_, brandName) => {
     if (globalCfg.elevenLabsApiKey) connected.push({ platform: 'elevenlabs', status: 'connected' });
     if (globalCfg.heygenApiKey) connected.push({ platform: 'heygen', status: 'connected' });
     if (globalCfg.slackBotToken || globalCfg.slackWebhookUrl) connected.push({ platform: 'slack', status: 'connected' });
+    if (globalCfg.discordGuildId && globalCfg.discordChannelId) connected.push({ platform: 'discord', status: 'connected' });
 
     return connected;
   } catch { return []; }
@@ -1887,6 +1917,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       pinterest: ['pinterestAccessToken', 'pinterestRefreshToken'],
       amazon: ['amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId'],
       slack: ['slackBotToken', 'slackWebhookUrl', 'slackChannel'],
+      discord: ['discordGuildId', 'discordChannelId'],
       fal: ['falApiKey'],
       elevenlabs: ['elevenLabsApiKey'],
       heygen: ['heygenApiKey'],
@@ -1896,7 +1927,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
 
     // Determine which config to modify (brand-specific tokens vs global API keys)
     // Keys that live in global config (not per-brand token files)
-    const GLOBAL_KEYS_SET = new Set(['falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'slackBotToken', 'slackWebhookUrl', 'slackChannel']);
+    const GLOBAL_KEYS_SET = new Set(['falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'slackBotToken', 'slackWebhookUrl', 'slackChannel', 'discordGuildId', 'discordChannelId']);
     const cfg = readConfig();
     let changed = false;
 
@@ -2466,12 +2497,16 @@ function httpsGet(url, _depth = 0) {
 }
 
 function getCurrentVersion() {
-  // Read fresh from disk every time — require() caches the old version
+  // Read version from version.json first (always writable, survives asar packaging)
+  // Then package.json as fallback. NEVER use require() — it caches stale versions.
+  try {
+    const vj = JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8'));
+    if (vj.version) return vj.version;
+  } catch {}
   try {
     return JSON.parse(fs.readFileSync(path.join(appRoot, 'package.json'), 'utf8')).version;
-  } catch {
-    return require('../package.json').version;
-  }
+  } catch {}
+  return '0.0.0';
 }
 
 // Semver comparison: returns true if a > b (e.g. "0.4.0" > "0.3.8")
@@ -2568,13 +2603,23 @@ async function downloadAndApplyUpdate() {
       try { fs.unlinkSync(binaryPath + '.backup'); } catch {}
     }
 
+    // Update version in BOTH version.json and package.json
+    // version.json is the source of truth (always writable, included in updatable list)
+    const vjPath = path.join(appRoot, 'version.json');
+    try {
+      const vj = JSON.parse(fs.readFileSync(vjPath, 'utf8'));
+      vj.version = latestVersion;
+      fs.writeFileSync(vjPath, JSON.stringify(vj, null, 2));
+    } catch {}
+
     const pkgPath = path.join(appRoot, 'package.json');
-    if (fs.existsSync(pkgPath)) {
+    try {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
       pkg.version = latestVersion;
       fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-    }
+    } catch {} // may fail in asar — that's OK, version.json is the source of truth
 
+    console.log(`[update] Version updated to ${latestVersion}`);
     if (win && !win.isDestroyed()) win.webContents.send('update-ready', { latest: latestVersion });
   } catch (err) {
     if (win && !win.isDestroyed()) win.webContents.send('update-error', err.message || String(err));
@@ -2598,6 +2643,28 @@ app.whenReady().then(async () => {
   try { migratePerBrand(); } catch (err) { console.error('[migration]', err.message); }
 
   await createWindow();
+
+  // macOS: Cmd+Q should actually quit (set forceQuit so close handler allows it)
+  app.on('before-quit', () => {
+    forceQuit = true;
+    // Kill any running Merlin.exe child processes to prevent zombies
+    for (const child of activeChildProcesses) {
+      try { child.kill(); } catch {}
+    }
+    activeChildProcesses.clear();
+  });
+
+  // Launch on system startup — opt-in only (user enables via "Start at login" toggle)
+  // On first install, default to enabled. User can disable from tray or settings.
+  if (app.isPackaged) {
+    try {
+      const startupPref = readConfig().startAtLogin;
+      // Only set if preference exists in config; first run defaults to true
+      const shouldStart = startupPref !== undefined ? startupPref : true;
+      app.setLoginItemSettings({ openAtLogin: shouldStart, openAsHidden: true });
+    } catch {}
+  }
+
   setTimeout(checkForUpdates, 10000);
   setInterval(checkForUpdates, 4 * 60 * 60 * 1000);
 
@@ -2657,5 +2724,8 @@ app.whenReady().then(async () => {
     } catch {}
   }, 60 * 60 * 1000);
 });
-app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+app.on('window-all-closed', () => { if (!tray) app.quit(); /* tray keeps app alive; without tray, quit normally */ });
+app.on('activate', () => {
+  if (win && !win.isDestroyed()) { win.show(); win.focus(); }
+  else if (BrowserWindow.getAllWindows().length === 0) createWindow();
+});

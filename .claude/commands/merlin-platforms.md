@@ -1,3 +1,39 @@
+## Discord
+
+When the user says "connect Discord", "set up Discord", or anything Discord-related:
+
+### Discord Login (Bot Invite)
+```bash
+.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"discord-login"}'
+```
+- Opens browser to Discord's bot authorization page
+- User selects which server to add Merlin to
+- Bot auto-discovers text channels and selects the first one
+- Sends a welcome embed to confirm the connection works
+- Use `timeout: 300000` (5 minutes) for the OAuth flow
+
+### Discord Setup (Change Channel)
+If user wants to change which channel receives notifications:
+```bash
+.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"discord-setup"}'
+```
+Returns a list of text channels. Set `discordChannelId` in config to the desired channel ID.
+
+### Discord Post (Manual Message)
+```bash
+.claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"discord-post","slackMessage":"Your message here"}'
+```
+
+### Automatic Discord Notifications
+When Discord is connected, Merlin automatically posts to Discord when:
+- Ads are published (Meta, TikTok, Google, Amazon)
+- Ads are paused or scaled
+- New creatives are generated (images, videos)
+
+No manual action needed — notifications fire alongside existing Slack webhooks.
+
+---
+
 ## Email Marketing
 
 When the user says "audit my email", "check email flows", "email performance", or anything email-related:

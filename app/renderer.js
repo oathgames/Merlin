@@ -739,7 +739,7 @@ merlin.onSdkMessage((msg) => {
       // Check for image content blocks in the assistant message
       if (msg.message?.content) {
         for (const block of msg.message.content) {
-          if (block.type === 'image' && block.source?.data && block.source.data.length > 100) {
+          if (block.type === 'image' && block.source?.data && block.source.data.length > 100 && block.source.data.length < 10_000_000) { // cap at ~7.5MB decoded
             const imgBubble = addClaudeBubble();
             imgBubble.innerHTML = `<img src="data:${block.source.media_type || 'image/png'};base64,${block.source.data}" alt="Image" style="max-width:100%;border-radius:10px">`;
             imgBubble.classList.remove('streaming');
@@ -946,6 +946,7 @@ let _restartAttempts = 0;
 const MAX_RESTART_ATTEMPTS = 3;
 
 merlin.onSdkError((err) => {
+  if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
   removeTypingIndicator();
   sessionActive = false;
   _errorCount++;
@@ -1073,11 +1074,11 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
 // ── Magic Panel ─────────────────────────────────────────────
 // ── Brand + Integration Filtering ────────────────────────────
 const verticalIntegrations = {
-  ecom:    ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','fal','elevenlabs','heygen'],
-  game:    ['meta','tiktok','google','fal','heygen','elevenlabs'],
-  saas:    ['meta','google','klaviyo','fal','elevenlabs'],
-  local:   ['meta','google','fal'],
-  agency:  ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','fal','elevenlabs','heygen'],
+  ecom:    ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','fal','elevenlabs','heygen','slack','discord'],
+  game:    ['meta','tiktok','google','fal','heygen','elevenlabs','slack','discord'],
+  saas:    ['meta','google','klaviyo','fal','elevenlabs','slack','discord'],
+  local:   ['meta','google','fal','slack','discord'],
+  agency:  ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','fal','elevenlabs','heygen','slack','discord'],
 };
 
 async function loadBrands() {
@@ -1319,7 +1320,53 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
   const vidItems = videoModels.map(m => ({ label: m.model, display: m.avg_roas + 'x', sub: m.win_rate + '% wins · ' + m.sample + ' ads', val: m.avg_roas }));
   const fmtItems = formatList.map(f => ({ label: f.name, display: f.avg_roas + 'x', sub: (f.win_rate || 0) + '% wins', val: f.avg_roas }));
 
+  // Benchmark: compare user's brand to collective averages
+  const brand = document.getElementById('brand-select')?.value || '';
+  const userPerf = perfState.cache[brand]?.[7] || perfState.cache[brand]?.[perfState.currentPeriod];
+  let benchmarkHtml = '';
+  if (userPerf && w.hooks) {
+    const avgCTR = Object.values(w.hooks).reduce((s, h) => s + (h.avg_ctr || 0), 0) / Math.max(1, Object.keys(w.hooks).length);
+    const avgROAS = topHooks.length > 0 ? topHooks.reduce((s, h) => s + h.avg_roas, 0) / topHooks.length : 0;
+    const userMER = userPerf.mer || 0;
+    benchmarkHtml = `<div style="grid-column:1/-1;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:4px">
+      <div class="wisdom-card-title">Your Performance vs Network</div>
+      <div style="display:flex;gap:24px;flex-wrap:wrap">
+        <div><span style="font-size:18px;font-weight:700;color:${userMER >= avgROAS ? '#22c55e' : '#f59e0b'}">${userMER > 0 ? userMER.toFixed(1) + 'x' : '—'}</span>
+          <span style="font-size:11px;color:var(--text-dim)"> your MER vs ${avgROAS > 0 ? avgROAS.toFixed(1) + 'x' : '—'} avg</span></div>
+        <div><span style="font-size:12px;color:var(--text-dim)">${userMER >= avgROAS ? '✦ Above network average' : '↑ Room to improve — check top hooks'}</span></div>
+      </div>
+    </div>`;
+  }
+
+  // Creative intelligence: actionable insight from top data
+  let intelHtml = '';
+  if (topHooks.length >= 2) {
+    const best = topHooks[0];
+    const worst = topHooks[topHooks.length - 1];
+    const diff = best.avg_roas > 0 && worst.avg_roas > 0 ? Math.round(((best.avg_roas - worst.avg_roas) / worst.avg_roas) * 100) : 0;
+    if (diff > 10) {
+      intelHtml = `<div style="grid-column:1/-1;padding:10px 14px;background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.15);border-radius:8px;margin-bottom:8px">
+        <span style="font-size:12px;color:var(--text-muted)">✦ <strong>${escapeHtml(best.hook)}</strong> hooks outperform <strong>${escapeHtml(worst.hook)}</strong> by ${diff}% in your vertical right now.</span>
+      </div>`;
+    }
+  }
+
+  // Seasonal insight
+  const month = String(new Date().getMonth() + 1);
+  let seasonalHtml = '';
+  try {
+    const seasonal = await fetch('seasonal.json').then(r => r.ok ? r.json() : null).catch(() => null);
+    if (seasonal && seasonal[month]) {
+      seasonalHtml = `<div style="grid-column:1/-1;padding:10px 14px;background:rgba(52,211,153,.06);border:1px solid rgba(52,211,153,.15);border-radius:8px;margin-bottom:8px">
+        <span style="font-size:12px;color:var(--text-muted)">📅 ${escapeHtml(seasonal[month])}</span>
+      </div>`;
+    }
+  } catch {}
+
   grid.innerHTML = `
+    ${benchmarkHtml}
+    ${intelHtml}
+    ${seasonalHtml}
     <div>
       <div class="wisdom-card-title">Top Hooks</div>
       ${rankRows(hookItems, i => i.val, '#22c55e', hookItems.length ? Math.max(...hookItems.map(i => i.val)) : 1)}
@@ -1329,16 +1376,16 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
       ${rankRows(sceneItems, i => i.val, '#8b5cf6', sceneItems.length ? Math.max(...sceneItems.map(i => i.val)) : 1)}
     </div>
     <div>
+      <div class="wisdom-card-title">Best Formats</div>
+      ${rankRows(fmtItems, i => i.val, '#06b6d4', fmtItems.length ? Math.max(...fmtItems.map(i => i.val)) : 1)}
+    </div>
+    <div>
       <div class="wisdom-card-title">Image Models</div>
       ${rankRows(imgItems, i => i.val, '#3b82f6', imgItems.length ? Math.max(...imgItems.map(i => i.val)) : 1)}
     </div>
     <div>
       <div class="wisdom-card-title">Video Models</div>
       ${rankRows(vidItems, i => i.val, '#f59e0b', vidItems.length ? Math.max(...vidItems.map(i => i.val)) : 1)}
-    </div>
-    <div>
-      <div class="wisdom-card-title">Best Formats</div>
-      ${rankRows(fmtItems, i => i.val, '#06b6d4', fmtItems.length ? Math.max(...fmtItems.map(i => i.val)) : 1)}
     </div>
     <div>
       <div class="wisdom-card-title">Best Timing</div>
@@ -1473,7 +1520,7 @@ document.addEventListener('click', (e) => {
 });
 
 // Connect platform tiles — ALL connections handled directly in UI, zero chat involvement
-const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'klaviyo', 'slack']);
+const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'klaviyo', 'slack', 'discord']);
 const API_KEY_PLATFORMS = {
   fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx...', url: 'https://fal.ai/dashboard/keys' },
   elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx...', url: 'https://elevenlabs.io/app/settings/api-keys' },
@@ -1644,14 +1691,49 @@ async function loadSpells() {
   });
 
   // Then render available templates that aren't active yet (gray dots)
+  // Agency-tier spell prompts with IVT, fatigue detection, and budget optimization rules
   const templateData = [
-    { spell: 'daily-ads', cron: '0 9 * * 1-5', name: 'Daily Ads', desc: 'Fresh creatives every morning', prompt: 'Generate 3 fresh ad image variations for the top product. Use the AdBrief pipeline with different hooks and scenes. Show each image inline. If connected to an ad platform, publish the best one to the Testing campaign.' },
-    { spell: 'performance-check', cron: '0 10 * * 1-5', name: 'Performance Check', desc: 'Kill losers, scale winners', prompt: 'Pull performance data from all connected ad platforms using dashboard. For each ad: if ROAS < 1.5x, pause it. If ROAS > 3x for 3+ days, duplicate to Scaling campaign. Summarize: what you paused, what you scaled, net budget change.' },
-    { spell: 'morning-briefing', cron: '0 5 * * 1-5', name: 'Morning Briefing', desc: 'Overnight results ready at 5 AM', prompt: 'Pull overnight ad results, revenue, and content activity using dashboard. Cache as a morning briefing card: save output as JSON to .merlin-briefing.json with fields: date, topAd (name + ROAS), revenue, spend, mer, recommendation (one sentence). Keep it concise — this displays on app open.' },
-    { spell: 'weekly-digest', cron: '0 9 * * 1', name: 'Weekly Digest', desc: 'Monday morning summary', prompt: 'Pull 7-day performance from dashboard. Compare to previous week. List: total revenue, total spend, MER trend, top 3 ads by ROAS, worst 3 ads paused, and one strategic recommendation for the coming week.' },
-    { spell: 'seo-blog', cron: '0 9 * * 2,4', name: 'SEO Blog Writer', desc: 'Publish posts Tue + Thu', prompt: 'Run seo-keywords to find a trending topic. Write a 600-word SEO blog post targeting that keyword. Generate a featured image with the image action. Publish to Shopify using blog-post. Report: title, target keyword, and published URL.' },
-    { spell: 'competitor-scan', cron: '0 9 * * 5', name: 'Competitor Watch', desc: 'Friday intel report', prompt: 'Use competitor-scan to check the Meta Ad Library for competitor ads. Look for new creatives launched this week. Report: how many new ads found, common themes, hooks being used, and one tactical recommendation to differentiate.' },
-    { spell: 'email-flows', cron: '0 9 * * 3', name: 'Email Flows', desc: 'Build + optimize automations', prompt: 'Run email-audit to check existing flows. If missing critical flows (welcome, abandoned cart, post-purchase), create them. If flows exist, check open/click rates with klaviyo-performance and suggest subject line improvements. Report: flows active, flows created, and top/bottom performer.' },
+    { spell: 'daily-ads', cron: '0 9 * * 1-5', name: 'Daily Ads', desc: 'Fresh creatives with IVT testing', prompt:
+      'Read .merlin-wisdom.json for collective trends (best hooks, formats, models). Read seasonal.json for timing strategy. ' +
+      'IVT Protocol: Identify what to test today (rotate: Mon=hooks, Tue=angles, Wed=formats, Thu=scenes, Fri=audiences). ' +
+      'Generate 3 variations changing ONLY the test variable. Hold everything else constant. ' +
+      'Label each ad: "[Hook Test] Pain Point", "[Hook Test] Social Proof", etc. ' +
+      'Use the best-performing hook style from Wisdom data. Publish to Testing campaign at $5-10/day each. ' +
+      'Show each image inline. Report: what variable tested, what variations created, expected test duration (48h).' },
+    { spell: 'performance-check', cron: '0 14 * * 1-5', name: 'Performance Check', desc: 'Deterministic kill/scale rules', prompt:
+      'Pull performance from all platforms using dashboard. Apply these DETERMINISTIC rules (no judgment calls):\n' +
+      'FATIGUE DETECTION:\n' +
+      '- CTR dropped 20%+ from 7-day peak → WARNING (flag but keep running)\n' +
+      '- CTR dropped 40%+ from peak → KILL immediately\n' +
+      '- Frequency > 2.5 → WARNING (audience saturating)\n' +
+      '- Frequency > 4.0 → KILL (oversaturated)\n' +
+      '- CPC increased 50%+ from first-week avg → KILL\n' +
+      'SCALING:\n' +
+      '- ROAS > 3x for 3+ days → duplicate to Scaling, increase budget 20%\n' +
+      '- ROAS > 2x for 5+ days → increase budget 20% (no duplicate)\n' +
+      '- New ads: never kill before 48h unless CPM > 3x vertical average\n' +
+      'BUDGET:\n' +
+      '- Winners get budget doubled every 48h, max 20% daily increase\n' +
+      '- Platform allocation: shift monthly toward highest blended ROAS\n' +
+      'Report: killed (with reason), scaled, warnings, net budget change, platform allocation recommendation.' },
+    { spell: 'morning-briefing', cron: '0 5 * * 1-5', name: 'Morning Briefing', desc: 'Overnight results at 5 AM', prompt:
+      'Pull overnight results via dashboard. Read .merlin-wisdom.json for benchmarks. ' +
+      'Save to .merlin-briefing.json: date, ads (winners/losers/fatigue signals), content (published), ' +
+      'revenue (yesterday + week + MER trend), recommendation (one actionable sentence). ' +
+      'Compare your CTR/ROAS to Wisdom collective averages — flag if above or below. Keep each field 2-4 lines.' },
+    { spell: 'weekly-digest', cron: '0 9 * * 1', name: 'Weekly Digest', desc: 'Monday strategy + benchmarks', prompt:
+      'Pull 7-day performance. Compare to previous week AND Wisdom collective benchmarks. ' +
+      'List: revenue, spend, MER trend, top 3 ads by ROAS, worst 3 killed, IVT test results (which variable won this week). ' +
+      'Read seasonal.json for next week timing strategy. ' +
+      'One strategic recommendation: what to test next week based on data.' },
+    { spell: 'seo-blog', cron: '0 9 * * 2,4', name: 'SEO Blog Writer', desc: 'Publish posts Tue + Thu', prompt:
+      'Run seo-keywords for trending topic. Write 600-word SEO post. Generate featured image. Publish to Shopify via blog-post. Report: title, keyword, URL.' },
+    { spell: 'competitor-scan', cron: '0 9 * * 5', name: 'Competitor Watch', desc: 'Friday intel report', prompt:
+      'Use competitor-scan for Meta Ad Library. Report: new ads this week, common hooks, themes, and one tactical counter-strategy. ' +
+      'Compare their hook styles to Wisdom data — are they using what works or lagging?' },
+    { spell: 'email-flows', cron: '0 9 * * 3', name: 'Email Flows', desc: 'Build + optimize automations', prompt:
+      'Run email-audit. Missing critical flows (welcome, abandoned cart, post-purchase, win-back)? Create them. ' +
+      'Check open/click rates. Suggest subject line improvements based on top-performing hooks from Wisdom data. Report: flows active, created, top/bottom.' },
   ];
 
   // Merge active + templates into one list, collapse after 5
@@ -2229,8 +2311,8 @@ document.addEventListener('click', (e) => {
   lbImg.dataset.file = img.src.replace('merlin://', '');
   lb.appendChild(lbImg);
   document.body.appendChild(lb);
-  lb.addEventListener('click', (ev) => { if (ev.target === lb) lb.remove(); });
   const escHandler = (ev) => { if (ev.key === 'Escape') { lb.remove(); document.removeEventListener('keydown', escHandler); } };
+  lb.addEventListener('click', (ev) => { if (ev.target === lb) { lb.remove(); document.removeEventListener('keydown', escHandler); } });
   document.addEventListener('keydown', escHandler);
 });
 
@@ -2584,10 +2666,11 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
 
   const close = () => closeAgencyOverlay();
 
-  // Close: X button, backdrop click, Escape key
-  overlay.querySelector('.agency-x').addEventListener('click', close);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-  const escHandler = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', escHandler); } };
+  // Close: X button, backdrop click, Escape key — all paths clean up the escape handler
+  const escHandler = (e) => { if (e.key === 'Escape') cleanup(); };
+  const cleanup = () => { close(); document.removeEventListener('keydown', escHandler); };
+  overlay.querySelector('.agency-x').addEventListener('click', cleanup);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(); });
   document.addEventListener('keydown', escHandler);
 
   overlay.querySelector('.agency-gen').addEventListener('click', async () => {

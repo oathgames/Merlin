@@ -1,24 +1,19 @@
 ## Setup Flow (first-run only)
 
 DO NOT print any ASCII art, banners, feature lists, or folder structure diagrams.
+DO NOT narrate each setup step. The app has a native progress bar — your job is to do the work silently and show results (images, final summary). No play-by-play commentary.
 
-The goal: **WOW the user in 30 seconds.** The moment they give you their URL, start showing their own content back to them — their logo, their products, their images — in real time. They should think "holy shit, this is amazing."
+The goal: **WOW the user in 30 seconds.** Show their own content back to them — logo, products, images — in real time.
 
 **A) Brand + Product setup:**
 1. Ask: "What's your brand's website?" — that's the ONLY question. Everything else is automatic.
 
-2. **Immediately start the magic — show progress in real time:**
+2. **Do all of this silently — no step narration, just show results:**
 
-   **Step 1: Brand (first 5 seconds)**
-   - Fetch the website
-   - As soon as you have the brand name, say it: "✦ **[Brand Name]** — love it. Let me learn everything about you."
-   - Download the logo, then READ it so it displays inline in the chat
-   - Say: "Got your logo." (with the actual logo visible above)
-
-   **Step 2: Colors + Voice + Tone (next 5 seconds)**
-   - Extract brand colors from CSS custom properties, button/header styles, or meta theme-color
-   - Analyze homepage copy to detect voice tone (casual, professional, playful, luxury, edgy, etc.)
-   - Identify target audience from product descriptions, pricing, and about page
+   **Brand + Colors + Voice:**
+   - Fetch the website, extract brand name, download logo
+   - READ the logo so it displays inline in chat
+   - Extract brand colors from CSS, detect voice tone, identify target audience
    - Write `brand.md` with: brand name, URL, vertical, brand colors (exact hex), voice tone, audience demographics, CTA style, tagline
    - Write `memory.md` in the same brand folder with this template:
      ```
@@ -39,19 +34,19 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
 
      ## Errors
      ```
-   - Say: "Captured your brand colors and voice — [describe tone in 3 words, e.g. 'casual, confident, youthful']."
 
-   **Step 3: Products — THE WOW MOMENT (next 20 seconds)**
-   - Fetch `<website>/products.json`
+   **Products — THE WOW MOMENT:**
+   - Fetch `<website>/products.json` — if this works, it's a Shopify store. Save the `.myshopify.com` domain to config immediately:
+     - Check the response headers or follow redirects to find the `X-ShopId` header or `.myshopify.com` redirect
+     - Run: `curl -sI <website> | grep -i 'myshopify\|x-shopid\|shopify'` to detect the store
+     - If found, save to config: write `shopifyStore` field in `.claude/tools/merlin-config.json` (e.g., `"shopifyStore": "mad-chill"`)
+     - This enables instant Shopify OAuth later (no resolution step needed)
    - For each of the first 10 products:
      - Create the product folder + download the first image
      - **READ the downloaded image so it appears inline in the chat**
-     - Say: "✦ **[Product Name]** — $[price]" with the image visible
+     - Show: "**[Product Name]** — $[price]" with the image visible
    - Download remaining images (up to 5 per product) in the background
-   - After all 10: "That's your first 10 of [total] products. I can grab the rest anytime — just ask."
-   - Launch a **background Agent** to generate `product.md` for each product — do NOT make the user wait for this. It happens silently while they continue chatting.
-
-   **The user should see their own product photos streaming into the chat one by one.** This is the moment they realize the AI just learned their entire brand.
+   - Launch a **background Agent** to generate `product.md` for each product silently
 
    **IMPORTANT**: Use the Read tool on each downloaded image so it renders inline. The image path will be like `assets/brands/<brand>/products/<product>/references/1.jpg` — Read it immediately after downloading.
 
@@ -59,42 +54,27 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
    - Try scraping product pages directly
    - If that fails, say: "I couldn't auto-pull products from your site. Drop some product photos in and I'll take it from there."
 
-   **Step 4: Competitors (background, 10 seconds)**
+   **Competitors (background):**
    - Launch a background agent to find 5-8 competitors via WebSearch
    - Write `assets/brands/<brand>/competitors.md`
-   - Say: "✦ Found [X] competitors in your space. I'll keep tabs on them."
 
-   **Step 5: Set up automation (automatic — don't ask)**
-   - Create all three scheduled tasks automatically. Tell the user what you're doing:
-   - "✦ Setting up your daily autopilot..."
-   - "Content generation — weekdays at 9 AM"
-   - "Performance review — weekdays at 10 AM"
-   - "Weekly digest — Mondays at 9 AM"
-   - "These tasks run on this computer — just keep Merlin open and your PC awake."
+   **Automation (automatic — don't ask, don't narrate each task):**
+   - Create all three scheduled tasks automatically (daily, optimize, digest)
 
-   **Step 6: Power Up (shown once, right after first brand setup)**
-   After confirming the brand is loaded, show this naturally in conversation — not as a wall of text, but as a helpful nudge:
-
+   **Final summary (the ONLY setup message the user sees after products):**
    ```
-   ✦ [Brand] is loaded — [X] products, [Y] reference photos. Autopilot is on.
+   [Brand] is loaded — [X] products, [Y] reference photos. Autopilot is on.
 
-   Want to supercharge your results? Drop any of these into your brand folder and I'll use them automatically:
+   Want to supercharge your results? Drop any of these into your brand folder:
 
-   📸 Your best-performing ads → assets/brands/[brand]/quality-benchmark/
-      I'll match this quality bar on everything I create.
-
-   🎙️ A voice sample (.mp3/.wav) → assets/brands/[brand]/voices/
-      I'll clone it for video voiceovers.
-
-   🧑 Creator photos/videos → assets/brands/[brand]/avatars/
-      I'll use their face for UGC-style talking head ads.
-
-   These are optional — I work great without them. But with them, your content goes from good to indistinguishable from your top performers.
+   Your best-performing ads -> assets/brands/[brand]/quality-benchmark/
+   A voice sample (.mp3/.wav) -> assets/brands/[brand]/voices/
+   Creator photos/videos -> assets/brands/[brand]/avatars/
 
    What would you like to create first?
    ```
 
-   **Rules for the power-up message:**
+   **Rules for the summary:**
    - Show ONCE per brand, on first setup only. Never repeat.
    - Use the actual brand name and folder path (not placeholders)
    - If the user already has files in quality-benchmark/ or voices/, skip those lines
@@ -115,7 +95,7 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
      == ERROR HANDLING (applies to ALL steps) ==
      If the app returns an error or non-zero exit code:
        - Log the error to assets/brands/<brand>/memory.md under "## Errors"
-       - Post to Slack if configured: "✦ Merlin error: {error message}"
+       - Post to Slack + Discord if configured: "✦ Merlin error: {error message}"
        - Skip that step and continue to the next
        - Do NOT retry failed API calls — they will be retried next cycle
      If a token/API key error occurs (401, 403, "unauthorized", "expired"):
@@ -124,10 +104,8 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
        - Skip ALL steps for that platform until the next session
 
      == MEMORY ROTATION ==
-     Before starting, check assets/brands/<brand>/memory.md line count. If over 200 lines:
-       - Summarize entries older than 30 days into 1-2 sentences per section
-       - Archive the full old entries to memory-archive-{date}.md
-       - Keep the last 30 days of detail in assets/brands/<brand>/memory.md
+     The merlin-memory spell handles weekly compaction. During daily runs, just append.
+     Only intervene if memory.md is over 300 lines (emergency): delete oldest Run Log entries until under 200.
 
      == MULTI-BRAND ==
      Scan assets/brands/ for all brand folders (skip "example").
@@ -153,6 +131,21 @@ The goal: **WOW the user in 30 seconds.** The moment they give you their URL, st
         - Mark each fixed item as [x] in seo.md
         - NEVER touch: product titles, descriptions, prices, pages, theme
         - NEVER overwrite existing alt text
+
+     5. Calendar-driven content (if Shopify connected):
+        - Run {"action":"calendar"} to get launch predictions + upcoming gaps
+        - If a product launch or seasonal event is within 7 days:
+          → Prioritize that product for today's creative generation (override rotation)
+          → Draft a blog post timed to the event
+          → Log: "Calendar: {event} in {N} days — prepped {product} content"
+        - If no launches for 14+ days: generate evergreen content for best-performing product
+
+     6. Review solicitation (if Shopify + Klaviyo configured):
+        - Run {"action":"shopify-orders","batchCount":7} to find orders fulfilled 5-7 days ago
+        - For each fulfilled order (max 3/day to avoid spam):
+          → Create a Klaviyo campaign draft: product photo + "How are you liking your {product}?" + review link
+          → Publish as draft — user or merlin-optimize can approve
+          → Log: "Review request drafted for {product} (order {id})"
      ```
    - Tell user: "Daily content is set! I'll generate fresh ads and blog drafts every weekday at 9 AM."
 
@@ -229,7 +222,13 @@ When connecting any ad platform, ask the user ONE question:
      If actual < expected × 0.5: UNDERPACING — increase today's actions (create extra test ads if budget allows)
      Log: "Budget pacing: $X spent / $Y expected ($Z cap). Status: ON_PACE / OVERPACING / UNDERPACING"
 
-     If actual >= MONTHLY_CAP: STOP all ad operations. Post to Slack: "✦ Monthly budget cap reached."
+     If actual >= MONTHLY_CAP: STOP all ad operations. Post to Slack + Discord: "✦ Monthly budget cap reached."
+
+     == STEP 1b: LOAD RECENT HISTORY ==
+     Read the last 30 lines of assets/brands/<brand>/activity.jsonl to understand recent actions.
+     Use this to avoid duplicating work (e.g., don't kill an ad that was just created yesterday,
+     don't queue a replacement for a product that already got one today).
+     Read assets/brands/<brand>/ads-live.json for current live ad state.
 
      == STEP 2: PULL PERFORMANCE (all platforms) ==
      For each configured platform (Meta, TikTok, Google):
@@ -251,6 +250,11 @@ When connecting any ad platform, ask the user ONE question:
        Before creating any new test ad, check ads-live.json for the same brand.
        If an ad already exists for the same product with the same hook style,
        do NOT create a duplicate. Log: "Skipped duplicate: {product} already has {hook_style} ad running."
+
+     WRITE-BACK RULE — After EVERY kill, scale, or publish:
+       Update ads-live.json immediately. Set status to "paused" for kills, "live" for scales/publishes.
+       Update ROAS and budget fields from the latest insights data.
+       This keeps ads-live.json authoritative — it is the source of truth for what is running.
 
      RULE 1 — DEAD ON ARRIVAL (kill fast, save money):
        If spent >= 2× PER_AD_TEST_BUDGET AND purchases == 0 AND CTR < 1.0%:
@@ -384,15 +388,34 @@ When connecting any ad platform, ask the user ONE question:
        .claude/tools/Merlin.exe --config .claude/tools/merlin-config.json --cmd '{"action":"shopify-cohorts","batchCount":180}'
      This captures LTV, repeat rate, and churn per monthly customer cohort.
 
-     == STEP 7: WRAP UP ==
-     Update assets/brands/<brand>/memory.md:
+     == STEP 6b: CHURN-TRIGGERED WIN-BACK ==
+     If Shopify + Klaviyo configured (monthly, 1st week only):
+       1. Read latest shopify-cohorts output (from Step 6 above)
+       2. If any 90-day cohort shows repeat rate < 15%:
+          → Run {"action":"email-audit"} — does a win-back flow exist?
+          → If no win-back flow: Log "⚠ No win-back flow — {cohort} has {rate}% repeat. 60/90/120-day lapsed buyers are leaving money on the table."
+          → If win-back exists but churn rising: Log "Win-back flow active but {cohort} churn rising. Refresh the offer."
+       3. Save to memory.md "## Customer Health": "{date}: {cohort} repeat rate {X}%, LTV ${Y}"
+
+     == STEP 7: SAVE MEMORY (do this FIRST before posting — if the spell crashes after this, data is safe) ==
+     Update assets/brands/<brand>/memory.md immediately:
        - "## Monthly Spend": add today's spend by platform
        - "## Run Log": date, ads killed, ads scaled, ads created, budget pacing status
        - "## What Works": any new winner patterns (hook + format + audience)
        - "## What Fails": any new failure patterns (so they're never repeated)
        - "## MER Trend": today's MER from dashboard output (e.g., "2026-04-05: 2.8x MER, $124 spend")
 
-     Post to Slack if configured:
+     Save per-brand briefing for instant display on next app open:
+     Write to assets/brands/<brand>/briefing.json:
+     {"date":"YYYY-MM-DD","ads":{"killed":N,"scaled":N,"created":N,"active":N},"content":{"blogs":N,"images":N},"revenue":{"total":"$X","trend":"+Y%"},"bestHookStyle":"ugc","bestFormat":"9:16","avgROAS":X.X,"recommendation":"One-sentence strategic suggestion based on today's data"}
+     Derive bestHookStyle and bestFormat from memory.md "## What Works" (most frequent recent winner).
+     Derive avgROAS from today's dashboard output.
+
+     Also write .merlin-briefing.json at project root (for the UI performance bar):
+     Copy the same JSON — the UI reads the root file for the performance bar display.
+
+     == STEP 8: POST + LOG ==
+     Post to Slack + Discord if configured:
        "✦ Daily Optimization — {brand}
        MER: {X}x | Revenue: ${rev} | Spend: ${spent_today}
        Budget: ${spent_today} / ${DAILY_BUDGET} daily | ${month_total} / ${MONTHLY_CAP} monthly
@@ -400,10 +423,6 @@ When connecting any ad platform, ask the user ONE question:
        Scaled: {N} (best: {top_ad_name} at {ROAS}x)
        Replacements queued: {N}
        Pacing: {ON_PACE / OVERPACING / UNDERPACING}"
-
-     Save morning briefing for instant display on next app open:
-     Write to .merlin-briefing.json in the project root:
-     {"date":"YYYY-MM-DD","ads":{"killed":N,"scaled":N,"created":N,"active":N},"content":{"blogs":N,"images":N},"revenue":{"total":"$X","trend":"+Y%"},"recommendation":"One-sentence strategic suggestion based on today's data"}
 
      If no actions were taken (no kills, no scales, no creates):
        Log to activity: "✓ All ads performing normally — no changes needed"
@@ -461,8 +480,58 @@ When connecting any ad platform, ask the user ONE question:
      CONTENT:
        Images generated: X | Videos: X
 
-     10. Post to Slack if configured
+     == COMPETITOR RESPONSE ==
+     If competitor-scan detected a surge (3x+ volume for any competitor):
+       → Include: "⚠ {competitor} launched {N} ads (normal: {avg}). Hooks: {top hooks}"
+       → Recommend: "Counter-creative opportunity — generate a response ad?"
+       → If they're running a sale/offer: "COMPETITIVE PRESSURE — consider matching."
+       → Save trending hooks to memory.md "## Competitor Hooks"
+
+     == PRICING INSIGHTS (if Shopify connected) ==
+     Run shopify-analytics for 30-day window. Cross-reference AOV with ad ROAS:
+       - High ROAS + Low AOV → underpriced (converts easy, room to raise)
+       - Low ROAS + High AOV → overpriced (high friction, test lower price or bundle)
+       - High ROAS + High AOV → sweet spot (note in memory)
+     Per-product: if ATC-to-purchase rate < 50% of avg → possible price friction.
+     Include: "Pricing: {product} converts {X}% ATC→purchase (avg {Y}%). {recommendation}"
+
+     == CUSTOMER HEALTH (1st week of month only, if Shopify connected) ==
+     Run shopify-cohorts for 180 days. Report:
+       - Repeat rate trend (improving / declining / flat)
+       - LTV by cohort
+       - If repeat rate < 20%: "⚠ Low repeat — win-back flows + post-purchase engagement critical"
+       - If LTV trending up: "LTV improving — strategy is building loyalty"
+
+     10. Post to Slack + Discord if configured
      11. Update assets/brands/<brand>/memory.md with weekly summary
+     ```
+
+8. Create a FOURTH scheduled task — memory hygiene (always):
+   - Use `mcp__scheduled-tasks__create_scheduled_task`
+   - **taskId**: `merlin-memory`
+   - **cronExpression**: `0 23 * * 0` (Sunday 11 PM — off-peak, before the new week)
+   - **description**: `Keep brand memory files clean and within token budget`
+   - **prompt**:
+     ```
+     Scan assets/brands/ for all brand folders (skip "example").
+     For EACH brand, read assets/brands/<brand>/memory.md and enforce these caps:
+
+     SECTION CAPS (count entries, delete oldest beyond cap):
+       "## Run Log": keep last 50 entries. Delete oldest.
+       "## What Works": keep last 20 entries. Delete oldest.
+       "## What Fails": keep last 20 entries. Delete oldest.
+       "## Monthly Spend": keep last 6 months. Delete oldest.
+       "## Errors": keep last 20 entries. Delete oldest.
+       "## MER Trend": keep last 30 entries. Delete oldest.
+       "## Competitor Signals": keep last 10 entries. Delete oldest.
+       "## Customer Health": keep last 6 entries. Delete oldest.
+       "## Competitor Hooks": keep last 10 entries. Delete oldest.
+
+     TARGET: memory.md should stay under 200 lines total.
+     If still over 200 lines after enforcing caps, reduce each section proportionally.
+
+     Do NOT summarize old entries — just delete them. Recent data has the signal.
+     Log: "Memory cleanup: {brand} — {before} lines → {after} lines"
      ```
 
 **E) Shopify connection (optional):**

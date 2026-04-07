@@ -14,8 +14,12 @@ build.ps1
 
 # Config with secrets (example template IS tracked)
 .claude/tools/merlin-config.json
+.claude/tools/.merlin-config-*
 .claude/tools/.merlin-tokens
 .claude/tools/.merlin-tokens-*
+.claude/tools/.autocmo-*
+.claude/tools/autocmo-*
+.claude/tools/AutoCMO*
 !.claude/tools/merlin-config.example.json
 
 # Output

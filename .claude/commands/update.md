@@ -15,7 +15,7 @@ WebFetch https://raw.githubusercontent.com/oathgames/Merlin/main/version.json
 
 Read the local `version.json` in the project root. Compare versions.
 
-If the remote version is the same or older, report "( ◕ ◡ ◕ ) Merlin is up to date (vX.X.X)" and stop.
+If the remote version is the same or older, report "✦ Merlin is up to date (vX.X.X)" and stop.
 
 ## Step 2: Back up current files
 
@@ -87,7 +87,7 @@ If successful, delete the backup: `rm .claude/tools/Merlin.exe.backup`
 ## Step 5: Report
 
 ```
-( ◕ ◡ ◕ )  Merlin updated: v{old} → v{new}
+✦ Merlin updated: v{old} → v{new}
 
 Updated files:
   ✓ CLAUDE.md

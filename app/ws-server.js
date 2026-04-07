@@ -75,7 +75,7 @@ function startServer() {
       httpServer = http.createServer(requestHandler);
     }
 
-    wss = new WebSocketServer({ server: httpServer });
+    wss = new WebSocketServer({ server: httpServer, maxPayload: 256 * 1024 }); // 256KB limit
 
     httpServer.listen(0, '127.0.0.1', () => {
       wsPort = httpServer.address().port;

@@ -1,5 +1,5 @@
 {
-  "version": "0.7.1",
+  "version": "0.7.5",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,10 +18,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.7.1: Slack OAuth (one-click connect), perf bar state machine (cached brand/period switching), right-click disconnect, friendly error messages, tooltip flicker fix, agency overlay bulletproofing, status indicator persistence, shimmer loading states.",
+  "notes": "v0.7.5: Discord bot integration, system tray + launch at startup, Shopify/Meta pagination fixes, memory system overhaul, security hardening, value-add automation (calendar, reviews, win-back, competitor alerts, pricing insights).",
   "whatsNew": [
-    "Slack integration — one-click connect for notifications",
-    "Revenue bar — instant brand/period switching with cache",
-    "Right-click to disconnect any platform"
+    "Discord bot — invite Merlin to your server for ad reports and activity notifications",
+    "Always-on autopilot — runs in system tray, spells fire on schedule",
+    "Smarter automation — calendar-driven content, review solicitation, competitor alerts"
   ]
 }
