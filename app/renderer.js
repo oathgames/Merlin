@@ -3252,33 +3252,32 @@ async function updateProgressBar() {
     // If data hasn't loaded yet, don't hide — wait for next call
     if (brands === null) return;
 
+    const salesPlatforms = ['shopify']; // expand later: custom API, game platforms, etc.
+    const hasSales = connected && connected.some(c => salesPlatforms.includes(c.platform));
+    const hasAds = connected && connected.some(c => !salesPlatforms.includes(c.platform) && !['fal','elevenlabs','heygen','slack','discord'].includes(c.platform));
+
     const steps = [
       { key: 'brand', done: brands && brands.length > 0 },
       { key: 'products', done: brands && brands.some(b => b.productCount > 0) },
-      { key: 'platform', done: connected && connected.length > 0 },
+      { key: 'sales', done: hasSales },
+      { key: 'platform', done: hasAds },
       { key: 'automation', done: spells && spells.length > 0 },
     ];
     const doneCount = steps.filter(s => s.done).length;
+    const totalSteps = steps.length;
 
     // Hide only when ALL done
-    if (doneCount === 4) { bar.classList.add('hidden'); return; }
+    if (doneCount === totalSteps) { bar.classList.add('hidden'); return; }
     // Show for any partial progress (including 0 — guides new users)
     bar.classList.remove('hidden');
-    document.getElementById('progress-fill').style.width = `${(doneCount / 4) * 100}%`;
+    document.getElementById('progress-fill').style.width = `${(doneCount / totalSteps) * 100}%`;
 
     steps.forEach(s => {
       const el = bar.querySelector(`.progress-step[data-step="${s.key}"]`);
       if (el) el.className = `progress-step ${s.done ? 'done' : 'active'}`;
     });
 
-    const nextStep = steps.find(s => !s.done);
-    const hints = {
-      brand: 'Next: Drop your website URL and we\'ll set up your brand.',
-      products: 'Next: Connect Shopify or drop product photos to add products.',
-      platform: 'Next: Connect Meta, Google, or Amazon in the ✦ menu.',
-      automation: 'Next: Set up autopilot — just ask and we\'ll walk you through it.',
-    };
-    document.getElementById('progress-next').textContent = nextStep ? hints[nextStep.key] || '' : '';
+    document.getElementById('progress-next').textContent = '';
   } catch {}
 }
 

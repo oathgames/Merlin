@@ -58,7 +58,7 @@ a:hover{text-decoration:underline}
 /* ── Onboarding Progress Bar ─────────────────────────────── */
 .progress-bar{
   flex-shrink:0;
-  padding:8px 16px 10px;
+  padding:10px 16px 8px;
   border-bottom:1px solid var(--border);
   background:var(--bg-deep);
   position:relative;
@@ -72,9 +72,9 @@ a:hover{text-decoration:underline}
 .progress-step.done::before{content:'✓ '}
 .progress-step.active{color:var(--text-muted)}
 .progress-step.active::before{content:'○ '}
-.progress-next{font-size:10px;color:var(--text-dim);margin-top:4px}
+.progress-next{font-size:10px;color:var(--text-dim);margin-top:0}
 .progress-close{
-  position:absolute;top:6px;right:10px;
+  position:absolute;top:10px;right:10px;
   background:none;border:none;color:var(--text-dim);
   font-size:14px;cursor:pointer;padding:0 4px;line-height:1;
 }

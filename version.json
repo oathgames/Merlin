@@ -1,5 +1,5 @@
 {
-  "version": "0.7.5",
+  "version": "0.7.6",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,10 +18,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.7.5: Discord bot integration, system tray + launch at startup, Shopify/Meta pagination fixes, memory system overhaul, security hardening, value-add automation (calendar, reviews, win-back, competitor alerts, pricing insights).",
+  "notes": "v0.7.6: Claude CLI PATH fix for fresh installs, sales platform onboarding stage, compressed memory format, progress bar polish.",
   "whatsNew": [
-    "Discord bot — invite Merlin to your server for ad reports and activity notifications",
-    "Always-on autopilot — runs in system tray, spells fire on schedule",
-    "Smarter automation — calendar-driven content, review solicitation, competitor alerts"
+    "Fresh install fix — Claude CLI detected reliably from shortcuts and installers",
+    "Sales platform stage — onboarding tracks Shopify connection as a milestone",
+    "Compressed memory — 4x fewer tokens for brand learnings"
   ]
 }
