@@ -58,11 +58,80 @@ process.on('uncaughtException', (err) => {
 });
 process.on('unhandledRejection', (reason) => { console.error('[UNHANDLED]', reason); });
 
-const appRoot = app.isPackaged
+// App install location (where Electron binary + asar live)
+const appInstall = app.isPackaged
   ? (process.platform === 'darwin'
     ? path.join(path.dirname(app.getPath('exe')), '..', 'Resources')
     : path.dirname(app.getPath('exe')))
   : path.join(__dirname, '..');
+
+// Workspace location (where brands, config, results live — user-accessible in Documents)
+const appRoot = app.isPackaged
+  ? path.join(app.getPath('documents'), 'Merlin')
+  : path.join(__dirname, '..');
+
+// ── First-run workspace bootstrap ─────────────────────────────
+// Copy default files from install location to Documents\Merlin on first launch.
+// This separates "app" from "workspace" — app updates don't touch user data.
+if (app.isPackaged && !fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) {
+  const copyDir = (src, dest) => {
+    if (!fs.existsSync(src)) return;
+    fs.mkdirSync(dest, { recursive: true });
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+      if (entry.isDirectory()) copyDir(srcPath, destPath);
+      else if (!fs.existsSync(destPath)) fs.copyFileSync(srcPath, destPath); // never overwrite user files
+    }
+  };
+  try {
+    fs.mkdirSync(appRoot, { recursive: true });
+    // Copy project skeleton: commands, settings, example brand, CLAUDE.md
+    copyDir(path.join(appInstall, '.claude'), path.join(appRoot, '.claude'));
+    copyDir(path.join(appInstall, 'assets'), path.join(appRoot, 'assets'));
+    for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
+      const src = path.join(appInstall, f);
+      const dest = path.join(appRoot, f);
+      if (fs.existsSync(src) && !fs.existsSync(dest)) fs.copyFileSync(src, dest);
+    }
+    console.log('[workspace] Bootstrapped Documents/Merlin from install');
+  } catch (err) {
+    console.error('[workspace] Bootstrap failed:', err.message);
+  }
+}
+
+// ── Workspace sync on app update ─────────────────────────────
+// When the app version is newer than workspace, sync updatable files (commands, settings)
+// but NEVER overwrite user data (brands, config, memory, results)
+if (app.isPackaged && fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) {
+  try {
+    const installVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(appInstall, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
+    const workspaceVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
+    if (installVer !== workspaceVer) {
+      // Sync: commands, settings, CLAUDE.md, version.json (never brands, config, memory)
+      const syncFiles = [
+        ['.claude/commands', '.claude/commands'],
+        ['.claude/settings.json', '.claude/settings.json'],
+        ['CLAUDE.md', 'CLAUDE.md'],
+        ['version.json', 'version.json'],
+      ];
+      for (const [src, dest] of syncFiles) {
+        const srcPath = path.join(appInstall, src);
+        const destPath = path.join(appRoot, dest);
+        if (!fs.existsSync(srcPath)) continue;
+        if (fs.statSync(srcPath).isDirectory()) {
+          fs.mkdirSync(destPath, { recursive: true });
+          for (const f of fs.readdirSync(srcPath)) {
+            fs.copyFileSync(path.join(srcPath, f), path.join(destPath, f));
+          }
+        } else {
+          fs.copyFileSync(srcPath, destPath);
+        }
+      }
+      console.log(`[workspace] Synced ${workspaceVer} → ${installVer}`);
+    }
+  } catch (err) { console.error('[workspace] Sync failed:', err.message); }
+}
 
 let win = null;
 let tray = null;
@@ -563,13 +632,15 @@ async function startSession() {
     return;
   }
 
-  // Dynamic import for ESM SDK — resolve from unpacked asar when packaged
-  let sdkPath = '@anthropic-ai/claude-agent-sdk';
-  if (app.isPackaged) {
-    const unpackedSdk = path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'sdk.mjs');
-    if (fs.existsSync(unpackedSdk)) sdkPath = 'file://' + unpackedSdk.replace(/\\/g, '/');
+  // Import SDK — try multiple resolution paths for packaged vs dev
+  let query;
+  try {
+    ({ query } = await import('@anthropic-ai/claude-agent-sdk'));
+  } catch {
+    // Fallback: resolve from unpacked asar explicitly
+    const unpackedSdk = path.join(appInstall, 'resources', 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk', 'sdk.mjs');
+    ({ query } = await import('file://' + unpackedSdk.replace(/\\/g, '/')));
   }
-  const { query } = await import(sdkPath);
 
   // Determine the active brand — must match what the welcome message shows
   let activeBrand = '';

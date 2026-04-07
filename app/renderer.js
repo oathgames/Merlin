@@ -959,20 +959,30 @@ merlin.onSdkError((err) => {
   const errLower = (err || '').toLowerCase();
   let userMsg = 'Something went wrong. ';
   let isAuthError = false;
+  let isClaudeNotFound = false;
   if (errLower.includes('enotfound') || errLower.includes('econnrefused') || errLower.includes('etimedout') || errLower.includes('network')) {
     userMsg = 'Lost connection — check your internet. ';
   } else if (errLower.includes('401') || errLower.includes('unauthorized') || errLower.includes('auth')) {
     userMsg = 'Session expired. ';
     isAuthError = true;
+  } else if (errLower.includes('enoent') || errLower.includes('not found') || errLower.includes('spawn') || errLower.includes('claude')) {
+    userMsg = 'Claude CLI not found. ';
+    isClaudeNotFound = true;
   }
+  console.error('[SDK Error]', err);
 
   const bubble = addClaudeBubble();
 
   if (_restartAttempts > MAX_RESTART_ATTEMPTS) {
-    // Stop retrying — show manual recovery
-    const reason = isAuthError
-      ? 'Please open Claude Desktop and make sure you\'re logged in, then click Retry.'
-      : 'Check your internet connection and click Retry when ready.';
+    // Stop retrying — show manual recovery with specific guidance
+    let reason;
+    if (isClaudeNotFound) {
+      reason = 'Claude CLI is not installed. Install it from claude.ai/download, then click Retry.';
+    } else if (isAuthError) {
+      reason = 'Please open Claude Desktop and make sure you\'re logged in, then click Retry.';
+    } else {
+      reason = 'Check your internet connection and click Retry when ready.';
+    }
     textBuffer = `${userMsg}Merlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}`;
     finalizeBubble();
     bubble.style.borderColor = 'rgba(239,68,68,.3)';

@@ -1,5 +1,5 @@
 {
-  "version": "0.7.7",
+  "version": "0.7.8",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,10 +18,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.7.7: macOS code signing (no more Gatekeeper warnings), download link caching, cert safety.",
+  "notes": "v0.7.8: Documents workspace separation, SDK import fix for packaged builds, macOS code signing, workspace auto-sync on update.",
   "whatsNew": [
-    "macOS code signing — no more 'damaged app' Gatekeeper warnings",
-    "Download links cached — no more GitHub rate limit fallbacks",
-    "Cert files gitignored across both repos"
+    "Workspace now lives in Documents/Merlin — your brands are always accessible",
+    "Packaged app SDK connection fix — no more 'tried 3 times' errors",
+    "Auto-sync: app updates bring new commands without touching your data"
   ]
 }
