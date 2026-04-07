@@ -680,16 +680,39 @@ function escapeHtml(text) {
 function friendlyError(raw, platformName) {
   if (!raw) return `Could not connect to ${platformName || 'the platform'}. Please try again.`;
   const s = String(raw);
-  // Strip full command paths — never show file paths or JSON to users
+  const sl = s.toLowerCase();
+
+  // Balance / billing errors — detect actual platform from error text
+  if (sl.includes('exhausted balance') || sl.includes('top up') || sl.includes('insufficient') || sl.includes('billing')) {
+    const src = sl.includes('fal.ai') ? 'fal.ai' : sl.includes('elevenlabs') ? 'ElevenLabs' : sl.includes('heygen') ? 'HeyGen' : (platformName || 'API');
+    return `Your ${src} balance is empty. Add credits to continue.`;
+  }
+  if (sl.includes('rate limit') || sl.includes('too many requests') || sl.includes('429')) return `Too many requests. Wait a moment and try again.`;
+  if (sl.includes('quota') || sl.includes('exceeded')) return `${platformName || 'API'} quota exceeded. Check your plan limits.`;
+
+  // Auth errors
+  if (sl.includes('401') || sl.includes('unauthorized') || sl.includes('invalid.*key') || sl.includes('invalid.*token')) return `Authorization failed. Try reconnecting ${platformName || 'the platform'}.`;
+  if (sl.includes('403') || sl.includes('forbidden') || sl.includes('locked')) return `Access denied on ${platformName || 'the platform'}. Check your account status.`;
+
+  // Network errors
+  if (sl.includes('enoent') || sl.includes('not found') || sl.includes('spawn')) return `Merlin engine not found. Try reinstalling or running /update.`;
+  if (sl.includes('etimedout') || sl.includes('timeout')) return `Connection timed out. Check your internet and try again.`;
+  if (sl.includes('econnrefused')) return `${platformName || 'Platform'} refused the connection. The service may be down.`;
+  if (sl.includes('enotfound') || sl.includes('dns')) return `Can't reach ${platformName || 'the service'}. Check your internet connection.`;
+
+  // Command/binary errors — never show raw paths
   if (s.includes('Command failed') || s.includes('.exe') || s.includes('--cmd') || s.includes('--config')) {
-    if (s.includes('ENOENT') || s.includes('not found')) return `Merlin engine not found. Try reinstalling or running /update.`;
-    if (s.includes('ETIMEDOUT') || s.includes('timeout')) return `Connection timed out. Check your internet and try again.`;
-    if (s.includes('ECONNREFUSED')) return `${platformName || 'Platform'} refused the connection. The service may be down.`;
-    if (s.includes('401') || s.includes('unauthorized')) return `Authorization failed. Try reconnecting ${platformName || 'the platform'}.`;
-    if (s.includes('403') || s.includes('forbidden')) return `Access denied. You may need additional permissions on ${platformName || 'the platform'}.`;
     return `Could not connect to ${platformName || 'the platform'}. Please check your internet connection and try again.`;
   }
-  // Truncate long messages
+
+  // JSON / technical errors — strip and simplify
+  if (s.includes('{"') || s.includes('[ERROR]') || s.includes('HTTP 4') || s.includes('HTTP 5')) {
+    if (sl.includes('500') || sl.includes('internal server')) return `${platformName || 'Service'} is having issues. Try again in a few minutes.`;
+    if (sl.includes('404')) return `${platformName || 'Resource'} not found. It may have been moved or deleted.`;
+    return `Something went wrong with ${platformName || 'the service'}. Try again.`;
+  }
+
+  // Truncate anything still long
   if (s.length > 150) return s.slice(0, 140) + '…';
   return s;
 }

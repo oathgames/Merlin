@@ -1,5 +1,5 @@
 {
-  "version": "0.8.0",
+  "version": "0.8.1",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -18,10 +18,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.8.0: Security hardening (Electron 39, Go 1.25.9, 10 CVE fixes), Swipes tab, creative pairing, cross-platform ad duplicate, predictive scoring, IVT framework, Slack digest, token efficiency (37% reduction), hallucination guardrails, agency-tier spell prompts.",
+  "notes": "v0.8.1: Download reliability fix (3-tier fallback, no more GitHub page redirects), mobile landing page, SDK error diagnostics, second-instance window restore.",
   "whatsNew": [
-    "Security hardening — Electron 39, 10 CVE patches, token-in-header",
-    "Swipes tab — save competitor ads, pair with yours, generate in your style",
-    "Agency-tier spells — IVT testing, fatigue detection, predictive scoring"
+    "Download links never break — 3-tier fallback with hardcoded URL pattern",
+    "Mobile visitors get 'email yourself the link' instead of broken DMG download",
+    "Better error diagnostics when Claude CLI connection fails"
   ]
 }
