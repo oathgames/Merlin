@@ -54,7 +54,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "app/icon.ico"
+      "icon": "app/icon-1024.png"
     },
     "mac": {
       "target": [
@@ -74,18 +74,17 @@
       "target": "AppImage"
     },
     "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": false,
+      "oneClick": true,
       "perMachine": false,
       "artifactName": "Merlin.Setup.${version}.${ext}",
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "shortcutName": "Merlin",
       "runAfterFinish": true,
       "installerIcon": "app/icon.ico",
       "uninstallerIcon": "app/icon.ico",
-      "installerHeader": "app/icon.ico",
-      "license": "LICENSE.txt"
+      "installerHeaderIcon": "app/icon.ico",
+      "deleteAppDataOnUninstall": false
     }
   }
 }

@@ -72,43 +72,31 @@ const appRoot = app.isPackaged
   : path.join(__dirname, '..');
 
 // ── Workspace bootstrap + sync ──────────────────────────────
-// Runs in a CHILD PROCESS so it NEVER blocks the main thread or causes "Not Responding."
+// 100% non-blocking. Every file operation runs in a child process.
+// The main thread NEVER touches the filesystem during bootstrap.
 function bootstrapWorkspace() {
   if (!app.isPackaged) return;
   const { exec } = require('child_process');
-  // Use robocopy on Windows (built-in, fast, non-blocking) / cp -rn on Mac
-  const src = appInstall;
-  const dest = appRoot;
-  if (!fs.existsSync(path.join(dest, 'CLAUDE.md'))) {
-    // First run — copy skeleton
-    fs.mkdirSync(dest, { recursive: true });
-    if (process.platform === 'win32') {
-      // /E=recurse /XC/XN/XO=skip existing (never overwrite user files) /NFL/NDL/NJH/NJS=quiet
-      exec(`robocopy "${path.join(src, '.claude')}" "${path.join(dest, '.claude')}" /E /XC /XN /XO /NFL /NDL /NJH /NJS & robocopy "${path.join(src, 'assets')}" "${path.join(dest, 'assets')}" /E /XC /XN /XO /NFL /NDL /NJH /NJS`, () => {});
-      for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
-        try { if (fs.existsSync(path.join(src, f)) && !fs.existsSync(path.join(dest, f))) fs.copyFileSync(path.join(src, f), path.join(dest, f)); } catch {}
-      }
-    } else {
-      exec(`cp -Rn "${path.join(src, '.claude')}" "${dest}/" 2>/dev/null; cp -Rn "${path.join(src, 'assets')}" "${dest}/" 2>/dev/null; for f in CLAUDE.md version.json memory.md README.txt; do [ -f "${src}/$f" ] && [ ! -f "${dest}/$f" ] && cp "${src}/$f" "${dest}/$f"; done`, () => {});
-    }
-    console.log('[workspace] Bootstrap started (background)');
+  const src = appInstall.replace(/\\/g, '\\\\');
+  const dest = appRoot.replace(/\\/g, '\\\\');
+
+  if (process.platform === 'win32') {
+    // Single robocopy command handles everything — dirs + individual files
+    // /E=recurse /XC/XN/XO=skip existing files /NFL/NDL/NJH/NJS/NP=quiet
+    // robocopy exits 0-7 on success, 8+ on failure — we ignore exit codes
+    exec([
+      `mkdir "${appRoot}" 2>nul`,
+      `robocopy "${path.join(appInstall, '.claude')}" "${path.join(appRoot, '.claude')}" /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP`,
+      `robocopy "${path.join(appInstall, 'assets')}" "${path.join(appRoot, 'assets')}" /E /XC /XN /XO /NFL /NDL /NJH /NJS /NP`,
+      `for %f in (CLAUDE.md version.json memory.md README.txt) do if not exist "${appRoot}\\%f" if exist "${appInstall}\\%f" copy /Y "${appInstall}\\%f" "${appRoot}\\%f"`,
+    ].join(' & '), { shell: 'cmd.exe' }, () => console.log('[workspace] Bootstrap complete'));
   } else {
-    // Update sync — just commands + settings (small, fast, OK to do sync)
-    try {
-      const installVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(src, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
-      const workspaceVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(dest, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
-      if (installVer !== workspaceVer) {
-        for (const [s, d] of [['.claude/commands','.claude/commands'],['.claude/settings.json','.claude/settings.json'],['CLAUDE.md','CLAUDE.md'],['version.json','version.json']]) {
-          const sp = path.join(src, s), dp = path.join(dest, d);
-          if (!fs.existsSync(sp)) continue;
-          if (fs.statSync(sp).isDirectory()) {
-            fs.mkdirSync(dp, { recursive: true });
-            for (const f of fs.readdirSync(sp)) fs.copyFileSync(path.join(sp, f), path.join(dp, f));
-          } else fs.copyFileSync(sp, dp);
-        }
-        console.log(`[workspace] Synced ${workspaceVer} → ${installVer}`);
-      }
-    } catch (err) { console.error('[workspace] Sync failed:', err.message); }
+    exec([
+      `mkdir -p "${appRoot}"`,
+      `cp -Rn "${path.join(appInstall, '.claude')}" "${appRoot}/" 2>/dev/null`,
+      `cp -Rn "${path.join(appInstall, 'assets')}" "${appRoot}/" 2>/dev/null`,
+      `for f in CLAUDE.md version.json memory.md README.txt; do [ -f "${appInstall}/$f" ] && [ ! -f "${appRoot}/$f" ] && cp "${appInstall}/$f" "${appRoot}/$f"; done`,
+    ].join('; '), () => console.log('[workspace] Bootstrap complete'));
   }
 }
 
