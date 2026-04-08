@@ -71,55 +71,45 @@ const appRoot = app.isPackaged
   ? path.join(app.getPath('documents'), 'Merlin')
   : path.join(__dirname, '..');
 
-// ── Workspace bootstrap + sync (deferred to after window shows) ──────
-// Runs ASYNC after app.whenReady() so the window appears instantly.
-// Never blocks main thread — prevents "Not Responding" on first launch.
+// ── Workspace bootstrap + sync ──────────────────────────────
+// Runs in a CHILD PROCESS so it NEVER blocks the main thread or causes "Not Responding."
 function bootstrapWorkspace() {
   if (!app.isPackaged) return;
-  const copyDir = (src, dest) => {
-    if (!fs.existsSync(src)) return;
+  const { exec } = require('child_process');
+  // Use robocopy on Windows (built-in, fast, non-blocking) / cp -rn on Mac
+  const src = appInstall;
+  const dest = appRoot;
+  if (!fs.existsSync(path.join(dest, 'CLAUDE.md'))) {
+    // First run — copy skeleton
     fs.mkdirSync(dest, { recursive: true });
-    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-      const srcPath = path.join(src, entry.name);
-      const destPath = path.join(dest, entry.name);
-      if (entry.isDirectory()) copyDir(srcPath, destPath);
-      else if (!fs.existsSync(destPath)) fs.copyFileSync(srcPath, destPath);
-    }
-  };
-
-  // First-run: copy skeleton to Documents/Merlin
-  if (!fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) {
-    try {
-      fs.mkdirSync(appRoot, { recursive: true });
-      copyDir(path.join(appInstall, '.claude'), path.join(appRoot, '.claude'));
-      copyDir(path.join(appInstall, 'assets'), path.join(appRoot, 'assets'));
+    if (process.platform === 'win32') {
+      // /E=recurse /XC/XN/XO=skip existing (never overwrite user files) /NFL/NDL/NJH/NJS=quiet
+      exec(`robocopy "${path.join(src, '.claude')}" "${path.join(dest, '.claude')}" /E /XC /XN /XO /NFL /NDL /NJH /NJS & robocopy "${path.join(src, 'assets')}" "${path.join(dest, 'assets')}" /E /XC /XN /XO /NFL /NDL /NJH /NJS`, () => {});
       for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
-        const src = path.join(appInstall, f);
-        const dest = path.join(appRoot, f);
-        if (fs.existsSync(src) && !fs.existsSync(dest)) fs.copyFileSync(src, dest);
+        try { if (fs.existsSync(path.join(src, f)) && !fs.existsSync(path.join(dest, f))) fs.copyFileSync(path.join(src, f), path.join(dest, f)); } catch {}
       }
-      console.log('[workspace] Bootstrapped Documents/Merlin from install');
-    } catch (err) { console.error('[workspace] Bootstrap failed:', err.message); }
-    return;
-  }
-
-  // Update sync: new commands/settings only (never touch user data)
-  try {
-    const installVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(appInstall, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
-    const workspaceVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
-    if (installVer !== workspaceVer) {
-      for (const [src, dest] of [['.claude/commands','.claude/commands'],['.claude/settings.json','.claude/settings.json'],['CLAUDE.md','CLAUDE.md'],['version.json','version.json']]) {
-        const srcPath = path.join(appInstall, src);
-        const destPath = path.join(appRoot, dest);
-        if (!fs.existsSync(srcPath)) continue;
-        if (fs.statSync(srcPath).isDirectory()) {
-          fs.mkdirSync(destPath, { recursive: true });
-          for (const f of fs.readdirSync(srcPath)) fs.copyFileSync(path.join(srcPath, f), path.join(destPath, f));
-        } else fs.copyFileSync(srcPath, destPath);
-      }
-      console.log(`[workspace] Synced ${workspaceVer} → ${installVer}`);
+    } else {
+      exec(`cp -Rn "${path.join(src, '.claude')}" "${dest}/" 2>/dev/null; cp -Rn "${path.join(src, 'assets')}" "${dest}/" 2>/dev/null; for f in CLAUDE.md version.json memory.md README.txt; do [ -f "${src}/$f" ] && [ ! -f "${dest}/$f" ] && cp "${src}/$f" "${dest}/$f"; done`, () => {});
     }
-  } catch (err) { console.error('[workspace] Sync failed:', err.message); }
+    console.log('[workspace] Bootstrap started (background)');
+  } else {
+    // Update sync — just commands + settings (small, fast, OK to do sync)
+    try {
+      const installVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(src, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
+      const workspaceVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(dest, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
+      if (installVer !== workspaceVer) {
+        for (const [s, d] of [['.claude/commands','.claude/commands'],['.claude/settings.json','.claude/settings.json'],['CLAUDE.md','CLAUDE.md'],['version.json','version.json']]) {
+          const sp = path.join(src, s), dp = path.join(dest, d);
+          if (!fs.existsSync(sp)) continue;
+          if (fs.statSync(sp).isDirectory()) {
+            fs.mkdirSync(dp, { recursive: true });
+            for (const f of fs.readdirSync(sp)) fs.copyFileSync(path.join(sp, f), path.join(dp, f));
+          } else fs.copyFileSync(sp, dp);
+        }
+        console.log(`[workspace] Synced ${workspaceVer} → ${installVer}`);
+      }
+    } catch (err) { console.error('[workspace] Sync failed:', err.message); }
+  }
 }
 
 let win = null;

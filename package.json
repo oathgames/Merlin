@@ -81,7 +81,7 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Merlin",
-      "runAfterFinish": false,
+      "runAfterFinish": true,
       "installerIcon": "app/icon.ico",
       "uninstallerIcon": "app/icon.ico",
       "installerHeader": "app/icon.ico",
