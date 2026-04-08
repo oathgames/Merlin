@@ -71,10 +71,11 @@ const appRoot = app.isPackaged
   ? path.join(app.getPath('documents'), 'Merlin')
   : path.join(__dirname, '..');
 
-// ── First-run workspace bootstrap ─────────────────────────────
-// Copy default files from install location to Documents\Merlin on first launch.
-// This separates "app" from "workspace" — app updates don't touch user data.
-if (app.isPackaged && !fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) {
+// ── Workspace bootstrap + sync (deferred to after window shows) ──────
+// Runs ASYNC after app.whenReady() so the window appears instantly.
+// Never blocks main thread — prevents "Not Responding" on first launch.
+function bootstrapWorkspace() {
+  if (!app.isPackaged) return;
   const copyDir = (src, dest) => {
     if (!fs.existsSync(src)) return;
     fs.mkdirSync(dest, { recursive: true });
@@ -82,52 +83,39 @@ if (app.isPackaged && !fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) {
       const srcPath = path.join(src, entry.name);
       const destPath = path.join(dest, entry.name);
       if (entry.isDirectory()) copyDir(srcPath, destPath);
-      else if (!fs.existsSync(destPath)) fs.copyFileSync(srcPath, destPath); // never overwrite user files
+      else if (!fs.existsSync(destPath)) fs.copyFileSync(srcPath, destPath);
     }
   };
-  try {
-    fs.mkdirSync(appRoot, { recursive: true });
-    // Copy project skeleton: commands, settings, example brand, CLAUDE.md
-    copyDir(path.join(appInstall, '.claude'), path.join(appRoot, '.claude'));
-    copyDir(path.join(appInstall, 'assets'), path.join(appRoot, 'assets'));
-    for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
-      const src = path.join(appInstall, f);
-      const dest = path.join(appRoot, f);
-      if (fs.existsSync(src) && !fs.existsSync(dest)) fs.copyFileSync(src, dest);
-    }
-    console.log('[workspace] Bootstrapped Documents/Merlin from install');
-  } catch (err) {
-    console.error('[workspace] Bootstrap failed:', err.message);
-  }
-}
 
-// ── Workspace sync on app update ─────────────────────────────
-// When the app version is newer than workspace, sync updatable files (commands, settings)
-// but NEVER overwrite user data (brands, config, memory, results)
-if (app.isPackaged && fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) {
+  // First-run: copy skeleton to Documents/Merlin
+  if (!fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) {
+    try {
+      fs.mkdirSync(appRoot, { recursive: true });
+      copyDir(path.join(appInstall, '.claude'), path.join(appRoot, '.claude'));
+      copyDir(path.join(appInstall, 'assets'), path.join(appRoot, 'assets'));
+      for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
+        const src = path.join(appInstall, f);
+        const dest = path.join(appRoot, f);
+        if (fs.existsSync(src) && !fs.existsSync(dest)) fs.copyFileSync(src, dest);
+      }
+      console.log('[workspace] Bootstrapped Documents/Merlin from install');
+    } catch (err) { console.error('[workspace] Bootstrap failed:', err.message); }
+    return;
+  }
+
+  // Update sync: new commands/settings only (never touch user data)
   try {
     const installVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(appInstall, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
     const workspaceVer = (() => { try { return JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8')).version; } catch { return '0'; } })();
     if (installVer !== workspaceVer) {
-      // Sync: commands, settings, CLAUDE.md, version.json (never brands, config, memory)
-      const syncFiles = [
-        ['.claude/commands', '.claude/commands'],
-        ['.claude/settings.json', '.claude/settings.json'],
-        ['CLAUDE.md', 'CLAUDE.md'],
-        ['version.json', 'version.json'],
-      ];
-      for (const [src, dest] of syncFiles) {
+      for (const [src, dest] of [['.claude/commands','.claude/commands'],['.claude/settings.json','.claude/settings.json'],['CLAUDE.md','CLAUDE.md'],['version.json','version.json']]) {
         const srcPath = path.join(appInstall, src);
         const destPath = path.join(appRoot, dest);
         if (!fs.existsSync(srcPath)) continue;
         if (fs.statSync(srcPath).isDirectory()) {
           fs.mkdirSync(destPath, { recursive: true });
-          for (const f of fs.readdirSync(srcPath)) {
-            fs.copyFileSync(path.join(srcPath, f), path.join(destPath, f));
-          }
-        } else {
-          fs.copyFileSync(srcPath, destPath);
-        }
+          for (const f of fs.readdirSync(srcPath)) fs.copyFileSync(path.join(srcPath, f), path.join(destPath, f));
+        } else fs.copyFileSync(srcPath, destPath);
       }
       console.log(`[workspace] Synced ${workspaceVer} → ${installVer}`);
     }
@@ -2790,6 +2778,9 @@ app.whenReady().then(async () => {
   try { migratePerBrand(); } catch (err) { console.error('[migration]', err.message); }
 
   await createWindow();
+
+  // Bootstrap workspace AFTER window is visible (prevents "Not Responding" on first launch)
+  setTimeout(bootstrapWorkspace, 500);
 
   // macOS: Cmd+Q should actually quit (set forceQuit so close handler allows it)
   app.on('before-quit', () => {
