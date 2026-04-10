@@ -1030,13 +1030,15 @@ merlin.onSdkError((err) => {
   let isClaudeNotFound = false;
   if (errLower.includes('enotfound') || errLower.includes('econnrefused') || errLower.includes('etimedout') || errLower.includes('network')) {
     userMsg = 'Lost connection — check your internet. ';
-  } else if (errLower.includes('401') || errLower.includes('unauthorized') || errLower.includes('auth')) {
+  } else if (errLower.includes('401') || errLower.includes('unauthorized')) {
     userMsg = 'Session expired. ';
     isAuthError = true;
-  } else if (errLower.includes('enoent') || errLower.includes('not found') || errLower.includes('spawn') || errLower.includes('claude')) {
+  } else if (errLower.includes('enoent') && (errLower.includes('spawn') || errLower.includes('node'))) {
+    // Only match actual spawn ENOENT — not every error containing "not found"
     userMsg = 'Claude CLI not found. ';
     isClaudeNotFound = true;
   }
+  // ALWAYS log the real error so we can debug
   console.error('[SDK Error]', err);
 
   const bubble = addClaudeBubble();
@@ -1051,7 +1053,8 @@ merlin.onSdkError((err) => {
     } else {
       reason = 'Check your internet connection and click Retry when ready.';
     }
-    textBuffer = `${userMsg}Merlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}`;
+    const debugInfo = err ? `\n\nError: ${(err || '').slice(0, 200)}` : '';
+    textBuffer = `${userMsg}Merlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}${debugInfo}`;
     finalizeBubble();
     bubble.style.borderColor = 'rgba(239,68,68,.3)';
 
@@ -1072,7 +1075,9 @@ merlin.onSdkError((err) => {
 
   // Exponential backoff: 2s, 4s, 8s
   const delay = Math.min(2000 * Math.pow(2, _restartAttempts - 1), 8000);
-  textBuffer = `${userMsg}Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
+  // Show the actual error on first attempt so Mac users can report it
+  const debugHint = _restartAttempts === 1 ? `\n(${(err || '').slice(0, 120)})` : '';
+  textBuffer = `${userMsg}Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})${debugHint}`;
   finalizeBubble();
   bubble.style.borderColor = 'rgba(239,68,68,.3)';
 
