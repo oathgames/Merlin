@@ -1025,6 +1025,76 @@ merlin.onSdkError((err) => {
   _restartAttempts++;
 
   const errLower = (err || '').toLowerCase();
+  console.error('[SDK Error]', err);
+
+  // ── "Not logged in" — Claude Code credentials missing ──
+  // On macOS, Claude Desktop and Claude Code use DIFFERENT credential stores
+  // (Desktop: "Claude Safe Storage" Keychain, Code: "Claude Code-credentials"
+  // Keychain). The user signed into Desktop, but Code has never been authed.
+  //
+  // Fix: trigger the bundled CLI's login flow automatically. This opens the
+  // user's browser for a quick OAuth redirect (they're already signed in to
+  // claude.ai so it's usually instant) and creates the CLI credential entry.
+  // Then retry the session.
+  if (errLower.includes('not logged in') || errLower.includes('please run /login') || errLower.includes('login required')) {
+    const bubble = addClaudeBubble();
+    textBuffer = 'Connecting to your Claude account...\n\nA browser window will open for a quick sign-in. This only happens once.';
+    finalizeBubble();
+    bubble.style.borderColor = 'rgba(251,191,36,.3)';
+
+    // Auto-trigger the login flow — opens browser for OAuth
+    (async () => {
+      try {
+        if (merlin.triggerClaudeLogin) {
+          const result = await merlin.triggerClaudeLogin();
+          if (result.success) {
+            // Login succeeded — retry session immediately
+            bubble.querySelector('.msg-text').textContent = 'Signed in! Starting Merlin...';
+            setTimeout(() => {
+              _restartAttempts = 0;
+              sessionActive = true;
+              merlin.startSession();
+            }, 1000);
+            return;
+          }
+        }
+      } catch (e) {
+        console.error('[login-trigger]', e);
+      }
+
+      // Login failed or not available — show manual buttons
+      bubble.querySelector('.msg-text').textContent = 'Sign in to your Claude account to use Merlin.\n\nClick the button below to open the sign-in page in your browser.';
+
+      const loginBtn = document.createElement('button');
+      loginBtn.textContent = 'Sign In to Claude';
+      loginBtn.className = 'btn-action btn-approve-style';
+      loginBtn.style.cssText = 'margin-top:12px;margin-right:8px;width:auto;padding:8px 20px;font-size:13px';
+      loginBtn.onclick = async () => {
+        loginBtn.textContent = 'Signing in...';
+        loginBtn.disabled = true;
+        try {
+          if (merlin.triggerClaudeLogin) await merlin.triggerClaudeLogin();
+        } catch {}
+        _restartAttempts = 0;
+        sessionActive = true;
+        merlin.startSession();
+      };
+      bubble.appendChild(loginBtn);
+
+      const retryBtn = document.createElement('button');
+      retryBtn.textContent = 'Retry';
+      retryBtn.className = 'btn-action btn-deny-style';
+      retryBtn.style.cssText = 'margin-top:12px;width:auto;padding:8px 20px;font-size:13px';
+      retryBtn.onclick = () => {
+        _restartAttempts = 0;
+        sessionActive = true;
+        merlin.startSession();
+      };
+      bubble.appendChild(retryBtn);
+    })();
+    return;
+  }
+
   let userMsg = 'Something went wrong. ';
   let isAuthError = false;
   let isClaudeNotFound = false;
@@ -1034,17 +1104,13 @@ merlin.onSdkError((err) => {
     userMsg = 'Session expired. ';
     isAuthError = true;
   } else if (errLower.includes('enoent') && (errLower.includes('spawn') || errLower.includes('node'))) {
-    // Only match actual spawn ENOENT — not every error containing "not found"
     userMsg = 'Claude CLI not found. ';
     isClaudeNotFound = true;
   }
-  // ALWAYS log the real error so we can debug
-  console.error('[SDK Error]', err);
 
   const bubble = addClaudeBubble();
 
   if (_restartAttempts > MAX_RESTART_ATTEMPTS) {
-    // Stop retrying — show manual recovery with specific guidance
     let reason;
     if (isClaudeNotFound) {
       reason = 'Claude CLI is not installed. Install it from claude.ai/download, then click Retry.';
@@ -1058,7 +1124,6 @@ merlin.onSdkError((err) => {
     finalizeBubble();
     bubble.style.borderColor = 'rgba(239,68,68,.3)';
 
-    // Add a retry button inline
     const retryBtn = document.createElement('button');
     retryBtn.textContent = 'Retry Connection';
     retryBtn.className = 'btn-action btn-approve-style';
@@ -1073,9 +1138,7 @@ merlin.onSdkError((err) => {
     return;
   }
 
-  // Exponential backoff: 2s, 4s, 8s
   const delay = Math.min(2000 * Math.pow(2, _restartAttempts - 1), 8000);
-  // Show the actual error on first attempt so Mac users can report it
   const debugHint = _restartAttempts === 1 ? `\n(${(err || '').slice(0, 120)})` : '';
   textBuffer = `${userMsg}Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})${debugHint}`;
   finalizeBubble();

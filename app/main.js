@@ -295,12 +295,34 @@ async function probeClaudeSetup(force = false) {
 
     try {
       const { query } = await importClaudeAgentSdk();
+      // On Mac, inject the OAuth token from Keychain so the probe CLI
+      // doesn't fail with "Not logged in" (same fix as startSession)
+      const probeEnv = { ...process.env };
+      if (process.platform === 'darwin' && !probeEnv.CLAUDE_CODE_OAUTH_TOKEN && !probeEnv.ANTHROPIC_API_KEY) {
+        try {
+          const { execSync } = require('child_process');
+          let credJson = '';
+          try {
+            credJson = execSync('security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null', { timeout: 5000, encoding: 'utf8' }).trim();
+          } catch {
+            try { credJson = fs.readFileSync(path.join(os.homedir(), '.claude', '.credentials.json'), 'utf8').trim(); } catch {}
+          }
+          if (credJson) {
+            try {
+              const creds = JSON.parse(credJson);
+              const oauth = creds.claudeAiOauth || creds;
+              if (oauth.accessToken) probeEnv.CLAUDE_CODE_OAUTH_TOKEN = oauth.accessToken;
+            } catch {}
+          }
+        } catch {}
+      }
       querySession = query({
         prompt: 'Merlin readiness check.',
         options: {
           cwd: appRoot,
           permissionMode: 'default',
           settingSources: ['project'],
+          env: probeEnv,
         },
       });
 
@@ -1184,6 +1206,54 @@ async function startSession() {
     }
   } catch {}
 
+  // macOS: Claude Code CLI reads auth from the macOS Keychain under the
+  // service name "Claude Code-credentials". But our ELECTRON_RUN_AS_NODE
+  // wrapper runs under Merlin's code signature, which may not be in the
+  // Keychain ACL → "Not logged in" error.
+  //
+  // Fix: read the OAuth token from the Keychain ourselves (the Electron main
+  // process IS in a GUI session so the Keychain is unlocked) and pass it
+  // via CLAUDE_CODE_OAUTH_TOKEN env var, which the CLI checks before Keychain.
+  //
+  // Fallback chain:
+  //   1. CLAUDE_CODE_OAUTH_TOKEN already set → use it
+  //   2. macOS Keychain "Claude Code-credentials" → read + inject
+  //   3. ~/.claude/.credentials.json file → read + inject
+  //   4. Neither → let the CLI try (may prompt "Not logged in")
+  if (process.platform === 'darwin' && !sessionEnv.CLAUDE_CODE_OAUTH_TOKEN && !sessionEnv.ANTHROPIC_API_KEY) {
+    try {
+      const { execSync } = require('child_process');
+      // Try Keychain first — this works when Keychain is unlocked (GUI session)
+      let credJson = '';
+      try {
+        credJson = execSync(
+          'security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null',
+          { timeout: 5000, encoding: 'utf8' }
+        ).trim();
+      } catch {
+        // Keychain entry doesn't exist or is locked — try the file fallback
+        try {
+          const credFile = path.join(os.homedir(), '.claude', '.credentials.json');
+          credJson = fs.readFileSync(credFile, 'utf8').trim();
+        } catch {}
+      }
+      if (credJson) {
+        try {
+          const creds = JSON.parse(credJson);
+          const oauth = creds.claudeAiOauth || creds;
+          if (oauth.accessToken) {
+            sessionEnv.CLAUDE_CODE_OAUTH_TOKEN = oauth.accessToken;
+            console.log('[auth] Injected OAuth token from', credJson.includes('Keychain') ? 'Keychain' : 'credentials');
+          }
+        } catch (e) {
+          console.error('[auth] Failed to parse credentials:', e.message);
+        }
+      }
+    } catch (e) {
+      console.error('[auth] macOS credential read failed:', e.message);
+    }
+  }
+
   // Register the Merlin MCP server — all platform API calls route through
   // this in-process server. Credentials never enter Claude's context.
   let mcpConfig = {};
@@ -1406,6 +1476,32 @@ ipcMain.handle('install-claude', async () => {
 });
 
 ipcMain.handle('start-session', () => { startSession(); return { success: true }; });
+
+// macOS: trigger the bundled CLI's login flow. Opens a browser for OAuth,
+// creates the "Claude Code-credentials" Keychain entry (or writes
+// ~/.claude/.credentials.json as fallback). Required when the user has
+// Claude Desktop signed in but has never run `claude login` from terminal.
+ipcMain.handle('trigger-claude-login', async () => {
+  if (process.platform !== 'darwin') return { success: true };
+  try {
+    const { execSync } = require('child_process');
+    const nodeWrapper = path.join(os.homedir(), '.claude', 'bin', 'node');
+    const sdkDir = app.isPackaged
+      ? path.join(path.dirname(app.getPath('exe')), '..', 'Resources', 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
+      : path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-agent-sdk');
+    const cliJs = path.join(sdkDir, 'cli.js');
+    // Run the login command — this opens a browser for OAuth
+    execSync(`"${nodeWrapper}" "${cliJs}" auth login`, {
+      timeout: 120000, // 2 min for user to complete browser flow
+      stdio: 'inherit', // show in Electron's terminal output
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    });
+    return { success: true };
+  } catch (e) {
+    console.error('[trigger-claude-login]', e.message);
+    return { success: false, error: e.message };
+  }
+});
 
 // API key fallback — user opts in explicitly
 ipcMain.handle('set-api-key', (_, apiKey) => {

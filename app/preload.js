@@ -118,4 +118,5 @@ contextBridge.exposeInMainWorld('merlin', {
   onUpdateError: (cb) => ipcRenderer.on('update-error', (_, err) => cb(err)),
   onTrialExpired: (cb) => ipcRenderer.on('trial-expired', () => cb()),
   onBypassAttempt: (cb) => ipcRenderer.on('bypass-attempt', (_, info) => cb(info)),
+  triggerClaudeLogin: () => ipcRenderer.invoke('trigger-claude-login'),
 });
