@@ -86,7 +86,7 @@
           },
           {
             "type": "command",
-            "command": "node -e \"const p=(JSON.parse(process.env.TOOL_INPUT||'{}').file_path||'').replace(/\\\\\\\\/g,'/');const blocked=[/\\/app\\/(main|renderer|preload|ws-server)\\.js$/,/\\/app\\/(style\\.css|index\\.html)$/,/\\.claude\\/settings\\.json$/,/\\.claude\\/commands\\//,/\\.claude\\/hooks\\//,/CLAUDE\\.md$/,/version\\.json$/,/package\\.json$/,/package-lock\\.json$/,/\\.(ssh|gnupg)\\//,/\\.(env|bashrc|zshrc|profile)$/,/(etc|Windows[\\\\/]System)/i];if(blocked.some(r=>r.test(p))){console.error('BLOCKED: Cannot modify app source or system files.');process.exit(2)}\""
+            "command": "node -e \"const p=(JSON.parse(process.env.TOOL_INPUT||'{}').file_path||'').replace(/\\\\\\\\/g,'/');const blocked=[/\\/app\\/(main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact)\\.js$/,/\\/app\\/(style\\.css|index\\.html)$/,/\\.claude\\/settings\\.json$/,/\\.claude\\/commands\\//,/\\.claude\\/hooks\\//,/CLAUDE\\.md$/,/version\\.json$/,/package\\.json$/,/package-lock\\.json$/,/\\.(ssh|gnupg)\\//,/\\.(env|bashrc|zshrc|profile)$/,/(etc|Windows[\\\\/]System)/i];if(blocked.some(r=>r.test(p))){console.error('BLOCKED: Cannot modify app source or system files.');process.exit(2)}\""
           }
         ]
       }

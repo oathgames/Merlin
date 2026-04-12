@@ -25,6 +25,7 @@ const TOKEN_PREFIXES = [
   /\bfal-[A-Za-z0-9]{20,}/g,        // fal.ai API keys
   /\bgsk_[A-Za-z0-9]{20,}/g,        // Groq API keys
   /\bwhsec_[A-Za-z0-9]{20,}/g,      // Webhook signing secrets
+  /\b[A-Za-z0-9]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}/g, // Discord bot tokens (base64.timestamp.hmac)
 ];
 
 // Fields whose values should ALWAYS be redacted from JSON output,

@@ -22,7 +22,12 @@ Use `mcp__merlin__*` tools for ALL platform interactions. They handle credential
 - `mcp__merlin__amazon_ads({action, brand, ...})` — Amazon ad operations
 - `mcp__merlin__shopify({action, brand, ...})` — Shopify store data
 - `mcp__merlin__content({action, brand, ...})` — images, blogs, social posts
+- `mcp__merlin__video({brand, product, ...})` — video ads (UGC, talking head, product showcase)
+- `mcp__merlin__voice({action, brand, ...})` — voice management (clone, list, delete)
 - `mcp__merlin__dashboard({action, brand, ...})` — performance, calendar, wisdom
+- `mcp__merlin__klaviyo({action, brand, ...})` — Klaviyo email marketing
+- `mcp__merlin__email({action, brand, ...})` — email program audit, revenue attribution
+- `mcp__merlin__discord({action, ...})` — Discord notifications
 - `mcp__merlin__platform_login({platform, brand})` — connect a platform via OAuth
 - `mcp__merlin__seo({action, brand, ...})` — SEO tools
 - `mcp__merlin__config({action, ...})` — API key setup, verification

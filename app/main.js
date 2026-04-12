@@ -795,7 +795,6 @@ const autoApproveTools = new Set([
   // NOTE: WebFetch REMOVED — now goes through handleToolApproval with a
   // canUseTool banned-host check (below). The hook is primary, canUseTool
   // is belt-and-suspenders.
-  // is belt-and-suspenders.
   'Read', 'Glob', 'Grep', 'WebSearch', 'TodoWrite',
   'Skill', 'Edit', 'Write', 'NotebookEdit', 'Agent',
 ]);
@@ -811,7 +810,7 @@ const safeBashPatterns = [
   /^ls\b/, /^wc\b/, /^find\b/, /^grep\b/,
   /^mkdir\b/, /^cp\b/, /^mv\b/, /^echo\b/, /^pwd\b/, /^cd\b/, /^test\b/,
   /^chmod\b/, /^xattr\b/, /^codesign\b/,
-  /^npx\b/,
+  // npx REMOVED — auto-approving it lets Claude run arbitrary packages
 ];
 
 function isSafeBash(command) {
@@ -847,6 +846,7 @@ const PROTECTED_PATH_PATTERNS = [
   /\.merlin-vault(\.|$)/i,
   /\.merlin-ratelimit(\.|$)/i,
   /\.merlin-audit(\.|$)/i,
+  /\.merlin-[a-z]/i,                    // Catch-all: .merlin-api-key, .merlin-subscription, etc.
   /\.rate-state\.bin$/i,
   // The actual vault file at %APPDATA%/Merlin/.vault
   /[/\\]Merlin[/\\]\.vault$/i,
@@ -1272,12 +1272,10 @@ async function startSession() {
           const oauth = creds.claudeAiOauth || creds;
           if (oauth.accessToken) {
             sessionEnv.CLAUDE_CODE_OAUTH_TOKEN = oauth.accessToken;
-            // Also set on process.env so headless spell sessions (spawned by
-            // the scheduler as child processes) inherit the token. Without this,
-            // Mac spell sessions fail with "Not logged in" because they don't
-            // go through startSession() and can't read the Keychain directly.
-            process.env.CLAUDE_CODE_OAUTH_TOKEN = oauth.accessToken;
-            console.log('[auth] Injected OAuth token (session + process.env)');
+            // SECURITY: Do NOT set process.env.CLAUDE_CODE_OAUTH_TOKEN —
+            // Claude can read it via `echo $CLAUDE_CODE_OAUTH_TOKEN` in Bash.
+            // Spell sessions inherit the token via the SDK's env option instead.
+            console.log('[auth] Injected OAuth token into session env');
           }
         } catch (e) {
           console.error('[auth] Failed to parse credentials:', e.message);
@@ -1898,8 +1896,27 @@ ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
 });
 
 // Save a single config field (for API key entry from UI)
+// Allowlist prevents injection of internal metadata keys (_migrationVersion, _userEmail, etc.)
+const CONFIG_FIELD_ALLOWLIST = new Set([
+  'metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaConfigId',
+  'tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId',
+  'shopifyStore', 'shopifyAccessToken',
+  'googleAccessToken', 'googleRefreshToken', 'googleAdsCustomerId', 'googleAdsDeveloperToken', 'googleApiKey',
+  'amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId', 'amazonSellerId',
+  'klaviyoAccessToken', 'klaviyoApiKey',
+  'pinterestAccessToken', 'pinterestRefreshToken',
+  'falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'arcadsApiKey',
+  'slackBotToken', 'slackWebhookUrl', 'slackChannel',
+  'discordGuildId', 'discordChannelId',
+  'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',
+  'maxDailyAdBudget', 'maxMonthlyAdSpend', 'autoPublishAds', 'blogPublishMode',
+  'qualityGate', 'falModel', 'imageModel', 'startAtLogin', 'dailyAdBudget',
+]);
 ipcMain.handle('save-config-field', (_, key, value, brandName) => {
   try {
+    if (!key || typeof key !== 'string' || key.startsWith('_') || !CONFIG_FIELD_ALLOWLIST.has(key)) {
+      return { success: false, error: 'Unknown config field' };
+    }
     if (brandName) {
       writeBrandTokens(brandName, { [key]: value });
     } else {
@@ -2067,7 +2084,6 @@ ipcMain.handle('refresh-perf', async (_, brandName) => {
     if (merged && Object.keys(merged).length > 0) {
       const tmpPath = path.join(os.tmpdir(), `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
       fs.writeFileSync(tmpPath, JSON.stringify(merged, null, 2), { mode: 0o600 });
-      setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 60000);
       configPath = tmpPath;
     }
   }
@@ -2075,11 +2091,14 @@ ipcMain.handle('refresh-perf', async (_, brandName) => {
   const cmdObj = { action: 'dashboard', batchCount: 1 };
   if (brandName) cmdObj.brand = brandName;
   const cmd = JSON.stringify(cmdObj);
+  const isTmpConfig = configPath !== path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   const { execFile } = require('child_process');
   return new Promise((resolve) => {
     execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
       timeout: 60000, cwd: appRoot,
     }, (err, stdout) => {
+      // Delete temp config IMMEDIATELY — don't leave decrypted credentials on disk
+      if (isTmpConfig) { try { fs.unlinkSync(configPath); } catch {} }
       if (err) return resolve({ error: err.message });
       // Cache the timestamp per brand
       try {
@@ -2962,12 +2981,18 @@ const statsFile = path.join(appRoot, '.merlin-stats.json');
 let _lastToolAction = null;
 
 function cacheDashboardData(msg) {
-  // Capture the action from tool_use commands
-  if (msg.type === 'tool_use' && msg.tool_name === 'Bash') {
-    const cmd = msg.input?.command || '';
-    if (cmd.includes('Merlin')) {
-      const match = cmd.match(/"action"\s*:\s*"([^"]+)"/);
-      if (match) _lastToolAction = match[1];
+  // Capture the action from tool_use commands (Bash or MCP)
+  if (msg.type === 'tool_use') {
+    if (msg.tool_name === 'Bash') {
+      const cmd = msg.input?.command || '';
+      if (cmd.includes('Merlin')) {
+        const match = cmd.match(/"action"\s*:\s*"([^"]+)"/);
+        if (match) _lastToolAction = match[1];
+      }
+    } else if (msg.tool_name && msg.tool_name.startsWith('mcp__merlin__')) {
+      // MCP tool calls: extract action from input
+      const action = msg.input?.action;
+      if (action) _lastToolAction = action;
     }
     return;
   }

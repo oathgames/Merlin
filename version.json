@@ -1,5 +1,5 @@
 {
-  "version": "0.9.92",
+  "version": "0.9.93",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,10 +23,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.9.6: MCP server architecture, cross-vertical wisdom intelligence, landing page auditor, hardened rate limits on all API calls.",
+  "notes": "v0.9.93: Security hardening — adversarial audit, credential protection, hook integrity, redaction improvements.",
   "whatsNew": [
-    "Landing page auditor — scans your product page for conversion killers",
-    "Cross-vertical wisdom — model performance tracking, ad intelligence rules",
-    "Every ad platform API call now rate-limited with zero bypasses"
+    "Security hardening — 13 fixes from adversarial audit",
+    "Revenue tracker now works with MCP tools (not just Bash)",
+    "Engine download progress visible during first launch"
   ]
 }

@@ -146,11 +146,16 @@ const PROTECTED_COMMAND_PATTERNS = [
   /\.merlin-ratelimit\b/i,
   /\.merlin-audit\b/i,
   /\.rate-state\.bin\b/i,
+  /\.merlin-[a-z]/i,                    // Catch-all: .merlin-api-key, .merlin-subscription, etc.
   // Match the real vault file at %APPDATA%/Merlin/.vault
   /Merlin[/\\]\.vault\b/i,
   /AppData.*\.vault\b/i,
   /Application Support.*\.vault\b/i,
   /\.config[/\\]merlin[/\\]\.vault\b/i,
+  // Protect framework files from mutation via cp/mv/rm
+  /\.claude[/\\]hooks[/\\]/i,
+  /\.claude[/\\]commands[/\\]/i,
+  /\.claude[/\\]settings\.json\b/i,
 ];
 
 // ── Audit log path ────────────────────────────────────────────────────────

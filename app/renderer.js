@@ -797,7 +797,8 @@ merlin.onSdkMessage((msg) => {
         for (const block of msg.message.content) {
           if (block.type === 'image' && block.source?.data && block.source.data.length > 100 && block.source.data.length < 10_000_000) { // cap at ~7.5MB decoded
             const imgBubble = addClaudeBubble();
-            imgBubble.innerHTML = `<img src="data:${block.source.media_type || 'image/png'};base64,${block.source.data}" alt="Image" style="max-width:100%;border-radius:10px">`;
+            const mimeType = (block.source.media_type || 'image/png').replace(/[^a-z0-9/+-]/gi, '');
+            imgBubble.innerHTML = `<img src="data:${mimeType};base64,${block.source.data}" alt="Image" style="max-width:100%;border-radius:10px">`;
             imgBubble.classList.remove('streaming');
             currentBubble = null;
             textBuffer = '';
@@ -1219,6 +1220,13 @@ merlin.onUpdateError((err) => {
     merlin.applyUpdate();
   };
   document.getElementById('update-dismiss').classList.remove('hidden');
+});
+
+// ── Engine Status (binary download progress) ─────────────────
+merlin.onEngineStatus((msg) => {
+  const status = document.getElementById('setup-status');
+  if (status) status.textContent = msg;
+  console.log('[engine]', msg);
 });
 
 // ── Security: bypass attempt toast ──────────────────────────
