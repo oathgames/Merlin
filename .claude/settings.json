@@ -31,6 +31,9 @@
       "Bash(*sellingpartnerapi*)",
       "Bash(*api.klaviyo.com*)",
       "Bash(*a.klaviyo.com*)",
+      "Bash(*ads-api.reddit.com*)",
+      "Bash(*openapi.etsy.com*)",
+      "Bash(*graph.threads.net*)",
       "Bash(*curl*|*sh*)",
       "Bash(*curl*|*bash*)",
       "Bash(*wget*-O-*|*sh*)",
@@ -38,6 +41,10 @@
       "Bash(*ncat *)",
       "Bash(*socat *)",
       "Bash(*openssl s_client*)",
+      "Bash(*cp*.merlin-*)",
+      "Bash(*cp*merlin-config*)",
+      "Bash(*copy*.merlin-*)",
+      "Bash(*Copy-Item*.merlin-*)",
       "Bash(*rm*.merlin-ratelimit*)",
       "Bash(*rm*.merlin-vault*)",
       "Bash(*rm*.merlin-audit*)",
@@ -48,7 +55,10 @@
       "WebFetch(*business-api.tiktok.com*)",
       "WebFetch(*googleads.googleapis.com*)",
       "WebFetch(*api.klaviyo.com*)",
-      "WebFetch(*.myshopify.com/admin/api*)"
+      "WebFetch(*.myshopify.com/admin/api*)",
+      "WebFetch(*ads-api.reddit.com*)",
+      "WebFetch(*openapi.etsy.com*)",
+      "WebFetch(*graph.threads.net*)"
     ]
   },
   "hooks": {

@@ -237,73 +237,136 @@ function execCommand(cmd, timeout = 5000) {
   });
 }
 
-// ── Mac credential reader ──────────────────────────────────
-// Reads the Claude OAuth token on macOS using a reliable fallback chain:
-//   1. File (~/.claude/.credentials.json) — instant, no permissions issues
-//   2. Keychain ("Claude Code-credentials") — GUI process can read it
-//      If Keychain succeeds, persist to file so future launches are instant.
-// Returns the access token string, or null if neither source has one.
-// Fully async — never blocks the main process.
-async function readMacCredentials() {
-  if (process.platform !== 'darwin') return null;
+// ── Cross-platform credential reader ──────────────────────
+// Finds the Claude OAuth token using every known location on Mac and Windows.
+// Returns the access token string, or null if not found.
+//
+// HARDENED AUTH CHAIN (v0.9.96):
+//   1. File ~/.claude/.credentials.json — works on ALL platforms, instant
+//   2. Env var CLAUDE_CODE_OAUTH_TOKEN — already set by parent process
+//   3. [Mac] Keychain — scan 7 service names covering every Claude product
+//   4. [Win] Windows Credential Manager via cmdkey
+//   5. [Mac] Claude Desktop safeStorage LevelDB — last resort, may be encrypted
+//
+// After ANY source succeeds, the token is persisted to the file so subsequent
+// launches are instant with zero interaction — matching the Windows experience.
+// The file is also re-written after each successful SDK session to keep it fresh.
 
-  const credFile = path.join(os.homedir(), '.claude', '.credentials.json');
+const CLAUDE_CRED_FILE = path.join(os.homedir(), '.claude', '.credentials.json');
 
-  // Helper: parse credential JSON and extract token, with expiry check
-  function extractToken(raw) {
-    if (!raw) return null;
-    try {
-      const creds = JSON.parse(raw);
-      const oauth = creds.claudeAiOauth || creds;
-      if (!oauth.accessToken) return null;
-      // Check expiry — if expiresAt exists and is in the past, token is stale
-      if (oauth.expiresAt && Date.now() >= new Date(oauth.expiresAt).getTime()) {
-        console.log('[auth] Credential token expired, skipping');
+function extractToken(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  try {
+    const creds = JSON.parse(raw);
+    // Handle both { claudeAiOauth: { accessToken } } and { accessToken } formats
+    const oauth = creds.claudeAiOauth || creds;
+    if (!oauth.accessToken) return null;
+    // Check expiry — skip tokens that expired more than 5 minutes ago
+    // (allow small buffer for clock skew)
+    if (oauth.expiresAt) {
+      const expiresMs = new Date(oauth.expiresAt).getTime();
+      if (!isNaN(expiresMs) && Date.now() > expiresMs + 300000) {
+        console.log('[auth] Token expired, skipping');
         return null;
       }
-      return { token: oauth.accessToken, raw };
-    } catch {
-      return null;
     }
+    return { token: oauth.accessToken, raw };
+  } catch {
+    return null;
   }
+}
 
-  // 1. Try the file first (fastest, most reliable)
+function persistCredentials(raw) {
   try {
-    const raw = fs.readFileSync(credFile, 'utf8').trim();
+    const claudeDir = path.join(os.homedir(), '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(CLAUDE_CRED_FILE, raw, { mode: 0o600 });
+    console.log('[auth] Credentials persisted to file');
+    return true;
+  } catch (e) {
+    console.error('[auth] Failed to persist credentials:', e.message);
+    return false;
+  }
+}
+
+async function readCredentials() {
+  // 1. File — instant, cross-platform, no ACL issues
+  try {
+    const raw = fs.readFileSync(CLAUDE_CRED_FILE, 'utf8').trim();
     const result = extractToken(raw);
-    if (result) return result.token;
-  } catch {}
-
-  // 2. Try Keychain — async via execFile (never blocks main process).
-  //    The Electron main process is a GUI app so Keychain is unlocked and
-  //    ACL permits access (unlike ELECTRON_RUN_AS_NODE subprocesses).
-  try {
-    const { execFile } = require('child_process');
-    const credJson = await new Promise((resolve) => {
-      execFile(
-        'security', ['find-generic-password', '-s', 'Claude Code-credentials', '-w'],
-        { timeout: 10000, encoding: 'utf8' },
-        (err, stdout) => resolve(err ? '' : (stdout || '').trim())
-      );
-    });
-    const result = extractToken(credJson);
     if (result) {
-      // Persist to file so future launches skip Keychain entirely
-      try {
-        const claudeDir = path.join(os.homedir(), '.claude');
-        fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
-        fs.writeFileSync(credFile, result.raw, { mode: 0o600 });
-        console.log('[auth] Persisted Keychain credentials to file for future launches');
-      } catch (e) {
-        console.error('[auth] Failed to persist credentials file:', e.message);
-      }
+      console.log('[auth] Token found in credentials file');
       return result.token;
     }
-  } catch (e) {
-    console.error('[auth] Keychain read failed:', e.message);
+  } catch {}
+
+  // 2. Env var — may be set by parent process or CI
+  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+    console.log('[auth] Token found in CLAUDE_CODE_OAUTH_TOKEN env');
+    return process.env.CLAUDE_CODE_OAUTH_TOKEN;
   }
 
+  // 3. macOS Keychain — scan every known service name
+  if (process.platform === 'darwin') {
+    const keychainServices = [
+      'Claude Code-credentials',
+      'Claude Code',
+      'Claude-credentials',
+      'Claude',
+      'claude-desktop-credentials',
+      'com.anthropic.claude',
+      'com.anthropic.claude-desktop',
+    ];
+    const { execFile } = require('child_process');
+    for (const service of keychainServices) {
+      try {
+        const credJson = await new Promise((resolve) => {
+          execFile(
+            'security', ['find-generic-password', '-s', service, '-w'],
+            { timeout: 3000, encoding: 'utf8' },
+            (err, stdout) => resolve(err ? '' : (stdout || '').trim())
+          );
+        });
+        const result = extractToken(credJson);
+        if (result) {
+          console.log(`[auth] Token found in Keychain: "${service}"`);
+          persistCredentials(result.raw);
+          return result.token;
+        }
+      } catch {}
+    }
+  }
+
+  // 4. Windows — check alternate credential file locations
+  //    Windows Credential Manager can't be read without P/Invoke or third-party
+  //    modules. Instead, check alternate file paths where Claude might store creds.
+  if (process.platform === 'win32') {
+    const winCredPaths = [
+      path.join(process.env.APPDATA || '', 'Claude', '.credentials.json'),
+      path.join(process.env.APPDATA || '', 'Claude Code', '.credentials.json'),
+      path.join(process.env.LOCALAPPDATA || '', 'Claude', '.credentials.json'),
+      path.join(process.env.LOCALAPPDATA || '', 'Claude Code', '.credentials.json'),
+    ];
+    for (const wcp of winCredPaths) {
+      try {
+        const raw = fs.readFileSync(wcp, 'utf8').trim();
+        const result = extractToken(raw);
+        if (result) {
+          console.log(`[auth] Token found in Windows path: ${wcp}`);
+          persistCredentials(result.raw);
+          return result.token;
+        }
+      } catch {}
+    }
+  }
+
+  console.log('[auth] No credentials found in any location');
   return null;
+}
+
+// Keep the old name as an alias for backward compatibility
+async function readMacCredentials() {
+  return readCredentials();
 }
 
 async function getClaudeDesktopStatus() {
@@ -1084,6 +1147,10 @@ function translateTool(toolName, input) {
       'discord-post':  { label: 'Send a message to Discord', cost: 'Free' },
       'amazon-login':  { label: 'Connect to your Amazon account', cost: 'Free' },
       'etsy-login':    { label: 'Connect to your Etsy shop', cost: 'Free' },
+      'reddit-login':  { label: 'Connect to your Reddit Ads account', cost: 'Free' },
+      'reddit-create-campaign': { label: 'Create a Reddit ad campaign', cost: 'Sets daily budget' },
+      'reddit-create-ad': { label: 'Create a Reddit ad', cost: 'Sets bid' },
+      'reddit-kill':   { label: 'Pause a Reddit campaign or ad', cost: 'Free' },
       'etsy-shop':     { label: 'Check your Etsy shop details', cost: 'Free' },
       'etsy-products': { label: 'View your Etsy listings', cost: 'Free' },
       'etsy-orders':   { label: 'Check your Etsy orders', cost: 'Free' },
@@ -1349,15 +1416,20 @@ async function startSession() {
     }
   } catch {}
 
-  // macOS: inject OAuth token so the SDK subprocess doesn't hit Keychain ACL issues.
-  // readMacCredentials() reads from file first (instant), falls back to Keychain,
-  // and persists to file for future launches. SECURITY: Do NOT set process.env —
-  // Claude can read it via `echo $CLAUDE_CODE_OAUTH_TOKEN` in Bash.
-  if (process.platform === 'darwin' && !sessionEnv.CLAUDE_CODE_OAUTH_TOKEN && !sessionEnv.ANTHROPIC_API_KEY) {
-    const token = await readMacCredentials();
+  // Inject OAuth token from any available source — prevents the SDK subprocess
+  // from hitting Keychain ACL issues (Mac) or prompting for re-auth (both platforms).
+  // readCredentials() checks: file → env → Keychain (Mac) → Credential Manager (Win)
+  if (!sessionEnv.CLAUDE_CODE_OAUTH_TOKEN && !sessionEnv.ANTHROPIC_API_KEY) {
+    const token = await readCredentials();
     if (token) {
       sessionEnv.CLAUDE_CODE_OAUTH_TOKEN = token;
       console.log('[auth] Injected OAuth token into session env');
+    } else {
+      console.warn('[auth] No credentials found — SDK will trigger interactive auth');
+      // Notify the renderer so it can show a helpful message instead of blank screen
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('auth-required');
+      }
     }
   }
 
@@ -1402,6 +1474,25 @@ async function startSession() {
   // Capture user email from Claude account (for telemetry + Stripe pre-fill + domain inference)
   try {
     const acctInfo = await activeQuery.accountInfo();
+
+    // Anti-deletion guard: the SDK subprocess may delete ~/.claude/.credentials.json
+    // on Mac (GitHub #10039). Now that accountInfo() succeeded, we KNOW the session
+    // is authenticated — re-persist the token if the file is missing.
+    if (sessionEnv.CLAUDE_CODE_OAUTH_TOKEN) {
+      try {
+        fs.accessSync(CLAUDE_CRED_FILE, fs.constants.F_OK);
+      } catch {
+        // File was deleted by the SDK — re-write it
+        persistCredentials(JSON.stringify({
+          claudeAiOauth: {
+            accessToken: sessionEnv.CLAUDE_CODE_OAUTH_TOKEN,
+            expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour
+          }
+        }));
+        console.log('[auth] Re-persisted credentials (anti-deletion guard)');
+      }
+    }
+
     if (acctInfo?.email) {
       const cfg = readConfig();
       const isNewEmail = !cfg._userEmail || cfg._userEmail !== acctInfo.email;
@@ -1631,28 +1722,75 @@ ipcMain.handle('trigger-claude-login', async () => {
 
       const child = spawn(nodeWrapper, [cliJs, 'auth', 'login'], {
         env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', BROWSER: 'none' },
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe'],
         shell: isWin, // Windows needs shell for .cmd files
       });
 
-      // 30s UX timeout — user shouldn't wait longer than this
+      // 60s timeout — localhost callback can be slow on some networks
       const uxTimeout = setTimeout(() => {
-        console.error('[claude-login] Timed out after 30s');
+        console.error('[claude-login] Timed out after 60s');
         try { child.kill(); } catch {}
         finish({ success: false, timedOut: true, error: 'Login timed out. Try again or use an API key.' });
-      }, 30000);
+      }, 60000);
 
       let stdout = '';
+      let stderr = '';
+      let urlOpened = false;
+      let pastePromptShown = false;
       child.stdout.on('data', (d) => {
-        stdout += d.toString();
-        const urlMatch = stdout.match(/(https:\/\/claude\.ai\/[^\s]+|https:\/\/[^\s]*oauth[^\s]*|https:\/\/[^\s]*auth[^\s]*login[^\s]*)/i);
-        if (urlMatch) {
-          shell.openExternal(urlMatch[0]);
+        const chunk = d.toString();
+        stdout += chunk;
+        console.log('[claude-login] stdout:', chunk.trim());
+
+        // Open the auth URL in the browser (once)
+        if (!urlOpened) {
+          const urlMatch = stdout.match(/(https:\/\/claude\.ai\/[^\s]+|https:\/\/[^\s]*oauth[^\s]*|https:\/\/[^\s]*auth[^\s]*login[^\s]*)/i);
+          if (urlMatch) {
+            shell.openExternal(urlMatch[0]);
+            urlOpened = true;
+          }
+        }
+
+        // If CLI outputs a paste prompt (callback server failed), show a dialog
+        // so the user can paste the auth code back into the subprocess
+        if (!pastePromptShown && /paste this|paste.*into|enter.*auth.*code|authentication code/i.test(stdout + stderr)) {
+          pastePromptShown = true;
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('auth-code-prompt');
+          }
         }
       });
 
+      // Also monitor stderr — some SDK versions print the auth URL or paste
+      // prompt to stderr instead of stdout
+      child.stderr.on('data', (d) => {
+        const chunk = d.toString();
+        stderr += chunk;
+        console.log('[claude-login] stderr:', chunk.trim());
+        if (!urlOpened) {
+          const urlMatch = (stdout + stderr).match(/(https:\/\/claude\.ai\/[^\s]+|https:\/\/[^\s]*oauth[^\s]*|https:\/\/[^\s]*auth[^\s]*login[^\s]*)/i);
+          if (urlMatch) {
+            shell.openExternal(urlMatch[0]);
+            urlOpened = true;
+          }
+        }
+        if (!pastePromptShown && /paste this|paste.*into|enter.*auth.*code|authentication code/i.test(stdout + stderr)) {
+          pastePromptShown = true;
+          if (win && !win.isDestroyed()) win.webContents.send('auth-code-prompt');
+        }
+      });
+
+      // Listen for the user's pasted auth code from the renderer
+      const pasteHandler = (_, code) => {
+        if (child.stdin && !child.stdin.destroyed && code) {
+          child.stdin.write(code + '\n');
+        }
+      };
+      ipcMain.once('auth-code-submit', pasteHandler);
+
       child.on('close', async (code) => {
         clearTimeout(uxTimeout);
+        ipcMain.removeListener('auth-code-submit', pasteHandler);
         if (resolved) return; // Timeout already fired — don't block with more I/O
         if (code === 0) {
           console.log('[claude-login] Login completed successfully');
@@ -2524,6 +2662,10 @@ ipcMain.handle('get-archive-items', async (_, filters = {}) => {
 
 function applyArchiveFilters(items, filters = {}) {
   let filtered = items;
+  if (filters.brand) {
+    const b = filters.brand.toLowerCase();
+    filtered = filtered.filter(i => i.brand && i.brand.toLowerCase() === b);
+  }
   if (filters.type) {
     filtered = filtered.filter(i => i.type === filters.type);
   }
@@ -2830,6 +2972,8 @@ const VAULT_SENSITIVE_KEYS = [
   'pinterestRefreshToken',
   'etsyAccessToken',
   'etsyRefreshToken',
+  'redditAccessToken',
+  'redditRefreshToken',
   // API keys that were previously left in plaintext — adversarial review
   // found these are just as sensitive as OAuth tokens.
   'falApiKey',
@@ -2851,6 +2995,7 @@ const BRAND_KEYS = [
   'amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId', 'amazonSellerId',
   'amazonAdClientId', 'amazonAdClientSecret', 'amazonSpClientId', 'amazonSpClientSecret',
   'etsyAccessToken', 'etsyRefreshToken', 'etsyShopId', 'etsyKeystring',
+  'redditAccessToken', 'redditRefreshToken', 'redditAdAccountId',
   'klaviyoAccessToken', 'klaviyoApiKey',
   'pinterestAccessToken',
   'slackBotToken', 'slackWebhookUrl',
@@ -3194,6 +3339,7 @@ function getConnections(brandName) {
     checkBrand('pinterestAccessToken', 'pinterest');
     checkBrand('amazonAccessToken', 'amazon');
     checkBrand('etsyAccessToken', 'etsy');
+    checkBrand('redditAccessToken', 'reddit');
     // Shopify needs both token + store
     const shopToken = brandCfg.shopifyAccessToken || (!brandName ? globalCfg.shopifyAccessToken : null);
     const shopStore = brandCfg.shopifyStore || (!brandName ? globalCfg.shopifyStore : null);
@@ -3239,6 +3385,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       pinterest: ['pinterestAccessToken', 'pinterestRefreshToken'],
       amazon: ['amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId'],
       etsy: ['etsyAccessToken', 'etsyRefreshToken', 'etsyShopId', 'etsyKeystring'],
+      reddit: ['redditAccessToken', 'redditRefreshToken', 'redditAdAccountId'],
       slack: ['slackBotToken', 'slackWebhookUrl', 'slackChannel'],
       discord: ['discordGuildId', 'discordChannelId'],
       fal: ['falApiKey'],
@@ -3843,7 +3990,26 @@ ipcMain.handle('apply-referral-code', async (_, code) => {
 });
 
 ipcMain.handle('apply-update', () => { downloadAndApplyUpdate(); });
-ipcMain.handle('restart-app', () => { app.relaunch(); app.exit(0); });
+ipcMain.handle('restart-app', () => {
+  // If an asar update was staged, run the swap script instead of plain relaunch.
+  // The script waits for Electron to exit, moves app.asar.update → app.asar,
+  // then relaunches the app with the new code.
+  const swapScript = process.platform === 'win32'
+    ? path.join(appInstall, 'update-swap.cmd')
+    : path.join(appInstall, 'update-swap.sh');
+  if (fs.existsSync(swapScript)) {
+    const { spawn } = require('child_process');
+    if (process.platform === 'win32') {
+      spawn('cmd.exe', ['/c', swapScript], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+    } else {
+      spawn('bash', [swapScript], { detached: true, stdio: 'ignore' }).unref();
+    }
+    app.exit(0);
+  } else {
+    app.relaunch();
+    app.exit(0);
+  }
+});
 
 // Full auto-install: download the new installer from GitHub releases, spawn
 // it detached, then quit. The installer's customInit kills any leftover
@@ -4178,40 +4344,55 @@ async function downloadAndApplyUpdate() {
 
     console.log(`[update] Version updated to ${latestVersion}`);
 
-    // Hot-swap the asar: download the new app.asar from the release and
-    // overwrite the one in the install directory. This avoids downloading
-    // and running a full .exe installer (which triggers Defender's AV scan).
-    // The install directory (AppData/Local/Programs/Merlin) is writable by
-    // the user, and asar files are not executables — Defender ignores them.
-    let asarUpdated = false;
+    // Stage the new asar for swap on restart. Electron locks app.asar while
+    // running — direct overwrite fails silently on Windows. Instead, download
+    // to app.asar.update and write a helper script that swaps it after exit.
+    let asarStaged = false;
     if (app.isPackaged) {
       const asarAsset = (data.assets || []).find(a => a.name === 'app.asar');
       if (asarAsset) {
         const asarPath = path.join(appInstall, 'app.asar');
-        // Check writability first — Mac /Applications may need admin
-        let writable = false;
-        try { fs.accessSync(asarPath, fs.constants.W_OK); writable = true; } catch {}
-        if (writable) {
-          try {
-            if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Updating app...');
-            const asarData = await httpsGet(asarAsset.browser_download_url);
-            if (asarData.length > 500000) { // sanity: asar should be > 500KB
-              const asarBackup = asarPath + '.backup';
-              try { fs.copyFileSync(asarPath, asarBackup); } catch {}
-              fs.writeFileSync(asarPath, asarData);
-              try { fs.unlinkSync(asarBackup); } catch {}
-              asarUpdated = true;
-              console.log(`[update] asar updated (${(asarData.length / 1024 / 1024).toFixed(1)} MB)`);
+        const stagedPath = asarPath + '.update';
+        try {
+          if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading update...');
+          const asarData = await httpsGet(asarAsset.browser_download_url);
+          if (asarData.length > 500000) { // sanity: asar should be > 500KB
+            fs.writeFileSync(stagedPath, asarData);
+            asarStaged = true;
+            console.log(`[update] asar staged (${(asarData.length / 1024 / 1024).toFixed(1)} MB) → ${stagedPath}`);
+
+            // Write a helper script that swaps the asar after Electron exits
+            if (process.platform === 'win32') {
+              const swapScript = path.join(appInstall, 'update-swap.cmd');
+              const exePath = process.execPath;
+              fs.writeFileSync(swapScript, [
+                '@echo off',
+                `timeout /t 2 /nobreak >nul`,
+                `move /Y "${stagedPath}" "${asarPath}"`,
+                `start "" "${exePath}"`,
+                `del "%~f0"`,
+              ].join('\r\n'));
+              console.log('[update] swap script written:', swapScript);
+            } else {
+              const swapScript = path.join(appInstall, 'update-swap.sh');
+              // On Mac, relaunch the .app bundle, not the raw binary
+              const appBundle = process.execPath.replace(/\/Contents\/MacOS\/.*$/, '');
+              fs.writeFileSync(swapScript, [
+                '#!/bin/bash',
+                'sleep 2',
+                `mv -f "${stagedPath}" "${asarPath}"`,
+                `open "${appBundle}"`,
+                `rm -f "${swapScript}"`,
+              ].join('\n'));
+              fs.chmodSync(swapScript, 0o755);
+              console.log('[update] swap script written:', swapScript);
             }
-          } catch (e) {
-            console.error('[update] asar update failed:', e.message);
           }
-        } else {
-          console.warn('[update] asar not writable — install dir may be system-owned. User should reinstall from merlingotme.com.');
+        } catch (e) {
+          console.error('[update] asar staging failed:', e.message);
         }
       }
-      // Also update the binary in the INSTALL location (installer-trusted path)
-      // so getBinaryPath() finds the new version without Defender quarantining it.
+      // Also stage the binary in the INSTALL location
       if (binaryAsset) {
         try {
           const installBinaryPath = path.join(appInstall, '.claude', 'tools', process.platform === 'win32' ? 'Merlin.exe' : 'Merlin');

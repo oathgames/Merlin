@@ -423,6 +423,28 @@ function buildTools(tool, z, ctx) {
     }
   ));
 
+  // ── reddit_ads ───────────────────────────────────────────
+  tools.push(tool(
+    'reddit_ads',
+    'Reddit Ads — manage campaigns, ad groups, ads, and check performance.',
+    {
+      action: z.enum(['accounts', 'campaigns', 'adgroups', 'ads', 'insights', 'create-campaign', 'create-ad', 'kill']).describe('Operation'),
+      brand: z.string().optional(),
+      campaignId: z.string().optional().describe('Campaign ID'),
+      adId: z.string().optional().describe('Ad or ad group ID'),
+      campaignName: z.string().optional().describe('Campaign name'),
+      dailyBudget: z.number().optional().describe('Daily budget in dollars'),
+      adHeadline: z.string().optional().describe('Ad headline'),
+      adLink: z.string().optional().describe('Destination URL'),
+      batchCount: z.number().optional().describe('Days of data (for insights)'),
+    },
+    async (args) => {
+      const result = await runBinary(ctx, 'reddit-' + args.action, args);
+      return { content: [{ type: 'text', text: result.text }], isError: result.error };
+    },
+    { annotations: { destructive: true } }
+  ));
+
   // ── etsy ─────────────────────────────────────────────────
   tools.push(tool(
     'etsy',
@@ -459,7 +481,7 @@ function buildTools(tool, z, ctx) {
     'platform_login',
     'Connect a platform via OAuth — opens browser for authorization. Returns success/failure only, never tokens.',
     {
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'pinterest', 'snapchat', 'twitter', 'slack', 'discord', 'etsy']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'pinterest', 'snapchat', 'twitter', 'slack', 'discord', 'etsy', 'reddit']).describe('Platform to connect'),
       brand: z.string().optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },

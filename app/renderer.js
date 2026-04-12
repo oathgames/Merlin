@@ -1275,6 +1275,60 @@ merlin.onUpdateError((err) => {
   document.getElementById('update-dismiss').classList.remove('hidden');
 });
 
+// ── Auth Code Paste Dialog ─────────────────────────────────
+// When the SDK's localhost callback fails and it falls back to a paste-code
+// flow, show an inline dialog so the user can paste the code from the browser.
+// This only happens on first-ever auth — credentials are persisted after.
+if (merlin.onAuthCodePrompt) {
+  merlin.onAuthCodePrompt(() => {
+    // Check if dialog already exists
+    if (document.getElementById('auth-code-dialog')) return;
+
+    const dialog = document.createElement('div');
+    dialog.id = 'auth-code-dialog';
+    dialog.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10000;background:var(--bg-deep);border:1px solid var(--accent);border-radius:16px;padding:24px 32px;max-width:420px;width:90%;box-shadow:0 16px 48px rgba(0,0,0,.6);text-align:center';
+    dialog.innerHTML = `
+      <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px">Paste your authentication code</div>
+      <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;line-height:1.5">Copy the code from the browser window that just opened and paste it below. This only happens once.</div>
+      <input id="auth-code-input" type="text" placeholder="Paste code here..." style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:14px;outline:none;margin-bottom:12px;text-align:center;letter-spacing:1px" autocomplete="off" spellcheck="false">
+      <div style="display:flex;gap:8px">
+        <button id="auth-code-submit-btn" style="flex:1;padding:10px 24px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:14px;cursor:pointer">Submit</button>
+        <button id="auth-code-cancel-btn" style="padding:10px 16px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:14px;cursor:pointer">Cancel</button>
+      </div>
+    `;
+    document.body.appendChild(dialog);
+
+    const input = document.getElementById('auth-code-input');
+    const btn = document.getElementById('auth-code-submit-btn');
+    input.focus();
+
+    function submit() {
+      const code = input.value.trim();
+      if (!code) return;
+      btn.textContent = 'Authenticating...';
+      btn.disabled = true;
+      input.disabled = true;
+      merlin.submitAuthCode(code);
+      setTimeout(() => { dialog.remove(); }, 3000);
+    }
+
+    btn.onclick = submit;
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+    document.getElementById('auth-code-cancel-btn').onclick = () => dialog.remove();
+    document.addEventListener('keydown', function escHandler(e) {
+      if (e.key === 'Escape') { dialog.remove(); document.removeEventListener('keydown', escHandler); }
+    });
+  });
+}
+
+// ── Auth Required Notification ───────────────────────────────
+// Shown when no credentials are found before session start.
+if (merlin.onAuthRequired) {
+  merlin.onAuthRequired(() => {
+    console.log('[auth] No credentials — SDK will trigger interactive auth');
+  });
+}
+
 // ── Engine Status (binary download progress) ─────────────────
 merlin.onEngineStatus((msg) => {
   const status = document.getElementById('setup-status');
@@ -1806,7 +1860,7 @@ document.addEventListener('click', (e) => {
 });
 
 // Connect platform tiles — ALL connections handled directly in UI, zero chat involvement
-const OAUTH_PLATFORMS = new Set(['tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'klaviyo', 'slack', 'discord', 'etsy']);
+const OAUTH_PLATFORMS = new Set(['tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit']);
 const API_KEY_PLATFORMS = {
   // Meta: manual token entry while app is in review. Users get their token
   // from developers.facebook.com → Graph API Explorer. Once App Review
@@ -2432,6 +2486,7 @@ function closeAgencyOverlay() {
 
 function clearStatusLabel() {
   if (_statusDebounce) { clearTimeout(_statusDebounce); _statusDebounce = null; }
+  if (_stuckTimer) { clearTimeout(_stuckTimer); _stuckTimer = null; }
   _currentStatusLabel = '';
   document.getElementById('chat-status').innerHTML = '';
 }
@@ -3565,9 +3620,11 @@ async function loadArchive() {
   }
 
   try {
+    const activeBrand = document.getElementById('brand-select')?.value || '';
     const items = await merlin.getArchiveItems({
       type: typeFilter === 'all' ? '' : typeFilter,
       search,
+      brand: activeBrand,
     });
     loading.style.display = 'none';
 

@@ -29,6 +29,7 @@ Use `mcp__merlin__*` tools for ALL platform interactions. They handle credential
 - `mcp__merlin__email({action, brand, ...})` — email program audit, revenue attribution
 - `mcp__merlin__discord({action, ...})` — Discord notifications
 - `mcp__merlin__threads({action, brand})` — Threads profile, posts, insights
+- `mcp__merlin__reddit_ads({action, brand, ...})` — Reddit campaigns, ads, insights, create, pause
 - `mcp__merlin__etsy({action, brand, ...})` — Etsy shop, listings, orders
 - `mcp__merlin__platform_login({platform, brand})` — connect a platform via OAuth
 - `mcp__merlin__seo({action, brand, ...})` — SEO tools

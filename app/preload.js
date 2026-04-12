@@ -120,4 +120,7 @@ contextBridge.exposeInMainWorld('merlin', {
   onBypassAttempt: (cb) => ipcRenderer.on('bypass-attempt', (_, info) => cb(info)),
   onEngineStatus: (cb) => ipcRenderer.on('engine-status', (_, msg) => cb(msg)),
   triggerClaudeLogin: () => ipcRenderer.invoke('trigger-claude-login'),
+  onAuthCodePrompt: (cb) => ipcRenderer.on('auth-code-prompt', () => cb()),
+  onAuthRequired: (cb) => ipcRenderer.on('auth-required', () => cb()),
+  submitAuthCode: (code) => ipcRenderer.send('auth-code-submit', code),
 });

@@ -1,5 +1,5 @@
 {
-  "version": "0.9.95",
+  "version": "0.9.96",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,10 +23,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.9.95: Mac auth rewrite, Windows Claude detection, Etsy + Threads, 20 new blog posts.",
+  "notes": "v0.9.96: Reddit Ads + Etsy + Threads integrations, Meta CBO fix, hardened Mac auth, auto-update fix.",
   "whatsNew": [
-    "Mac login — faster auth with file-first credential chain + expiry check",
-    "Etsy + Threads integrations live (shop, products, orders, profile, posts)",
-    "20 new SEO blog posts + dynamic OG images"
+    "Reddit Ads, Etsy, and Threads — full platform integrations with rate-limited APIs",
+    "Meta CBO campaign fix — ad sets no longer break on campaign-budget-optimized campaigns",
+    "Mac auth hardened — scans 7 Keychain entries, persists credentials, one-time setup"
   ]
 }
