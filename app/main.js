@@ -7,6 +7,88 @@ const { generateQRDataUri } = require('./qr');
 
 Menu.setApplicationMenu(null);
 
+// ── Cloud Credentials Cache (in-memory + encrypted disk) ─────
+// Fetches OAuth client secrets from api.merlingotme.com on startup.
+// Never writes secrets to unencrypted disk. safeStorage encrypts the disk cache.
+const _credentialsCache = { data: null, fetchedAt: 0, promise: null };
+const CREDENTIALS_TTL_MS = 60 * 60 * 1000; // 1 hour
+const CREDENTIALS_URL = 'https://api.merlingotme.com/api/credentials';
+const CREDENTIALS_APP_TOKEN = 'd4c3a2dff4582d1ddb727dbe34e40c726a23e57a8aa65fc06f8b8c051080c409';
+
+async function fetchCredentials() {
+  // Return cached if fresh
+  if (_credentialsCache.data && (Date.now() - _credentialsCache.fetchedAt) < CREDENTIALS_TTL_MS) {
+    return _credentialsCache.data;
+  }
+  // Deduplicate concurrent requests
+  if (_credentialsCache.promise) return _credentialsCache.promise;
+
+  _credentialsCache.promise = (async () => {
+    try {
+      const https = require('https');
+      const data = await new Promise((resolve, reject) => {
+        const req = https.request(CREDENTIALS_URL, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${CREDENTIALS_APP_TOKEN}` },
+          timeout: 10000,
+        }, (res) => {
+          let body = '';
+          res.on('data', (chunk) => { body += chunk; });
+          res.on('end', () => {
+            if (res.statusCode === 200) {
+              try { resolve(JSON.parse(body)); } catch { reject(new Error('invalid JSON')); }
+            } else {
+              reject(new Error(`HTTP ${res.statusCode}`));
+            }
+          });
+        });
+        req.on('error', reject);
+        req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+        req.end();
+      });
+
+      _credentialsCache.data = data;
+      _credentialsCache.fetchedAt = Date.now();
+      console.log('[credentials] Fetched from server');
+
+      // Persist encrypted to disk for offline fallback
+      try {
+        if (safeStorage.isEncryptionAvailable()) {
+          const encrypted = safeStorage.encryptString(JSON.stringify(data));
+          const cachePath = path.join(os.homedir(), '.claude', '.merlin-creds-cache');
+          fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+          fs.writeFileSync(cachePath, encrypted);
+        }
+      } catch {}
+
+      return data;
+    } catch (err) {
+      console.warn('[credentials] Fetch failed:', err.message);
+
+      // Try encrypted disk cache
+      try {
+        if (safeStorage.isEncryptionAvailable()) {
+          const cachePath = path.join(os.homedir(), '.claude', '.merlin-creds-cache');
+          const encrypted = fs.readFileSync(cachePath);
+          const decrypted = safeStorage.decryptString(encrypted);
+          const data = JSON.parse(decrypted);
+          _credentialsCache.data = data;
+          _credentialsCache.fetchedAt = Date.now() - CREDENTIALS_TTL_MS + 300000; // expire in 5 min
+          console.log('[credentials] Loaded from encrypted disk cache');
+          return data;
+        }
+      } catch {}
+
+      // Return stale in-memory cache if available
+      return _credentialsCache.data || null;
+    } finally {
+      _credentialsCache.promise = null;
+    }
+  })();
+
+  return _credentialsCache.promise;
+}
+
 // ── Fix PATH for Electron launched from installers/shortcuts ──────────
 // Electron doesn't inherit the user's full shell PATH when launched from
 // desktop shortcuts, Start Menu, or installer "Run" buttons. Add common
@@ -245,8 +327,7 @@ function execCommand(cmd, timeout = 5000) {
 //   1. File ~/.claude/.credentials.json — works on ALL platforms, instant
 //   2. Env var CLAUDE_CODE_OAUTH_TOKEN — already set by parent process
 //   3. [Mac] Keychain — scan 7 service names covering every Claude product
-//   4. [Win] Windows Credential Manager via cmdkey
-//   5. [Mac] Claude Desktop safeStorage LevelDB — last resort, may be encrypted
+//   4. [Win] Windows alternate credential file paths (APPDATA/LOCALAPPDATA)
 //
 // After ANY source succeeds, the token is persisted to the file so subsequent
 // launches are instant with zero interaction — matching the Windows experience.
@@ -296,6 +377,18 @@ async function readCredentials() {
     const result = extractToken(raw);
     if (result) {
       console.log('[auth] Token found in credentials file');
+      return result.token;
+    }
+  } catch {}
+
+  // 1b. File without dot prefix — some Claude Code versions use this path
+  try {
+    const altFile = path.join(os.homedir(), '.claude', 'credentials.json');
+    const raw = fs.readFileSync(altFile, 'utf8').trim();
+    const result = extractToken(raw);
+    if (result) {
+      console.log('[auth] Token found in credentials.json (no-dot variant)');
+      persistCredentials(result.raw); // Normalize to the canonical path
       return result.token;
     }
   } catch {}
@@ -469,7 +562,20 @@ async function probeClaudeSetup(force = false) {
         if (token) {
           probeEnv.CLAUDE_CODE_OAUTH_TOKEN = token;
         } else {
-          console.log('[setup-probe] No Mac credentials found — needs login');
+          // No credentials on Mac — skip the expensive SDK probe (it will always
+          // fail without a token, wasting up to 12s). Return needsLogin immediately
+          // so the renderer triggers auto-login within milliseconds.
+          console.log('[setup-probe] No Mac credentials found — skipping probe, needs login');
+          result = {
+            ready: false,
+            needsLogin: true,
+            desktopInstalled: desktop.installed,
+            desktopRunning: desktop.running,
+            desktopPath: desktop.path,
+            reason: 'Signing in to your Claude account...',
+          };
+          cachedClaudeSetup = { at: Date.now(), result };
+          return result;
         }
       }
       querySession = query({
@@ -1452,6 +1558,7 @@ async function startSession() {
       activeChildProcesses,
       appendAudit,
       sdkModule,
+      fetchCredentials,
     });
     mcpConfig = { merlin: merlinMcp };
   } catch (err) {
@@ -1482,11 +1589,13 @@ async function startSession() {
       try {
         fs.accessSync(CLAUDE_CRED_FILE, fs.constants.F_OK);
       } catch {
-        // File was deleted by the SDK — re-write it
+        // File was deleted by the SDK — re-write it.
+        // Omit expiresAt: we don't know the real token lifetime.
+        // extractToken() treats missing expiry as valid; the SDK
+        // validates the token server-side on next launch.
         persistCredentials(JSON.stringify({
           claudeAiOauth: {
             accessToken: sessionEnv.CLAUDE_CODE_OAUTH_TOKEN,
-            expiresAt: new Date(Date.now() + 3600000).toISOString(), // 1 hour
           }
         }));
         console.log('[auth] Re-persisted credentials (anti-deletion guard)');
@@ -1726,9 +1835,36 @@ ipcMain.handle('trigger-claude-login', async () => {
         shell: isWin, // Windows needs shell for .cmd files
       });
 
+      // Backup signal: watch for credential file creation.
+      // If the CLI writes credentials but doesn't exit cleanly, this catches it.
+      let credWatcher = null;
+      try {
+        const claudeDir = path.join(os.homedir(), '.claude');
+        fs.mkdirSync(claudeDir, { recursive: true });
+        credWatcher = fs.watch(claudeDir, async (eventType, filename) => {
+          if (filename && /credentials\.json$/i.test(filename)) {
+            await new Promise(r => setTimeout(r, 500)); // let file finish writing
+            try {
+              const raw = fs.readFileSync(path.join(claudeDir, filename), 'utf8').trim();
+              const tok = extractToken(raw);
+              if (tok) {
+                console.log('[claude-login] Credential file detected via fs.watch');
+                try { credWatcher.close(); } catch {}
+                credWatcher = null;
+                try { child.kill(); } catch {}
+                finish({ success: true });
+              }
+            } catch {}
+          }
+        });
+      } catch (e) {
+        console.warn('[claude-login] fs.watch setup failed:', e.message);
+      }
+
       // 60s timeout — localhost callback can be slow on some networks
       const uxTimeout = setTimeout(() => {
         console.error('[claude-login] Timed out after 60s');
+        try { credWatcher?.close(); } catch {}
         try { child.kill(); } catch {}
         finish({ success: false, timedOut: true, error: 'Login timed out. Try again or use an API key.' });
       }, 60000);
@@ -1786,10 +1922,12 @@ ipcMain.handle('trigger-claude-login', async () => {
           child.stdin.write(code + '\n');
         }
       };
-      ipcMain.once('auth-code-submit', pasteHandler);
+      // Use .on (not .once) so the user can retry with a different code
+      ipcMain.on('auth-code-submit', pasteHandler);
 
       child.on('close', async (code) => {
         clearTimeout(uxTimeout);
+        try { credWatcher?.close(); } catch {}
         ipcMain.removeListener('auth-code-submit', pasteHandler);
         if (resolved) return; // Timeout already fired — don't block with more I/O
         if (code === 0) {
@@ -2215,6 +2353,11 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
 });
 
 ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
+ipcMain.handle('open-external-url', (_, url) => {
+  if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
+    shell.openExternal(url);
+  }
+});
 ipcMain.handle('open-merlin-folder', () => { shell.openPath(appRoot); });
 
 // ── Spell creation: write SKILL.md directly (no Claude, no MCP) ──
@@ -4436,6 +4579,9 @@ app.whenReady().then(async () => {
   try { migrateTokensToVault(); } catch (err) { console.error('[vault-migration]', err.message); }
 
   await createWindow();
+
+  // Pre-fetch OAuth credentials from cloud vault (non-blocking)
+  fetchCredentials().catch(() => {});
 
   // Bootstrap workspace AFTER window is visible (prevents "Not Responding" on first launch)
   setTimeout(bootstrapWorkspace, 500);

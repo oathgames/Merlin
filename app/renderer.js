@@ -315,29 +315,63 @@ async function init() {
         if (merlin.triggerClaudeLogin) {
           const loginResult = await merlin.triggerClaudeLogin();
           if (loginResult.success) {
-            document.getElementById('setup-status').textContent = 'Signed in! Connecting...';
+            document.getElementById('setup-status').textContent = 'Signed in! Starting Merlin...';
             window._loginTriggered = false;
-            // Force-invalidate probe cache so next check sees new credentials
-            let _forceFirst = true;
-            window._claudePoller = setInterval(async () => {
-              const detected = await detectClaude(_forceFirst);
-              _forceFirst = false;
-              if (detected) {
-                setup.style.animation = 'fadeOut .3s ease forwards';
-                setTimeout(() => { setup.classList.add('hidden'); setup.style.animation = ''; }, 300);
-              }
-            }, 3000);
-            return false;
+            // Dismiss paste dialog if it was open
+            const authDialog = document.getElementById('auth-code-dialog');
+            if (authDialog) authDialog.remove();
+            // Credentials are now persisted — start session directly instead of
+            // polling probeClaudeSetup every 3s (each poll takes 2-12s).
+            if (window._claudePoller) { clearInterval(window._claudePoller); window._claudePoller = null; }
+            setup.style.animation = 'fadeOut .3s ease forwards';
+            setTimeout(() => { setup.classList.add('hidden'); setup.style.animation = ''; }, 300);
+            turnStartTime = Date.now();
+            sessionActive = true;
+            merlin.startSession();
+            setTimeout(updateProgressBar, 2000);
+            return true;
           }
-          // Login timed out or failed — show retry
-          if (loginResult.timedOut) {
-            document.getElementById('setup-status').textContent = 'Sign-in timed out. Click Retry to try again.';
+          // Login timed out or failed — show retry with actual buttons
+          const msg = loginResult.timedOut
+            ? 'Sign-in timed out.'
+            : (loginResult.error || 'Sign-in failed.');
+          document.getElementById('setup-status').textContent = msg;
+          const setupMain = document.getElementById('setup-main');
+          if (setupMain) {
+            setupMain.innerHTML = `
+              <button id="setup-retry-btn" class="btn-primary" style="width:100%;margin-bottom:6px">Retry Sign In</button>
+              <button id="setup-apikey-btn2" class="btn-secondary" style="width:100%">Use API key instead</button>
+            `;
+            document.getElementById('setup-retry-btn')?.addEventListener('click', () => {
+              window._loginTriggered = false;
+              detectClaude();
+            });
+            document.getElementById('setup-apikey-btn2')?.addEventListener('click', () => {
+              setupMain.style.display = 'none';
+              document.getElementById('setup-apikey-form').style.display = '';
+            });
           }
         }
       } catch (e) { console.error('[auto-login]', e); }
       window._loginTriggered = false;
-      if (!document.getElementById('setup-login-cancel')) {
-        document.getElementById('setup-status').textContent = 'Sign in to Claude to continue. Click Retry after signing in.';
+      // If no buttons were rendered by the timeout/failure path above, add them
+      if (!document.getElementById('setup-retry-btn') && !document.getElementById('setup-login-cancel')) {
+        document.getElementById('setup-status').textContent = 'Sign in to Claude to continue.';
+        const setupMain = document.getElementById('setup-main');
+        if (setupMain) {
+          setupMain.innerHTML = `
+            <button id="setup-retry-fallback" class="btn-primary" style="width:100%;margin-bottom:6px">Retry Sign In</button>
+            <button id="setup-apikey-fallback" class="btn-secondary" style="width:100%">Use API key instead</button>
+          `;
+          document.getElementById('setup-retry-fallback')?.addEventListener('click', () => {
+            window._loginTriggered = false;
+            detectClaude();
+          });
+          document.getElementById('setup-apikey-fallback')?.addEventListener('click', () => {
+            setupMain.style.display = 'none';
+            document.getElementById('setup-apikey-form').style.display = '';
+          });
+        }
       }
       return false;
     }
@@ -1112,22 +1146,8 @@ merlin.onSdkError((err) => {
       // Login failed or not available — show manual buttons
       bubble.textContent = 'Sign in to your Claude account to use Merlin.\n\nClick the button below to open the sign-in page in your browser.';
 
-      const loginBtn = document.createElement('button');
-      loginBtn.textContent = 'Sign In to Claude';
-      loginBtn.className = 'btn-action btn-approve-style';
-      loginBtn.style.cssText = 'margin-top:12px;margin-right:8px;width:auto;padding:8px 20px;font-size:13px';
-      loginBtn.onclick = async () => {
-        loginBtn.textContent = 'Signing in...';
-        loginBtn.disabled = true;
-        try {
-          if (merlin.triggerClaudeLogin) await merlin.triggerClaudeLogin();
-        } catch {}
-        _restartAttempts = 0;
-        sessionActive = true;
-        merlin.startSession();
-      };
-      bubble.appendChild(loginBtn);
-
+      // Create both buttons before assigning onclick handlers so closures
+      // reference fully-initialized variables (no TDZ issues).
       const retryBtn = document.createElement('button');
       retryBtn.textContent = 'Retry';
       retryBtn.className = 'btn-action btn-deny-style';
@@ -1137,6 +1157,40 @@ merlin.onSdkError((err) => {
         sessionActive = true;
         merlin.startSession();
       };
+
+      const loginBtn = document.createElement('button');
+      loginBtn.textContent = 'Sign In to Claude';
+      loginBtn.className = 'btn-action btn-approve-style';
+      loginBtn.style.cssText = 'margin-top:12px;margin-right:8px;width:auto;padding:8px 20px;font-size:13px';
+      loginBtn.onclick = async () => {
+        loginBtn.textContent = 'Signing in...';
+        loginBtn.disabled = true;
+        try {
+          if (merlin.triggerClaudeLogin) {
+            const result = await merlin.triggerClaudeLogin();
+            if (result.success) {
+              // Dismiss paste dialog if it was open
+              const authDialog = document.getElementById('auth-code-dialog');
+              if (authDialog) authDialog.remove();
+              _restartAttempts = 0;
+              sessionActive = true;
+              merlin.startSession();
+              return;
+            }
+            // Login failed — re-enable button with error
+            bubble.textContent = result.error || 'Sign-in failed. Click the button to try again.';
+            loginBtn.textContent = 'Sign In to Claude';
+            loginBtn.disabled = false;
+            bubble.appendChild(loginBtn);
+            bubble.appendChild(retryBtn);
+            return;
+          }
+        } catch {}
+        // triggerClaudeLogin not available — re-enable
+        loginBtn.textContent = 'Sign In to Claude';
+        loginBtn.disabled = false;
+      };
+      bubble.appendChild(loginBtn);
       bubble.appendChild(retryBtn);
     })();
     return;
@@ -1305,18 +1359,41 @@ if (merlin.onAuthCodePrompt) {
     function submit() {
       const code = input.value.trim();
       if (!code) return;
-      btn.textContent = 'Authenticating...';
+      btn.textContent = 'Submitting...';
       btn.disabled = true;
       input.disabled = true;
       merlin.submitAuthCode(code);
-      setTimeout(() => { dialog.remove(); }, 3000);
+      // Re-enable after 3s for retry if code was wrong.
+      // Dialog stays open until Cancel, Escape, or successful login.
+      setTimeout(() => {
+        if (!document.getElementById('auth-code-dialog')) return;
+        btn.textContent = 'Submit';
+        btn.disabled = false;
+        input.disabled = false;
+        input.value = '';
+        input.focus();
+        // Add hint so user knows they can retry
+        let hint = document.getElementById('auth-code-hint');
+        if (!hint) {
+          hint = document.createElement('div');
+          hint.id = 'auth-code-hint';
+          hint.style.cssText = 'font-size:11px;color:var(--text-muted);margin-bottom:8px';
+          input.parentNode.insertBefore(hint, input.nextSibling);
+        }
+        hint.textContent = 'Code submitted. If it didn\'t work, paste a new one.';
+      }, 3000);
+    }
+
+    function dismissDialog() {
+      const d = document.getElementById('auth-code-dialog');
+      if (d) d.remove();
     }
 
     btn.onclick = submit;
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
-    document.getElementById('auth-code-cancel-btn').onclick = () => dialog.remove();
+    document.getElementById('auth-code-cancel-btn').onclick = dismissDialog;
     document.addEventListener('keydown', function escHandler(e) {
-      if (e.key === 'Escape') { dialog.remove(); document.removeEventListener('keydown', escHandler); }
+      if (e.key === 'Escape') { dismissDialog(); document.removeEventListener('keydown', escHandler); }
     });
   });
 }

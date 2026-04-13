@@ -1,5 +1,5 @@
 {
-  "version": "0.9.96",
+  "version": "0.9.97",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,10 +23,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.9.96: Reddit Ads + Etsy + Threads integrations, Meta CBO fix, hardened Mac auth, auto-update fix.",
+  "notes": "v0.9.97: Mac onboarding rewrite — instant auth, no paste codes, bulletproof credential detection.",
   "whatsNew": [
-    "Reddit Ads, Etsy, and Threads — full platform integrations with rate-limited APIs",
-    "Meta CBO campaign fix — ad sets no longer break on campaign-budget-optimized campaigns",
-    "Mac auth hardened — scans 7 Keychain entries, persists credentials, one-time setup"
+    "Mac sign-in is now instant — skips the 12-second probe when credentials are missing",
+    "One-time browser OAuth is fully automatic — no paste codes, retryable on failure",
+    "Fixed stale token bug, broken API key link, and missing Retry buttons"
   ]
 }

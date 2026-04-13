@@ -123,4 +123,5 @@ contextBridge.exposeInMainWorld('merlin', {
   onAuthCodePrompt: (cb) => ipcRenderer.on('auth-code-prompt', () => cb()),
   onAuthRequired: (cb) => ipcRenderer.on('auth-required', () => cb()),
   submitAuthCode: (code) => ipcRenderer.send('auth-code-submit', code),
+  openExternal: (url) => ipcRenderer.invoke('open-external-url', url),
 });
