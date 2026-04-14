@@ -1,5 +1,5 @@
 {
-  "version": "1.0.6",
+  "version": "1.0.7",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,10 +23,14 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v1.0.6: Videos play inline, budget safety rails, Seedance 2.0 support, zero-setup onboarding.",
+  "notes": "v1.0.7: Enterprise-grade per-brand reporting, voice input via whisper.cpp, bidirectional referrals, Stripe/affiliate payments, live ad sync across every platform, and a sweeping security hardening pass.",
   "whatsNew": [
-    "Videos render inline in chat and play immediately — fixed empty 0:00 player, Meta video upload now waits for processing, Seedance 2.0 compatibility",
-    "Budget safety rails — rejects cents-as-dollars mistakes across every ad platform before any spend hits your account",
-    "Merlin launches straight into chat — no more setup blocker; Claude auth is requested inline only when you send your first message"
+    "Performance bar now reliably shows revenue/spend/MER for every brand with a connected ad platform — per-brand dashboards with staggered schedules, strict brand enforcement at the tool layer, and an engine version floor so old binaries can't silently misroute output",
+    "Voice input via bundled whisper.cpp — hit the mic button and Merlin streams your speech to local transcription, no cloud STT, works offline",
+    "Refer a friend, earn trial days — apply a friend's code right in the app for +7 days (cap at 21), and your link now shows how many have registered vs subscribed",
+    "Live ad sync across Meta, TikTok, Google, Amazon, LinkedIn, and Reddit — the dashboard now reflects real-time live/paused/archived state so a killed winner doesn't look 'active' in Merlin while paused on the platform",
+    "Security hardening: OAuth CSRF protection with constant-time state comparison, vault exfiltration path closed (.bak / .tmp suffixes now blocked), /api/credentials bulk-secret endpoint removed in favor of per-request BFF exchange, LinkedIn scaling budget re-validated against user caps, and every user-facing error humanized so raw EPERM/ENOSPC/network strings never leak into the UI",
+    "Wisdom collective now deduplicates reports per (instance, day, platform) and aggregates eagerly inside Cloudflare Workers so your own ad performance starts influencing the network within minutes instead of waiting 24h for the nightly cron",
+    "Subscription status reconciled at startup across devices — if you cancel on one machine and reopen on another, Merlin recognizes the state change instead of showing a stale 'Pro' badge; activation timeouts and cancellations now surface inline recovery prompts"
   ]
 }

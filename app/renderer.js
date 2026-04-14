@@ -142,8 +142,25 @@ let _trialExpired = false;
 })();
 
 document.getElementById('subscribe-btn').addEventListener('click', async () => {
-  const sub = await merlin.getSubscription();
+  // P1-7 recovery hook: before opening the subscribe modal, ask the
+  // server whether this machine already has an active license. This
+  // rescues users who paid on another device, whose local file was
+  // wiped, or whose activation poller timed out before it detected
+  // payment completion. If the server says we're active, refreshCheck
+  // sends `subscription-activated` and the UI flips to Pro.
+  let sub;
+  if (merlin.checkSubscriptionStatus) {
+    try { sub = await merlin.checkSubscriptionStatus(); }
+    catch { sub = await merlin.getSubscription(); }
+  } else {
+    sub = await merlin.getSubscription();
+  }
   if (sub?.subscribed) {
+    // Server confirmed we're already Pro — reflect in UI and open billing.
+    document.getElementById('trial-text').textContent = '✦ Pro';
+    document.querySelector('.subscribe-cta').textContent = 'Manage';
+    document.getElementById('subscribe-btn').classList.add('subscribed');
+    _trialExpired = false;
     merlin.openManage();
     return;
   }
@@ -173,12 +190,21 @@ document.getElementById('subscribe-btn').addEventListener('click', async () => {
   });
 });
 
-// Auto-activate when Stripe payment completes (polled from main.js)
+// Auto-activate when Stripe payment completes (polled from main.js) OR
+// when the launch-time reconcile restores Pro from the server.
 merlin.onSubscriptionActivated(() => {
-  document.getElementById('subscribe-btn').classList.add('hidden-sub');
+  // Flip the header button to "Manage Pro" state instead of hiding it —
+  // the user still needs access to the billing portal.
+  document.getElementById('trial-text').textContent = '✦ Pro';
+  document.querySelector('.subscribe-cta').textContent = 'Manage';
+  const btn = document.getElementById('subscribe-btn');
+  btn.classList.remove('hidden-sub');
+  btn.classList.add('subscribed');
+  btn.style.borderColor = '';
+  btn.style.animation = '';
   _trialExpired = false;
   const bubble = addClaudeBubble();
-  textBuffer = '✦ Payment received — welcome to Merlin Pro! All features are unlocked.';
+  textBuffer = '✦ Welcome to Merlin Pro — all features unlocked.';
   finalizeBubble();
 });
 
@@ -607,6 +633,17 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+// Build a safe merlin:// URL from a relative path. URL-encodes each path
+// segment (so filenames with spaces, quotes, angle brackets, etc. are safely
+// inert inside HTML attributes) while leaving '/' as the segment delimiter.
+// Use this anywhere a filename derived from disk flows into `src=` or `href=`
+// — the custom merlin:// protocol handler already handles decoding.
+function merlinUrl(relPath) {
+  if (relPath == null) return '';
+  const clean = String(relPath).replace(/^merlin:\/\//, '');
+  return 'merlin://' + clean.split('/').map(encodeURIComponent).join('/');
+}
+
 // Sanitize raw errors into user-friendly messages with actionable "Try:" guidance
 function friendlyError(raw, platformName) {
   if (!raw) return `Could not connect to ${platformName || 'the platform'}.\nTry: Check your internet connection and try again.`;
@@ -666,6 +703,20 @@ function friendlyError(raw, platformName) {
   // Truncate anything still long
   if (s.length > 150) return s.slice(0, 140) + '…';
   return s;
+}
+
+// REGRESSION GUARD (2026-04-14, adversarial review #6 fix):
+// humanizeUpdateError sanitizes install/update errors before they hit the UI.
+// Do NOT let raw EPERM/EBUSY/ENOSPC/ENOTFOUND strings leak into the toast.
+function humanizeUpdateError(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return 'Update couldn\'t install. Try again in a moment.';
+  if (/EPERM|EBUSY|EACCES/i.test(s)) return 'Merlin needs to close before updating. Save your work and try again.';
+  if (/ENOSPC/i.test(s)) return 'Not enough disk space for the update. Free up some space and try again.';
+  if (/ENOTFOUND|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|network/i.test(s)) return 'Can\'t reach the update server. Check your internet and try again.';
+  if (/checksum|hash|integrity/i.test(s)) return 'The update file looks corrupted. Try again in a moment — we\'ll re-download it.';
+  if (/signature|signed/i.test(s)) return 'The update couldn\'t be verified. Try again, and if it keeps failing, reinstall from merlingotme.com.';
+  return 'Update couldn\'t install. Try again in a moment.';
 }
 
 // ── SDK Message Handling ────────────────────────────────────
@@ -1038,18 +1089,28 @@ merlin.onSdkError((err) => {
     return;
   }
 
-  let userMsg = 'Something went wrong. ';
-  let isAuthError = false;
-  let isClaudeNotFound = false;
-  if (errLower.includes('enotfound') || errLower.includes('econnrefused') || errLower.includes('etimedout') || errLower.includes('network')) {
-    userMsg = 'Lost connection — check your internet. ';
-  } else if (errLower.includes('401') || errLower.includes('unauthorized')) {
-    userMsg = 'Session expired. ';
-    isAuthError = true;
-  } else if (errLower.includes('enoent') && (errLower.includes('spawn') || errLower.includes('node'))) {
-    userMsg = 'Claude CLI not found. ';
-    isClaudeNotFound = true;
-  }
+  // REGRESSION GUARD (2026-04-14, adversarial review #6 fix):
+  // This error path used to concat raw err strings into the chat bubble
+  // (`Error: ${(err||'').slice(0,200)}`). Paying users saw things like
+  // "Error: POST https://queue.fal.run/... HTTP 402: exhausted balance".
+  //
+  // friendlyError() (defined at line 611 above) already classifies every
+  // failure mode we care about — fal.ai balance, Shopify throttling, Meta
+  // token expiry, DNS, ECONNREFUSED, HTTP 4xx/5xx, Claude spawn errors, etc.
+  // The SDK error path MUST route through friendlyError() before rendering.
+  //
+  // Why: "UX so good a 5th grader can use it" (CLAUDE.md principle). Raw
+  // stack traces and platform JSON errors break that contract instantly.
+  //
+  // How to apply: any future error-surfacing path added to renderer.js
+  // (SDK errors, tool errors, update errors, OAuth errors) MUST pipe the
+  // raw string through friendlyError(raw, platformName) BEFORE it enters
+  // textBuffer or innerHTML. The helper is side-effect-free and idempotent.
+  // If you find yourself writing `.slice(0, N)` on a raw error, stop — use
+  // friendlyError() instead. DO NOT revert to raw-error concatenation.
+  let userMsg = friendlyError(err, '') || 'Something went wrong.';
+  const isClaudeNotFound = errLower.includes('enoent') && (errLower.includes('spawn') || errLower.includes('node'));
+  const isAuthError = errLower.includes('401') || errLower.includes('unauthorized');
 
   const bubble = addClaudeBubble();
 
@@ -1062,8 +1123,7 @@ merlin.onSdkError((err) => {
     } else {
       reason = 'Check your internet connection and click Retry when ready.';
     }
-    const debugInfo = err ? `\n\nError: ${(err || '').slice(0, 200)}` : '';
-    textBuffer = `${userMsg}Merlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}${debugInfo}`;
+    textBuffer = `${userMsg}\n\nMerlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}`;
     finalizeBubble();
     bubble.style.borderColor = 'rgba(239,68,68,.3)';
 
@@ -1082,8 +1142,7 @@ merlin.onSdkError((err) => {
   }
 
   const delay = Math.min(2000 * Math.pow(2, _restartAttempts - 1), 8000);
-  const debugHint = _restartAttempts === 1 ? `\n(${(err || '').slice(0, 120)})` : '';
-  textBuffer = `${userMsg}Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})${debugHint}`;
+  textBuffer = `${userMsg}\n\nRetrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
   finalizeBubble();
   bubble.style.borderColor = 'rgba(239,68,68,.3)';
 
@@ -1164,14 +1223,17 @@ merlin.onUpdateReady(({ latest, needsReinstall }) => {
       try {
         const r = await merlin.installUpdate();
         if (!r?.ok) {
-          document.getElementById('update-text').textContent = `Install failed: ${r?.error || 'unknown error'}`;
+          // REGRESSION GUARD (2026-04-14): never show raw r.error. Users
+          // saw "Install failed: EPERM: operation not permitted, open
+          // 'C:\\Program Files\\Merlin\\...'" and had no idea what to do.
+          document.getElementById('update-text').textContent = humanizeUpdateError(r?.error);
           document.getElementById('update-btn').textContent = 'Retry';
           document.getElementById('update-btn').disabled = false;
           dismiss.classList.remove('hidden');
         }
         // On success, the app will quit shortly — no further UI needed
       } catch (e) {
-        document.getElementById('update-text').textContent = `Install failed: ${e.message}`;
+        document.getElementById('update-text').textContent = humanizeUpdateError(e.message);
         document.getElementById('update-btn').textContent = 'Retry';
         document.getElementById('update-btn').disabled = false;
         dismiss.classList.remove('hidden');
@@ -1188,7 +1250,8 @@ merlin.onUpdateReady(({ latest, needsReinstall }) => {
 });
 
 merlin.onUpdateError((err) => {
-  document.getElementById('update-text').textContent = `Update failed: ${err}`;
+  // REGRESSION GUARD (2026-04-14): humanize raw update errors.
+  document.getElementById('update-text').textContent = humanizeUpdateError(err);
   document.getElementById('update-btn').textContent = 'Retry';
   document.getElementById('update-btn').disabled = false;
   document.getElementById('update-btn').onclick = () => {
@@ -2141,10 +2204,35 @@ async function loadReferralInfo() {
     const linkInput = document.getElementById('referral-link');
     const stats = document.getElementById('referral-stats');
     linkInput.value = `merlingotme.com?ref=${info.referralCode || ''}`;
-    if (info.referralCount > 0) {
-      stats.textContent = `${info.referralCount} friend${info.referralCount > 1 ? 's' : ''} referred · +${info.trialExtensionDays || 0} bonus days`;
+
+    // R2-2: split registered vs subscribed counts so the user sees both
+    // "3 friends installed" and "+21 bonus days locked in".
+    const total = info.referralCount || 0;
+    const subscribed = info.subscribedCount || 0;
+    const bonus = info.trialExtensionDays || 0;
+    if (total > 0) {
+      const friendsLabel = `${total} friend${total !== 1 ? 's' : ''} installed`;
+      const subLabel = subscribed > 0 ? ` · ${subscribed} subscribed` : '';
+      const bonusLabel = ` · +${bonus} bonus day${bonus !== 1 ? 's' : ''}`;
+      stats.textContent = friendsLabel + subLabel + bonusLabel;
     } else {
       stats.textContent = '';
+    }
+
+    // If the user has already applied a friend's code, hide the input and
+    // show a confirmed state in the status line.
+    const applyRow = document.getElementById('referral-apply-row');
+    const applyStatus = document.getElementById('referral-apply-status');
+    const applyInput = document.getElementById('referral-apply-input');
+    const applyBtn = document.getElementById('referral-apply-btn');
+    if (info.appliedReferralCode) {
+      if (applyRow) applyRow.style.display = 'none';
+      if (applyStatus) {
+        applyStatus.textContent = `✦ Applied code ${info.appliedReferralCode} — your friend gets the bonus when you subscribe`;
+        applyStatus.className = 'referral-apply-status success';
+      }
+      if (applyInput) applyInput.disabled = true;
+      if (applyBtn) applyBtn.disabled = true;
     }
   } catch {}
 }
@@ -2158,6 +2246,87 @@ document.getElementById('referral-copy').addEventListener('click', () => {
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
   });
 });
+
+// R1-1: Apply a friend's referral code. Calls main's apply-referral-code
+// IPC (which hits /api/register-referral) and shows inline feedback.
+(function setupReferralApply() {
+  const input = document.getElementById('referral-apply-input');
+  const btn = document.getElementById('referral-apply-btn');
+  const status = document.getElementById('referral-apply-status');
+  if (!input || !btn || !status) return;
+
+  async function applyCode() {
+    const code = (input.value || '').trim().toLowerCase();
+    if (!code) {
+      status.textContent = 'Enter the 8-character code your friend shared.';
+      status.className = 'referral-apply-status error';
+      return;
+    }
+    if (!/^[0-9a-f]{8}$/.test(code)) {
+      status.textContent = 'Invalid format — should be 8 characters (0-9 and a-f).';
+      status.className = 'referral-apply-status error';
+      return;
+    }
+    btn.disabled = true;
+    input.disabled = true;
+    status.textContent = 'Applying...';
+    status.className = 'referral-apply-status';
+    try {
+      const result = await merlin.applyReferralCode(code);
+      if (result && result.success) {
+        status.textContent = `✦ Applied! Your friend gets +7 trial days when you subscribe to Pro.`;
+        status.className = 'referral-apply-status success';
+        document.getElementById('referral-apply-row').style.display = 'none';
+        await loadReferralInfo();
+      } else {
+        status.textContent = (result && result.error) || 'Could not apply code';
+        status.className = 'referral-apply-status error';
+        btn.disabled = false;
+        input.disabled = false;
+      }
+    } catch (err) {
+      status.textContent = 'Network error — try again.';
+      status.className = 'referral-apply-status error';
+      btn.disabled = false;
+      input.disabled = false;
+    }
+  }
+
+  btn.addEventListener('click', applyCode);
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') applyCode(); });
+  // Strip invalid characters as the user types (hex only, 8 max).
+  input.addEventListener('input', () => {
+    const cleaned = input.value.toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 8);
+    if (cleaned !== input.value) input.value = cleaned;
+  });
+})();
+
+// Subscription canceled (server told us via /api/check-license)
+if (merlin.onSubscriptionCanceled) {
+  merlin.onSubscriptionCanceled((data) => {
+    const trialEl = document.getElementById('trial-text');
+    const ctaEl = document.querySelector('.subscribe-cta');
+    const btn = document.getElementById('subscribe-btn');
+    if (btn) {
+      btn.classList.remove('subscribed');
+      btn.classList.remove('hidden-sub');
+    }
+    if (trialEl) trialEl.textContent = 'Expired';
+    if (ctaEl) ctaEl.textContent = 'Upgrade Now';
+    const bubble = addClaudeBubble();
+    textBuffer = `✦ Your subscription was ${data && data.reason === 'refunded' ? 'refunded' : 'canceled'}. You can re-subscribe anytime from the button up top.`;
+    finalizeBubble();
+  });
+}
+
+// Activation poller gave up — give the user a manual-check path.
+if (merlin.onActivationTimeout) {
+  merlin.onActivationTimeout(() => {
+    const bubble = addClaudeBubble();
+    textBuffer = `✦ Still finishing up on Stripe? If you've already paid, click the trial button up top — we'll re-check with the server.`;
+    finalizeBubble();
+  });
+}
 
 // ── Spellbook ──────────────────────────────────────────────
 function formatCron(cron) {
@@ -2442,33 +2611,136 @@ function buildSpellRow(spell, isActive) {
   return row;
 }
 
-function activateSpell(template, row) {
+// Deterministic minute offset per brand based on a simple 32-bit string hash.
+// Returns a value in [0, 30) so spells for different brands are spread
+// across the first half-hour of the trigger slot, avoiding thundering-herd
+// API calls at 9:00 / 5:00 / 14:00 etc. 30 minutes is narrow enough that a
+// "5 AM morning briefing" still fires during morning, wide enough that
+// realistic brand counts don't collide (birthday-paradox ~50% collision at
+// 6+ brands for 30 slots; acceptable for the staggering goal).
+function brandHashMinuteOffset(brand) {
+  let h = 0;
+  for (let i = 0; i < brand.length; i++) {
+    h = ((h << 5) - h + brand.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h) % 30;
+}
+
+// Add a minute offset to a standard 5-field cron expression. Only the minute
+// field is adjusted — the hour/day/month/dow fields are untouched. If the
+// minute field is a wildcard ("*", "*/5", ranges, lists), the expression is
+// returned unchanged because shifting a pattern like "*/5" by an offset
+// would change its meaning.
+function offsetCronMinutes(cron, offset) {
+  const parts = String(cron || '').trim().split(/\s+/);
+  if (parts.length !== 5) return cron;
+  const minField = parts[0];
+  if (!/^\d+$/.test(minField)) return cron;
+  const newMin = (parseInt(minField, 10) + ((offset % 60) + 60)) % 60;
+  parts[0] = String(newMin);
+  return parts.join(' ');
+}
+
+// Discover every brand the user has set up that has at least one ad platform
+// connected. Enterprise default: scheduled tasks get created for all of them.
+// Single-brand users get identical behavior to before since the array has
+// one element.
+async function discoverBrandsForSpellActivation() {
+  const targets = [];
+  try {
+    const brands = await merlin.getBrands();
+    for (const b of (brands || [])) {
+      const name = b?.name;
+      if (!name) continue;
+      try {
+        const conns = await merlin.getConnectedPlatforms(name);
+        const hasAdPlatform = (conns || []).some(c => {
+          // Ad platforms, not notification channels — scheduled reporting
+          // only makes sense for brands where there's ad spend to report on.
+          return ['meta', 'tiktok', 'google', 'amazon', 'linkedin', 'reddit', 'shopify', 'klaviyo'].includes(c.platform);
+        });
+        if (hasAdPlatform) targets.push(name);
+      } catch {}
+    }
+  } catch {}
+  return targets;
+}
+
+async function activateSpell(template, row) {
   // Optimistic: show creating state
   row.querySelector('.spell-dot').className = 'spell-dot dot-creating';
   row.querySelector('.spell-meta').textContent = 'Setting up...';
   row.style.pointerEvents = 'none';
 
-  const spellBrand = document.getElementById('brand-select')?.value || '';
-  merlin.createSpell(`merlin-${template.spell}`, template.cron, template.name, template.prompt, spellBrand).then(result => {
-    if (result.success) {
-      row.querySelector('.spell-dot').className = 'spell-dot dot-active';
-      row.querySelector('.spell-meta').textContent = 'Active ✓';
-      setTimeout(() => loadSpells(), 2000);
+  // Enterprise default: enable the spell for EVERY brand that has at least
+  // one ad platform or shopify connected. That way the user gets portfolio-
+  // wide reporting without having to re-activate per brand. The bug this
+  // prevents is the one we just fixed — a single-brand spell silently
+  // producing empty data because it was only wired to the currently-
+  // selected brand in the dropdown while other brands went dark.
+  let targetBrands = await discoverBrandsForSpellActivation();
 
-      // First-run confirmation: ask user if they want to run immediately
-      showFirstRunPrompt(template, spellBrand);
-    } else {
-      row.querySelector('.spell-dot').className = 'spell-dot dot-error';
-      row.querySelector('.spell-meta').textContent = `Failed — ${result.error || 'tap to retry'}`;
-      row.style.pointerEvents = '';
-      console.warn('[spell] Creation failed:', result.error);
+  // Fallback: if discovery failed (no brands, IPC error) use whatever the
+  // dropdown currently shows. This keeps a first-run single-brand user
+  // working even before they've connected a platform — the spell gets
+  // created, and the brand-lock in Part C ensures it routes correctly once
+  // they connect one. Filter out reserved sentinel values so activating
+  // with "+ New Brand" or the empty placeholder doesn't spawn a ghost spell.
+  if (targetBrands.length === 0) {
+    const selected = document.getElementById('brand-select')?.value || '';
+    if (selected && selected !== '__add__' && /^[a-z0-9_-]+$/i.test(selected)) {
+      targetBrands = [selected];
     }
-  }).catch(err => {
+  }
+
+  if (targetBrands.length === 0) {
     row.querySelector('.spell-dot').className = 'spell-dot dot-error';
-    row.querySelector('.spell-meta').textContent = 'Error — tap to retry';
+    row.querySelector('.spell-meta').textContent = 'No brands yet — set one up first';
     row.style.pointerEvents = '';
-    console.error('[spell] Creation error:', err);
-  });
+    return;
+  }
+
+  // Stagger cron minutes per brand so N spells don't all hit platform APIs
+  // at exactly the same instant. Hash-based offset is deterministic so a
+  // given brand always lands on the same minute — reruns/migrations don't
+  // cause a spell to drift across the clock.
+  const results = [];
+  for (let i = 0; i < targetBrands.length; i++) {
+    const brand = targetBrands[i];
+    const staggeredCron = offsetCronMinutes(template.cron, brandHashMinuteOffset(brand));
+    try {
+      const r = await merlin.createSpell(`merlin-${template.spell}`, staggeredCron, template.name, template.prompt, brand);
+      results.push({ brand, ok: r?.success === true, error: r?.error });
+    } catch (err) {
+      results.push({ brand, ok: false, error: err?.message || 'unknown' });
+    }
+  }
+
+  const okCount = results.filter(r => r.ok).length;
+  const failed = results.filter(r => !r.ok);
+
+  if (okCount === targetBrands.length) {
+    row.querySelector('.spell-dot').className = 'spell-dot dot-active';
+    row.querySelector('.spell-meta').textContent = okCount === 1 ? 'Active ✓' : `Active for ${okCount} brands ✓`;
+    setTimeout(() => loadSpells(), 2000);
+
+    // First-run confirmation uses the currently-selected brand as the
+    // "primary" one to run immediately. Other brands will fire on schedule.
+    const primaryBrand = document.getElementById('brand-select')?.value || targetBrands[0];
+    showFirstRunPrompt(template, primaryBrand);
+  } else if (okCount > 0) {
+    // Partial success — show both counts so the user knows some worked
+    row.querySelector('.spell-dot').className = 'spell-dot dot-warning';
+    row.querySelector('.spell-meta').textContent = `Active for ${okCount} of ${targetBrands.length} — check errors`;
+    row.style.pointerEvents = '';
+    console.warn('[spell] Multi-brand creation partial failure:', failed);
+    setTimeout(() => loadSpells(), 2000);
+  } else {
+    row.querySelector('.spell-dot').className = 'spell-dot dot-error';
+    row.querySelector('.spell-meta').textContent = `Failed — ${failed[0]?.error || 'tap to retry'}`;
+    row.style.pointerEvents = '';
+    console.warn('[spell] All creations failed:', failed);
+  }
 }
 
 // First-run: prompt user to run the spell immediately after activation
@@ -2706,10 +2978,18 @@ function sendMessage() {
         if (key && key.length > 0) {
           merlin.activateKey(key).then((result) => {
             if (result.success) {
-              document.getElementById('subscribe-btn').classList.add('hidden-sub');
+              // Flip to "Manage Pro" state — hiding the button leaves
+              // the user with no path to the billing portal.
+              const btn = document.getElementById('subscribe-btn');
+              btn.classList.remove('hidden-sub');
+              btn.classList.add('subscribed');
+              btn.style.borderColor = '';
+              btn.style.animation = '';
+              document.getElementById('trial-text').textContent = '✦ Pro';
+              document.querySelector('.subscribe-cta').textContent = 'Manage';
               _trialExpired = false;
               const bubble = addClaudeBubble();
-              textBuffer = '✦ Welcome to Merlin Pro! All features are unlocked.';
+              textBuffer = '✦ Welcome to Merlin Pro — all features unlocked.';
               finalizeBubble();
               sendMessage();
             } else {
@@ -2770,11 +3050,153 @@ input.addEventListener('keydown', (e) => {
 
 sendBtn.addEventListener('click', sendMessage);
 
-// ── Voice Input (stubbed) ────────────────────────────────────
-// TODO: Integrate local speech-to-text via Go binary (Whisper.cpp or Vosk).
-// Flow: mic click → Web Audio API records → save temp WAV → binary transcribes → text in input
-// Web Speech API doesn't work in Electron (requires Google's servers).
-// Mic button hidden via CSS (.mic-btn{display:none}) until this is built.
+// ── Voice Input (streaming MediaRecorder → whisper.cpp) ──────
+// Records mic audio in the renderer (webm/opus) with a 2.5s timeslice,
+// so `ondataavailable` fires every ~2.5s with more audio. Each firing
+// re-transcribes the cumulative blob via main.js (ffmpeg → whisper-cli)
+// and updates the input with the latest text in desaturated gray
+// (.voice-interim). On stop, the final transcription flips the color
+// back to normal. Escape cancels and restores whatever was in the
+// input before recording.
+const micBtn = document.getElementById('mic-btn');
+let mediaRecorder = null;
+let audioStream = null;
+let recordingChunks = [];
+let isRecording = false;
+let isCanceled = false;
+let streamBusy = false;     // prevents overlapping whisper-cli calls
+let voiceBaseText = '';     // text that was in input before recording started
+
+async function transcribeCurrent(isInterim) {
+  if (recordingChunks.length === 0) return;
+  const blob = new Blob(recordingChunks, { type: 'audio/webm' });
+  const arrayBuffer = await blob.arrayBuffer();
+  const bytes = Array.from(new Uint8Array(arrayBuffer));
+  try {
+    const result = await merlin.transcribeAudio(bytes);
+    if (result && result.transcript && result.transcript.trim()) {
+      const text = result.transcript.trim();
+      input.value = (voiceBaseText + text).replace(/^\s+/, '');
+      if (isInterim) input.classList.add('voice-interim');
+      else input.classList.remove('voice-interim');
+      autoResize();
+    } else if (result && result.error && !isInterim) {
+      showModal({
+        title: 'Transcription failed',
+        body: result.error,
+        confirmLabel: 'OK',
+      });
+    }
+  } catch (err) {
+    // Interim failures are silent — next chunk will retry. Only surface
+    // the error on the final (post-stop) transcription.
+    if (!isInterim) {
+      console.warn('transcribeAudio threw:', err);
+      showModal({
+        title: 'Transcription failed',
+        body: String(err && err.message ? err.message : err),
+        confirmLabel: 'OK',
+      });
+    }
+  }
+}
+
+async function startRecording() {
+  try {
+    audioStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+      },
+    });
+  } catch (err) {
+    console.warn('getUserMedia failed:', err);
+    showModal({
+      title: 'Microphone blocked',
+      body: 'Voice input needs microphone access. Check Windows mic permissions for Merlin and try again.',
+      confirmLabel: 'OK',
+    });
+    return;
+  }
+  // Capture whatever was in the input so streaming updates append to it
+  voiceBaseText = input.value ? input.value.trimEnd() + ' ' : '';
+  recordingChunks = [];
+  isCanceled = false;
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : 'audio/webm';
+  mediaRecorder = new MediaRecorder(audioStream, { mimeType: mime });
+
+  mediaRecorder.ondataavailable = async (e) => {
+    if (e.data && e.data.size > 0) recordingChunks.push(e.data);
+    // Interim streaming transcription (gray) — skip if a previous call
+    // is still in flight; we'll catch up on the next chunk.
+    if (isRecording && !isCanceled && !streamBusy && recordingChunks.length > 0) {
+      streamBusy = true;
+      try { await transcribeCurrent(true); }
+      finally { streamBusy = false; }
+    }
+  };
+
+  mediaRecorder.onstop = async () => {
+    try { audioStream.getTracks().forEach(t => t.stop()); } catch {}
+    audioStream = null;
+    micBtn.classList.remove('recording');
+    // Wait for any in-flight interim transcription to settle before final
+    while (streamBusy) await new Promise(r => setTimeout(r, 50));
+
+    if (isCanceled) {
+      // Revert to whatever was in the input before recording
+      input.value = voiceBaseText.trimEnd();
+      input.classList.remove('voice-interim');
+      autoResize();
+      isCanceled = false;
+      return;
+    }
+    if (recordingChunks.length === 0) return;
+
+    micBtn.classList.add('transcribing');
+    micBtn.disabled = true;
+    try {
+      await transcribeCurrent(false);  // final → strips gray class
+      input.focus();
+    } finally {
+      micBtn.classList.remove('transcribing');
+      micBtn.disabled = false;
+    }
+  };
+
+  // 2500ms timeslice = ondataavailable fires every ~2.5s for streaming
+  mediaRecorder.start(2500);
+  isRecording = true;
+  micBtn.classList.add('recording');
+}
+
+function stopRecording() {
+  if (mediaRecorder && isRecording) {
+    try { mediaRecorder.stop(); } catch (e) { console.warn('stop error', e); }
+    isRecording = false;
+  }
+}
+
+function cancelRecording() {
+  if (mediaRecorder && isRecording) {
+    isCanceled = true;
+    try { mediaRecorder.stop(); } catch (e) { console.warn('cancel error', e); }
+    isRecording = false;
+  }
+}
+
+micBtn.addEventListener('click', () => {
+  if (isRecording) stopRecording();
+  else startRecording();
+});
+
+// Escape cancels recording entirely (restores pre-recording text)
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && isRecording) cancelRecording();
+});
 
 // Auto-resize textarea
 function autoResize() {
@@ -2782,6 +3204,10 @@ function autoResize() {
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
 }
 input.addEventListener('input', autoResize);
+// User typing over interim voice text commits it to normal color
+input.addEventListener('input', () => {
+  if (input.classList.contains('voice-interim')) input.classList.remove('voice-interim');
+});
 
 // ── Image/Video Paste + Drag-Drop ───────────────────────────
 function savePastedMedia(file) {
@@ -2955,8 +3381,20 @@ document.addEventListener('contextmenu', (e) => {
   const mediaEl = media.matches('img, video') ? media
     : media.querySelector('img[src^="merlin://"], video[src^="merlin://"]');
   const archiveCard = media.closest('.archive-card');
-  const src = media.dataset?.file || mediaEl?.dataset?.file || mediaEl?.src?.replace('merlin://', '') || '';
-  const filePath = src;
+  // Prefer data-file attributes (stored raw). Fall back to the element's src,
+  // which IS URL-encoded (merlinUrl applies encodeURIComponent per segment for
+  // XSS safety). Decode the src back to a raw filesystem path so IPC handlers
+  // (copyImage, deleteFile, openFolder) receive a path that actually exists
+  // on disk. `decodeURI` preserves the '/' separator.
+  let filePath = '';
+  if (media.dataset?.file) {
+    filePath = media.dataset.file;
+  } else if (mediaEl?.dataset?.file) {
+    filePath = mediaEl.dataset.file;
+  } else if (mediaEl?.src) {
+    const raw = mediaEl.src.replace(/^merlin:\/\//, '');
+    try { filePath = decodeURI(raw); } catch { filePath = raw; }
+  }
   const folderPath = filePath ? filePath.split('/').slice(0, -1).join('/') : (archiveCard?.dataset?.folder || '');
   const isVideo = mediaEl?.tagName === 'VIDEO'
     || media.closest('.video-wrap')
@@ -2990,7 +3428,8 @@ document.addEventListener('contextmenu', (e) => {
       showCopyToast(result?.success ? 'Copied!' : 'Copy failed');
     } else if (action === 'save') {
       const a = document.createElement('a');
-      a.href = mediaEl?.src || `merlin://${filePath}`;
+      // Prefer the element's already-encoded src; fall back to encoding filePath
+      a.href = mediaEl?.src || merlinUrl(filePath);
       a.download = filePath.split('/').pop();
       a.click();
       closeCtxMenu();
@@ -3059,10 +3498,13 @@ const perfState = {
   cache: {},    // { [brand]: { [days]: summaryData } }
 };
 
+// Brand-scoped perf check is running right now — button debounce.
+const perfRunInFlight = new Set();
+
 function renderPerfBar(perf) {
   const text = document.getElementById('perf-text');
   if (!perf || !perf.generatedAt) {
-    text.innerHTML = 'No data yet — connect an ad platform to start tracking';
+    renderPerfBarEmpty(text);
     return;
   }
   const rev = perf.revenue > 0 ? `<strong>${fmtMoney(perf.revenue)}</strong> revenue` : '';
@@ -3125,6 +3567,87 @@ function renderPerfBar(perf) {
 
 function renderPerfBarSkeleton() {
   document.getElementById('perf-text').innerHTML = '<span class="perf-shimmer"></span>';
+}
+
+// Render the empty-state message truthfully. The old copy ("connect an ad
+// platform to start tracking") was a lie when a platform WAS connected but
+// no dashboard had been pulled yet — which is the most common case on first
+// launch. We differentiate via getConnectedPlatforms:
+//
+//   - No ad platforms connected → "Connect an ad platform..." (accurate)
+//   - Ad platform connected, no data → "No performance data yet — run a
+//     check now" with an inline button that kicks off refreshPerf for the
+//     selected brand and period. One click to recovery.
+async function renderPerfBarEmpty(text) {
+  const brand = perfState.currentBrand;
+  let hasAdPlatform = false;
+  if (brand) {
+    try {
+      const conns = await merlin.getConnectedPlatforms(brand);
+      hasAdPlatform = (conns || []).some(c => ['meta', 'tiktok', 'google', 'amazon', 'linkedin', 'reddit'].includes(c.platform));
+    } catch {}
+  }
+
+  // Race guard: if the user switched brands during the getConnectedPlatforms
+  // await, abandon this render — a newer call against the new brand will
+  // already have taken over the shared perf-text element, and our delayed
+  // innerHTML would stomp it with stale data.
+  if (perfState.currentBrand !== brand) return;
+
+  if (!hasAdPlatform) {
+    text.innerHTML = 'Connect an ad platform to start tracking revenue';
+    return;
+  }
+
+  // Button id includes brand so double-wiring across brand switches doesn't
+  // leak listeners onto the wrong handler. Using inline styles to avoid
+  // touching the stylesheet for this small affordance.
+  const btnId = `perf-run-now-${brand || 'global'}`;
+  text.innerHTML = `No performance data yet — <a href="#" id="${btnId}" style="color:var(--accent);text-decoration:underline;cursor:pointer">run a check now</a>`;
+
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (perfRunInFlight.has(brand)) return; // debounce double-click
+    perfRunInFlight.add(brand);
+    btn.textContent = 'running...';
+    btn.style.pointerEvents = 'none';
+
+    // Clear the "already refreshed once this session" guard that loadPerfBar
+    // uses — without this, a user who landed in the empty state due to a
+    // first-launch failure would click the button and the refresh would be
+    // skipped. The guard only exists to prevent infinite refresh loops on
+    // brands with no connected platforms, which we already verified above.
+    perfState._refreshedBrands?.delete(brand);
+
+    try {
+      const result = await merlin.refreshPerf(brand, perfState.currentPeriod || 7);
+
+      // Race guard: if the user switched brands during the 30-60s refresh,
+      // don't yank the UI back to this (now inactive) brand's data.
+      if (perfState.currentBrand !== brand) return;
+
+      // Surface backend errors (e.g. _binaryTooOld gate, binary missing,
+      // stale config) so the user isn't left staring at a blank bar with
+      // no explanation. The handler returns { error } on refusal.
+      if (result && result.error) {
+        text.innerHTML = escapeHtml(result.error);
+        return;
+      }
+
+      // perf-data-changed event fires on success and reloads the bar
+      // automatically. Also trigger loadPerfBar here so the render happens
+      // even if the IPC notification was dropped.
+      loadPerfBar(perfState.currentPeriod || 7, brand);
+    } catch (err) {
+      if (perfState.currentBrand !== brand) return;
+      text.innerHTML = 'Couldn\'t reach the Merlin engine — try again in a moment';
+      console.warn('[perf-bar] refresh failed:', err);
+    } finally {
+      perfRunInFlight.delete(brand);
+    }
+  });
 }
 
 async function fetchPerfData(days, brand) {
@@ -3441,6 +3964,7 @@ function showArchiveView() {
   document.getElementById('archive-empty').style.display = 'none';
   const feed = document.getElementById('activity-feed-section');
   if (feed) feed.remove();
+  if (typeof updateArchiveRefreshVisibility === 'function') updateArchiveRefreshVisibility();
   loadArchive();
 }
 
@@ -3556,11 +4080,51 @@ document.getElementById('archive-expand').addEventListener('click', (e) => {
   btn.textContent = panel.classList.contains('expanded') ? '→' : '←';
 });
 
+// Refresh button: only visible on the Live Ads tab. Click triggers a full
+// platform sweep (Meta/TikTok/Google/Amazon/Reddit/LinkedIn) for the active
+// brand — ads-live.json gets rewritten, then the panel auto-reloads via the
+// live-ads-changed event.
+(() => {
+  const refreshBtn = document.getElementById('archive-refresh-btn');
+  if (!refreshBtn) return;
+  refreshBtn.style.display = 'none';
+  refreshBtn.addEventListener('click', async (e) => {
+    e.preventDefault();
+    if (refreshBtn.classList.contains('refreshing')) return;
+    refreshBtn.classList.add('refreshing');
+    const brand = document.getElementById('brand-select')?.value || '';
+    try {
+      await merlin.refreshLiveAds(brand || null);
+    } catch (err) {
+      console.warn('[archive] refresh failed', err);
+    }
+    // Reload the panel so users see the fresh data immediately.
+    refreshBtn.classList.remove('refreshing');
+    loadArchive();
+  });
+  if (merlin.onLiveAdsChanged) {
+    merlin.onLiveAdsChanged(() => {
+      // Only reload if the Live Ads tab is currently showing. Other tabs
+      // render generated content or swipes, which don't care about ads-live.
+      const active = document.querySelector('.archive-filter.active')?.dataset.filter;
+      if (active === 'live') loadArchive();
+    });
+  }
+})();
+
+function updateArchiveRefreshVisibility() {
+  const btn = document.getElementById('archive-refresh-btn');
+  if (!btn) return;
+  const active = document.querySelector('.archive-filter.active')?.dataset.filter;
+  btn.style.display = active === 'live' ? '' : 'none';
+}
+
 // Archive filter buttons
 document.querySelectorAll('.archive-filter').forEach(btn => {
   btn.addEventListener('click', () => {
     document.querySelectorAll('.archive-filter').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+    updateArchiveRefreshVisibility();
     loadArchive();
   });
 });
@@ -3611,7 +4175,7 @@ async function loadArchive() {
       card.className = 'archive-card swipe-card';
       card.dataset.path = swipe.path || '';
       card.dataset.id = swipe.id || '';
-      const thumb = swipe.thumbnail ? `<img src="merlin://${swipe.thumbnail}" alt="" loading="lazy">` : '<div class="archive-card-placeholder">✦</div>';
+      const thumb = swipe.thumbnail ? `<img src="${escapeHtml(merlinUrl(swipe.thumbnail))}" alt="" loading="lazy">` : '<div class="archive-card-placeholder">✦</div>';
       card.innerHTML = `
         ${thumb}
         <div class="archive-card-info">
@@ -3637,8 +4201,8 @@ async function loadArchive() {
     loading.style.display = 'none';
 
     if (!ads || ads.length === 0) {
-      empty.querySelector('p').textContent = 'No live ads';
-      empty.querySelector('.archive-empty-sub').textContent = 'Publish an ad to see it here';
+      empty.querySelector('p').textContent = 'No live ads cached yet';
+      empty.querySelector('.archive-empty-sub').textContent = 'Click ↻ to pull your current ads from Meta, TikTok, Google, Amazon, Reddit and LinkedIn';
       empty.style.display = 'block';
       return;
     }
@@ -3653,11 +4217,12 @@ async function loadArchive() {
       const budgetText = ad.budget ? `$${ad.budget}/day` : '';
 
       if (ad.creativePath) {
-        card.innerHTML = `<img class="archive-card-thumb" src="merlin://${ad.creativePath}" alt="" loading="lazy">`;
+        card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(ad.creativePath))}" alt="" loading="lazy">`;
       } else {
         card.innerHTML = `<div class="archive-card-thumb" style="display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--text-dim)">📢</div>`;
       }
 
+      const brandLabel = ad.brand ? ad.brand.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : '';
       card.innerHTML += `
         <div class="archive-card-info">
           <div class="archive-card-title">${escapeHtml(ad.product || ad.platform || 'Ad')}</div>
@@ -3669,6 +4234,7 @@ async function loadArchive() {
             <span class="platform-badge platform-${(ad.platform || '').toLowerCase()}">${escapeHtml(ad.platform || '')}</span>
             <span>${roasText}</span>
           </div>
+          ${brandLabel ? `<div class="archive-card-meta" style="margin-top:1px"><span>${escapeHtml(brandLabel)}</span></div>` : ''}
         </div>`;
 
       // Left click: preview the creative
@@ -3890,10 +4456,20 @@ function createArchiveCard(item) {
   const time = new Date(item.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
   if (item.thumbnail) {
-    card.innerHTML = `<img class="archive-card-thumb" src="merlin://${item.thumbnail}" alt="" loading="lazy">`;
+    card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(item.thumbnail))}" alt="" loading="lazy">`;
   } else {
     card.innerHTML = `<div class="archive-card-thumb" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text-dim)">${isVideo ? '▶' : '✦'}</div>`;
   }
+
+  // Extra badges: QA status (when explicitly known) and "loose" marker for
+  // orphan files that weren't produced by the standard pipeline. The loose
+  // marker is subtle — it just signals that metadata.json wasn't found, so
+  // fields like model/product are inferred from the filename.
+  let extraBadges = '';
+  if (item.qaPassed === false) extraBadges += `<span class="archive-card-badge badge-qa-fail" title="Quality gate failed">✗ QA</span>`;
+  else if (item.qaPassed === true) extraBadges += `<span class="archive-card-badge badge-qa-pass" title="Quality gate passed">✓ QA</span>`;
+  if (item.source === 'loose') extraBadges += `<span class="archive-card-badge badge-source-loose" title="Loose file — no metadata">legacy</span>`;
+
   card.innerHTML += `
     <div class="archive-card-info">
       <div class="archive-card-title">${escapeHtml(title)}</div>
@@ -3901,6 +4477,7 @@ function createArchiveCard(item) {
         <span class="archive-card-badge ${badgeClass}">${badgeText}</span>
         <span>${time}</span>
       </div>
+      ${extraBadges ? `<div class="archive-card-meta" style="margin-top:2px;gap:4px">${extraBadges}</div>` : ''}
     </div>`;
 
   card.addEventListener('click', () => openArchivePreview(item));
@@ -4010,11 +4587,19 @@ function openArchivePreview(item) {
   let mediaPath = '';
 
   if (isVideo) {
-    const best = (item.files || []).find(f => f === 'captioned.mp4') || (item.files || []).find(f => f === 'final.mp4');
-    if (best) mediaPath = `merlin://${item.folder}/${best}`;
+    const files = item.files || [];
+    // Prefer the canonical pipeline outputs, then fall back to ANY video file
+    // in the folder so loose files (seedance_xxx.mp4, veo3_xxx.mp4, etc.) can
+    // still be previewed — before this fallback, loose videos showed "No
+    // preview available" in the overlay.
+    const best =
+      files.find(f => f === 'captioned.mp4') ||
+      files.find(f => f === 'final.mp4') ||
+      files.find(f => /\.(mp4|mov|webm|m4v)$/i.test(f));
+    if (best) mediaPath = merlinUrl((item.folder ? item.folder + '/' : '') + best);
   } else if (item.thumbnail) {
     // Use the same file as the thumbnail — single source of truth
-    mediaPath = `merlin://${item.thumbnail}`;
+    mediaPath = merlinUrl(item.thumbnail);
   }
 
   // Build performance stats panel from metadata tags
@@ -4033,9 +4618,9 @@ function openArchivePreview(item) {
   }
 
   if (isVideo && mediaPath) {
-    overlay.innerHTML = `<div class="preview-layout"><video src="${mediaPath}" controls autoplay playsinline></video>${statsHtml}</div>`;
+    overlay.innerHTML = `<div class="preview-layout"><video src="${escapeHtml(mediaPath)}" controls autoplay playsinline></video>${statsHtml}</div>`;
   } else if (mediaPath) {
-    overlay.innerHTML = `<div class="preview-layout"><img src="${mediaPath}" alt="" data-folder="${escapeHtml(item.folder)}" data-file="${escapeHtml(mediaPath.replace('merlin://', ''))}">${statsHtml}</div>`;
+    overlay.innerHTML = `<div class="preview-layout"><img src="${escapeHtml(mediaPath)}" alt="" data-folder="${escapeHtml(item.folder || '')}" data-file="${escapeHtml(decodeURIComponent(mediaPath.replace('merlin://', '')))}">${statsHtml}</div>`;
   } else {
     overlay.innerHTML = `<div style="color:var(--text-muted);font-size:14px">No preview available</div>`;
   }
@@ -4155,9 +4740,60 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
     const cb = document.getElementById('tos-checkbox');
     const btn = document.getElementById('tos-accept-btn');
     cb.addEventListener('change', () => { btn.disabled = !cb.checked; });
+
+    // R1-3: first-run referral prompt. Because the landing page can't
+    // carry the ?ref= code through the installer, the user must paste
+    // it once. This is the only moment their intent is fresh, so we
+    // ask here rather than burying it in a side panel.
+    const refCheckbox = document.getElementById('tos-has-referral');
+    const refWrap = document.getElementById('tos-referral-wrap');
+    const refInput = document.getElementById('tos-referral-input');
+    const refStatus = document.getElementById('tos-referral-status');
+    if (refCheckbox && refWrap && refInput) {
+      refCheckbox.addEventListener('change', () => {
+        refWrap.classList.toggle('hidden', !refCheckbox.checked);
+        if (refCheckbox.checked) setTimeout(() => refInput.focus(), 50);
+      });
+      refInput.addEventListener('input', () => {
+        const cleaned = refInput.value.toLowerCase().replace(/[^0-9a-f]/g, '').slice(0, 8);
+        if (cleaned !== refInput.value) refInput.value = cleaned;
+      });
+    }
+
     btn.addEventListener('click', async () => {
       const emailOptIn = document.getElementById('email-optin-checkbox').checked;
       await merlin.acceptTos({ emailOptIn });
+
+      // Try to apply the referral code if the user provided one. We don't
+      // block the ToS flow on failure — just surface the error inline and
+      // still proceed into the app.
+      if (refCheckbox && refCheckbox.checked && refInput) {
+        const code = (refInput.value || '').trim().toLowerCase();
+        if (/^[0-9a-f]{8}$/.test(code)) {
+          try {
+            const result = await merlin.applyReferralCode(code);
+            if (result && result.success && refStatus) {
+              refStatus.textContent = `✦ Applied — your friend gets the bonus when you subscribe`;
+              refStatus.className = 'referral-apply-status success';
+            } else if (refStatus) {
+              refStatus.textContent = (result && result.error) || 'Could not apply code — you can retry in the Share Merlin panel';
+              refStatus.className = 'referral-apply-status error';
+              // Hold the modal briefly so the user can read the error
+              await new Promise(r => setTimeout(r, 800));
+            }
+          } catch {
+            if (refStatus) {
+              refStatus.textContent = 'Network error — retry later from the Share Merlin panel';
+              refStatus.className = 'referral-apply-status error';
+            }
+          }
+        } else if (refStatus && code) {
+          refStatus.textContent = 'Invalid format — retry later from the Share Merlin panel';
+          refStatus.className = 'referral-apply-status error';
+          await new Promise(r => setTimeout(r, 600));
+        }
+      }
+
       document.getElementById('tos-overlay').style.animation = 'fadeOut .3s ease forwards';
       setTimeout(() => {
         document.getElementById('tos-overlay').classList.add('hidden');

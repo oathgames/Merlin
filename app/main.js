@@ -1749,6 +1749,13 @@ async function startSession() {
       activeChildProcesses,
       appendAudit,
       sdkModule,
+      // Startup version gate — same one refresh-perf awaits. Scheduled
+      // tasks and chat-driven MCP tool calls must also wait for this so
+      // they don't race past the version check on an old binary and
+      // write output to the wrong directory.
+      awaitStartupChecks: () => (_startupChecksPromise || Promise.resolve()),
+      isBinaryTooOld,
+      minBinaryVersion: MIN_BINARY_VERSION,
     });
     mcpConfig = { merlin: merlinMcp };
   } catch (err) {
@@ -2695,6 +2702,111 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
   } catch (err) { console.error('[answer]', err.message); }
 });
 
+// ── Voice Input: Audio Transcription ─────────────────────────
+// Renderer captures mic audio via MediaRecorder (webm/opus), ships the
+// bytes here, we convert → 16kHz mono WAV via bundled ffmpeg and run
+// whisper-cli against ggml-tiny.en.bin. Binaries live alongside ffmpeg
+// at .claude/tools/. Auto-download is phase 2 — for now, a missing
+// binary returns a clear error with a download link.
+ipcMain.handle('transcribe-audio', async (_, audioBytes) => {
+  if (!Array.isArray(audioBytes) || audioBytes.length === 0) {
+    return { error: 'No audio data received' };
+  }
+  if (audioBytes.length > 50 * 1024 * 1024) {
+    return { error: 'Audio too large (>50MB)' };
+  }
+
+  const { spawn } = require('child_process');
+  const isWin = process.platform === 'win32';
+
+  // Resolve paths: check install dir first (bundled), fall back to workspace
+  const findTool = (name) => {
+    const installPath = path.join(appInstall, '.claude', 'tools', name);
+    if (fs.existsSync(installPath)) return installPath;
+    const workspacePath = path.join(appRoot, '.claude', 'tools', name);
+    if (fs.existsSync(workspacePath)) return workspacePath;
+    return null;
+  };
+
+  const ffmpegPath = findTool(isWin ? 'ffmpeg.exe' : 'ffmpeg');
+  const whisperBin = findTool(isWin ? 'whisper-cli.exe' : 'whisper-cli');
+  const modelPath = findTool('ggml-tiny.en.bin');
+
+  if (!ffmpegPath) {
+    return { error: 'ffmpeg not found. Merlin install may be corrupted — try reinstalling.' };
+  }
+  if (!whisperBin) {
+    const target = path.join(appRoot, '.claude', 'tools', isWin ? 'whisper-cli.exe' : 'whisper-cli');
+    return {
+      error: `Voice setup needed.\n\nDownload whisper-cli from:\nhttps://github.com/ggerganov/whisper.cpp/releases\n\nExtract and place at:\n${target}\n\n(Auto-install coming in next update.)`,
+    };
+  }
+  if (!modelPath) {
+    const target = path.join(appRoot, '.claude', 'tools', 'ggml-tiny.en.bin');
+    return {
+      error: `Voice model missing.\n\nDownload ggml-tiny.en.bin (74MB) from:\nhttps://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin\n\nPlace at:\n${target}`,
+    };
+  }
+
+  // Write webm to temp, then transcode to wav
+  const tmp = os.tmpdir();
+  const id = Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+  const webmPath = path.join(tmp, `merlin-stt-${id}.webm`);
+  const wavPath = path.join(tmp, `merlin-stt-${id}.wav`);
+
+  try {
+    fs.writeFileSync(webmPath, Buffer.from(audioBytes));
+  } catch (err) {
+    return { error: `Failed to write audio: ${err.message}` };
+  }
+
+  try {
+    // 1. ffmpeg: webm/opus → 16kHz mono 16-bit PCM WAV (whisper.cpp's required format)
+    await new Promise((resolve, reject) => {
+      const args = ['-y', '-loglevel', 'error', '-i', webmPath, '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le', wavPath];
+      const ff = spawn(ffmpegPath, args, { windowsHide: true });
+      let stderr = '';
+      ff.stderr.on('data', (d) => { stderr += d.toString(); });
+      ff.on('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 500)}`));
+      });
+      ff.on('error', reject);
+    });
+
+    // 2. whisper-cli: wav → transcript on stdout
+    // Flags: -nt (no timestamps), -np (no progress), -l en (English)
+    const transcript = await new Promise((resolve, reject) => {
+      const args = ['-m', modelPath, '-f', wavPath, '-nt', '-np', '-l', 'en'];
+      const w = spawn(whisperBin, args, { windowsHide: true });
+      let stdout = '';
+      let stderr = '';
+      w.stdout.on('data', (d) => { stdout += d.toString(); });
+      w.stderr.on('data', (d) => { stderr += d.toString(); });
+      w.on('close', (code) => {
+        if (code === 0) resolve(stdout.trim());
+        else reject(new Error(`whisper exit ${code}: ${stderr.slice(0, 500)}`));
+      });
+      w.on('error', reject);
+    });
+
+    // whisper-cli sometimes prefixes lines with "[BLANK_AUDIO]" or logs
+    const cleaned = transcript
+      .split('\n')
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('[') && !l.startsWith('whisper_'))
+      .join(' ')
+      .trim();
+
+    return { transcript: cleaned };
+  } catch (err) {
+    return { error: String(err && err.message ? err.message : err) };
+  } finally {
+    try { fs.unlinkSync(webmPath); } catch {}
+    try { fs.unlinkSync(wavPath); } catch {}
+  }
+});
+
 ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
 ipcMain.handle('open-external-url', (_, url) => {
   if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
@@ -2702,6 +2814,240 @@ ipcMain.handle('open-external-url', (_, url) => {
   }
 });
 ipcMain.handle('open-merlin-folder', () => { shell.openPath(appRoot); });
+
+// ── Spell SKILL.md builder ──────────────────────────────────
+//
+// The spell SKILL.md body has a specific structure that matters for
+// brand-locked reliability:
+//
+//   1. Frontmatter (name / description / cronExpression) — consumed by
+//      Claude Code's scheduler.
+//   2. Brand Lock section — if brandName is set, injects literal MCP call
+//      examples with the brand already filled in. The old format ("Brand:
+//      ivory-ella" as prose) left brand as a documentation note that Claude
+//      sometimes failed to translate into the `brand:` argument on tool
+//      calls, producing empty-data dashboards. The new format shows Claude
+//      the exact call shape and tells it verbatim that brand is required on
+//      every brand-scoped tool — combined with runBinary's hard-refuse
+//      guard in mcp-tools.js, this makes "brand forgotten" impossible.
+//   3. First-run showcase block — walks Claude through the first run so the
+//      user sees the output in narrative form (unchanged from prior design).
+//   4. Spell body — the original template prompt.
+//
+// The MCP examples only list brand-scoped tools. Voice/subscription etc.
+// are intentionally omitted from the Brand Lock block because they are
+// brand-agnostic — listing them would suggest brand is required there,
+// which would be wrong.
+//
+// The marker string "<!-- merlin-skill-v2 -->" is written as the first line
+// of the body so migrateLegacySkills() can distinguish freshly-written
+// skills from legacy/hand-edited ones without parsing prose.
+const SKILL_BODY_MARKER = '<!-- merlin-skill-v2 -->';
+
+// Move orphaned dashboard artifacts from the legacy tools/results/ location
+// into the workspace's main results/_legacy/ folder. Runs once per install,
+// gated by `_legacyResultsMigrated` in merlin-config.json.
+//
+// Before v1.0.7 the Go binary resolved `outputDir` relative to its exe
+// directory, so dashboard files landed at:
+//
+//     {workspace}/.claude/tools/results/dashboard_*.json
+//
+// After v1.0.7 they land in the workspace-level `results/` dir where the
+// Electron perf bar reads from. This migration relocates the stale files so
+// the old directory doesn't sit there as an orphan. Files go into a
+// `_legacy/` subfolder rather than the top-level `results/` so they don't
+// get picked up by computePerfSummary's "latest dashboard" scan — those
+// files are ambiguous (no brand scoping) and using them would show wrong
+// totals on the bar.
+function migrateLegacyResultsDir() {
+  const cfg = readConfig();
+  if (cfg._legacyResultsMigrated === 1) return { skipped: true };
+
+  const legacyDir = path.join(appRoot, '.claude', 'tools', 'results');
+  if (!fs.existsSync(legacyDir)) {
+    try { const c = readConfig(); c._legacyResultsMigrated = 1; writeConfig(c); } catch {}
+    return { moved: 0, reason: 'no legacy dir' };
+  }
+
+  const destDir = path.join(appRoot, 'results', '_legacy');
+  let moved = 0, failed = 0;
+  try {
+    fs.mkdirSync(destDir, { recursive: true });
+    // Walk the legacy dir recursively so any brand-scoped subfolders (e.g.
+    // `.claude/tools/results/ivory-ella/`) get preserved under _legacy/.
+    function moveEntry(src, rel) {
+      let stat;
+      try { stat = fs.statSync(src); } catch { return; }
+      if (stat.isDirectory()) {
+        let children;
+        try { children = fs.readdirSync(src); } catch { return; }
+        for (const c of children) moveEntry(path.join(src, c), path.join(rel, c));
+        try { fs.rmdirSync(src); } catch {}
+        return;
+      }
+      const destPath = path.join(destDir, rel);
+      try {
+        fs.mkdirSync(path.dirname(destPath), { recursive: true });
+        // Use rename first (fast, same volume), fall back to copy+unlink
+        try { fs.renameSync(src, destPath); }
+        catch { fs.copyFileSync(src, destPath); fs.unlinkSync(src); }
+        moved++;
+      } catch { failed++; }
+    }
+    for (const name of fs.readdirSync(legacyDir)) {
+      moveEntry(path.join(legacyDir, name), name);
+    }
+    // Remove the now-empty legacy dir so an old binary running briefly
+    // before users auto-update won't repopulate an already-abandoned tree.
+    try { fs.rmdirSync(legacyDir); } catch {}
+  } catch (err) {
+    appendErrorLog(`${new Date().toISOString()} [legacy-results] migration failed: ${err.message}\n`);
+  }
+
+  try {
+    const c = readConfig();
+    c._legacyResultsMigrated = 1;
+    writeConfig(c);
+  } catch {}
+  appendErrorLog(`${new Date().toISOString()} [legacy-results] moved=${moved} failed=${failed} src=${legacyDir} dest=${destDir}\n`);
+  return { moved, failed };
+}
+
+// Migrate legacy SKILL.md files to the brand-locked v2 format. Runs once per
+// install, gated by `_brandLockSkillMigration` in merlin-config.json so it's
+// idempotent across restarts.
+//
+// Legacy format (pre-migration) looked like:
+//   ---
+//   name: merlin-ivory-ella-morning-briefing
+//   description: Overnight results at 5 AM
+//   cronExpression: "0 5 * * 1-5"
+//   ---
+//
+//   Brand: ivory-ella
+//   Brand assets: assets/brands/ivory-ella/
+//
+//   First-run check: If this is the first time running ...
+//
+//   {original prompt}
+//
+// The "First-run check:" sentence is literal and identical across every legacy
+// spell, so we use it as a split marker to extract the original prompt. We
+// ONLY migrate files that match the full legacy pattern exactly — hand-edits
+// between frontmatter and the First-run line cause a clean skip, preserving
+// any user customization.
+const LEGACY_FIRST_RUN_LINE = 'First-run check: If this is the first time running (no prior results exist for this task), use the best quality settings, narrate each step, show results visually, and end with a summary of what you did and when the next scheduled run is.';
+
+function migrateLegacySkills() {
+  const cfg = readConfig();
+  if (cfg._brandLockSkillMigration === 1) return { skipped: true, reason: 'already migrated' };
+
+  const tasksRoot = path.join(os.homedir(), '.claude', 'scheduled-tasks');
+  if (!fs.existsSync(tasksRoot)) {
+    try { const c = readConfig(); c._brandLockSkillMigration = 1; writeConfig(c); } catch {}
+    return { migrated: 0, scanned: 0 };
+  }
+
+  let scanned = 0, migrated = 0, skipped = 0, errors = 0;
+  const errDetails = [];
+
+  let entries;
+  try { entries = fs.readdirSync(tasksRoot, { withFileTypes: true }); } catch { return { migrated: 0, scanned: 0 }; }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!entry.name.startsWith('merlin-')) continue;
+
+    const skillPath = path.join(tasksRoot, entry.name, 'SKILL.md');
+    if (!fs.existsSync(skillPath)) continue;
+    scanned++;
+
+    try {
+      const content = fs.readFileSync(skillPath, 'utf8');
+
+      if (content.includes(SKILL_BODY_MARKER)) { skipped++; continue; }
+
+      // Match the ENTIRE legacy body structure in one strict regex. The old
+      // create-spell handler emitted exactly:
+      //
+      //   ---\nname: X\ndescription: Y\ncronExpression: "Z"\n---\n
+      //   \nBrand: B\nBrand assets: assets/brands/B/\n
+      //   \nFirst-run check: <literal sentence>\n
+      //   \n{prompt}\n
+      //
+      // Any byte outside this skeleton (comments, extra blank lines, edits
+      // to the brand block, rewording of the First-run sentence) causes the
+      // match to fail and we skip the file — preserving user customizations.
+      const legacyPattern = /^---\nname: ([^\n]+)\ndescription: ([^\n]+)\ncronExpression: "([^"]+)"\n---\n\nBrand: ([a-z0-9_-]+)\nBrand assets: assets\/brands\/\4\/\n\nFirst-run check: If this is the first time running \(no prior results exist for this task\), use the best quality settings, narrate each step, show results visually, and end with a summary of what you did and when the next scheduled run is\.\n\n([\s\S]*?)\n?$/;
+      const m = content.match(legacyPattern);
+      if (!m) { skipped++; continue; }
+      const fullTaskId = m[1];
+      const description = m[2];
+      const cron = m[3];
+      const brandName = m[4];
+      const originalPrompt = m[5].replace(/\n+$/, '');
+      if (!fullTaskId.startsWith('merlin-')) { skipped++; continue; }
+      if (!originalPrompt) { skipped++; continue; }
+
+      // Rebuild with v2 format
+      const rebuilt = buildSkillBody({ fullTaskId, description, cron, prompt: originalPrompt, brandName });
+
+      // Atomic write: temp + rename so a crash mid-write can't leave a half-written SKILL.md
+      const tmpPath = skillPath + '.migrating';
+      fs.writeFileSync(tmpPath, rebuilt);
+      fs.renameSync(tmpPath, skillPath);
+      migrated++;
+    } catch (err) {
+      errors++;
+      errDetails.push(`${entry.name}: ${err.message}`);
+    }
+  }
+
+  // Persist the migration flag so we don't re-scan every launch
+  try {
+    const c = readConfig();
+    c._brandLockSkillMigration = 1;
+    writeConfig(c);
+  } catch {}
+
+  // Log the summary so we can see what happened in the error log
+  try {
+    const summary = `${new Date().toISOString()} [spell-migration] scanned=${scanned} migrated=${migrated} skipped=${skipped} errors=${errors}${errDetails.length ? ' details=' + errDetails.join('; ') : ''}\n`;
+    appendErrorLog(summary);
+  } catch {}
+
+  return { scanned, migrated, skipped, errors };
+}
+
+function buildSkillBody({ fullTaskId, description, cron, prompt, brandName }) {
+  const frontmatter = `---\nname: ${fullTaskId}\ndescription: ${description}\ncronExpression: "${cron}"\n---\n`;
+  let brandLock = '';
+  if (brandName) {
+    brandLock = `
+## Brand Lock — ${brandName}
+
+This scheduled task operates EXCLUSIVELY on brand \`${brandName}\`. Every brand-scoped MCP tool call in this session MUST include \`brand: "${brandName}"\` as an argument. Do not omit it. Do not substitute another brand. The Merlin MCP server will REFUSE brand-scoped actions that are missing the brand argument and return a loud error — don't let that happen by forgetting.
+
+Examples of correctly-scoped calls for this task:
+
+- \`mcp__merlin__dashboard({ action: "dashboard", brand: "${brandName}", batchCount: 7 })\`
+- \`mcp__merlin__meta_ads({ action: "insights", brand: "${brandName}" })\`
+- \`mcp__merlin__tiktok_ads({ action: "insights", brand: "${brandName}" })\`
+- \`mcp__merlin__google_ads({ action: "insights", brand: "${brandName}" })\`
+- \`mcp__merlin__shopify({ action: "analytics", brand: "${brandName}" })\`
+- \`mcp__merlin__klaviyo({ action: "performance", brand: "${brandName}" })\`
+- \`mcp__merlin__email({ action: "audit", brand: "${brandName}" })\`
+- \`mcp__merlin__seo({ action: "audit", brand: "${brandName}" })\`
+- \`mcp__merlin__content({ action: "image", brand: "${brandName}" })\`
+- \`mcp__merlin__video({ action: "generate", brand: "${brandName}" })\`
+
+Brand assets live at \`assets/brands/${brandName}/\`. Read \`brand.md\` for voice and positioning, and \`memory.md\` for prior decisions before acting. Save any new learnings back to \`memory.md\` so the next run compounds.
+`;
+  }
+  const firstRunBlock = `\nFirst-run check: If this is the first time running (no prior results exist for this task), use the best quality settings, narrate each step, show results visually, and end with a summary of what you did and when the next scheduled run is.\n`;
+  return `${frontmatter}${SKILL_BODY_MARKER}\n${brandLock}${firstRunBlock}\n${prompt}\n`;
+}
 
 // ── Spell creation: write SKILL.md directly (no Claude, no MCP) ──
 ipcMain.handle('create-spell', (_, taskId, cron, description, prompt, brandName) => {
@@ -2718,10 +3064,10 @@ ipcMain.handle('create-spell', (_, taskId, cron, description, prompt, brandName)
     const tasksDir = path.join(os.homedir(), '.claude', 'scheduled-tasks', fullTaskId);
     fs.mkdirSync(tasksDir, { recursive: true });
 
-    // Include brand context + first-run showcase instructions in the spell prompt
-    const brandContext = brandName ? `\nBrand: ${brandName}\nBrand assets: assets/brands/${brandName}/\n` : '';
-    const firstRunBlock = `\nFirst-run check: If this is the first time running (no prior results exist for this task), use the best quality settings, narrate each step, show results visually, and end with a summary of what you did and when the next scheduled run is.\n`;
-    const skillContent = `---\nname: ${fullTaskId}\ndescription: ${description}\ncronExpression: "${cron}"\n---\n${brandContext}${firstRunBlock}\n${prompt}\n`;
+    // Build brand lock + first-run showcase + prompt into the SKILL.md body.
+    // See buildSkillBody for why brand gets a dedicated lock section with
+    // literal MCP call examples rather than inline prose.
+    const skillContent = buildSkillBody({ fullTaskId, description, cron, prompt, brandName });
     fs.writeFileSync(path.join(tasksDir, 'SKILL.md'), skillContent);
 
     // Store spell metadata per-brand
@@ -2796,15 +3142,68 @@ ipcMain.handle('open-folder', (_, folderPath) => {
   return { success: true };
 });
 
+// Rotate .merlin-errors.log when it exceeds ~1MB. Keeps a single .old copy
+// (overwriting any previous one) so disk usage stays bounded even if the
+// binary starts regressing every refresh for a long time.
+const ERROR_LOG_MAX_BYTES = 1024 * 1024;
+
+function appendErrorLog(line) {
+  try {
+    const logPath = path.join(appRoot, '.merlin-errors.log');
+    try {
+      const stat = fs.statSync(logPath);
+      if (stat.size >= ERROR_LOG_MAX_BYTES) {
+        const oldPath = logPath + '.old';
+        try { fs.unlinkSync(oldPath); } catch {}
+        try { fs.renameSync(logPath, oldPath); } catch {}
+      }
+    } catch {}
+    fs.appendFileSync(logPath, line);
+  } catch {}
+}
+
 // ── Performance status bar: read cached dashboard data ──────
-// Background dashboard refresh — runs binary to pull fresh data from all platforms
-ipcMain.handle('refresh-perf', async (_, brandName) => {
+// Background dashboard refresh — runs binary to pull fresh data from all platforms.
+// The optional `days` parameter controls how many days of history the binary
+// pulls; on-launch refresh sends 1 for speed (and because the bar shows
+// today's live number), while the user-initiated "Run a check now" button
+// (Part F) can request a longer window matching the selected period.
+ipcMain.handle('refresh-perf', async (_, brandName, days) => {
+  const requestedDays = Number.isInteger(days) && days > 0 && days <= 365 ? days : 1;
+
+  // Wait for the startup ensure+version check to complete before we let
+  // any refresh run. If this handler fires during the 1500ms startup delay
+  // (on-launch loadPerfBar, scheduled spell that happens to align with
+  // app open, click that arrives before the delay elapses), racing past
+  // the check would execute against whatever stale binary is on disk —
+  // precisely the failure mode Part A fixed. Awaiting here is free when
+  // the check has already completed, and bounded to ~2s otherwise.
+  if (_startupChecksPromise) {
+    try { await _startupChecksPromise; } catch {}
+  }
+
+  // Guard: if the installed binary is below the minimum required version,
+  // refuse the refresh instead of running an engine that writes dashboard
+  // files to the wrong directory (see Part A fix). The startup version
+  // check has already tried to force-update; reaching here means the update
+  // failed (no network / quarantine / checksum error). Tell the UI clearly.
+  if (isBinaryTooOld()) {
+    appendErrorLog(`${new Date().toISOString()} [refresh-perf] refused: binary below min version ${MIN_BINARY_VERSION}\n`);
+    return { error: `Engine needs to update to v${MIN_BINARY_VERSION}. Check your network connection and restart Merlin.` };
+  }
+
   const binaryPath = getBinaryPath();
-  try { fs.accessSync(binaryPath); } catch { return { error: 'binary missing' }; }
+  try { fs.accessSync(binaryPath); } catch {
+    appendErrorLog(`${new Date().toISOString()} [refresh-perf] brand=${brandName || '_global'} binary missing at ${binaryPath}\n`);
+    return { error: 'binary missing' };
+  }
 
   // Use merged brand config if brand specified (includes brand tokens)
   let configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
-  try { fs.accessSync(configPath); } catch { return { error: 'config missing' }; }
+  try { fs.accessSync(configPath); } catch {
+    appendErrorLog(`${new Date().toISOString()} [refresh-perf] brand=${brandName || '_global'} config missing at ${configPath}\n`);
+    return { error: 'config missing' };
+  }
   if (brandName) {
     const merged = brandName ? readBrandConfig(brandName) : readConfig();
     if (merged && Object.keys(merged).length > 0) {
@@ -2814,19 +3213,34 @@ ipcMain.handle('refresh-perf', async (_, brandName) => {
     }
   }
 
-  const cmdObj = { action: 'dashboard', batchCount: 1 };
+  const cmdObj = { action: 'dashboard', batchCount: requestedDays };
   if (brandName) cmdObj.brand = brandName;
   const cmd = JSON.stringify(cmdObj);
   const isTmpConfig = configPath !== path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   const { execFile } = require('child_process');
+  const { redactOutput } = require('./mcp-redact');
   return new Promise((resolve) => {
     execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
-      timeout: 60000, cwd: appRoot,
-    }, (err, stdout) => {
+      timeout: 90000, cwd: appRoot,
+    }, (err, stdout, stderr) => {
       // Delete temp config IMMEDIATELY — don't leave decrypted credentials on disk
       if (isTmpConfig) { try { fs.unlinkSync(configPath); } catch {} }
+
+      // Log any stderr output (even on success — warnings/deprecations show up there)
+      // and any error. We used to swallow these with `catch {}` on the caller side,
+      // which made "perf bar stays empty" impossible to diagnose without attaching a
+      // debugger. Redact before writing to disk so access tokens that leak into
+      // stderr (e.g. from a failed HTTP request) don't end up persisted.
+      if (err || (stderr && stderr.trim())) {
+        const sanitized = redactOutput('', stderr || '');
+        const msg = `${new Date().toISOString()} [refresh-perf] brand=${brandName || '_global'} days=${requestedDays}${err ? ' error=' + err.message : ''}${sanitized ? '\n  stderr: ' + sanitized.replace(/\n/g, '\n  ') : ''}\n`;
+        appendErrorLog(msg);
+      }
+
       if (err) return resolve({ error: err.message });
-      // Cache the timestamp per brand
+
+      // Cache the timestamp per brand — written ONLY on success so staleness
+      // checks correctly detect failed refreshes and retry.
       try {
         const resultsDir = brandName ? path.join(appRoot, 'results', brandName) : path.join(appRoot, 'results');
         fs.mkdirSync(resultsDir, { recursive: true });
@@ -3021,157 +3435,18 @@ ipcMain.handle('get-swipes', (_, brandName) => {
   } catch { return []; }
 });
 
+// Archive scanner lives in its own module (app/archive-scanner.js) so it can
+// be unit-tested in isolation. See that file for the full discovery strategy.
+const archiveScanner = require('./archive-scanner');
+
 ipcMain.handle('get-archive-items', async (_, filters = {}) => {
-  const resultsDir = path.join(appRoot, 'results');
-  if (!fs.existsSync(resultsDir)) return [];
-
-  const crypto = require('crypto');
-  const indexPath = path.join(resultsDir, 'archive-index.json');
-
-  // Build folder list from all result directories (flat + hierarchical)
-  function findRunFolders(dir, relativeTo) {
-    const folders = [];
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      for (const e of entries) {
-        if (!e.isDirectory()) continue;
-        const name = e.name;
-        if (name === 'archive' || name === '.') continue;
-        const fullPath = path.join(dir, name);
-        const relPath = path.relative(relativeTo, fullPath).replace(/\\/g, '/');
-
-        // Is this a run folder? (starts with ad_ or img_)
-        if (name.startsWith('ad_') || name.startsWith('img_')) {
-          folders.push({ name, fullPath, relPath });
-        } else {
-          // Recurse into type/month/brand hierarchy
-          folders.push(...findRunFolders(fullPath, relativeTo));
-        }
-      }
-    } catch {}
-    return folders;
-  }
-
-  const runFolders = findRunFolders(resultsDir, appRoot);
-
-  // Hash check: skip rebuild if unchanged
-  const hashInput = runFolders.map(f => {
-    try { return `${f.name}:${fs.statSync(f.fullPath).mtimeMs}`; } catch { return f.name; }
-  }).sort().join('|');
-  const currentHash = crypto.createHash('md5').update(hashInput).digest('hex');
-
-  let cached = null;
   try {
-    cached = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
-    if (cached.hash === currentHash && cached.items) {
-      // Apply filters to cached items
-      return applyArchiveFilters(cached.items, filters);
-    }
-  } catch {}
-
-  // Rebuild index
-  const items = [];
-  for (const folder of runFolders) {
-    const item = {
-      id: folder.name,
-      type: folder.name.startsWith('ad_') ? 'video' : 'image',
-      timestamp: 0,
-      brand: '',
-      product: '',
-      status: 'completed',
-      qaPassed: true,
-      model: '',
-      thumbnail: '',
-      files: [],
-      folder: folder.relPath,
-    };
-
-    // Parse timestamp from folder name: ad_YYYYMMDD_HHMMSS or img_YYYYMMDD_HHMMSS
-    const tsMatch = folder.name.match(/(\d{8})_(\d{6})$/);
-    if (tsMatch) {
-      const d = tsMatch[1], t = tsMatch[2];
-      const parsed = new Date(
-        `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}T${t.slice(0,2)}:${t.slice(2,4)}:${t.slice(4,6)}`
-      ).getTime();
-      if (!isNaN(parsed)) item.timestamp = parsed;
-    }
-
-    // Read metadata.json if present
-    const metaPath = path.join(folder.fullPath, 'metadata.json');
-    try {
-      if (fs.existsSync(metaPath)) {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        if (meta.brand) item.brand = meta.brand;
-        if (meta.product) item.product = meta.product;
-        if (meta.status) item.status = meta.status;
-        if (meta.model) item.model = meta.model;
-        if (meta.qaPassed !== undefined) item.qaPassed = meta.qaPassed;
-        if (meta.type) item.type = meta.type;
-        if (meta.tags) item.tags = meta.tags;
-        if (meta.createdAt) {
-          const createdTime = new Date(meta.createdAt).getTime();
-          if (!isNaN(createdTime)) item.timestamp = createdTime;
-        }
-      }
-    } catch (err) { console.warn(`[archive] Bad metadata in ${folder.name}:`, err.message); }
-
-    // Find thumbnail — use portrait as single source of truth (same image in card + preview)
-    try {
-      const files = fs.readdirSync(folder.fullPath);
-      item.files = files;
-      const portrait = files.find(f => f.includes('_portrait') && /\.(jpg|png|webp)$/i.test(f));
-      const anyImage = files.find(f => /\.(jpg|jpeg|png|webp)$/i.test(f) && !f.includes('_square'));
-      const thumb = portrait || anyImage;
-      if (thumb) item.thumbnail = folder.relPath + '/' + thumb;
-    } catch {}
-
-    // Skip completely empty folders
-    if (item.files.length === 0) continue;
-
-    // Skip corrupted videos — must have at least one video file > 10KB
-    if (item.type === 'video') {
-      const videoFiles = item.files.filter(f => /\.(mp4|webm|mov)$/i.test(f));
-      if (videoFiles.length === 0) continue;
-      const hasValidVideo = videoFiles.some(f => {
-        try { return fs.statSync(path.join(folder.fullPath, f)).size > 10240; } catch { return false; }
-      });
-      if (!hasValidVideo) continue;
-    }
-
-    items.push(item);
+    return archiveScanner.scanArchive(appRoot, filters || {});
+  } catch (err) {
+    console.warn('[archive] scan failed:', err.message);
+    return [];
   }
-
-  // Sort newest first
-  items.sort((a, b) => b.timestamp - a.timestamp);
-
-  // Cache index
-  try {
-    fs.writeFileSync(indexPath, JSON.stringify({ hash: currentHash, items }, null, 2));
-  } catch {}
-
-  return applyArchiveFilters(items, filters);
 });
-
-function applyArchiveFilters(items, filters = {}) {
-  let filtered = items;
-  if (filters.brand) {
-    const b = filters.brand.toLowerCase();
-    filtered = filtered.filter(i => i.brand && i.brand.toLowerCase() === b);
-  }
-  if (filters.type) {
-    filtered = filtered.filter(i => i.type === filters.type);
-  }
-  if (filters.search) {
-    const q = filters.search.toLowerCase();
-    filtered = filtered.filter(i =>
-      (i.brand && i.brand.toLowerCase().includes(q)) ||
-      (i.product && i.product.toLowerCase().includes(q)) ||
-      (i.model && i.model.toLowerCase().includes(q)) ||
-      i.id.toLowerCase().includes(q)
-    );
-  }
-  return filtered;
-}
 
 ipcMain.handle('check-tos-accepted', () => {
   const stateFile = path.join(appRoot, '.merlin-state.json');
@@ -4160,26 +4435,138 @@ ipcMain.handle('toggle-spell', (_, taskId, enabled) => {
   return { success: true, synced: false };
 });
 
-// Read brands from filesystem
+// Returns the user's live ads from every connected platform. When a brand is
+// specified, only that brand's ads are returned. When omitted, ads from all
+// brands are unioned together so the "All" view shows everything running.
+// Each entry is tagged with its brand so the renderer can show a badge and
+// filter client-side.
 ipcMain.handle('get-live-ads', (_, brandName) => {
-  if (!brandName) {
-    // Use first brand with ads-live.json
-    const brandsDir = path.join(appRoot, 'assets', 'brands');
+  const brandsDir = path.join(appRoot, 'assets', 'brands');
+  const readBrandAds = (brand) => {
+    if (!/^[a-z0-9_-]+$/i.test(brand)) return [];
+    const adsPath = path.join(brandsDir, brand, 'ads-live.json');
     try {
-      const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory() && d.name !== 'example');
-      for (const d of dirs) {
-        const adsPath = path.join(brandsDir, d.name, 'ads-live.json');
-        if (fs.existsSync(adsPath)) { brandName = d.name; break; }
-      }
-    } catch {}
-  }
-  if (!brandName) return [];
-  if (!/^[a-z0-9_-]+$/i.test(brandName)) return [];
-  const adsPath = path.join(appRoot, 'assets', 'brands', brandName, 'ads-live.json');
+      const parsed = JSON.parse(fs.readFileSync(adsPath, 'utf8'));
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(ad => ({ ...ad, brand: ad.brand || brand }));
+    } catch { return []; }
+  };
+
+  if (brandName) return readBrandAds(brandName);
+
+  // No brand → union every brand's ads-live.json
+  let all = [];
   try {
-    return JSON.parse(fs.readFileSync(adsPath, 'utf8'));
-  } catch { return []; }
+    for (const d of fs.readdirSync(brandsDir, { withFileTypes: true })) {
+      if (!d.isDirectory() || d.name === 'example') continue;
+      all = all.concat(readBrandAds(d.name));
+    }
+  } catch {}
+  // Sort most recent first — publishedAt > updatedAt > 0
+  all.sort((a, b) => {
+    const ta = Date.parse(a.updatedAt || a.publishedAt || 0) || 0;
+    const tb = Date.parse(b.updatedAt || b.publishedAt || 0) || 0;
+    return tb - ta;
+  });
+  return all;
+});
+
+// Background refresh of live ads — spawns the binary sequentially for each
+// platform that has valid credentials, so ads-live.json gets populated with
+// the user's CURRENT state on Meta/TikTok/Google/Amazon/Reddit/LinkedIn.
+// This means "Live Ads" shows real running ads, not a stale local snapshot —
+// and it includes ads the user launched outside Merlin, as long as the
+// platform's insights action reports them.
+ipcMain.handle('refresh-live-ads', async (_, brandName) => {
+  const binaryPath = getBinaryPath();
+  try { fs.accessSync(binaryPath); } catch { return { success: false, error: 'binary missing' }; }
+
+  // Merge brand config if a brand is specified so brand-scoped tokens are available
+  let configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(configPath); } catch { return { success: false, error: 'config missing' }; }
+  let isTmpConfig = false;
+  let cfg = {};
+  try {
+    cfg = brandName ? readBrandConfig(brandName) : readConfig();
+  } catch {}
+  if (brandName) {
+    if (cfg && Object.keys(cfg).length > 0) {
+      const tmpPath = path.join(os.tmpdir(), `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
+      try {
+        fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+        configPath = tmpPath;
+        isTmpConfig = true;
+      } catch (err) {
+        return { success: false, error: `cannot write tmp config: ${err.message}` };
+      }
+    }
+  }
+
+  // Decide which platforms to hit based on what's connected in the config.
+  // Each entry: [action, credential-check]. We skip any platform whose
+  // credentials are missing — no point firing a request that will 401.
+  //
+  // Ordering matters: fast campaign-listing endpoints fire first so the UI
+  // populates quickly. Reddit + LinkedIn use the campaigns endpoint (not
+  // insights) because their insights responses are account-level aggregates
+  // and don't give us per-campaign IDs to sync into ads-live.json.
+  const platformJobs = [
+    ['meta-insights',       !!cfg.metaAccessToken && !!cfg.metaAdAccountId],
+    ['tiktok-insights',     !!cfg.tiktokAccessToken && !!cfg.tiktokAdvertiserId],
+    ['google-ads-insights', !!cfg.googleAccessToken && !!cfg.googleAdsCustomerId],
+    ['amazon-ads-insights', !!cfg.amazonAccessToken && !!cfg.amazonProfileId],
+    ['reddit-campaigns',    !!cfg.redditAccessToken && !!cfg.redditAdAccountId],
+    ['linkedin-campaigns',  !!cfg.linkedinAccessToken && !!cfg.linkedinAdAccountId],
+  ];
+
+  const { execFile } = require('child_process');
+  const results = [];
+
+  try {
+    for (const [action, connected] of platformJobs) {
+      if (!connected) { results.push({ action, skipped: true, reason: 'not connected' }); continue; }
+      const cmdObj = { action, batchCount: 7 };
+      if (brandName) cmdObj.brand = brandName;
+      const cmd = JSON.stringify(cmdObj);
+      const outcome = await new Promise((resolve) => {
+        const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
+          timeout: 60000, cwd: appRoot, windowsHide: true,
+          maxBuffer: 10 * 1024 * 1024,
+        }, (err, stdout, stderr) => {
+          if (!err) return resolve({ ok: true });
+          // Capture a compact summary of the failure for the renderer —
+          // stderr trimmed to 200 chars, plus whether it was a timeout.
+          const stderrStr = String(stderr || '').trim();
+          const isTimeout = err.killed === true;
+          resolve({
+            ok: false,
+            error: isTimeout ? 'timeout after 60s' : (stderrStr.slice(0, 200) || err.message),
+          });
+        });
+        activeChildProcesses.add(child);
+        child.on('exit', () => activeChildProcesses.delete(child));
+      });
+      results.push({ action, skipped: false, ...outcome });
+    }
+  } finally {
+    // ALWAYS delete the tmp config — even if the loop throws, we must not
+    // leave decrypted credentials on disk.
+    if (isTmpConfig) { try { fs.unlinkSync(configPath); } catch {} }
+  }
+
+  if (win && !win.isDestroyed()) win.webContents.send('live-ads-changed', { brand: brandName || '' });
+
+  // Summarise: how many platforms were attempted, how many succeeded
+  const attempted = results.filter(r => !r.skipped);
+  const successes = attempted.filter(r => r.ok);
+  const failures = attempted.filter(r => !r.ok);
+  return {
+    success: true,
+    attempted: attempted.length,
+    succeeded: successes.length,
+    failed: failures.length,
+    results,
+  };
 });
 
 // Read brands from filesystem
@@ -4302,14 +4689,19 @@ ipcMain.handle('get-credits', async (_, brandName) => {
 });
 let _wisdomCache = {};  // keyed by vertical
 let _wisdomCacheTime = {};
-const WISDOM_CACHE_MS = 4 * 60 * 60 * 1000; // 4 hours
+// Cache aligned with the server-side eager aggregation throttle (10 min).
+// Previously 4 h, which masked fresh reports from the user's own binary —
+// they ran meta-insights, sent data to the wisdom API, and still saw the
+// stale pre-run numbers in the app because the cache hadn't expired.
+const WISDOM_CACHE_MS = 10 * 60 * 1000; // 10 minutes
 
-ipcMain.handle('get-wisdom', async (_, brandName) => {
+ipcMain.handle('get-wisdom', async (_, brandName, opts) => {
   if (!brandName) try { brandName = readState().activeBrand || ''; } catch {}
   const cfg = brandName ? readBrandConfig(brandName) : readConfig();
   const vertical = cfg.vertical || 'general';
 
-  if (_wisdomCache[vertical] && (Date.now() - (_wisdomCacheTime[vertical] || 0)) < WISDOM_CACHE_MS) {
+  const force = opts && opts.force === true;
+  if (!force && _wisdomCache[vertical] && (Date.now() - (_wisdomCacheTime[vertical] || 0)) < WISDOM_CACHE_MS) {
     return _wisdomCache[vertical];
   }
   try {
@@ -4318,6 +4710,24 @@ ipcMain.handle('get-wisdom', async (_, brandName) => {
     _wisdomCacheTime[vertical] = Date.now();
     return _wisdomCache[vertical];
   } catch { return _wisdomCache[vertical] || null; }
+});
+
+// Force-invalidate the wisdom cache for a specific vertical (or all).
+// Called from the binary hook after any *-insights action reports fresh data,
+// so the next get-wisdom query bypasses the in-memory cache and pulls the
+// freshly-aggregated numbers straight from the API.
+function invalidateWisdomCache(vertical) {
+  if (vertical) {
+    delete _wisdomCache[vertical];
+    delete _wisdomCacheTime[vertical];
+  } else {
+    _wisdomCache = {};
+    _wisdomCacheTime = {};
+  }
+}
+ipcMain.handle('invalidate-wisdom-cache', (_, vertical) => {
+  invalidateWisdomCache(vertical);
+  return { ok: true };
 });
 
 ipcMain.handle('win-minimize', () => { if (win) win.minimize(); });
@@ -4363,7 +4773,17 @@ function hashKey(key) {
   return crypto.createHmac('sha256', 'merlin-salt-2026').update(key).digest('hex').slice(0, 16);
 }
 
-// Machine fingerprint for Stripe checkout + license polling (persistent)
+// Machine fingerprint for Stripe checkout + license polling (persistent).
+//
+// P1-8: the seed is DETERMINISTIC so that if the user wipes their
+// workspace (or reinstalls), they land on the same machineId and their
+// paid subscription is automatically recovered from the Cloudflare KV
+// license record via reconcileSubscriptionWithServer(). The old code
+// included Date.now() and generated a new ID on every fresh install,
+// orphaning the paid subscription in KV forever.
+//
+// The on-disk file still wins if present, so existing users keep their
+// old non-deterministic ID and nothing breaks for them.
 function getMachineId() {
   const machineIdFile = path.join(appRoot, '.merlin-machine-id');
   try {
@@ -4372,7 +4792,7 @@ function getMachineId() {
   } catch {}
 
   const crypto = require('crypto');
-  const raw = `${os.hostname()}|${os.userInfo().username}|${os.platform()}|${os.arch()}|${Date.now()}`;
+  const raw = `${os.hostname()}|${os.userInfo().username}|${os.platform()}|${os.arch()}`;
   const id = crypto.createHash('sha256').update(raw).digest('hex');
   try {
     fs.mkdirSync(path.dirname(machineIdFile), { recursive: true });
@@ -4381,8 +4801,23 @@ function getMachineId() {
   return id;
 }
 
+// Read the applied referral attribution (the referrer's code the current
+// user entered into the UI). Used by the Stripe checkout URL builder and
+// by getReferralInfo() so the UI can reflect the applied state.
+function getAppliedAttribution() {
+  try {
+    const attrFile = path.join(appRoot, '.merlin-attribution');
+    if (fs.existsSync(attrFile)) {
+      const data = JSON.parse(fs.readFileSync(attrFile, 'utf8'));
+      if (data && typeof data === 'object') return data;
+    }
+  } catch {}
+  return null;
+}
+
 function getSubscriptionState() {
   const subFile = path.join(appRoot, '.merlin-subscription');
+  let recoveryNeeded = false;
   try {
     if (fs.existsSync(subFile)) {
       let raw = readSecureFile(subFile);
@@ -4392,11 +4827,21 @@ function getSubscriptionState() {
       }
       if (raw) {
         const data = JSON.parse(raw);
-        if (data.subscribed) return { subscribed: true, tier: data.tier || 'pro', key: data.key || '' };
+        if (data.subscribed) {
+          return {
+            subscribed: true,
+            tier: data.tier || 'pro',
+            key: data.key || '',
+            status: data.status || 'active',
+            email: data.email || '',
+            gracePeriodUntil: data.gracePeriodUntil || null,
+            currentPeriodEnd: data.currentPeriodEnd || null,
+          };
+        }
       } else {
-        // File exists but can't be read (keychain reset, machine migration)
-        // Check with server using machine ID as recovery
-        return { subscribed: false, daysLeft: 7, recoveryNeeded: true };
+        // File exists but can't be read (keychain reset, migration).
+        // Flag for reconciliation so the UI can fall back to the server.
+        recoveryNeeded = true;
       }
     }
   } catch {}
@@ -4416,10 +4861,128 @@ function getSubscriptionState() {
   bonusDays = Math.min(Math.max(bonusDays, 0), 21);
   const totalTrialDays = 7 + bonusDays;
   const daysLeft = Math.max(0, totalTrialDays - Math.floor((Date.now() - trialStart) / (1000 * 60 * 60 * 24)));
-  return { subscribed: false, daysLeft, bonusDays, trialStart, expired: daysLeft === 0 };
+  return {
+    subscribed: false,
+    daysLeft,
+    bonusDays,
+    trialStart,
+    expired: daysLeft === 0,
+    recoveryNeeded,
+  };
+}
+
+// Persist the server's view of the subscription to the encrypted local
+// file. Called by the activation poller AND by reconcileSubscriptionWithServer.
+function persistSubscription(data) {
+  const subFile = path.join(appRoot, '.merlin-subscription');
+  const payload = JSON.stringify({
+    subscribed: true,
+    tier: data.tier || 'pro',
+    status: data.status || 'active',
+    email: data.email || '',
+    gracePeriodUntil: data.gracePeriodUntil || null,
+    currentPeriodEnd: data.currentPeriodEnd || null,
+    activatedAt: Date.now(),
+    via: data.via || 'stripe',
+  });
+  try {
+    writeSecureFile(subFile, payload);
+  } catch (err) {
+    // safeStorage write failed — fall back to plaintext so recovery still works.
+    try { fs.writeFileSync(subFile, payload); } catch {}
+  }
+}
+
+// Clear the local subscription file (called on cancel/refund).
+function clearSubscription() {
+  const subFile = path.join(appRoot, '.merlin-subscription');
+  try { fs.unlinkSync(subFile); } catch {}
+}
+
+// Throttle server reconciliation so we never hammer /api/check-license.
+let _lastReconcileAt = 0;
+
+// Reconcile the local subscription state with the server. This is the
+// backbone of P1-6, P1-7 and the P1-8 recovery story:
+//   - At launch, if the local file says "trial" or is unreadable, we ask
+//     the server whether the same machineId has an active license. If yes,
+//     we write the file and unlock Pro.
+//   - After a cancellation webhook fires, the server returns
+//     {activated:false, canceled:true} and we clear the local file.
+//   - If the server says the license is in a grace period, we keep Pro
+//     active but the UI can surface a "payment failed" banner.
+//
+// Opts:
+//   force: skip the throttle window
+//   reason: free-form string for logging
+async function reconcileSubscriptionWithServer(opts = {}) {
+  const now = Date.now();
+  if (!opts.force && now - _lastReconcileAt < 60 * 1000) {
+    return { reconciled: false, reason: 'throttled' };
+  }
+  _lastReconcileAt = now;
+
+  const machineId = getMachineId();
+  try {
+    const raw = await httpsGet(`https://merlingotme.com/api/check-license?id=${machineId}`);
+    let data;
+    try { data = JSON.parse(raw.toString()); } catch { return { reconciled: false, reason: 'parse' }; }
+
+    const current = getSubscriptionState();
+
+    if (data.activated === true) {
+      if (!current.subscribed) {
+        persistSubscription({
+          tier: data.tier || 'pro',
+          status: data.status || 'active',
+          email: data.email || '',
+          gracePeriodUntil: data.gracePeriodUntil || null,
+          currentPeriodEnd: data.currentPeriodEnd || null,
+          via: opts.via || 'reconcile',
+        });
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('subscription-activated', { tier: data.tier || 'pro' });
+        }
+        return { reconciled: true, subscribed: true, changed: true };
+      }
+      return { reconciled: true, subscribed: true, changed: false };
+    }
+
+    // Server says not activated. Two cases:
+    //
+    //  (a) The server returns a `status` field — the license record
+    //      EXISTS and has been explicitly deactivated (canceled, refunded,
+    //      past_due with 3 failed retries). In that case we clear local
+    //      Pro state so the UI matches reality.
+    //
+    //  (b) No `status` field — the KV record doesn't exist on the server.
+    //      This could mean the user activated via a local license key and
+    //      never hit Stripe at all, or the record was purged. Preserve
+    //      local state rather than downgrading a legit key-activated user.
+    if (current.subscribed && data.status && data.status !== 'active' && data.status !== 'trialing') {
+      clearSubscription();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('subscription-canceled', { reason: data.status });
+      }
+      return { reconciled: true, subscribed: false, changed: true };
+    }
+    return { reconciled: true, subscribed: !!current.subscribed, changed: false };
+  } catch (err) {
+    // Network failure — preserve local state and let the user keep using
+    // the app. We'll retry on the next throttle window.
+    return { reconciled: false, reason: 'network', error: err?.message || String(err) };
+  }
 }
 
 ipcMain.handle('get-subscription', () => getSubscriptionState());
+ipcMain.handle('check-subscription-status', async () => {
+  // User-triggered path uses the 60-second throttle to avoid hammering
+  // the server if the button is clicked repeatedly. Automated callers
+  // (launch reconcile, hourly reconcile, activation poller) pass
+  // force:true to bypass the throttle.
+  await reconcileSubscriptionWithServer();
+  return getSubscriptionState();
+});
 
 ipcMain.handle('activate-key', (_, key) => {
   if (!key || typeof key !== 'string') return { success: false, error: 'Invalid key' };
@@ -4452,7 +5015,45 @@ ipcMain.handle('activate-key', (_, key) => {
   return { success: false, error: 'Invalid key. Check your email or visit merlingotme.com' };
 });
 
+// Stripe payment link ID — this is the PRODUCTION Payment Link, not the
+// Customer Portal login ID. The old code re-used this ID in the billing
+// portal URL, which resolved to a 404 (P1-1). The billing portal now
+// hits /api/portal and receives a one-time Stripe-generated session URL.
+const STRIPE_CHECKOUT_ID = '5kQfZggqt73f7MMca85wI00';
+const STRIPE_CHECKOUT_URL = `https://buy.stripe.com/${STRIPE_CHECKOUT_ID}`;
+
 let _activationPoller = null;
+let _activationPollerMachineId = null;
+
+function startActivationPoller(machineId) {
+  // P1-6: extend window from 10 to 30 minutes and make the poller
+  // idempotent so the renderer can restart it via check-subscription-status.
+  if (_activationPoller) {
+    clearInterval(_activationPoller);
+    _activationPoller = null;
+  }
+  _activationPollerMachineId = machineId;
+  let attempts = 0;
+  const MAX_ATTEMPTS = 180; // 180 × 10s = 30 minutes
+  _activationPoller = setInterval(async () => {
+    attempts++;
+    if (attempts > MAX_ATTEMPTS) {
+      clearInterval(_activationPoller);
+      _activationPoller = null;
+      _activationPollerMachineId = null;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('activation-timeout');
+      }
+      return;
+    }
+    const result = await reconcileSubscriptionWithServer({ force: true, via: 'stripe' });
+    if (result.reconciled && result.subscribed) {
+      clearInterval(_activationPoller);
+      _activationPoller = null;
+      _activationPollerMachineId = null;
+    }
+  }, 10000);
+}
 
 ipcMain.handle('open-subscribe', async () => {
   const machineId = getMachineId();
@@ -4466,85 +5067,180 @@ ipcMain.handle('open-subscribe', async () => {
   } catch {}
   // Append attribution if present
   let attrSuffix = '';
-  try {
-    const attrFile = path.join(appRoot, '.merlin-attribution');
-    if (fs.existsSync(attrFile)) {
-      const attr = JSON.parse(fs.readFileSync(attrFile, 'utf8'));
-      const safeCode = encodeURIComponent(attr.code || '');
-      if (attr.type === 'affiliate') attrSuffix = `__aff_${safeCode}`;
-      else if (attr.type === 'referral') attrSuffix = `__ref_${safeCode}`;
-    }
-  } catch {}
-  shell.openExternal(`https://buy.stripe.com/5kQfZggqt73f7MMca85wI00?client_reference_id=${machineId}${attrSuffix}${emailParam}`);
+  const attr = getAppliedAttribution();
+  if (attr && attr.code && /^[0-9a-z-]{1,32}$/.test(String(attr.code))) {
+    const safeCode = encodeURIComponent(attr.code);
+    if (attr.type === 'affiliate') attrSuffix = `__aff_${safeCode}`;
+    else if (attr.type === 'referral') attrSuffix = `__ref_${safeCode}`;
+  }
+  shell.openExternal(
+    `${STRIPE_CHECKOUT_URL}?client_reference_id=${machineId}${attrSuffix}${emailParam}`,
+  );
 
-  // Poll for activation every 10s for 10 minutes after opening checkout
-  if (_activationPoller) clearInterval(_activationPoller);
-  let attempts = 0;
-  _activationPoller = setInterval(async () => {
-    attempts++;
-    if (attempts > 60) { clearInterval(_activationPoller); _activationPoller = null; return; }
-
-    try {
-      const raw = await httpsGet(`https://merlingotme.com/api/check-license?id=${machineId}`);
-      const data = JSON.parse(raw.toString());
-      if (data.activated) {
-        clearInterval(_activationPoller);
-        _activationPoller = null;
-        // Write encrypted subscription file
-        const subFile = path.join(appRoot, '.merlin-subscription');
-        writeSecureFile(subFile, JSON.stringify({ subscribed: true, tier: 'pro', activatedAt: Date.now(), via: 'stripe' }));
-        // Notify renderer
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('subscription-activated', { tier: 'pro' });
-        }
-      }
-    } catch {}
-  }, 10000);
+  startActivationPoller(machineId);
+  return { ok: true };
 });
 
-ipcMain.handle('open-manage', () => {
-  shell.openExternal('https://billing.stripe.com/p/login/5kQfZggqt73f7MMca85wI00');
-});
-
-// ── Referral System ────────────────────────────────────────
-ipcMain.handle('get-referral-info', async () => {
-  try {
-    const machineId = getMachineId();
-    const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${machineId}`);
-    return JSON.parse(raw.toString());
-  } catch { return { referralCode: getMachineId().slice(0, 8), referralCount: 0, trialExtensionDays: 0 }; }
-});
-
-ipcMain.handle('apply-referral-code', async (_, code) => {
-  if (!code || typeof code !== 'string') return { success: false, error: 'Invalid code' };
-  const trimmed = code.trim().toLowerCase().slice(0, 8);
-  if (!/^[0-9a-f]{8}$/.test(trimmed)) return { success: false, error: 'Invalid referral code format' };
-
+// P1-1: Billing portal URL is generated server-side via /api/portal,
+// which creates a per-customer Stripe Customer Portal session. The old
+// code opened a hard-coded URL that reused the payment link ID and
+// resolved to a 404 for every existing customer.
+ipcMain.handle('open-manage', async () => {
   const machineId = getMachineId();
   try {
     const https = require('https');
-    const payload = JSON.stringify({ referrer: trimmed, referred: machineId });
+    const payload = JSON.stringify({ machineId });
     const raw = await new Promise((resolve, reject) => {
-      const req = https.request('https://merlingotme.com/api/register-referral', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 10000,
+      const req = https.request('https://merlingotme.com/api/portal', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        timeout: 10000,
       }, (res) => {
-        let body = []; res.on('data', c => body.push(c)); res.on('end', () => resolve(Buffer.concat(body)));
+        let body = [];
+        res.on('data', c => body.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(body) }));
       });
       req.on('error', reject);
       req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
       req.write(payload);
       req.end();
     });
-    const result = JSON.parse(raw.toString());
-    if (result.ok) {
-      // Save attribution for Stripe checkout
-      const attrFile = path.join(appRoot, '.merlin-attribution');
-      fs.writeFileSync(attrFile, JSON.stringify({ type: 'referral', code: trimmed }));
-      return { success: true, bonus: result.bonus };
+
+    let data = {};
+    try { data = JSON.parse(raw.body.toString()); } catch {}
+
+    if (raw.status >= 200 && raw.status < 300 && data.url) {
+      shell.openExternal(data.url);
+      return { ok: true };
     }
-    return { success: false, error: result.error || 'Could not register referral' };
+
+    // Fall back to the homepage with a helpful hint rather than opening a
+    // broken URL — the user will see "no subscription on file" or similar
+    // and know to contact support.
+    const errMsg = data.error || `Server returned ${raw.status}`;
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('inline-message', {
+        kind: 'error',
+        text: `Could not open billing portal: ${errMsg}. Email support@merlingotme.com if this persists.`,
+      });
+    }
+    return { ok: false, error: errMsg };
   } catch (err) {
-    return { success: false, error: 'Network error — try again' };
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('inline-message', {
+        kind: 'error',
+        text: `Could not reach billing portal (${err?.message || 'network error'}). Check your connection and retry.`,
+      });
+    }
+    return { ok: false, error: err?.message || 'network error' };
+  }
+});
+
+// ── Referral System ────────────────────────────────────────
+ipcMain.handle('get-referral-info', async () => {
+  const machineId = getMachineId();
+  const attribution = getAppliedAttribution();
+  const appliedReferralCode = attribution && attribution.type === 'referral' ? attribution.code : null;
+  try {
+    const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${machineId}`);
+    const info = JSON.parse(raw.toString());
+    return {
+      referralCode: info.referralCode || machineId.slice(0, 8),
+      referralCount: info.referralCount || 0,
+      subscribedCount: info.subscribedCount || 0,
+      trialExtensionDays: info.trialExtensionDays || 0,
+      referredBy: info.referredBy || null,
+      appliedReferralCode,
+    };
+  } catch {
+    return {
+      referralCode: machineId.slice(0, 8),
+      referralCount: 0,
+      subscribedCount: 0,
+      trialExtensionDays: 0,
+      referredBy: null,
+      appliedReferralCode,
+    };
+  }
+});
+
+ipcMain.handle('apply-referral-code', async (_, code) => {
+  if (!code || typeof code !== 'string') return { success: false, error: 'Invalid code' };
+  const trimmed = code.trim().toLowerCase().slice(0, 8);
+  if (!/^[0-9a-f]{8}$/.test(trimmed)) {
+    return { success: false, error: 'Invalid code format — should be 8 characters (0-9 and a-f)' };
+  }
+
+  // Block applying a code you've already applied (idempotent error).
+  const existing = getAppliedAttribution();
+  if (existing && existing.type === 'referral' && existing.code === trimmed) {
+    return { success: true, bonus: 0, alreadyApplied: true };
+  }
+
+  const machineId = getMachineId();
+  // Refuse to apply your own code locally — saves a round trip and gives
+  // a clearer error than the server's "cannot self-refer".
+  if (trimmed === machineId.slice(0, 8)) {
+    return { success: false, error: "That's your own referral code — share it with a friend" };
+  }
+
+  try {
+    const https = require('https');
+    const payload = JSON.stringify({ referrer: trimmed, referred: machineId });
+    const raw = await new Promise((resolve, reject) => {
+      const req = https.request('https://merlingotme.com/api/register-referral', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload),
+        },
+        timeout: 10000,
+      }, (res) => {
+        let body = [];
+        res.on('data', c => body.push(c));
+        res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(body) }));
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+      req.write(payload);
+      req.end();
+    });
+
+    let result = {};
+    try { result = JSON.parse(raw.body.toString()); } catch {}
+
+    if (raw.status === 200 && result.ok) {
+      // Save attribution for the next Stripe checkout so the referrer gets
+      // credit at the paid conversion event.
+      try {
+        const attrFile = path.join(appRoot, '.merlin-attribution');
+        fs.writeFileSync(attrFile, JSON.stringify({ type: 'referral', code: trimmed, appliedAt: Date.now() }));
+      } catch {}
+      // R2-1: immediately refresh the local bonus cache so the UI counter
+      // updates without waiting for the 1-hour poll.
+      try {
+        const check = await httpsGet(`https://merlingotme.com/api/check-referral?id=${machineId}`);
+        const data = JSON.parse(check.toString());
+        if (Number.isFinite(data.trialExtensionDays) && data.trialExtensionDays >= 0) {
+          fs.writeFileSync(path.join(appRoot, '.merlin-referral-bonus'), String(data.trialExtensionDays));
+        }
+      } catch {}
+      return { success: true, bonus: result.bonus || 0 };
+    }
+
+    // Friendly error messages for known server responses
+    const serverError = result.error || '';
+    if (raw.status === 404) return { success: false, error: 'No user found with that referral code' };
+    if (raw.status === 400 && serverError.includes('self-refer')) {
+      return { success: false, error: "That's your own code — share it with a friend" };
+    }
+    if (raw.status === 429) return { success: false, error: 'Too many tries — wait a minute and retry' };
+    return { success: false, error: serverError || 'Could not register referral' };
+  } catch (err) {
+    return { success: false, error: 'Network error — check your connection and try again' };
   }
 });
 
@@ -4714,6 +5410,162 @@ function isNewerVersion(a, b) {
 // install location. This runs only when the install copy is missing AND
 // the workspace copy is missing. Writes to the workspace because the
 // install location may be read-only (Mac) or AV-watched.
+// Minimum binary version this Electron release requires. If the user's
+// installed engine is below this, refresh-perf produces dashboard files in
+// the WRONG directory (.claude/tools/results/ instead of results/{brand}/)
+// because the cwd-aware outputDir fix shipped in 1.0.7. Without an enforced
+// floor, a user on 1.0.6 who installs the new Electron would click "run a
+// check now" and see no improvement — making the fix look broken.
+//
+// This constant lives in code rather than version.json because the Electron
+// app and the engine binary are separate artifacts that can be on different
+// versions briefly during rollout, and we want the app to know its own hard
+// dependency without reading a file that's updatable.
+const MIN_BINARY_VERSION = '1.0.7';
+
+// Compare two dotted-number version strings (e.g. "1.0.7" vs "1.0.6").
+// Returns -1, 0, or 1. Non-numeric or missing fields compare as 0.
+function compareVersions(a, b) {
+  const pa = String(a || '').split('.').map(n => parseInt(n, 10) || 0);
+  const pb = String(b || '').split('.').map(n => parseInt(n, 10) || 0);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x < y) return -1;
+    if (x > y) return 1;
+  }
+  return 0;
+}
+
+// Shell out to the binary's `--version` flag and parse the version string.
+// The binary prints "Merlin Pipeline vX.Y.Z" to stdout. Returns null on any
+// failure (binary missing, bad exit, unparseable output).
+//
+// NOTE: we use the `--version` FLAG, not `--cmd '{"action":"version"}'`,
+// because the flag short-circuits before loadConfig runs. The cmd path
+// requires a valid config file on disk, which we can't assume during the
+// version check — especially during forced-update recovery after a failed
+// install where config may be missing or corrupted.
+async function getBinaryVersion() {
+  const binaryPath = getBinaryPath();
+  try { fs.accessSync(binaryPath); } catch { return null; }
+  const { execFile } = require('child_process');
+  return new Promise((resolve) => {
+    execFile(binaryPath, ['--version'], { timeout: 10000 }, (err, stdout) => {
+      if (err || !stdout) return resolve(null);
+      const m = String(stdout).match(/Merlin Pipeline v(\d+\.\d+\.\d+)/);
+      resolve(m ? m[1] : null);
+    });
+  });
+}
+
+// Tracks whether the binary is below MIN_BINARY_VERSION after the startup
+// check. Consulted by refresh-perf and the perf-bar empty-state button so
+// the user sees a clear "engine updating" message instead of a confusing
+// failure when the fix can't apply yet.
+let _binaryTooOld = false;
+function isBinaryTooOld() { return _binaryTooOld; }
+
+// Promise that resolves once the startup binary ensure+version check has
+// completed. refresh-perf and MCP runBinary await this to prevent a request
+// that slips into the startup window (before the check runs) from executing
+// against a stale binary that writes dashboards to the wrong directory.
+//
+// kickoffStartupChecks schedules the work behind a setTimeout so window
+// creation isn't blocked, but returns the promise immediately so callers
+// can await it instead of racing it.
+//
+// Safety: the whole body is wrapped so the promise is GUARANTEED to resolve.
+// If it didn't, every subsequent refresh-perf call would hang forever
+// (deadlock). A failed startup check must still resolve the promise — with
+// _binaryTooOld=true — so downstream callers see the refusal message
+// instead of silent infinite-await.
+let _startupChecksPromise = null;
+function kickoffStartupChecks(onProgress) {
+  if (_startupChecksPromise) return _startupChecksPromise;
+  _startupChecksPromise = new Promise((resolve) => {
+    const finish = (result) => {
+      try { resolve(result); } catch {}
+    };
+    // Hard safety net: if for any reason the async body never resolves
+    // within 5 minutes, force-resolve so we don't deadlock downstream
+    // callers. 5 minutes is generous — ensureBinary is 30-60s worst case,
+    // the version check is <1s.
+    const deadlineTimer = setTimeout(() => {
+      _binaryTooOld = true;
+      finish({ ok: false, error: 'startup check deadline exceeded' });
+    }, 5 * 60 * 1000);
+
+    setTimeout(async () => {
+      try {
+        try {
+          await ensureBinary({ onProgress });
+        } catch (err) {
+          console.error('[ensureBinary]', err.message);
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('engine-status', `Engine download failed: ${err.message}`);
+          }
+          // Swallow — the version check below still runs and sets _binaryTooOld
+          // if we can't read a version, which is the correct refusal state.
+        }
+        let result;
+        try {
+          result = await ensureBinaryMinVersion(onProgress);
+          if (!result.ok && win && !win.isDestroyed()) {
+            win.webContents.send('engine-status', `Engine is out of date (need ≥${MIN_BINARY_VERSION}). Performance tracking is disabled until update completes.`);
+          }
+        } catch (err) {
+          console.error('[ensureBinaryMinVersion]', err.message);
+          _binaryTooOld = true;
+          result = { ok: false, error: err.message };
+        }
+        clearTimeout(deadlineTimer);
+        finish(result);
+      } catch (err) {
+        // Last-resort catch — nothing above should throw since each step
+        // has its own try/catch, but belt-and-braces to prevent deadlock.
+        console.error('[startup-checks] unexpected error:', err && err.message);
+        _binaryTooOld = true;
+        clearTimeout(deadlineTimer);
+        finish({ ok: false, error: err && err.message });
+      }
+    }, 1500);
+  });
+  return _startupChecksPromise;
+}
+
+// Verify the installed binary is new enough. If not, force-download from
+// GitHub releases (ensureBinary with force:true). Sets _binaryTooOld if the
+// update fails so downstream code can react.
+async function ensureBinaryMinVersion(onProgress = null) {
+  const current = await getBinaryVersion();
+  if (current && compareVersions(current, MIN_BINARY_VERSION) >= 0) {
+    _binaryTooOld = false;
+    return { ok: true, version: current };
+  }
+
+  console.log(`[engine] current=${current || 'unknown'} requires=>=${MIN_BINARY_VERSION} — updating`);
+  if (onProgress) onProgress(`Updating engine to v${MIN_BINARY_VERSION}...`);
+  try {
+    await ensureBinary({ force: true, onProgress });
+  } catch (err) {
+    console.error('[engine] forced update failed:', err.message);
+    _binaryTooOld = true;
+    appendErrorLog(`${new Date().toISOString()} [binary-version] current=${current || 'unknown'} required=${MIN_BINARY_VERSION} update failed: ${err.message}\n`);
+    return { ok: false, version: current, error: err.message };
+  }
+
+  // Re-check after download
+  const updated = await getBinaryVersion();
+  if (updated && compareVersions(updated, MIN_BINARY_VERSION) >= 0) {
+    _binaryTooOld = false;
+    return { ok: true, version: updated };
+  }
+  _binaryTooOld = true;
+  appendErrorLog(`${new Date().toISOString()} [binary-version] after forced update: current=${updated || 'unknown'} still below ${MIN_BINARY_VERSION}\n`);
+  return { ok: false, version: updated };
+}
+
 async function ensureBinary(opts = {}) {
   const { force = false, onProgress = null } = opts;
 
@@ -5029,30 +5881,29 @@ app.whenReady().then(async () => {
   try { migratePerBrand(); } catch (err) { console.error('[migration]', err.message); }
   // Migrate plaintext tokens to vault (runs once, idempotent)
   try { migrateTokensToVault(); } catch (err) { console.error('[vault-migration]', err.message); }
+  // Rewrite legacy SKILL.md files to the brand-locked v2 format so scheduled
+  // tasks pass `brand` on every MCP call (runs once, idempotent, only touches
+  // files that match the legacy template exactly — hand edits are preserved)
+  try { migrateLegacySkills(); } catch (err) { console.error('[skill-migration]', err.message); }
+  // Move orphaned dashboard files from the legacy .claude/tools/results/
+  // location into results/_legacy/ (runs once, idempotent)
+  try { migrateLegacyResultsDir(); } catch (err) { console.error('[legacy-results-migration]', err.message); }
+
+  // Kick off the engine ensure + version check BEFORE createWindow. This
+  // sets _startupChecksPromise so the very first refresh-perf IPC from the
+  // renderer (which could fire as soon as the window's HTML loads) can
+  // await it instead of racing past it onto a stale binary. The onProgress
+  // callback is safe to invoke before `win` exists — it null-checks — so
+  // any engine-status messages produced before window creation are quietly
+  // dropped (acceptable: they're toast notifications, not load-bearing).
+  kickoffStartupChecks((msg) => {
+    if (win && !win.isDestroyed()) win.webContents.send('engine-status', msg);
+  });
 
   await createWindow();
 
   // Bootstrap workspace AFTER window is visible (prevents "Not Responding" on first launch)
   setTimeout(bootstrapWorkspace, 500);
-
-  // Ensure the Merlin engine binary is present. It's not bundled with the
-  // Electron app (intentionally — kept out of the 99MB installer), so first
-  // run must download it from GitHub releases. Runs in background so the
-  // window stays responsive.
-  setTimeout(async () => {
-    try {
-      await ensureBinary({
-        onProgress: (msg) => {
-          if (win && !win.isDestroyed()) win.webContents.send('engine-status', msg);
-        },
-      });
-    } catch (err) {
-      console.error('[ensureBinary]', err.message);
-      if (win && !win.isDestroyed()) {
-        win.webContents.send('engine-status', `Engine download failed: ${err.message}`);
-      }
-    }
-  }, 1500);
 
   // macOS: Cmd+Q should actually quit (set forceQuit so close handler allows it)
   app.on('before-quit', () => {
@@ -5119,21 +5970,49 @@ app.whenReady().then(async () => {
       // Check for bonus days
       const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${machineId}`);
       const data = JSON.parse(raw.toString());
-      if (data.trialExtensionDays > 0) {
+      if (Number.isFinite(data.trialExtensionDays) && data.trialExtensionDays >= 0) {
         fs.writeFileSync(path.join(appRoot, '.merlin-referral-bonus'), String(data.trialExtensionDays));
       }
     } catch {}
   }, 8000);
 
-  // Hourly referral bonus refresh
+  // P1-6 / P1-7: reconcile subscription state with the server at launch so
+  // users who paid on another install (or whose local file was wiped) get
+  // their Pro status restored automatically. Also catches cancellations
+  // that happened while the app was closed.
+  setTimeout(() => {
+    reconcileSubscriptionWithServer({ force: true, via: 'launch' }).catch(() => {});
+  }, 4000);
+
+  // P1-5 support: persist the machine ID into merlin-config.json so the
+  // Go binary's `subscribe` CLI action can use it as client_reference_id.
+  // Without this, a user who runs Merlin.exe subscribe standalone would
+  // complete checkout but the webhook would reject with "missing
+  // client_reference_id" and the license would never get written.
+  setTimeout(() => {
+    try {
+      const cfg = readConfig();
+      const id = getMachineId();
+      if (id && cfg.machineId !== id) {
+        cfg.machineId = id;
+        writeConfig(cfg);
+      }
+    } catch {}
+  }, 2000);
+
+  // Hourly referral bonus refresh + subscription reconcile. The combined
+  // tick means a canceled subscription is reflected in the app at most an
+  // hour after the webhook fires, and a newly-subscribed device flips to
+  // Pro without needing a relaunch.
   setInterval(async () => {
     try {
       const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${getMachineId()}`);
       const data = JSON.parse(raw.toString());
-      if (data.trialExtensionDays > 0) {
+      if (Number.isFinite(data.trialExtensionDays) && data.trialExtensionDays >= 0) {
         fs.writeFileSync(path.join(appRoot, '.merlin-referral-bonus'), String(data.trialExtensionDays));
       }
     } catch {}
+    reconcileSubscriptionWithServer({ force: true, via: 'hourly' }).catch(() => {});
   }, 60 * 60 * 1000);
 });
 app.on('window-all-closed', () => { if (!tray) app.quit(); /* tray keeps app alive; without tray, quit normally */ });

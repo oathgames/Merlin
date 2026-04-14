@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('merlin', {
   openSubscribe: () => ipcRenderer.invoke('open-subscribe'),
   openManage: () => ipcRenderer.invoke('open-manage'),
   activateKey: (key) => ipcRenderer.invoke('activate-key', assertStr(key, 200)),
+  checkSubscriptionStatus: () => ipcRenderer.invoke('check-subscription-status'),
 
   // Setup + Install
   checkSetup: (force) => ipcRenderer.invoke('check-setup', !!force),
@@ -91,13 +92,14 @@ contextBridge.exposeInMainWorld('merlin', {
 
   // Performance + Activity
   getPerfSummary: (days, brand) => ipcRenderer.invoke('get-perf-summary', assertInt(days, 7), assertBrand(brand)),
-  refreshPerf: (brand) => ipcRenderer.invoke('refresh-perf', assertBrand(brand)),
+  refreshPerf: (brand, days) => ipcRenderer.invoke('refresh-perf', assertBrand(brand), Number.isInteger(days) && days > 0 && days <= 365 ? days : undefined),
   getPerfUpdated: (brand) => ipcRenderer.invoke('get-perf-updated', assertBrand(brand)),
   getActivityFeed: (brand, limit) => ipcRenderer.invoke('get-activity-feed', assertBrand(brand), assertInt(limit, 50)),
 
   // Archive
   getArchiveItems: (filters) => ipcRenderer.invoke('get-archive-items', assertObj(filters)),
   getLiveAds: (brand) => ipcRenderer.invoke('get-live-ads', assertBrand(brand)),
+  refreshLiveAds: (brand) => ipcRenderer.invoke('refresh-live-ads', assertBrand(brand)),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', assertStr(folderPath, 500)),
   copyImage: (filePath) => ipcRenderer.invoke('copy-image', assertStr(filePath, 500)),
   deleteFile: (folderPath) => ipcRenderer.invoke('delete-file', assertStr(folderPath, 500)),
@@ -181,6 +183,14 @@ contextBridge.exposeInMainWorld('merlin', {
     const h = (_, data) => cb(data); ipcRenderer.on('subscription-activated', h);
     return () => ipcRenderer.removeListener('subscription-activated', h);
   },
+  onSubscriptionCanceled: (cb) => {
+    const h = (_, data) => cb(data || {}); ipcRenderer.on('subscription-canceled', h);
+    return () => ipcRenderer.removeListener('subscription-canceled', h);
+  },
+  onActivationTimeout: (cb) => {
+    const h = () => cb(); ipcRenderer.on('activation-timeout', h);
+    return () => ipcRenderer.removeListener('activation-timeout', h);
+  },
   onSpellActivity: (cb) => {
     const h = (_, data) => cb(data); ipcRenderer.on('spell-activity', h);
     return () => ipcRenderer.removeListener('spell-activity', h);
@@ -192,6 +202,10 @@ contextBridge.exposeInMainWorld('merlin', {
   onPerfDataChanged: (cb) => {
     const h = (_, data) => cb(data); ipcRenderer.on('perf-data-changed', h);
     return () => ipcRenderer.removeListener('perf-data-changed', h);
+  },
+  onLiveAdsChanged: (cb) => {
+    const h = (_, data) => cb(data); ipcRenderer.on('live-ads-changed', h);
+    return () => ipcRenderer.removeListener('live-ads-changed', h);
   },
   onUpdateAvailable: (cb) => {
     const h = (_, info) => cb(info); ipcRenderer.on('update-available', h);
@@ -249,4 +263,12 @@ contextBridge.exposeInMainWorld('merlin', {
   submitAuthCode: (code) => ipcRenderer.send('auth-code-submit', assertStr(code, 500)),
   submitAuthCodeWithResult: (code) => ipcRenderer.invoke('auth-code-submit-invoke', assertStr(code, 500)),
   openExternal: (url) => ipcRenderer.invoke('open-external-url', assertStr(url, 2000)),
+
+  // Voice input: webm audio bytes → transcript via bundled whisper.cpp
+  transcribeAudio: (bytes) => {
+    if (!Array.isArray(bytes)) throw new Error('invalid audio bytes');
+    if (bytes.length === 0) throw new Error('empty audio');
+    if (bytes.length > 50 * 1024 * 1024) throw new Error('audio too large');
+    return ipcRenderer.invoke('transcribe-audio', bytes);
+  },
 });

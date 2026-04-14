@@ -87,6 +87,54 @@ function validateBudget(ctx, args, platform) {
 	return null;
 }
 
+// ── Brand enforcement ────────────────────────────────────────
+//
+// Multi-brand users store tokens in brand-scoped configs (.merlin-config-{brand}.json).
+// If Claude calls a brand-scoped action (e.g. dashboard, meta-insights) without
+// specifying a brand, the binary silently falls back to the global config —
+// which may have no tokens at all — and produces empty output. That's the
+// "connected Meta Ads yields $0 revenue" failure mode.
+//
+// Defense: any binary action that operates on brand-scoped data MUST receive
+// an explicit brand argument. The allowlist below enumerates actions that are
+// genuinely brand-agnostic (utilities, voice management shared across brands,
+// OAuth login flows that may write to global OR brand config, etc.). Every
+// other action defaults to BRAND-REQUIRED, so new actions added in the future
+// inherit the safe default without needing a code change here.
+//
+// When enforcement triggers, we return a loud, explanatory error rather than
+// silently falling back to any "active brand" state — that would introduce a
+// race condition under concurrent scheduled tasks for different brands.
+const BRAND_OPTIONAL_ACTIONS = new Set([
+  // Installer / utility
+  'setup', 'version', 'update', 'subscribe', 'archive', 'dry-run',
+  'api-key-setup', 'verify-key',
+  // Voice + avatar management — these resources are shared across brands
+  'list-voices', 'list-avatars', 'clone-voice', 'delete-voice',
+  // Collective wisdom — keyed on vertical, not brand
+  'wisdom',
+  // Global notification channels
+  'discord-login', 'discord-setup', 'discord-post',
+  'slack-login', 'slack-exchange',
+  // OAuth login flows — user may connect globally or per-brand; the binary
+  // writes to the correct scope based on whether brand was passed.
+  'meta-login', 'tiktok-login', 'google-login', 'amazon-login',
+  'shopify-login', 'klaviyo-login', 'etsy-login', 'reddit-login',
+  'linkedin-login', 'pinterest-login', 'snapchat-login', 'twitter-login',
+  // Landing page audit takes a raw URL, no brand context needed
+  'landing-audit',
+]);
+
+// Normalize `brand` input — empty string, undefined, and null all mean
+// "not provided". Non-string values are rejected upstream by Zod but we
+// defend anyway.
+function isBrandMissing(brand) {
+  if (brand === undefined || brand === null) return true;
+  if (typeof brand !== 'string') return true;
+  if (brand.trim() === '') return true;
+  return false;
+}
+
 // ── Shared binary runner ─────────────────────────────────────
 
 /**
@@ -100,6 +148,39 @@ function validateBudget(ctx, args, platform) {
  * @returns {Promise<{text: string, error?: boolean}>}
  */
 async function runBinary(ctx, action, args, opts = {}) {
+  // Hard-refuse brand-scoped actions that didn't receive a brand argument.
+  // This turns what used to be a silent "empty dashboard" data corruption
+  // into a loud, actionable error that pushes Claude to re-call with brand.
+  // Runs BEFORE the binary-exists check so enforcement is consistent even on
+  // broken installs. Intentionally NO fallback to session state — that would
+  // introduce a race condition under concurrent per-brand scheduled tasks.
+  if (isBrandMissing(args.brand) && !BRAND_OPTIONAL_ACTIONS.has(action)) {
+    return {
+      text: `Refusing ${action}: no brand specified. This action operates on brand-scoped data and cannot run without a brand. Retry the tool call with an explicit brand argument, e.g. { action: "${args.action || action}", brand: "<brand-name>" }. If multiple brands are set up, pick the one the user is asking about.`,
+      error: true,
+    };
+  }
+
+  // Wait for the startup ensure+version check. Scheduled tasks / chat-driven
+  // tool calls that fire during app launch would otherwise race past the
+  // version check and run on a stale binary — writing output to the wrong
+  // directory, exactly like the bug Part A fixes. Awaiting is a no-op once
+  // the check has completed; ctx.awaitStartupChecks is optional to keep
+  // unit-test contexts simple.
+  if (typeof ctx.awaitStartupChecks === 'function') {
+    try { await ctx.awaitStartupChecks(); } catch {}
+  }
+
+  // Guard: binary version is below the minimum required by this Electron
+  // release. Refuse LOUDLY so the user sees why the action failed instead
+  // of watching a silent empty result pile up in the logs.
+  if (typeof ctx.isBinaryTooOld === 'function' && ctx.isBinaryTooOld()) {
+    return {
+      text: `Engine needs to update to v${ctx.minBinaryVersion || '1.0.7'}. Check your network connection and restart Merlin.`,
+      error: true,
+    };
+  }
+
   const binaryPath = ctx.getBinaryPath();
   if (!binaryPath || !fs.existsSync(binaryPath)) {
     return { text: 'Merlin engine not found. Try reinstalling or running /update.', error: true };

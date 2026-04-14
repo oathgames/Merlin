@@ -164,12 +164,22 @@
   <div class="magic-section">
     <div class="magic-section-label"><span style="background:linear-gradient(135deg,#a78bfa,#34d399);-webkit-background-clip:text;-webkit-text-fill-color:transparent">Share Merlin</span></div>
     <div class="referral-card">
+      <div class="referral-sublabel">Your link</div>
       <div class="referral-link-row">
         <input id="referral-link" class="referral-link-input" readonly value="loading...">
         <button id="referral-copy" class="referral-copy-btn">Copy</button>
       </div>
       <div id="referral-stats" class="referral-stats"></div>
-      <div class="referral-hint" style="opacity:1;color:var(--text-muted);font-style:normal">+7 days per friend who downloads (up to 3)</div>
+      <div class="referral-hint">Each friend who installs and enters your code adds +7 trial days, up to 3 friends (+21 days).</div>
+
+      <div class="referral-divider"></div>
+
+      <div class="referral-sublabel">Got a friend's code?</div>
+      <div class="referral-apply-row" id="referral-apply-row">
+        <input id="referral-apply-input" class="referral-apply-input" type="text" maxlength="8" placeholder="e.g. a1b2c3d4" autocomplete="off" spellcheck="false">
+        <button id="referral-apply-btn" class="referral-apply-btn">Apply</button>
+      </div>
+      <div id="referral-apply-status" class="referral-apply-status"></div>
     </div>
   </div>
 
@@ -202,6 +212,9 @@
         <button class="archive-filter" data-filter="image">Images</button>
         <button class="archive-filter" data-filter="video">Videos</button>
         <button class="archive-filter" data-filter="swipes">Swipes</button>
+        <button id="archive-refresh-btn" class="archive-refresh-btn" aria-label="Refresh live ads from connected platforms" title="Refresh live ads">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
       </div>
       <input id="archive-search" type="text" class="archive-search" placeholder="Search brand, product, model...">
     </div>
@@ -365,6 +378,14 @@
         <input type="checkbox" id="email-optin-checkbox" checked style="margin-top:4px">
         <span style="font-size:13px;color:var(--muted)">Send me product updates, tips, and special offers (you can unsubscribe anytime)</span>
       </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:14px">
+        <input type="checkbox" id="tos-has-referral" style="margin:0">
+        <span style="font-size:13px;color:var(--muted)">I have a referral code from a friend</span>
+      </label>
+      <div id="tos-referral-wrap" class="hidden" style="margin-top:10px;display:flex;gap:6px">
+        <input id="tos-referral-input" class="referral-apply-input" type="text" maxlength="8" placeholder="e.g. a1b2c3d4" autocomplete="off" spellcheck="false" style="flex:1">
+      </div>
+      <div id="tos-referral-status" class="referral-apply-status"></div>
     </div>
     <button id="tos-accept-btn" class="btn-primary" disabled>Get Started</button>
   </div>

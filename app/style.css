@@ -436,13 +436,15 @@ a:hover{text-decoration:underline}
 #input::-webkit-scrollbar-track{background:transparent}
 #input:focus{border-color:var(--accent-border)}
 #input::placeholder{color:var(--text-dim)}
+/* Desaturated gray while voice is transcribing — flips back on stop or typing */
+#input.voice-interim{color:var(--text-dim)}
 .mic-btn{
   flex-shrink:0;
-  width:34px;height:34px;
+  width:38px;height:38px;
   border:1px solid var(--border);
   background:transparent;
   color:var(--text-dim);
-  border-radius:8px;
+  border-radius:10px;
   cursor:pointer;
   display:flex;align-items:center;justify-content:center;
   transition:all .2s;
@@ -910,7 +912,9 @@ body.platform-mac .titlebar-drag{
 }
 
 /* ── Share Merlin (Referrals) ────────────────────────────── */
-.referral-card{display:flex;flex-direction:column;gap:8px}
+.referral-card{display:flex;flex-direction:column;gap:6px}
+.referral-sublabel{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);opacity:.75;margin-bottom:-2px}
+.referral-divider{height:1px;background:linear-gradient(90deg,transparent,rgba(167,139,250,.18),transparent);margin:6px 0 2px}
 .referral-link-row{display:flex;gap:6px}
 .referral-link-input{
   flex:1;
@@ -930,7 +934,31 @@ body.platform-mac .titlebar-drag{
 .referral-copy-btn:hover{background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(52,211,153,.15));color:var(--text)}
 .referral-copy-btn.copied{border-color:rgba(52,211,153,.5);color:#34d399}
 .referral-stats{font-size:11px;color:var(--text-dim)}
-.referral-hint{font-size:10px;color:var(--text-dim);opacity:.6;font-style:italic}
+.referral-hint{font-size:10px;color:var(--text-dim);opacity:.85;line-height:1.4}
+
+/* Apply-a-friend's-code input (R1-1) */
+.referral-apply-row{display:flex;gap:6px}
+.referral-apply-input{
+  flex:1;
+  background:var(--bg-deep);border:1px solid var(--border);
+  border-radius:8px;padding:6px 10px;
+  color:var(--text);font-size:11px;font-family:monospace;letter-spacing:.05em;
+  outline:none;
+}
+.referral-apply-input:focus{border-color:rgba(167,139,250,.5);box-shadow:0 0 0 2px rgba(167,139,250,.12)}
+.referral-apply-input:disabled{opacity:.5;cursor:not-allowed}
+.referral-apply-btn{
+  padding:6px 12px;border-radius:8px;
+  border:1px solid rgba(167,139,250,.3);
+  background:linear-gradient(135deg,rgba(167,139,250,.1),rgba(52,211,153,.08));
+  color:var(--text-muted);font-size:11px;font-weight:600;
+  cursor:pointer;transition:all .2s;font-family:var(--font);white-space:nowrap;
+}
+.referral-apply-btn:hover:not(:disabled){background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(52,211,153,.15));color:var(--text)}
+.referral-apply-btn:disabled{opacity:.5;cursor:not-allowed}
+.referral-apply-status{font-size:11px;color:var(--text-dim);min-height:14px;line-height:1.3}
+.referral-apply-status.error{color:#f87171}
+.referral-apply-status.success{color:#34d399}
 
 /* Community (Discord) */
 .discord-link{
@@ -1420,8 +1448,7 @@ body.platform-mac .titlebar-drag{
 
 /* ── Stubbed buttons (hidden until features are ready) ── */
 /* Phone: hidden until Cloudflare Tunnel security is ready */
-/* Mic: hidden until local speech-to-text (Whisper.cpp/Vosk) is integrated */
-.icon-btn,.mic-btn{display:none}
+.icon-btn{display:none}
 
 /* ── QR Modal ────────────────────────────────────────────── */
 .qr-card{
@@ -1563,7 +1590,7 @@ body.platform-mac .titlebar-drag{
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.archive-filter-row { display: flex; gap: 6px; margin-bottom: 8px; }
+.archive-filter-row { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
 .archive-filter {
   padding: 4px 12px;
   border-radius: 6px;
@@ -1580,6 +1607,32 @@ body.platform-mac .titlebar-drag{
   color: var(--accent);
   border-color: var(--accent-border);
 }
+.archive-refresh-btn {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all .2s;
+}
+.archive-refresh-btn:hover {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border-color: var(--accent-border);
+}
+.archive-refresh-btn.refreshing { pointer-events: none; opacity: .6; }
+.archive-refresh-btn.refreshing svg { animation: archive-spin 1s linear infinite; }
+@keyframes archive-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.badge-qa-fail { background: rgba(239,68,68,.15); color: #f87171; }
+.badge-qa-pass { background: rgba(52,211,153,.12); color: #34d399; }
+.badge-source-loose { background: rgba(251,191,36,.12); color: #fbbf24; }
 .archive-search {
   width: 100%;
   padding: 6px 10px;
@@ -1836,3 +1889,6 @@ body.platform-mac .titlebar-drag{
 .platform-google { background:rgba(66,133,244,.15); color:#4285F4; }
 .platform-amazon { background:rgba(255,153,0,.15); color:#FF9900; }
 .platform-pinterest { background:rgba(230,0,35,.12); color:#E60023; }
+.platform-reddit { background:rgba(255,69,0,.12); color:#FF4500; }
+.platform-linkedin { background:rgba(10,102,194,.15); color:#0a66c2; }
+.platform-snapchat { background:rgba(255,252,0,.15); color:#fffc00; }

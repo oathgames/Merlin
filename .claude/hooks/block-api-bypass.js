@@ -125,11 +125,22 @@ const PROTECTED_PATH_PATTERNS = [
   /\.merlin-vault(\.|$)/i,
   /\.merlin-ratelimit(\.|$)/i,
   /\.merlin-audit(\.|$)/i,
-  /\.rate-state\.bin$/i,
-  // The ACTUAL vault file is at %APPDATA%/Merlin/.vault (just ".vault").
-  /[/\\]Merlin[/\\]\.vault$/i,
-  /[/\\]\.vault$/i,
+  /\.rate-state(\.|$)/i,
+  /\.rate-secret(\.|$)/i,
+  // REGRESSION GUARD (2026-04-14, adversary loop 2):
+  // These MUST use `(\.|$)` not `$` so they match .vault.bak, .vault.tmp,
+  // .rate-state.tmp, etc. The `$` anchor was a bypass hole: vault.go:204
+  // writes `%APPDATA%/Merlin/.vault.bak` during rekey, and that suffix was
+  // NOT blocked — a rogue skill could `Read ~/Merlin/.vault.bak` and
+  // exfiltrate an encrypted vault snapshot.
+  //
+  // DO NOT tighten these back to `$`. The trailing `.bak` / `.tmp` suffixes
+  // are legitimate implementation details of atomic-write patterns and must
+  // all be covered by the same blocklist rule.
+  /[/\\]Merlin[/\\]\.vault(\.|$)/i,
+  /[/\\]\.vault(\.|$)/i,
   /[/\\]\.rate-state\b/i,
+  /[/\\]\.rate-secret\b/i,
   // MCP source files — redaction patterns must stay secret
   /mcp-server\.js$/i,
   /mcp-tools\.js$/i,
@@ -145,9 +156,13 @@ const PROTECTED_COMMAND_PATTERNS = [
   /\.merlin-vault\b/i,
   /\.merlin-ratelimit\b/i,
   /\.merlin-audit\b/i,
-  /\.rate-state\.bin\b/i,
+  /\.rate-state\b/i,
+  /\.rate-secret\b/i,
   /\.merlin-[a-z]/i,                    // Catch-all: .merlin-api-key, .merlin-subscription, etc.
-  // Match the real vault file at %APPDATA%/Merlin/.vault
+  // REGRESSION GUARD (2026-04-14, adversary loop 2): `\b` is a word boundary,
+  // so `.vault\b` already catches `.vault`, `.vault.bak`, `.vault.tmp` via
+  // the `.` char not being a word char. Kept explicit for readability.
+  // Match the real vault file at %APPDATA%/Merlin/.vault (and .bak/.tmp siblings).
   /Merlin[/\\]\.vault\b/i,
   /AppData.*\.vault\b/i,
   /Application Support.*\.vault\b/i,
