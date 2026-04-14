@@ -1,6 +1,6 @@
 {
   "name": "Merlin",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Merlin — Your AI CMO",
   "main": "app/main.js",
   "scripts": {
@@ -16,7 +16,7 @@
     "ws": "^8.20.0"
   },
   "devDependencies": {
-    "electron": "^39.0.0",
+    "electron": "33.4.11",
     "electron-builder": "^25.1.8"
   },
   "build": {

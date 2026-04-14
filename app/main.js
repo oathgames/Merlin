@@ -1832,11 +1832,25 @@ ipcMain.handle('trigger-claude-login', async () => {
       let authWin = null;
       let codeInjected = false;
 
-      // Open the auth URL in an in-app BrowserWindow instead of the system browser.
-      // This lets us intercept the OAuth redirect (to localhost or the paste-code
-      // fallback at platform.claude.com) and auto-capture the auth code from the URL.
-      // No paste page, no manual steps — the window closes itself on success.
+      // Open the auth URL.
+      //
+      // Windows / Linux: system browser via shell.openExternal. The CLI's
+      // built-in localhost callback server captures the token internally —
+      // no interception needed, no paste page, this just works.
+      //
+      // macOS: in-app BrowserWindow with webRequest interception. macOS users
+      // were stranded on a "Paste this into Claude Code" page because the
+      // localhost OAuth callback fails on some Mac network configurations.
+      // The in-app window catches both the localhost callback AND the
+      // platform.claude.com paste fallback URL.
       function openAuthWindow(authUrl) {
+        if (process.platform !== 'darwin') {
+          // Windows/Linux: system browser. CLI handles the rest.
+          if (urlOpened) return;
+          shell.openExternal(authUrl);
+          return;
+        }
+        // macOS: in-app BrowserWindow
         if (authWin) return;
         authWin = new BrowserWindow({
           width: 460, height: 720,
@@ -3170,9 +3184,15 @@ function readConfig() {
   try {
     const buf = fs.readFileSync(tokensFilePath);
     let tokens;
-    if (safeStorage.isEncryptionAvailable()) {
+    if (canUseSafeStorage()) {
       try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
         tokens = JSON.parse(buf.toString('utf8'));
+      }
+    } else if (process.platform === 'darwin' && looksEncrypted(buf) && safeStorage.isEncryptionAvailable()) {
+      // macOS legacy migration — one keychain prompt then never again
+      try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
+        try { fs.renameSync(tokensFilePath, tokensFilePath + '.legacy'); } catch {}
+        throw new Error('legacy decrypt denied');
       }
     } else {
       tokens = JSON.parse(buf.toString('utf8'));
@@ -3219,9 +3239,15 @@ function readBrandConfig(brandName) {
   try {
     const buf = fs.readFileSync(brandTokensPath);
     let tokens;
-    if (safeStorage.isEncryptionAvailable()) {
+    if (canUseSafeStorage()) {
       try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
         tokens = JSON.parse(buf.toString('utf8'));
+      }
+    } else if (process.platform === 'darwin' && looksEncrypted(buf) && safeStorage.isEncryptionAvailable()) {
+      // macOS legacy migration — one keychain prompt then never again
+      try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
+        try { fs.renameSync(brandTokensPath, brandTokensPath + '.legacy'); } catch {}
+        throw new Error('legacy decrypt denied');
       }
     } else {
       tokens = JSON.parse(buf.toString('utf8'));
@@ -3370,24 +3396,61 @@ function migrateTokensToVault() {
   }
 }
 
-// Encrypted read/write for sensitive local state (subscription, machine ID)
-// Uses OS keychain via Electron safeStorage — not readable by other processes
+// Encrypted read/write for sensitive local state (subscription, api keys, tokens).
+//
+// Platform behavior:
+//   Windows / Linux: Electron safeStorage (DPAPI / kwallet / gnome-keyring).
+//   macOS:           plaintext files with 0o600 permissions.
+//
+// Why macOS uses plaintext: Electron's safeStorage on macOS is keyed to the app's
+// code signature. Each new release re-signs the binary, which invalidates the
+// previous "Always Allow" keychain grant — so users get prompted on EVERY update.
+// Standard Unix CLI tools (gh, aws, docker, kubectl) all use plaintext files in
+// the user's home directory with restrictive permissions. The user's home dir is
+// already protected from other users by the OS; safeStorage adds zero real
+// security on macOS but costs significant UX.
+//
+// Migration: legacy encrypted files on macOS are decrypted on first read (one
+// final keychain prompt) and immediately re-saved as plaintext. If the user
+// denies the prompt, the file is renamed to .legacy so we never re-prompt.
+function canUseSafeStorage() {
+  return process.platform !== 'darwin' && safeStorage.isEncryptionAvailable();
+}
+function looksEncrypted(buf) {
+  // Electron safeStorage prefixes encrypted output with a binary version header.
+  // Plaintext (JSON or printable strings) always starts with a printable byte.
+  if (!buf || buf.length < 2) return false;
+  const first = buf[0];
+  return first < 0x20 || first > 0x7E;
+}
 function readSecureFile(filePath) {
   try {
     const buf = fs.readFileSync(filePath);
-    if (safeStorage.isEncryptionAvailable()) {
+    if (canUseSafeStorage()) {
       return safeStorage.decryptString(buf);
     }
-    return buf.toString('utf8'); // fallback if encryption unavailable
+    // macOS: prefer plaintext, transparently migrate legacy encrypted files
+    if (process.platform === 'darwin' && looksEncrypted(buf) && safeStorage.isEncryptionAvailable()) {
+      try {
+        const plain = safeStorage.decryptString(buf);
+        try { fs.writeFileSync(filePath, plain, { mode: 0o600 }); } catch {}
+        return plain;
+      } catch {
+        // User denied the prompt or decrypt failed — rename so we never retry
+        try { fs.renameSync(filePath, filePath + '.legacy'); } catch {}
+        return null;
+      }
+    }
+    return buf.toString('utf8');
   } catch { return null; }
 }
 function writeSecureFile(filePath, data) {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    if (safeStorage.isEncryptionAvailable()) {
+    if (canUseSafeStorage()) {
       fs.writeFileSync(filePath, safeStorage.encryptString(data));
     } else {
-      fs.writeFileSync(filePath, data);
+      fs.writeFileSync(filePath, data, { mode: 0o600 });
     }
   } catch {}
 }
@@ -3602,8 +3665,11 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       try {
         const buf = fs.readFileSync(legacyTokensPath);
         let tokens = {};
-        if (safeStorage.isEncryptionAvailable()) {
+        if (canUseSafeStorage()) {
           try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch { tokens = JSON.parse(buf.toString('utf8')); }
+        } else if (process.platform === 'darwin' && looksEncrypted(buf)) {
+          // macOS: skip legacy encrypted file — readBrandConfig handles migration
+          throw new Error('skip legacy on darwin');
         } else { tokens = JSON.parse(buf.toString('utf8')); }
         let changed = false;
         for (const key of keys) {
@@ -3613,10 +3679,10 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
           }
         }
         if (changed) {
-          if (safeStorage.isEncryptionAvailable()) {
+          if (canUseSafeStorage()) {
             fs.writeFileSync(legacyTokensPath, safeStorage.encryptString(JSON.stringify(tokens)));
           } else {
-            fs.writeFileSync(legacyTokensPath, JSON.stringify(tokens));
+            fs.writeFileSync(legacyTokensPath, JSON.stringify(tokens), { mode: 0o600 });
           }
         }
       } catch { /* legacy file may not exist — normal */ }

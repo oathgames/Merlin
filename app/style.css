@@ -796,6 +796,11 @@ a:hover{text-decoration:underline}
   align-items:center;
   padding-left:14px;
 }
+/* macOS: clear the traffic light buttons (red/yellow/green) — they live at x=12
+   with 3 buttons × 14px + gaps ≈ 70px, so 82px gives comfortable clearance. */
+body.platform-mac .titlebar-drag{
+  padding-left:82px !important;
+}
 .titlebar-title{
   font-size:12px;
   font-weight:600;
