@@ -5,7 +5,42 @@ const os = require('os');
 const wsServer = require('./ws-server');
 const { generateQRDataUri } = require('./qr');
 
-Menu.setApplicationMenu(null);
+// macOS requires an application menu with Edit role entries for Cmd+C/V/X/A to work
+// in ANY input field. Without this, users cannot paste API keys, auth codes, or copy
+// text from the chat. Windows doesn't need this — the OS handles it natively.
+if (process.platform === 'darwin') {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    { label: app.name, submenu: [
+      { role: 'about' },
+      { type: 'separator' },
+      { role: 'hide' },
+      { role: 'hideOthers' },
+      { role: 'unhide' },
+      { type: 'separator' },
+      { role: 'quit' },
+    ]},
+    { label: 'Edit', submenu: [
+      { role: 'undo' },
+      { role: 'redo' },
+      { type: 'separator' },
+      { role: 'cut' },
+      { role: 'copy' },
+      { role: 'paste' },
+      { role: 'selectAll' },
+    ]},
+    { label: 'View', submenu: [
+      { role: 'toggleDevTools', accelerator: 'Cmd+Option+I', visible: false },
+    ]},
+    { label: 'Window', submenu: [
+      { role: 'minimize' },
+      { role: 'zoom' },
+      { type: 'separator' },
+      { role: 'front' },
+    ]},
+  ]));
+} else {
+  Menu.setApplicationMenu(null);
+}
 
 // ── BFF Architecture ─────────────────────────────────────────
 // OAuth client secrets are NEVER in the Electron app. Token exchange
@@ -125,56 +160,107 @@ const appInstall = app.isPackaged
     : path.join(path.dirname(app.getPath('exe')), 'resources'))
   : path.join(__dirname, '..');
 
-// Workspace location (where brands, config, results live — user-accessible in Documents)
+// Workspace location (where brands, config, results live).
+// macOS: ~/Library/Application Support/Merlin — avoids iCloud Documents sync which
+// causes conflicts with binaries, vault files, and temp+rename state writes.
+// Windows: Documents/Merlin — user-accessible, no sync issues.
 const appRoot = app.isPackaged
-  ? path.join(app.getPath('documents'), 'Merlin')
+  ? (process.platform === 'darwin'
+    ? path.join(app.getPath('userData')) // ~/Library/Application Support/Merlin
+    : path.join(app.getPath('documents'), 'Merlin'))
   : path.join(__dirname, '..');
 // Ensure workspace exists early — the SDK probe uses it as cwd and fails
 // with ENOENT if it doesn't exist yet (race with bootstrapWorkspace on first launch).
 try { fs.mkdirSync(appRoot, { recursive: true }); } catch {}
 
-// The Claude Agent SDK spawns `node cli.js` as a subprocess. On Mac, non-developer
-// users don't have Node.js installed, so `node` isn't on PATH and the SDK fails
-// with ENOENT. Fix: create a wrapper script at a known PATH location that uses
-// Electron's own embedded Node via ELECTRON_RUN_AS_NODE=1.
+// macOS migration: move workspace from ~/Documents/Merlin (iCloud-synced) to
+// ~/Library/Application Support/Merlin (not synced). One-time, idempotent.
+if (app.isPackaged && process.platform === 'darwin') {
+  const oldRoot = path.join(app.getPath('documents'), 'Merlin');
+  if (oldRoot !== appRoot && fs.existsSync(oldRoot) && fs.existsSync(path.join(oldRoot, '.claude'))) {
+    try {
+      // Only migrate if new location is empty (prevent overwriting existing data)
+      const newHasData = fs.existsSync(path.join(appRoot, '.claude'));
+      if (!newHasData) {
+        const { execSync } = require('child_process');
+        const { execFileSync } = require('child_process');
+        execFileSync('cp', ['-Rn', oldRoot + '/', appRoot + '/'], { timeout: 30000 });
+        // Leave a breadcrumb so user knows where their data went
+        fs.writeFileSync(path.join(oldRoot, 'MOVED.txt'),
+          `Your Merlin workspace moved to:\n${appRoot}\n\nThis avoids iCloud sync conflicts.\nYou can safely delete this folder.\n`);
+        console.log(`[migration] Workspace migrated from ${oldRoot} to ${appRoot}`);
+      }
+    } catch (e) {
+      console.error('[migration] macOS workspace move failed:', e.message);
+    }
+  }
+}
+
+// ── Node.js Runtime for SDK Subprocesses ────────────────────
 // The Claude Agent SDK spawns `node cli.js` as a subprocess. Non-developer
-// users don't have Node.js installed, so `node` isn't on PATH. Fix: create
-// a wrapper that re-execs Electron's own binary with ELECTRON_RUN_AS_NODE=1,
-// which strips all Chromium/GUI behavior and makes it act as pure Node.js.
-// Works on BOTH Mac and Windows — same technique, different script format.
-// Extracted into a function so it can be re-invoked on each session start (C5 fix)
+// users don't have Node.js installed, so `node` isn't on PATH.
+//
+// PRIMARY (packaged builds): A real standalone Node.js binary is bundled
+// at .claude/tools/node-runtime/node[.exe] inside the app resources.
+// This is invisible to macOS (no Dock bounce, no GUI flash) because it's
+// a headless binary — not the Electron app re-executed in Node mode.
+//
+// FALLBACK (dev mode or missing binary): The old ELECTRON_RUN_AS_NODE
+// wrapper script at ~/.claude/bin/node[.cmd] is still created as a backup.
+
+// Check if a real standalone Node binary is bundled with the app.
+// Returns the absolute path or null if not available.
+function getBundledNodePath() {
+  const binaryName = process.platform === 'win32' ? 'node.exe' : 'node';
+  if (app.isPackaged) {
+    const bundled = path.join(appInstall, '.claude', 'tools', 'node-runtime', binaryName);
+    try {
+      fs.accessSync(bundled, fs.constants.X_OK);
+      return bundled;
+    } catch {}
+  }
+  return null; // Dev mode or binary not bundled
+}
+
+// FALLBACK ONLY: ELECTRON_RUN_AS_NODE wrapper for dev mode / missing bundled node.
 function createNodeWrapper() {
   const electronBin = process.execPath;
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const nodeWrapperDir = path.join(os.homedir(), '.claude', 'bin');
+  fs.mkdirSync(nodeWrapperDir, { recursive: true });
   if (process.platform === 'win32') {
-    const nodeWrapperDir = path.join(os.homedir(), '.claude', 'bin');
     const nodeWrapper = path.join(nodeWrapperDir, 'node.cmd');
-    fs.mkdirSync(nodeWrapperDir, { recursive: true });
     const script = `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${electronBin}" %*\r\n`;
     let needsWrite = true;
     try { if (fs.readFileSync(nodeWrapper, 'utf8').includes(electronBin)) needsWrite = false; } catch {}
     if (needsWrite) fs.writeFileSync(nodeWrapper, script);
-    if (!process.env.PATH.includes(nodeWrapperDir)) process.env.PATH = nodeWrapperDir + ';' + process.env.PATH;
   } else {
-    const nodeWrapperDir = path.join(os.homedir(), '.claude', 'bin');
     const nodeWrapper = path.join(nodeWrapperDir, 'node');
-    fs.mkdirSync(nodeWrapperDir, { recursive: true });
-    const script = `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${electronBin}" "$@"\n`;
+    const script = `#!/bin/sh\nexport ELECTRON_RUN_AS_NODE=1\nexport ELECTRON_NO_ASAR=1\nexec "${electronBin}" "$@"\n`;
     let needsWrite = true;
     try { if (fs.readFileSync(nodeWrapper, 'utf8').includes(electronBin)) needsWrite = false; } catch {}
     if (needsWrite) fs.writeFileSync(nodeWrapper, script, { mode: 0o755 });
-    if (!process.env.PATH.includes(nodeWrapperDir)) process.env.PATH = nodeWrapperDir + ':' + process.env.PATH;
+  }
+  if (!process.env.PATH.includes(nodeWrapperDir)) {
+    process.env.PATH = nodeWrapperDir + sep + process.env.PATH;
   }
 }
 
-// Validates the node wrapper points to current Electron binary — called on each session start
+// Validates the node wrapper (only needed when bundled node is unavailable).
 function validateNodeWrapper() {
+  if (getBundledNodePath()) return; // Bundled Node available — wrapper not needed
   try {
-    const wrapperPath = process.platform === 'win32'
-      ? path.join(os.homedir(), '.claude', 'bin', 'node.cmd')
-      : path.join(os.homedir(), '.claude', 'bin', 'node');
+    const isWin = process.platform === 'win32';
+    const wrapperPath = path.join(os.homedir(), '.claude', 'bin', isWin ? 'node.cmd' : 'node');
     if (fs.existsSync(wrapperPath)) {
       const content = fs.readFileSync(wrapperPath, 'utf8');
-      if (content.includes(process.execPath)) return; // Still valid
+      const stat = fs.statSync(wrapperPath);
+      const isExecutable = isWin || (stat.mode & 0o111) !== 0;
+      if (content.includes(process.execPath) && isExecutable) return;
+      if (content.includes(process.execPath) && !isExecutable) {
+        fs.chmodSync(wrapperPath, 0o755);
+        return;
+      }
     }
     createNodeWrapper();
   } catch (err) {
@@ -183,11 +269,20 @@ function validateNodeWrapper() {
   }
 }
 
+// Bootstrap: prefer bundled Node, fall back to wrapper
 if (app.isPackaged) {
-  try {
-    createNodeWrapper();
-  } catch (e) {
-    console.error('[node-wrapper] Failed to create node wrapper:', e.message);
+  const bundledNode = getBundledNodePath();
+  if (bundledNode) {
+    // Real Node.js binary found — prepend its directory to PATH.
+    // The SDK's spawn("node") will find this binary. No ELECTRON_RUN_AS_NODE,
+    // no Dock bounce, no GUI flash. Invisible subprocess like grep or curl.
+    const bundledDir = path.dirname(bundledNode);
+    const sep = process.platform === 'win32' ? ';' : ':';
+    process.env.PATH = bundledDir + sep + process.env.PATH;
+    console.log('[node] Using bundled Node.js');
+  } else {
+    // Fallback: ELECTRON_RUN_AS_NODE wrapper (binary not yet bundled or dev build)
+    try { createNodeWrapper(); } catch (e) { console.error('[node-wrapper]', e.message); }
   }
 }
 
@@ -338,7 +433,9 @@ async function readCredentials() {
     return process.env.CLAUDE_CODE_OAUTH_TOKEN;
   }
 
-  // 3. macOS Keychain — scan every known service name
+  // 3. macOS Keychain — fast scan with 3-second TOTAL cap (not per-service).
+  // Previous implementation: 7 services × 3s each = 21s worst case.
+  // New: try cached service first, then race all others with a 3s deadline.
   if (process.platform === 'darwin') {
     const keychainServices = [
       'Claude Code-credentials',
@@ -350,23 +447,32 @@ async function readCredentials() {
       'com.anthropic.claude-desktop',
     ];
     const { execFile } = require('child_process');
-    for (const service of keychainServices) {
-      try {
-        const credJson = await new Promise((resolve) => {
-          execFile(
-            'security', ['find-generic-password', '-s', service, '-w'],
-            { timeout: 3000, encoding: 'utf8' },
-            (err, stdout) => resolve(err ? '' : (stdout || '').trim())
-          );
-        });
-        const result = extractToken(credJson);
-        if (result) {
-          console.log(`[auth] Token found in Keychain: "${service}"`);
-          persistCredentials(result.raw);
-          return result.token;
-        }
-      } catch {}
-    }
+    const queryKeychain = (service) => new Promise((resolve) => {
+      execFile('security', ['find-generic-password', '-s', service, '-w'],
+        { timeout: 2000, encoding: 'utf8' },
+        (err, stdout) => resolve(err ? '' : (stdout || '').trim()));
+    });
+    // Race all Keychain services in parallel — first valid token wins, 3s total cap
+    try {
+      const result = await Promise.race([
+        (async () => {
+          const results = await Promise.allSettled(keychainServices.map(s => queryKeychain(s)));
+          for (let i = 0; i < results.length; i++) {
+            if (results[i].status === 'fulfilled' && results[i].value) {
+              const parsed = extractToken(results[i].value);
+              if (parsed) {
+                console.log('[auth] Token found in Keychain');
+                persistCredentials(parsed.raw);
+                return parsed.token;
+              }
+            }
+          }
+          return null;
+        })(),
+        new Promise((resolve) => setTimeout(() => resolve(null), 3000)), // 3s hard cap
+      ]);
+      if (result) return result;
+    } catch {}
   }
 
   // 4. Windows — check alternate credential file locations
@@ -498,7 +604,8 @@ async function probeClaudeSetup(force = false) {
       // ELECTRON_RUN_AS_NODE prevents the subprocess from launching as a macOS GUI app
       // (which causes dock bouncing and hangs). Without it, the Electron binary registers
       // with the window server instead of running as headless Node.
-      const probeEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1', BROWSER: 'none' };
+      const probeEnv = { ...process.env, BROWSER: 'none' };
+      if (!getBundledNodePath()) probeEnv.ELECTRON_RUN_AS_NODE = '1'; // Only needed for wrapper fallback
       if (process.platform === 'darwin' && !probeEnv.CLAUDE_CODE_OAUTH_TOKEN && !probeEnv.ANTHROPIC_API_KEY) {
         const token = await readMacCredentials();
         if (token) {
@@ -678,123 +785,6 @@ let activeQuery = null;
 let _awaitingAuth = false; // True while waiting for login flow after auth-required
 let _suppressNextResponse = false; // Suppress SDK responses for internal actions (spell toggle/create)
 
-// ── TEST HARNESS (rip out after v1) ────────────────────────
-// REMOVAL: Delete this block (to "END TEST HARNESS" below), then run:
-//   grep -n "TEST HARNESS\|testActive\|TEST_FLAGS\|TEST_DATA" app/main.js
-// That finds ~7 one-liner early-returns in IPC handlers (delete those lines)
-// plus one block in win.once('ready-to-show') (delete between the
-// "TEST HARNESS" and "END TEST HARNESS" comments). Total: ~120 lines.
-//
-// Launch with flags to inject mock data for UI preview:
-//   --test-all           Enable ALL test mocks
-//   --test-perf          Mock performance bar data
-//   --test-activity      Mock activity feed entries
-//   --test-live          Mock live ads
-//   --test-archive       Mock archive items
-//   --test-spells        Mock spellbook entries
-//   --test-connections   Mock connected platforms
-//   --test-brands        Mock brand list
-//   --test-spell-fire    Simulate spell completion event (fires after 5s)
-const TEST_FLAGS = {
-  all: process.argv.includes('--test-all'),
-  perf: process.argv.includes('--test-perf'),
-  activity: process.argv.includes('--test-activity'),
-  live: process.argv.includes('--test-live'),
-  archive: process.argv.includes('--test-archive'),
-  spells: process.argv.includes('--test-spells'),
-  connections: process.argv.includes('--test-connections'),
-  brands: process.argv.includes('--test-brands'),
-  spellFire: process.argv.includes('--test-spell-fire'),
-};
-// Block test mode in production builds
-if (app.isPackaged) {
-  Object.keys(TEST_FLAGS).forEach(k => TEST_FLAGS[k] = false);
-}
-function testActive(flag) { return TEST_FLAGS.all || TEST_FLAGS[flag]; }
-
-// Mock data generators (all self-contained, no file deps)
-const TEST_DATA = {
-  brands() {
-    return [
-      { name: 'madchill', displayName: 'MadChill', vertical: 'ecommerce', productCount: 3, status: 'active' },
-      { name: 'flowstate', displayName: 'FlowState', vertical: 'saas', productCount: 1, status: 'active' },
-    ];
-  },
-
-  perf(days) {
-    return {
-      revenue: 12847.53,
-      spend: 3291.20,
-      mer: 3.9,
-      platforms: 3,
-      platformBreakdown: [
-        { name: 'Meta', spend: 1842.50, revenue: 7623.10, roas: 4.14 },
-        { name: 'TikTok', spend: 948.70, revenue: 3412.43, roas: 3.60 },
-        { name: 'Google', spend: 500.00, revenue: 1812.00, roas: 3.62 },
-      ],
-      dailyBudget: 150,
-      trend: 12,
-      periodDays: days || 7,
-      generatedAt: new Date().toISOString(),
-    };
-  },
-
-  activity() {
-    const now = Date.now();
-    const hour = 3600000;
-    return [
-      { ts: new Date(now - hour * 1).toISOString(), type: 'optimize', action: 'meta-insights', detail: 'Pulled performance data — 3 winners, 1 underperformer paused', product: 'Sweatpants' },
-      { ts: new Date(now - hour * 3).toISOString(), type: 'publish', action: 'meta-push', detail: 'Published "Summer Vibes" to Meta Testing campaign', product: 'Full Zip Hoodie' },
-      { ts: new Date(now - hour * 5).toISOString(), type: 'create', action: 'image', detail: 'Generated 4 ad variations — lifestyle scene, studio shot, flat lay, action shot', product: 'Sweatpants' },
-      { ts: new Date(now - hour * 8).toISOString(), type: 'optimize', action: 'meta-duplicate', detail: 'Scaled "Street Style" winner to Scaling campaign — $25/day', product: 'Sweatpants' },
-      { ts: new Date(now - hour * 12).toISOString(), type: 'optimize', action: 'meta-kill', detail: 'Paused "Neon Nights" — CPC $2.14, below 1.5x ROAS threshold', product: 'Full Zip Hoodie' },
-      { ts: new Date(now - hour * 24).toISOString(), type: 'report', action: 'dashboard', detail: 'Daily report: $1,847 revenue, $423 spend, 4.37x MER', product: '' },
-      { ts: new Date(now - hour * 26).toISOString(), type: 'publish', action: 'tiktok-push', detail: 'Published "Get Ready With Me" to TikTok Testing campaign', product: 'Sweatpants' },
-      { ts: new Date(now - hour * 30).toISOString(), type: 'create', action: 'image', detail: 'Generated hero image for email campaign — product on marble background', product: 'Full Zip Hoodie' },
-      { ts: new Date(now - hour * 48).toISOString(), type: 'optimize', action: 'seo-audit', detail: 'SEO audit complete — 92/100 score, 3 missing alt tags fixed', product: '' },
-      { ts: new Date(now - hour * 52).toISOString(), type: 'error', action: 'meta-push', detail: 'Meta rejected creative — text overlay exceeds 20% threshold', product: 'Sweatpants' },
-    ];
-  },
-
-  liveAds() {
-    return [
-      { product: 'Sweatpants', platform: 'meta', status: 'live', adId: '120210987654321', budget: '$25/day', creativePath: null, lastRoas: 4.2 },
-      { product: 'Sweatpants', platform: 'meta', status: 'live', adId: '120210987654322', budget: '$15/day', creativePath: null, lastRoas: 3.1 },
-      { product: 'Full Zip Hoodie', platform: 'meta', status: 'paused', adId: '120210987654323', budget: '$20/day', creativePath: null, lastRoas: 1.2 },
-      { product: 'Sweatpants', platform: 'tiktok', status: 'live', adId: '1234567890123', budget: '$30/day', creativePath: null, lastRoas: 3.6 },
-      { product: 'Full Zip Hoodie', platform: 'google', status: 'live', adId: '9876543210', budget: '$20/day', creativePath: null, lastRoas: 3.8 },
-      { product: 'Sweatpants', platform: 'meta', status: 'pending', adId: '120210987654324', budget: '$10/day', creativePath: null, lastRoas: null },
-    ];
-  },
-
-  archive() {
-    const now = Date.now();
-    const day = 86400000;
-    return [
-      { id: 'img_20260405_143022', type: 'image', timestamp: now - day * 1, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: true, model: 'flux-pro', thumbnail: '', files: ['hero.png', 'square.png'], folder: 'results/image/2026-04/madchill/img_20260405_143022', title: 'Lifestyle — Summer Vibes' },
-      { id: 'img_20260404_091215', type: 'image', timestamp: now - day * 2, brand: 'madchill', product: 'Full Zip Hoodie', status: 'completed', qaPassed: true, model: 'flux-pro', thumbnail: '', files: ['hero.png'], folder: 'results/image/2026-04/madchill/img_20260404_091215', title: 'Studio — Clean White' },
-      { id: 'ad_20260403_160830', type: 'video', timestamp: now - day * 3, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: true, model: 'minimax', thumbnail: '', files: ['ad.mp4'], folder: 'results/video/2026-04/madchill/ad_20260403_160830', title: 'Street Style — Walking' },
-      { id: 'img_20260402_110445', type: 'image', timestamp: now - day * 4, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: false, model: 'flux-pro', thumbnail: '', files: ['hero.png', 'square.png'], folder: 'results/image/2026-04/madchill/img_20260402_110445', title: 'Neon Nights — Failed QA' },
-      { id: 'img_20260401_082100', type: 'image', timestamp: now - day * 5, brand: 'madchill', product: 'Full Zip Hoodie', status: 'completed', qaPassed: true, model: 'flux-pro', thumbnail: '', files: ['hero.png'], folder: 'results/image/2026-04/madchill/img_20260401_082100', title: 'Flat Lay — Marble' },
-      { id: 'ad_20260331_193015', type: 'video', timestamp: now - day * 6, brand: 'madchill', product: 'Sweatpants', status: 'completed', qaPassed: true, model: 'minimax', thumbnail: '', files: ['ad.mp4'], folder: 'results/video/2026-03/madchill/ad_20260331_193015', title: 'Get Ready With Me' },
-    ];
-  },
-
-  spells() {
-    const now = Date.now();
-    return [
-      { id: 'merlin-madchill-daily-ads', name: 'Daily Ads', description: 'Create and test new ad variations every morning', cron: '0 9 * * 1-5', enabled: true, lastRun: now - 3600000, lastStatus: 'success', lastSummary: 'Created 3 new variations, paused 1 underperformer', consecutiveFailures: 0, isMerlin: true },
-      { id: 'merlin-madchill-performance-check', name: 'Performance Check', description: 'Analyze ad performance and optimize spend', cron: '0 14 * * *', enabled: true, lastRun: now - 7200000, lastStatus: 'success', lastSummary: 'Scaled 1 winner, paused 2 underperformers, saved $45/day', consecutiveFailures: 0, isMerlin: true },
-      { id: 'merlin-madchill-morning-briefing', name: 'Morning Briefing', description: 'Daily performance summary and recommendations', cron: '30 8 * * 1-5', enabled: true, lastRun: now - 86400000, lastStatus: 'success', lastSummary: 'Yesterday: $1,847 revenue, 4.37x MER, 3 ads performing above target', consecutiveFailures: 0, isMerlin: true },
-      { id: 'merlin-madchill-weekly-seo', name: 'Weekly SEO', description: 'Check rankings and publish a blog post', cron: '0 10 * * 1', enabled: false, lastRun: now - 604800000, lastStatus: 'failed', lastSummary: 'Shopify connection expired — reconnect to continue', consecutiveFailures: 2, isMerlin: true },
-    ];
-  },
-
-  connections() {
-    return ['meta', 'tiktok', 'google', 'shopify', 'fal', 'klaviyo'];
-  },
-};
-// ── END TEST HARNESS ───────────────────────────────────────
 
 // Auto-expire pending approvals after 15 minutes
 const APPROVAL_TIMEOUT_MS = 15 * 60 * 1000;
@@ -912,39 +902,6 @@ async function createWindow() {
     if (!launchedHidden) win.show();
     win.webContents.send('platform', process.platform);
 
-    // TEST HARNESS — rip out after v1
-    // Simulate spell completion event after 5s
-    if (testActive('spellFire')) {
-      setTimeout(() => {
-        win.webContents.send('spell-completed', {
-          taskId: 'merlin-madchill-daily-ads',
-          status: 'success',
-          summary: 'Created 3 new ad variations for Sweatpants. Paused 1 underperformer (CPC $2.40). Scaled "Street Style" winner to $25/day.',
-          timestamp: Date.now(),
-        });
-      }, 5000);
-      // Fire a failure event at 10s to test error toast
-      setTimeout(() => {
-        win.webContents.send('spell-completed', {
-          taskId: 'merlin-madchill-weekly-seo',
-          status: 'failed',
-          summary: 'Shopify connection expired — reconnect to continue SEO automation.',
-          timestamp: Date.now(),
-        });
-      }, 10000);
-    }
-    // Log active test flags + show visual banner so test mode is never mistaken for real
-    const activeFlags = Object.entries(TEST_FLAGS).filter(([, v]) => v).map(([k]) => k);
-    if (activeFlags.length > 0) {
-      console.log('[TEST] Active test flags:', activeFlags.join(', '));
-      win.webContents.executeJavaScript(`
-        const b = document.createElement('div');
-        b.textContent = '⚠ TEST MODE — Mock data active';
-        b.style.cssText = 'position:fixed;top:0;left:50%;transform:translateX(-50%);z-index:99999;background:#ef4444;color:#fff;padding:4px 16px;font-size:11px;font-weight:700;border-radius:0 0 8px 8px;pointer-events:none;';
-        document.body.appendChild(b);
-      `);
-    }
-    // END TEST HARNESS
   });
 
   // ── Minimize to tray on close (keeps spells running) ──────
@@ -1282,10 +1239,6 @@ async function handleToolApproval(toolName, input) {
     return { behavior: 'allow', updatedInput: input };
   }
 
-  // Auto-approve MCP scheduled-task operations (spell create/update/delete)
-  if (toolName.includes('scheduled-tasks') || toolName.includes('scheduled_tasks')) {
-    return { behavior: 'allow', updatedInput: input };
-  }
 
   // ── MCP Merlin tools — auto-approve read-only, gate spend actions ──
   if (toolName.startsWith('mcp__merlin__')) {
@@ -1499,7 +1452,8 @@ async function startSession() {
   // If user has an API key, pass it via env so Claude Code uses it instead of subscription
   // ELECTRON_RUN_AS_NODE prevents the SDK subprocess from launching as a macOS GUI app
   // (dock bouncing + hang). The login flow at trigger-claude-login already sets this.
-  const sessionEnv = { ...process.env, ELECTRON_RUN_AS_NODE: '1', BROWSER: 'none' };
+  const sessionEnv = { ...process.env, BROWSER: 'none' };
+  if (!getBundledNodePath()) sessionEnv.ELECTRON_RUN_AS_NODE = '1'; // Only needed for wrapper fallback
   try {
     const storedKey = readSecureFile(path.join(appRoot, '.merlin-api-key'));
     if (storedKey && storedKey.startsWith('sk-ant-')) {
@@ -1808,7 +1762,8 @@ ipcMain.handle('trigger-claude-login', async () => {
   try {
     const { spawn } = require('child_process');
     const isWin = process.platform === 'win32';
-    const nodeWrapper = path.join(os.homedir(), '.claude', 'bin', isWin ? 'node.cmd' : 'node');
+    const bundledNode = getBundledNodePath();
+    const nodeExe = bundledNode || path.join(os.homedir(), '.claude', 'bin', isWin ? 'node.cmd' : 'node');
     const sdkDir = app.isPackaged
       ? (process.platform === 'darwin'
         ? path.join(path.dirname(app.getPath('exe')), '..', 'Resources', 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
@@ -1816,18 +1771,23 @@ ipcMain.handle('trigger-claude-login', async () => {
       : path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-agent-sdk');
     const cliJs = path.join(sdkDir, 'cli.js');
 
-    // Spawn the bundled CLI's login flow. Captures stdout to extract the
-    // auth URL, then opens it in an in-app BrowserWindow. The window
-    // intercepts the OAuth redirect (localhost or platform.claude.com)
-    // and auto-captures the auth code — no paste page, no manual steps.
+    // Spawn the CLI's login flow. Prefer bundled Node (invisible, no Dock bounce).
+    // Fall back to ELECTRON_RUN_AS_NODE wrapper if bundled binary not available.
     return new Promise((resolve) => {
       let resolved = false;
       const finish = (result) => { if (!resolved) { resolved = true; _awaitingAuth = false; resolve(result); } };
 
-      const child = spawn(nodeWrapper, [cliJs, 'auth', 'login'], {
-        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', BROWSER: 'none' },
+      const loginEnv = { ...process.env, BROWSER: 'none' };
+      if (!bundledNode) loginEnv.ELECTRON_RUN_AS_NODE = '1';
+      // When using bundled Node (real binary), spawn directly — no shell layer needed.
+      // When falling back to the wrapper (shell script on Mac, .cmd on Windows),
+      // shell: true is needed for macOS to execute the script via /bin/sh.
+      const useBundled = !!bundledNode;
+      const child = spawn(nodeExe, [cliJs, 'auth', 'login'], {
+        env: loginEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: isWin, // Windows needs shell for .cmd files
+        shell: !useBundled, // false for real binary, true for wrapper script
+        windowsHide: true,
       });
 
       // Backup signal: watch for credential file creation.
@@ -1939,7 +1899,7 @@ ipcMain.handle('trigger-claude-login', async () => {
       child.stdout.on('data', (d) => {
         const chunk = d.toString();
         stdout += chunk;
-        console.log('[claude-login] stdout:', chunk.trim());
+        console.log('[claude-login] stdout received');
         handleOutput(stdout + stderr);
       });
 
@@ -2023,14 +1983,6 @@ ipcMain.handle('has-api-key', () => {
 
 // Morning briefing — reads cached briefing generated by scheduled spells
 ipcMain.handle('get-briefing', (_, brandName) => {
-  // TEST HARNESS — rip out after v1
-  if (testActive('spells')) return {
-    date: new Date().toISOString(),
-    ads: '3 winners running strong (4.2x, 3.8x, 3.1x ROAS). Paused "Neon Nights" — CPC hit $2.40. Net spend down $15/day.',
-    content: '2 blog posts published this week. "Summer Streetwear Guide" getting organic traffic.',
-    revenue: '$1,847 yesterday. $12.8K this week. MER trending up 12% vs last week.',
-    recommendation: 'Scale "Street Style" to $50/day — it has held 4.2x ROAS for 5 consecutive days.',
-  };
   const suffix = brandName ? `-${brandName}` : '';
   const briefingFile = path.join(appRoot, `.merlin-briefing${suffix}.json`);
   try {
@@ -2178,7 +2130,14 @@ async function runOAuthFlow(platform, brandName, extra) {
       try {
         const brandMd = path.join(appRoot, 'assets', 'brands', name, 'brand.md');
         const content = fs.readFileSync(brandMd, 'utf8');
-        const urlMatch = content.match(/URL:\s*(https?:\/\/[^\s\n]+)/i) || content.match(/website:\s*(https?:\/\/[^\s\n]+)/i);
+        // Match all common brand.md formats:
+        //   URL: https://example.com
+        //   Website: https://example.com
+        //   - **Website**: https://example.com
+        //   - **URL**: https://example.com
+        //   - **Website**: example.com  (no protocol)
+        const urlMatch = content.match(/\*?\*?(?:URL|Website)\*?\*?\s*[:]\s*(https?:\/\/[^\s\n)]+)/i)
+          || content.match(/\*?\*?(?:URL|Website)\*?\*?\s*[:]\s*([a-z0-9][a-z0-9.-]+\.[a-z]{2,}[^\s\n)]*)/i);
         if (urlMatch) return urlMatch[1].replace(/^https?:\/\//, '').replace(/\/$/, '');
       } catch {}
       return null;
@@ -2350,6 +2309,9 @@ ipcMain.handle('send-message', (_, text, options = {}) => {
   if (resolveNextMessage) {
     resolveNextMessage(msg);
   } else {
+    if (pendingMessageQueue.length >= 50) {
+      return { success: false, error: 'Message queue full — please wait for the current session to start' };
+    }
     pendingMessageQueue.push(msg);
     // If no session is running, start one so the queued message gets processed.
     // This handles the case where the session was stopped (Escape) or crashed
@@ -2614,7 +2576,6 @@ function computePerfSummary(days, brandName) {
 }
 
 ipcMain.handle('get-perf-summary', (_, requestedDays, brandName) => {
-  if (testActive('perf')) return TEST_DATA.perf(requestedDays); // TEST HARNESS — rip out after v1
   const days = requestedDays || 7;
   const key = brandName || '_global';
 
@@ -2638,7 +2599,6 @@ ipcMain.handle('get-perf-summary', (_, requestedDays, brandName) => {
 
 // ── Activity feed: read brand's activity.jsonl ──────────────
 ipcMain.handle('get-activity-feed', (_, brandName, limit = 30) => {
-  if (testActive('activity')) return TEST_DATA.activity().slice(0, limit); // TEST HARNESS — rip out after v1
   if (!brandName) {
     // Try to find the first brand with an activity log
     const brandsDir = path.join(appRoot, 'assets', 'brands');
@@ -2717,7 +2677,6 @@ ipcMain.handle('get-swipes', (_, brandName) => {
 });
 
 ipcMain.handle('get-archive-items', async (_, filters = {}) => {
-  if (testActive('archive')) return TEST_DATA.archive(); // TEST HARNESS — rip out after v1
   const resultsDir = path.join(appRoot, 'results');
   if (!fs.existsSync(resultsDir)) return [];
 
@@ -2924,7 +2883,12 @@ ipcMain.handle('get-decrypted-config-path', (_, brandName) => {
     if (!cfg || Object.keys(cfg).length === 0) return null;
     const tmpPath = path.join(os.tmpdir(), `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
     fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 60000);
+    // Clean up temp config aggressively — 10s grace for binary to read it, then delete
+    setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch (e) { console.error('[config-cleanup]', e.message); } }, 10000);
+    // Failsafe: also register for process exit cleanup
+    const cleanup = () => { try { fs.unlinkSync(tmpPath); } catch {} };
+    process.once('exit', cleanup);
+    setTimeout(() => { process.removeListener('exit', cleanup); }, 15000);
     return tmpPath;
   }
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
@@ -2960,7 +2924,10 @@ function writeState(data) {
     fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
     fs.renameSync(tmpPath, stateFile);
     return true;
-  } catch { return false; }
+  } catch (e) {
+    console.error('[state-write]', e.message);
+    return false;
+  }
 }
 
 ipcMain.handle('save-state', (_, data) => {
@@ -3229,7 +3196,7 @@ function writeConfig(cfg) {
   try {
     fs.mkdirSync(path.dirname(configPath), { recursive: true });
     const tmpPath = configPath + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2));
+    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
     fs.renameSync(tmpPath, configPath);
   } catch (err) { console.error('[config] write failed:', err.message); }
   finally { _configLock = false; }
@@ -3527,7 +3494,6 @@ function getConnections(brandName) {
     checkBrand('metaAccessToken', 'meta');
     checkBrand('tiktokAccessToken', 'tiktok');
     checkBrand('googleAccessToken', 'google');
-    checkBrand('pinterestAccessToken', 'pinterest');
     checkBrand('amazonAccessToken', 'amazon');
     checkBrand('etsyAccessToken', 'etsy');
     checkBrand('redditAccessToken', 'reddit');
@@ -3547,14 +3513,19 @@ function getConnections(brandName) {
     if (globalCfg.elevenLabsApiKey || vaultGet('_global', 'elevenLabsApiKey')) connected.push({ platform: 'elevenlabs', status: 'connected' });
     if (globalCfg.heygenApiKey || vaultGet('_global', 'heygenApiKey')) connected.push({ platform: 'heygen', status: 'connected' });
     if (globalCfg.arcadsApiKey || vaultGet('_global', 'arcadsApiKey')) connected.push({ platform: 'arcads', status: 'connected' });
-    if (globalCfg.slackBotToken || globalCfg.slackWebhookUrl || vaultGet('_global', 'slackBotToken')) connected.push({ platform: 'slack', status: 'connected' });
+    // Slack posting requires a webhook URL. Bot token alone (from OAuth) enables
+    // channel discovery but NOT posting. Show "needs setup" if only bot token exists.
+    if (globalCfg.slackWebhookUrl) {
+      connected.push({ platform: 'slack', status: 'connected' });
+    } else if (globalCfg.slackBotToken || vaultGet('_global', 'slackBotToken')) {
+      connected.push({ platform: 'slack', status: 'expired' }); // shows as needing attention
+    }
     if (globalCfg.discordGuildId && globalCfg.discordChannelId) connected.push({ platform: 'discord', status: 'connected' });
     return connected;
   } catch { return []; }
 }
 
 ipcMain.handle('get-connected-platforms', (_, brandName) => {
-  if (testActive('connections')) return TEST_DATA.connections(); // TEST HARNESS — rip out after v1
   return getConnections(brandName);
 });
 
@@ -3667,7 +3638,6 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
 
 // ── Spellbook (Scheduled Tasks) ────────────────────────────
 ipcMain.handle('list-spells', (_, brandName) => {
-  if (testActive('spells')) return TEST_DATA.spells(); // TEST HARNESS — rip out after v1
   const tasksDir = path.join(os.homedir(), '.claude', 'scheduled-tasks');
   if (!fs.existsSync(tasksDir)) return [];
 
@@ -3795,7 +3765,6 @@ ipcMain.handle('toggle-spell', (_, taskId, enabled) => {
 
 // Read brands from filesystem
 ipcMain.handle('get-live-ads', (_, brandName) => {
-  if (testActive('live')) return TEST_DATA.liveAds(); // TEST HARNESS — rip out after v1
   if (!brandName) {
     // Use first brand with ads-live.json
     const brandsDir = path.join(appRoot, 'assets', 'brands');
@@ -3818,7 +3787,6 @@ ipcMain.handle('get-live-ads', (_, brandName) => {
 
 // Read brands from filesystem
 ipcMain.handle('get-brands', () => {
-  if (testActive('brands')) return TEST_DATA.brands(); // TEST HARNESS — rip out after v1
   const brandsDir = path.join(appRoot, 'assets', 'brands');
   try {
     const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
@@ -3831,9 +3799,12 @@ ipcMain.handle('get-brands', () => {
         let vertical = '', status = 'active', displayName = d.name;
         if (fs.existsSync(brandMd)) {
           const content = fs.readFileSync(brandMd, 'utf8');
-          const vertMatch = content.match(/vertical[:\s]+(\w+)/i);
+          // Match both plain and markdown bold formats:
+          //   Vertical: apparel         — plain format
+          //   - **Vertical**: apparel   — markdown bold format
+          const vertMatch = content.match(/\*?\*?Vertical\*?\*?\s*[:]\s*(\w+)/i);
           if (vertMatch) vertical = vertMatch[1];
-          const statusMatch = content.match(/status[:\s]+(active|paused|archived)/i);
+          const statusMatch = content.match(/\*?\*?Status\*?\*?\s*[:]\s*(active|paused|archived)/i);
           if (statusMatch) status = statusMatch[1].toLowerCase();
           const h1Match = content.match(/^#\s+(.+)$/m);
           if (h1Match) {
@@ -4183,23 +4154,19 @@ ipcMain.handle('apply-referral-code', async (_, code) => {
 ipcMain.handle('apply-update', () => { downloadAndApplyUpdate(); });
 ipcMain.handle('restart-app', () => {
   // If an asar update was staged, run the swap script instead of plain relaunch.
-  // The script waits for Electron to exit, moves app.asar.update → app.asar,
-  // then relaunches the app with the new code.
-  const swapScript = process.platform === 'win32'
-    ? path.join(appInstall, 'update-swap.cmd')
-    : path.join(appInstall, 'update-swap.sh');
-  if (fs.existsSync(swapScript)) {
-    const { spawn } = require('child_process');
-    if (process.platform === 'win32') {
+  // asar hot-swap is Windows-only (macOS disabled to preserve code signature).
+  if (process.platform === 'win32') {
+    const swapScript = path.join(appInstall, 'update-swap.cmd');
+    if (fs.existsSync(swapScript)) {
+      const { spawn } = require('child_process');
       spawn('cmd.exe', ['/c', swapScript], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-    } else {
-      spawn('bash', [swapScript], { detached: true, stdio: 'ignore' }).unref();
+      app.exit(0);
+      return;
     }
-    app.exit(0);
-  } else {
-    app.relaunch();
-    app.exit(0);
   }
+  // Standard relaunch (macOS always, Windows when no swap script)
+  app.relaunch();
+  app.exit(0);
 });
 
 // Full auto-install: download the new installer from GitHub releases, spawn
@@ -4243,6 +4210,10 @@ ipcMain.handle('install-update', async () => {
       assetName = a.name;
       runner = (filePath) => {
         const { spawn } = require('child_process');
+        // Show guidance before opening DMG — non-technical users need instructions
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('update-progress', 'Opening installer — drag Merlin to your Applications folder to complete the update.');
+        }
         spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref();
       };
     } else {
@@ -4425,7 +4396,12 @@ async function ensureBinary(opts = {}) {
     fs.chmodSync(binaryPath, 0o755);
     const { execSync } = require('child_process');
     try { execSync(`xattr -d com.apple.quarantine "${binaryPath}" 2>/dev/null`); } catch {}
-    try { execSync(`codesign --force --sign - "${binaryPath}" 2>/dev/null`); } catch {}
+    try {
+      execSync(`codesign --force --sign - "${binaryPath}"`);
+    } catch (signErr) {
+      console.error('[ensureBinary] macOS ad-hoc codesign failed:', signErr.message);
+      if (onProgress) onProgress('Engine downloaded — codesign failed. You may need to allow it in System Settings > Privacy.');
+    }
   }
 
   console.log(`[ensureBinary] Downloaded ${assetName} (${(binary.length / 1024 / 1024).toFixed(1)} MB) to ${binaryPath}`);
@@ -4563,11 +4539,13 @@ async function downloadAndApplyUpdate() {
 
     console.log(`[update] Version updated to ${latestVersion}`);
 
-    // Stage the new asar for swap on restart. Electron locks app.asar while
-    // running — direct overwrite fails silently on Windows. Instead, download
-    // to app.asar.update and write a helper script that swaps it after exit.
+    // Stage the new asar for swap on restart.
+    // macOS: DISABLED — mutating files inside a signed .app bundle invalidates the
+    // code signature, causing "The application Merlin is not open anymore" on relaunch.
+    // Ad-hoc re-signing loses hardened runtime entitlements. Mac users update via DMG only.
+    // Windows: asar hot-swap works because Windows doesn't enforce code signatures on apps.
     let asarStaged = false;
-    if (app.isPackaged) {
+    if (app.isPackaged && process.platform === 'win32') {
       const asarAsset = (data.assets || []).find(a => a.name === 'app.asar');
       if (asarAsset) {
         const asarPath = path.join(appInstall, 'app.asar');
@@ -4575,50 +4553,20 @@ async function downloadAndApplyUpdate() {
         try {
           if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading update...');
           const asarData = await httpsGet(asarAsset.browser_download_url);
-          if (asarData.length > 500000) { // sanity: asar should be > 500KB
+          if (asarData.length > 500000) {
             fs.writeFileSync(stagedPath, asarData);
             asarStaged = true;
             console.log(`[update] asar staged (${(asarData.length / 1024 / 1024).toFixed(1)} MB) → ${stagedPath}`);
-
-            // Write a helper script that swaps the asar after Electron exits
-            if (process.platform === 'win32') {
-              const swapScript = path.join(appInstall, 'update-swap.cmd');
-              const exePath = process.execPath;
-              fs.writeFileSync(swapScript, [
-                '@echo off',
-                `timeout /t 2 /nobreak >nul`,
-                `move /Y "${stagedPath}" "${asarPath}"`,
-                `start "" "${exePath}"`,
-                `del "%~f0"`,
-              ].join('\r\n'));
-              console.log('[update] swap script written:', swapScript);
-            } else {
-              const swapScript = path.join(appInstall, 'update-swap.sh');
-              // On Mac, relaunch the .app bundle, not the raw binary.
-              // CRITICAL: After replacing app.asar, the code signature is invalid.
-              // We must re-sign the bundle with ad-hoc signature before relaunching,
-              // otherwise macOS kills the process with "is not open anymore."
-              const appBundle = process.execPath.replace(/\/Contents\/MacOS\/.*$/, '');
-              const installBinaryPath = path.join(appInstall, '.claude', 'tools', 'Merlin');
-              const stagedBinaryPath = installBinaryPath + '.update';
-              fs.writeFileSync(swapScript, [
-                '#!/bin/bash',
-                'sleep 2',
-                `mv -f "${stagedPath}" "${asarPath}"`,
-                `# Swap staged binary if it exists`,
-                `[ -f "${stagedBinaryPath}" ] && mv -f "${stagedBinaryPath}" "${installBinaryPath}" && chmod +x "${installBinaryPath}"`,
-                `# Re-sign the entire .app bundle after modifying contents.`,
-                `# Without this, macOS kills the app with "is not open anymore"`,
-                `# because the original code signature no longer matches.`,
-                `codesign --force --deep --sign - "${appBundle}" 2>/dev/null || true`,
-                `# Clear quarantine on the re-signed bundle`,
-                `xattr -cr "${appBundle}" 2>/dev/null || true`,
-                `open "${appBundle}"`,
-                `rm -f "${swapScript}"`,
-              ].join('\n'));
-              fs.chmodSync(swapScript, 0o755);
-              console.log('[update] swap script written:', swapScript);
-            }
+            const swapScript = path.join(appInstall, 'update-swap.cmd');
+            const exePath = process.execPath;
+            fs.writeFileSync(swapScript, [
+              '@echo off',
+              `timeout /t 2 /nobreak >nul`,
+              `move /Y "${stagedPath}" "${asarPath}"`,
+              `start "" "${exePath}"`,
+              `del "%~f0"`,
+            ].join('\r\n'));
+            console.log('[update] swap script written:', swapScript);
           }
         } catch (e) {
           console.error('[update] asar staging failed:', e.message);
@@ -4671,6 +4619,15 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  // macOS About panel
+  if (process.platform === 'darwin') {
+    app.setAboutPanelOptions({
+      applicationName: 'Merlin',
+      applicationVersion: getCurrentVersion(),
+      copyright: '© Oath Games',
+    });
+  }
+
   // Migrate global tokens to per-brand (runs once, idempotent)
   try { migratePerBrand(); } catch (err) { console.error('[migration]', err.message); }
   // Migrate plaintext tokens to vault (runs once, idempotent)

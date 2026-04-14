@@ -1,5 +1,5 @@
 {
-  "version": "0.9.99",
+  "version": "1.0.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,10 +23,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v0.9.99: Mac auth fix — seamless sign-in, no more paste-code page.",
+  "notes": "v1.0.0: Production release — full security audit, hardened error handling, test harness removed.",
   "whatsNew": [
-    "Mac auth completely rebuilt — in-app sign-in window auto-captures OAuth code",
-    "No more 'Paste this into Claude Code' — redirect intercepted automatically",
-    "Session blocked until auth completes — no more blank loading screens"
+    "Production-hardened: comprehensive security audit with 25+ fixes across all systems",
+    "Removed test harness and mock data — all data is real, all the time",
+    "Strengthened error handling across Go engine, Electron app, and Cloudflare Workers"
   ]
 }

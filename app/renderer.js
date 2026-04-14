@@ -790,7 +790,7 @@ function renderMarkdown(text) {
 
   // Parse markdown with marked, then sanitize to prevent XSS
   let html = typeof DOMPurify !== 'undefined'
-    ? DOMPurify.sanitize(marked.parse(text), { ADD_TAGS: ['video'], ADD_ATTR: ['data-path', 'data-file', 'loading', 'controls', 'playsinline', 'preload'], ALLOW_UNKNOWN_PROTOCOLS: true })
+    ? DOMPurify.sanitize(marked.parse(text), { ADD_TAGS: ['video'], ADD_ATTR: ['data-path', 'data-file', 'loading', 'controls', 'playsinline', 'preload'], ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|merlin|data):)/i })
     : marked.parse(text);
 
   // Normalize Windows backslash paths to forward slashes

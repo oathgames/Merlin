@@ -465,6 +465,29 @@ function buildTools(tool, z, ctx) {
     { annotations: { destructive: true } }
   ));
 
+  // ── linkedin_ads ─────────────────────────────────────────
+  tools.push(tool(
+    'linkedin_ads',
+    'LinkedIn Ads — manage campaigns, creatives, budgets, and check performance.',
+    {
+      action: z.enum(['accounts', 'campaigns', 'setup', 'push', 'insights', 'kill', 'duplicate', 'budget']).describe('Operation'),
+      brand: z.string().optional(),
+      campaignId: z.string().optional().describe('Campaign ID or URN'),
+      adId: z.string().optional().describe('Creative ID or URN'),
+      campaignName: z.string().optional().describe('Campaign name'),
+      dailyBudget: z.number().optional().describe('Daily budget in dollars'),
+      adHeadline: z.string().optional().describe('Ad headline'),
+      adBody: z.string().optional().describe('Ad body text'),
+      adLink: z.string().optional().describe('Destination URL'),
+      batchCount: z.number().optional().describe('Days of data (for insights)'),
+    },
+    async (args) => {
+      const result = await runBinary(ctx, 'linkedin-' + args.action, args);
+      return { content: [{ type: 'text', text: result.text }], isError: result.error };
+    },
+    { annotations: { destructive: true } }
+  ));
+
   // ── etsy ─────────────────────────────────────────────────
   tools.push(tool(
     'etsy',
@@ -501,7 +524,7 @@ function buildTools(tool, z, ctx) {
     'platform_login',
     'Connect a platform via OAuth — opens browser for authorization. Returns success/failure only, never tokens.',
     {
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'pinterest', 'snapchat', 'twitter', 'slack', 'discord', 'etsy', 'reddit']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit']).describe('Platform to connect'),
       brand: z.string().optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -512,7 +535,7 @@ function buildTools(tool, z, ctx) {
         return { content: [{ type: 'text', text: 'Meta is currently connected via manual token entry (App Review pending). Ask the user to click the Meta tile in the Connections panel and paste their token from developers.facebook.com/tools/explorer. Then use connection_status to verify.' }] };
       }
       // Guard platforms that don't have OAuth credentials yet
-      const comingSoon = ['klaviyo', 'pinterest', 'snapchat', 'twitter'];
+      const comingSoon = ['klaviyo'];
       if (comingSoon.includes(args.platform)) {
         return { content: [{ type: 'text', text: `${args.platform} integration is coming soon — not yet available.` }] };
       }

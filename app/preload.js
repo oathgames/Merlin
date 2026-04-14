@@ -30,6 +30,13 @@ function assertObj(v) {
   if (typeof v !== 'object' || Array.isArray(v)) throw new Error('invalid object');
   return v;
 }
+function assertCron(v) {
+  if (typeof v !== 'string' || v.length > 50) throw new Error('invalid cron');
+  const parts = v.trim().split(/\s+/);
+  if (parts.length !== 5) throw new Error('cron must have 5 fields');
+  if (/^\*\/1?\s/.test(v.trim()) || v.trim() === '* * * * *') throw new Error('cron expression runs too frequently');
+  return v;
+}
 
 contextBridge.exposeInMainWorld('merlin', {
   // Platform
@@ -122,7 +129,7 @@ contextBridge.exposeInMainWorld('merlin', {
   saveConfigField: (key, value, brand) => ipcRenderer.invoke('save-config-field', assertStr(key, 100), assertStr(String(value), 2000), assertBrand(brand)),
   sendMessage: (text, options) => ipcRenderer.invoke('send-message', assertStr(text, MAX_TEXT), assertObj(options)),
   sendSilent: (text) => ipcRenderer.invoke('send-message', assertStr(text, MAX_TEXT), { silent: true }),
-  createSpell: (taskId, cron, desc, prompt, brand) => ipcRenderer.invoke('create-spell', assertStr(taskId, 100), assertStr(cron, 50), assertStr(desc, 500), assertStr(prompt, MAX_STR), assertBrand(brand)),
+  createSpell: (taskId, cron, desc, prompt, brand) => ipcRenderer.invoke('create-spell', assertStr(taskId, 100), assertCron(cron), assertStr(desc, 500), assertStr(prompt, MAX_STR), assertBrand(brand)),
   listSpells: (brand) => ipcRenderer.invoke('list-spells', assertBrand(brand)),
 
   // Approvals
