@@ -1816,97 +1816,71 @@ ipcMain.handle('trigger-claude-login', async () => {
         console.warn('[claude-login] fs.watch setup failed:', e.message);
       }
 
-      // 60s timeout — localhost callback can be slow on some networks
+      // 3-minute timeout — accounts for user signing in, potentially 2FA,
+      // copying the code from the browser, and pasting into our dialog
       const uxTimeout = setTimeout(() => {
-        console.error('[claude-login] Timed out after 60s');
+        console.error('[claude-login] Timed out after 180s');
         try { credWatcher?.close(); } catch {}
         try { child.kill(); } catch {}
-        try { if (authWin && !authWin.isDestroyed()) authWin.close(); } catch {}
         finish({ success: false, timedOut: true, error: 'Login timed out. Try again or use an API key.' });
-      }, 60000);
+      }, 180000);
 
       let stdout = '';
       let stderr = '';
       let urlOpened = false;
       let pastePromptShown = false;
-      let authWin = null;
-      let codeInjected = false;
 
-      // Open the auth URL.
+      // Auth flow (all platforms):
       //
-      // Windows / Linux: system browser via shell.openExternal. The CLI's
-      // built-in localhost callback server captures the token internally —
-      // no interception needed, no paste page, this just works.
+      //   1. Spawn `claude auth login` subprocess → prints auth URL to stdout
+      //   2. We detect the URL and open it in the user's default browser via
+      //      shell.openExternal. The system browser handles sign-in — password
+      //      managers, 2FA, SSO, and corporate proxies all work out of the box.
+      //   3. Claude's OAuth redirects to either:
+      //      a) http://localhost:<port>/callback?code=... — the CLI's built-in
+      //         HTTP listener captures this internally and exits cleanly.
+      //      b) https://platform.claude.com/oauth/code/callback?code=... — the
+      //         paste-code fallback page when localhost isn't reachable.
+      //   4. We show the paste-code dialog in the Merlin window IMMEDIATELY
+      //      when we see the auth URL, so the user always has a place to paste
+      //      the code. If the CLI's localhost path (3a) succeeds first, the
+      //      process exits and the renderer dismisses the dialog automatically.
+      //      If the user ends up on the paste page (3b), they copy the code and
+      //      paste it into our dialog, which forwards to child.stdin and the CLI
+      //      exchanges it for a token.
       //
-      // macOS: in-app BrowserWindow with webRequest interception. macOS users
-      // were stranded on a "Paste this into Claude Code" page because the
-      // localhost OAuth callback fails on some Mac network configurations.
-      // The in-app window catches both the localhost callback AND the
-      // platform.claude.com paste fallback URL.
+      // Why this approach and not an in-app BrowserWindow:
+      //   Past versions tried to intercept the OAuth redirect inside an Electron
+      //   BrowserWindow via webRequest.onBeforeRequest. This worked sometimes but
+      //   was fragile across Electron versions and blocked users on platforms
+      //   where interception silently failed. The system browser is universally
+      //   reliable and matches how every other CLI auth flow works (gh, aws,
+      //   gcloud, kubectl, etc).
       function openAuthWindow(authUrl) {
-        if (process.platform !== 'darwin') {
-          // Windows/Linux: system browser. CLI handles the rest.
-          if (urlOpened) return;
-          shell.openExternal(authUrl);
-          return;
+        if (urlOpened) return;
+        urlOpened = true;
+        console.log('[claude-login] Opening auth URL in system browser');
+        shell.openExternal(authUrl);
+        // Show the paste dialog immediately. If CLI captures via localhost first,
+        // the renderer dismisses the dialog on success. Otherwise the user has
+        // somewhere to paste the code from the browser's fallback page.
+        if (!pastePromptShown && win && !win.isDestroyed()) {
+          pastePromptShown = true;
+          win.webContents.send('auth-code-prompt');
         }
-        // macOS: in-app BrowserWindow
-        if (authWin) return;
-        authWin = new BrowserWindow({
-          width: 460, height: 720,
-          title: 'Sign in to Claude',
-          show: true, center: true,
-          autoHideMenuBar: true,
-          webPreferences: {
-            nodeIntegration: false,
-            contextIsolation: true,
-            // Isolated session — the webRequest filter only applies here,
-            // not the main window (which uses ws://127.0.0.1 for WebSocket).
-            // 'persist:' prefix keeps cookies across auth retries so the user
-            // doesn't have to sign in to claude.ai again if retry is needed.
-            partition: 'persist:claude-auth',
-          },
-        });
-
-        // Intercept requests to localhost callback OR platform.claude.com paste-code fallback.
-        // Both URLs contain ?code=XXX — extract it and feed to CLI stdin.
-        authWin.webContents.session.webRequest.onBeforeRequest(
-          { urls: ['http://localhost:*/*', 'http://127.0.0.1:*/*', 'https://platform.claude.com/*'] },
-          (details, callback) => {
-            try {
-              const parsed = new URL(details.url);
-              const code = parsed.searchParams.get('code');
-              if (code && !codeInjected) {
-                codeInjected = true;
-                console.log('[claude-login] Auto-captured auth code from OAuth redirect');
-                if (child.stdin && !child.stdin.destroyed) child.stdin.write(code + '\n');
-                setTimeout(() => { try { if (authWin && !authWin.isDestroyed()) authWin.close(); } catch {} }, 300);
-                callback({ cancel: true });
-                return;
-              }
-            } catch {}
-            callback({ cancel: false });
-          }
-        );
-
-        authWin.on('closed', () => { authWin = null; });
-        authWin.loadURL(authUrl);
       }
 
       function handleOutput(combined) {
-        // Open auth URL in BrowserWindow (once)
         if (!urlOpened) {
-          const urlMatch = combined.match(/(https:\/\/claude\.ai\/[^\s]+|https:\/\/[^\s]*oauth[^\s]*|https:\/\/[^\s]*auth[^\s]*login[^\s]*)/i);
+          // Match any Claude OAuth URL the CLI prints. Patterns we've seen:
+          //   https://claude.ai/oauth/authorize?...
+          //   https://console.anthropic.com/oauth/authorize?...
+          //   https://platform.claude.com/oauth/authorize?...
+          const urlMatch = combined.match(/https:\/\/(?:claude\.ai|console\.anthropic\.com|platform\.claude\.com)\/[^\s\n\r]+/i)
+            || combined.match(/https:\/\/[^\s\n\r]*oauth[^\s\n\r]*/i);
           if (urlMatch) {
             openAuthWindow(urlMatch[0]);
-            urlOpened = true;
           }
-        }
-        // Fallback: if CLI still outputs a paste prompt (e.g. BrowserWindow failed),
-        // show the in-app paste dialog so the user isn't completely stuck
-        if (!pastePromptShown && !codeInjected && /paste this|paste.*into|enter.*auth.*code|authentication code/i.test(combined)) {
-          pastePromptShown = true;
-          if (win && !win.isDestroyed()) win.webContents.send('auth-code-prompt');
         }
       }
 
@@ -1936,7 +1910,8 @@ ipcMain.handle('trigger-claude-login', async () => {
       child.on('close', async (code) => {
         clearTimeout(uxTimeout);
         try { credWatcher?.close(); } catch {}
-        try { if (authWin && !authWin.isDestroyed()) authWin.close(); } catch {}
+        // Dismiss the paste dialog in the renderer on CLI exit (success path)
+        if (win && !win.isDestroyed()) win.webContents.send('auth-code-dismiss');
         ipcMain.removeListener('auth-code-submit', pasteHandler);
         if (resolved) return; // Timeout already fired — don't block with more I/O
         if (code === 0) {
@@ -1966,7 +1941,7 @@ ipcMain.handle('trigger-claude-login', async () => {
 
       child.on('error', (e) => {
         clearTimeout(uxTimeout);
-        try { if (authWin && !authWin.isDestroyed()) authWin.close(); } catch {}
+        if (win && !win.isDestroyed()) win.webContents.send('auth-code-dismiss');
         console.error('[claude-login] Spawn error:', e.message);
         finish({ success: false, error: e.message });
       });

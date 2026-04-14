@@ -217,6 +217,10 @@ contextBridge.exposeInMainWorld('merlin', {
     const h = () => cb(); ipcRenderer.on('auth-code-prompt', h);
     return () => ipcRenderer.removeListener('auth-code-prompt', h);
   },
+  onAuthCodeDismiss: (cb) => {
+    const h = () => cb(); ipcRenderer.on('auth-code-dismiss', h);
+    return () => ipcRenderer.removeListener('auth-code-dismiss', h);
+  },
   onAuthRequired: (cb) => {
     const h = () => cb(); ipcRenderer.on('auth-required', h);
     return () => ipcRenderer.removeListener('auth-required', h);

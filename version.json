@@ -1,5 +1,5 @@
 {
-  "version": "1.0.1",
+  "version": "1.0.2",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,10 +23,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v1.0.1: Critical hotfix — Electron rollback fixes Mac crashes, Windows auth fix, no more keychain prompts.",
+  "notes": "v1.0.2: Auth flow rewrite — paste dialog now shows reliably on all platforms.",
   "whatsNew": [
-    "Fixed Mac crash on launch (Electron 39 incompatibility on newer Macs — rolled back to 33)",
-    "Fixed Windows auth flow (reverted to system browser, in-app window was broken in Electron 39)",
-    "Fixed macOS keychain prompts on every update (now uses plaintext with 0600 permissions)"
+    "Sign-in: paste dialog now opens immediately so you always have a place to paste the code",
+    "Removed fragile in-app browser — system browser handles sign-in everywhere (password managers, 2FA, SSO all just work)",
+    "Extended sign-in timeout to 3 minutes for slower networks and 2FA flows"
   ]
 }

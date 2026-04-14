@@ -1475,6 +1475,18 @@ if (merlin.onAuthCodePrompt) {
   });
 }
 
+// ── Auth Code Dismiss (CLI exited — dialog no longer needed) ──
+// Fires when the Claude CLI subprocess closes (success or failure). The
+// paste dialog is always opened preemptively as a safety net the moment
+// we see the auth URL — this event removes it if the CLI's built-in
+// localhost callback captured the code before the user needed to paste.
+if (merlin.onAuthCodeDismiss) {
+  merlin.onAuthCodeDismiss(() => {
+    const d = document.getElementById('auth-code-dialog');
+    if (d) d.remove();
+  });
+}
+
 // ── Auth Required Notification ───────────────────────────────
 // Fired when startSession() finds no credentials and returns early
 // (instead of letting the SDK open a browser with no paste dialog).
