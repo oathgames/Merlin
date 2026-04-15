@@ -1,5 +1,5 @@
 {
-  "version": "1.1.1",
+  "version": "1.1.2",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,10 +23,10 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v1.1.1: Upgraded the bundled runtime for macOS 26 compatibility, fixing a startup crash on Apple Silicon Macs.",
+  "notes": "v1.1.2: Correctly ships the Electron 41 runtime for macOS 26 compatibility, fixing the Apple Silicon startup crash.",
   "whatsNew": [
+    "Correctly ships the Electron 41 runtime on macOS and Windows",
     "Fixed startup crash on macOS 26.x Apple Silicon",
-    "Upgraded the bundled Chromium runtime for performance and security",
     "Added a defensive entitlement for modern macOS JIT enforcement"
   ]
 }
