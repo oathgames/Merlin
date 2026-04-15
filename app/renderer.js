@@ -1845,26 +1845,72 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
   const sample = w.sample_size || 0;
   sampleEl.textContent = sample > 0 ? `From ${sample.toLocaleString()} anonymized ads` : 'Collecting data...';
 
-  const patterns = w.patterns || {};
-  const topHooks = (patterns.top_hooks || []).slice(0, 4);
-  const topScenes = (patterns.top_scenes || []).slice(0, 4);
-  const topModels = (patterns.top_models || []);
-  const imageModels = topModels.filter(m => m.type === 'image').slice(0, 3);
-  const videoModels = topModels.filter(m => m.type === 'video').slice(0, 3);
-  const formats = w.formats || {};
+  // Wisdom server schema (wisdom-api/worker.js:aggregate):
+  //   hooks:     { [name]: {ctr, cpc, roas, win, cpa?, n} }
+  //   formats?:  { [name]: {ctr, roas, win, n} }
+  //   timing:    { days: [topDowIndexes], hours: [topHourIndexes] }
+  //   platforms: { [name]: {ctr, roas?, n} }
+  //   models?:   { [name]: {roas, win, n} }   (min 2 samples)
+  //
+  // Old client code read `w.patterns.top_hooks`, `f.avg_roas`, `m.win_rate`,
+  // `timing.best_days`, etc. — NONE of those keys exist in the server
+  // response, so every panel showed "Collecting..." even with server data
+  // present (and the one partial render showed "undefinedx" / "0% wins").
+  // Every field-name below matches the actual server shape.
+  const hooksObj = (w.hooks && typeof w.hooks === 'object') ? w.hooks : {};
+  const formatsObj = (w.formats && typeof w.formats === 'object') ? w.formats : {};
+  const modelsObj = (w.models && typeof w.models === 'object') ? w.models : {};
   const timing = w.timing || {};
 
-  const formatList = Object.entries(formats)
-    .map(([name, v]) => ({ name, ...v }))
-    .sort((a, b) => (b.avg_roas || 0) - (a.avg_roas || 0))
-    .slice(0, 4);
+  // Object-keyed → sorted array by roas desc. Fall through defensively on
+  // partial rows (e.g. server adds a new field later).
+  const objToSortedArray = (obj, nameKey) => Object.entries(obj)
+    .map(([name, v]) => ({ [nameKey]: name, ...(v || {}) }))
+    .sort((a, b) => (b.roas || 0) - (a.roas || 0));
+
+  const topHooks = objToSortedArray(hooksObj, 'hook').slice(0, 4);
+  const formatList = objToSortedArray(formatsObj, 'name').slice(0, 4);
+
+  // Server's `models` object isn't tagged by type (no image vs video). Use a
+  // known-video-model list to split — anything not in the list is treated as
+  // an image model. Covers the current fal.ai + Google + HeyGen + Arcads set
+  // that Merlin supports for video generation.
+  const VIDEO_MODELS = new Set([
+    'veo', 'veo2', 'veo3', 'kling', 'seedance', 'seedance-2', 'minimax', 'hunyuan', 'wan', 'hailuo', 'luma', 'heygen', 'arcads',
+  ]);
+  const isVideoModel = (name) => {
+    if (!name) return false;
+    const lower = String(name).toLowerCase();
+    if (VIDEO_MODELS.has(lower)) return true;
+    // Substring check catches fal-style names like "fal-ai/veo3" and "veo-3.0-fast"
+    for (const v of VIDEO_MODELS) if (lower.includes(v)) return true;
+    return false;
+  };
+  const allModels = objToSortedArray(modelsObj, 'model');
+  const imageModels = allModels.filter(m => !isVideoModel(m.model)).slice(0, 3);
+  const videoModels = allModels.filter(m => isVideoModel(m.model)).slice(0, 3);
+
+  // Top scenes / creative styles aren't currently produced by the server
+  // aggregation (no `scene` dimension on ads yet). Keep the slot reserved so
+  // a future server update lights it up automatically without another client
+  // shipping, but for now it stays empty (legitimately "Collecting...").
+  const topScenes = [];
 
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  const bestDays = (timing.best_days || []).map(i => dayNames[i] || i).join(', ');
-  const bestHours = (timing.best_hours || []).map(h => {
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    return (h === 0 ? 12 : h > 12 ? h - 12 : h) + ampm;
-  }).join(', ');
+  // topKeys in wisdom-api returns numeric day-of-week (0-6) / hour (0-23);
+  // defensively coerce in case a stray string slips through.
+  const bestDays = (Array.isArray(timing.days) ? timing.days : [])
+    .map(i => dayNames[Number(i)] || String(i))
+    .join(', ');
+  const bestHours = (Array.isArray(timing.hours) ? timing.hours : [])
+    .map(h => {
+      const hh = Number(h);
+      if (!Number.isFinite(hh)) return '';
+      const ampm = hh >= 12 ? 'PM' : 'AM';
+      return (hh === 0 ? 12 : hh > 12 ? hh - 12 : hh) + ampm;
+    })
+    .filter(Boolean)
+    .join(', ');
 
   const empty = '<div style="color:var(--text-dim);font-size:12px">Collecting...</div>';
 
@@ -1884,19 +1930,33 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
     }).join('');
   }
 
-  const hookItems = topHooks.map(h => ({ label: h.hook, display: h.avg_roas + 'x', sub: h.sample + ' ads', val: h.avg_roas }));
-  const sceneItems = topScenes.map(s => ({ label: s.scene, display: s.avg_roas + 'x', sub: s.sample + ' ads', val: s.avg_roas }));
-  const imgItems = imageModels.map(m => ({ label: m.model, display: m.avg_roas + 'x', sub: m.win_rate + '% wins · ' + m.sample + ' ads', val: m.avg_roas }));
-  const vidItems = videoModels.map(m => ({ label: m.model, display: m.avg_roas + 'x', sub: m.win_rate + '% wins · ' + m.sample + ' ads', val: m.avg_roas }));
-  const fmtItems = formatList.map(f => ({ label: f.name, display: f.avg_roas + 'x', sub: (f.win_rate || 0) + '% wins', val: f.avg_roas }));
+  // Format helpers matching the server shape: `roas` (not avg_roas), `n`
+  // (not sample), `win` in 0..1 ratio (not win_rate percentage).
+  const fmtRoas = (r) => (Number(r) || 0).toFixed(2) + 'x';
+  const fmtWinPct = (w) => Math.round((Number(w) || 0) * 100) + '% wins';
+
+  const hookItems = topHooks.map(h => ({
+    label: h.hook, display: fmtRoas(h.roas), sub: (h.n || 0) + ' ads', val: h.roas || 0,
+  }));
+  const sceneItems = topScenes.map(s => ({
+    label: s.scene, display: fmtRoas(s.roas), sub: (s.n || 0) + ' ads', val: s.roas || 0,
+  }));
+  const imgItems = imageModels.map(m => ({
+    label: m.model, display: fmtRoas(m.roas), sub: fmtWinPct(m.win) + ' · ' + (m.n || 0) + ' ads', val: m.roas || 0,
+  }));
+  const vidItems = videoModels.map(m => ({
+    label: m.model, display: fmtRoas(m.roas), sub: fmtWinPct(m.win) + ' · ' + (m.n || 0) + ' ads', val: m.roas || 0,
+  }));
+  const fmtItems = formatList.map(f => ({
+    label: f.name, display: fmtRoas(f.roas), sub: fmtWinPct(f.win), val: f.roas || 0,
+  }));
 
   // Benchmark: compare user's brand to collective averages
   const brand = document.getElementById('brand-select')?.value || '';
   const userPerf = perfState.cache[brand]?.[7] || perfState.cache[brand]?.[perfState.currentPeriod];
   let benchmarkHtml = '';
-  if (userPerf && w.hooks) {
-    const avgCTR = Object.values(w.hooks).reduce((s, h) => s + (h.avg_ctr || 0), 0) / Math.max(1, Object.keys(w.hooks).length);
-    const avgROAS = topHooks.length > 0 ? topHooks.reduce((s, h) => s + h.avg_roas, 0) / topHooks.length : 0;
+  if (userPerf && topHooks.length > 0) {
+    const avgROAS = topHooks.reduce((s, h) => s + (h.roas || 0), 0) / topHooks.length;
     const userMER = userPerf.mer || 0;
     benchmarkHtml = `<div style="grid-column:1/-1;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:4px">
       <div class="wisdom-card-title">Your Performance vs Network</div>

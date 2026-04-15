@@ -1,5 +1,5 @@
 {
-  "version": "1.0.7",
+  "version": "1.0.9",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -23,14 +23,13 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v1.0.7: Enterprise-grade per-brand reporting, voice input via whisper.cpp, bidirectional referrals, Stripe/affiliate payments, live ad sync across every platform, and a sweeping security hardening pass.",
+  "notes": "v1.0.9: Wisdom panel now actually renders server data, version notes tooltip no longer overflows the window, scrollbars hide when there's nothing to scroll, deferred-update safety net completes stale asar swaps on next launch, ffmpeg missing error now tells you where to get it, and a sweeping security hardening pass covering billing portal auth, auto-update integrity verification, OAuth relay, encrypted local state on macOS, and preview-API gating.",
   "whatsNew": [
-    "Performance bar now reliably shows revenue/spend/MER for every brand with a connected ad platform — per-brand dashboards with staggered schedules, strict brand enforcement at the tool layer, and an engine version floor so old binaries can't silently misroute output",
-    "Voice input via bundled whisper.cpp — hit the mic button and Merlin streams your speech to local transcription, no cloud STT, works offline",
-    "Refer a friend, earn trial days — apply a friend's code right in the app for +7 days (cap at 21), and your link now shows how many have registered vs subscribed",
-    "Live ad sync across Meta, TikTok, Google, Amazon, LinkedIn, and Reddit — the dashboard now reflects real-time live/paused/archived state so a killed winner doesn't look 'active' in Merlin while paused on the platform",
-    "Security hardening: OAuth CSRF protection with constant-time state comparison, vault exfiltration path closed (.bak / .tmp suffixes now blocked), /api/credentials bulk-secret endpoint removed in favor of per-request BFF exchange, LinkedIn scaling budget re-validated against user caps, and every user-facing error humanized so raw EPERM/ENOSPC/network strings never leak into the UI",
-    "Wisdom collective now deduplicates reports per (instance, day, platform) and aggregates eagerly inside Cloudflare Workers so your own ad performance starts influencing the network within minutes instead of waiting 24h for the nightly cron",
-    "Subscription status reconciled at startup across devices — if you cancel on one machine and reopen on another, Merlin recognizes the state change instead of showing a stale 'Pro' badge; activation timeouts and cancellations now surface inline recovery prompts"
+    "Wisdom panel now reliably shows Top Hooks / Best Formats / Best Timing from the collective network — the old client-server contract was off (every field name) so data-rich responses rendered as 'Collecting...' and 'undefinedx'; every field now matches the actual server shape",
+    "Version notes tooltip no longer overflows the window on long release notes — wraps at word boundaries with a sensible max width",
+    "Scrollbars in the Wisdom panel and archive sidebar now hide when there's nothing to scroll (auto instead of always-scroll)",
+    "Deferred-update safety net: if you auto-update to a new version but close Merlin before clicking the 'Restart' button in the toast, the pending asar swap now completes automatically on the next launch — no more half-updated installs where the titlebar says a new version but features from that version are missing",
+    "Missing-ffmpeg error for voice input now points you at the exact download URL and target path instead of the misleading 'install may be corrupted' message",
+    "Security hardening pass: billing portal and GDPR delete now verify your account email in addition to machine identity, auto-updater verifies SHA-256 checksums for every downloaded artifact with rollback on failure, Meta OAuth relay now forwards the CSRF state and works on any localhost port (not just 8392), sensitive local state files (subscription info, API keys) now use AES-256-GCM encryption on macOS instead of plaintext, preview-quality Amazon SP-API endpoints are now gated behind an opt-in config flag so half-implemented paths no longer surface confusing errors, and a handful of admin / Wisdom API endpoints got tightened auth and IP-based abuse controls"
   ]
 }

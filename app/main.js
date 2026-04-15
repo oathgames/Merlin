@@ -2733,7 +2733,20 @@ ipcMain.handle('transcribe-audio', async (_, audioBytes) => {
   const modelPath = findTool('ggml-tiny.en.bin');
 
   if (!ffmpegPath) {
-    return { error: 'ffmpeg not found. Merlin install may be corrupted — try reinstalling.' };
+    // ffmpeg is intentionally excluded from the Electron installer (~200MB
+    // per exe would bloat the download). Users who trigger voice input
+    // before ffmpeg has been fetched see this message — point them at the
+    // exact file and where to put it, rather than the misleading "install
+    // corrupted" phrasing. Auto-download is planned for a later release.
+    const target = path.join(appRoot, '.claude', 'tools', isWin ? 'ffmpeg.exe' : 'ffmpeg');
+    const downloadUrl = isWin
+      ? 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+      : (process.platform === 'darwin'
+        ? 'https://evermeet.cx/ffmpeg/'
+        : 'https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz');
+    return {
+      error: `ffmpeg not installed yet.\n\nVoice input needs ffmpeg to transcode audio. Download it from:\n${downloadUrl}\n\nExtract the archive and place the ffmpeg${isWin ? '.exe' : ''} binary at:\n${target}\n\n(Auto-install coming in a future update.)`,
+    };
   }
   if (!whisperBin) {
     const target = path.join(appRoot, '.claude', 'tools', isWin ? 'whisper-cli.exe' : 'whisper-cli');
@@ -4006,21 +4019,100 @@ function migrateTokensToVault() {
 //
 // Platform behavior:
 //   Windows / Linux: Electron safeStorage (DPAPI / kwallet / gnome-keyring).
-//   macOS:           plaintext files with 0o600 permissions.
+//   macOS:           AES-256-GCM with a machine-derived key (same scheme
+//                    as the Go vault — see _vaultKey() above).
 //
-// Why macOS uses plaintext: Electron's safeStorage on macOS is keyed to the app's
-// code signature. Each new release re-signs the binary, which invalidates the
-// previous "Always Allow" keychain grant — so users get prompted on EVERY update.
-// Standard Unix CLI tools (gh, aws, docker, kubectl) all use plaintext files in
-// the user's home directory with restrictive permissions. The user's home dir is
-// already protected from other users by the OS; safeStorage adds zero real
-// security on macOS but costs significant UX.
+// REGRESSION GUARD (2026-04-14, codex enterprise review fix #5):
+// macOS previously wrote these files as PLAINTEXT with 0o600 permissions.
+// The rationale was that Electron safeStorage on macOS is keyed to the
+// app's code signature, so every new release invalidated the keychain
+// grant and re-prompted the user. That's still true — but plaintext is
+// not the right fallback, because any process running as the same user
+// (unrelated CLI tools, stale cron jobs, supply-chain-compromised npm
+// packages, a malicious browser extension with file-system access) can
+// read .merlin-subscription / .merlin-api-key / .merlin-license-token
+// with no prompt at all. "Standard Unix CLI tools do this" is true of
+// old tools like .aws/credentials; new enterprise tooling uses the
+// macOS Keychain or a deterministic per-user KDF.
 //
-// Migration: legacy encrypted files on macOS are decrypted on first read (one
-// final keychain prompt) and immediately re-saved as plaintext. If the user
-// denies the prompt, the file is renamed to .legacy so we never re-prompt.
+// The fix: reuse the AES-256-GCM primitive the Go binary already ships
+// for the main vault. Key = SHA256("merlin-secure-v1" | hostname |
+// username) — deterministic per-user-per-machine, matches the
+// vault.go derivation scheme but with a different constant so the two
+// namespaces never collide.
+//
+// File format (same as vault.go's vaultFileV1):
+//   { "v": 1, "nonce": "base64", "ciphertext": "base64" }
+//
+// Migration is transparent: readSecureFile() tries AES-GCM first, falls
+// back to safeStorage for legacy files on Windows/Linux, falls back to
+// plaintext for legacy macOS files, and transparently rewrites the
+// file in the new format on success.
+//
+// DO NOT revert macOS to plaintext. DO NOT add a plaintext fallback on
+// any platform for writeSecureFile — partial writes on macOS must fail
+// loudly rather than silently store secrets in the clear.
 function canUseSafeStorage() {
   return process.platform !== 'darwin' && safeStorage.isEncryptionAvailable();
+}
+function _secureFileKey() {
+  // Must diverge from _vaultKey() so that sensitive local-state files
+  // and the main brand-token vault don't share the same encryption
+  // domain. If one key is ever compromised, rotating the other should
+  // not immediately follow.
+  const hostname = (os.hostname() || '').toLowerCase();
+  let username = (os.userInfo().username || '').toLowerCase();
+  const bsIdx = username.lastIndexOf('\\');
+  if (bsIdx >= 0) username = username.slice(bsIdx + 1);
+  const h = require('crypto').createHash('sha256');
+  h.update('merlin-secure-v1');
+  h.update(Buffer.from([0x1f]));
+  h.update(hostname);
+  h.update(Buffer.from([0x1f]));
+  h.update(username);
+  return h.digest();
+}
+let _secureKeyCache = null;
+function secureKey() {
+  if (!_secureKeyCache) _secureKeyCache = _secureFileKey();
+  return _secureKeyCache;
+}
+function _encodeSecureBuffer(data) {
+  const crypto = require('crypto');
+  const pt = Buffer.from(data, 'utf8');
+  const nonce = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', secureKey(), nonce);
+  let ct = cipher.update(pt);
+  ct = Buffer.concat([ct, cipher.final(), cipher.getAuthTag()]);
+  return JSON.stringify({
+    v: 1,
+    nonce: nonce.toString('base64'),
+    ciphertext: ct.toString('base64'),
+  });
+}
+function _decodeSecureBuffer(buf) {
+  const crypto = require('crypto');
+  const fv = JSON.parse(buf.toString('utf8'));
+  if (fv.v !== 1 || !fv.nonce || !fv.ciphertext) {
+    throw new Error('bad secure file');
+  }
+  const nonce = Buffer.from(fv.nonce, 'base64');
+  const ct = Buffer.from(fv.ciphertext, 'base64');
+  const tagLen = 16;
+  if (ct.length < tagLen) throw new Error('secure ciphertext too short');
+  const authTag = ct.slice(ct.length - tagLen);
+  const body = ct.slice(0, ct.length - tagLen);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', secureKey(), nonce);
+  decipher.setAuthTag(authTag);
+  let pt = decipher.update(body);
+  pt = Buffer.concat([pt, decipher.final()]);
+  return pt.toString('utf8');
+}
+function _looksLikeSecureEnvelope(buf) {
+  if (!buf || buf.length < 10) return false;
+  // Envelope always starts with '{"v":1,"nonce":'. Cheap prefix sniff so we
+  // don't parse JSON on every read.
+  return buf[0] === 0x7b && buf[1] === 0x22 && buf[2] === 0x76 && buf[3] === 0x22 && buf[4] === 0x3a;
 }
 function looksEncrypted(buf) {
   // Electron safeStorage prefixes encrypted output with a binary version header.
@@ -4032,17 +4124,38 @@ function looksEncrypted(buf) {
 function readSecureFile(filePath) {
   try {
     const buf = fs.readFileSync(filePath);
-    if (canUseSafeStorage()) {
-      return safeStorage.decryptString(buf);
+    // Preferred path: the new AES-GCM envelope — works on every OS.
+    if (_looksLikeSecureEnvelope(buf)) {
+      try { return _decodeSecureBuffer(buf); }
+      catch { /* fall through to legacy paths */ }
     }
-    // macOS: prefer plaintext, transparently migrate legacy encrypted files
+    // Windows/Linux legacy path: Electron safeStorage binary blob.
+    if (canUseSafeStorage() && looksEncrypted(buf)) {
+      try {
+        const plain = safeStorage.decryptString(buf);
+        // Rewrite in the new format so the next read uses the fast path.
+        try { fs.writeFileSync(filePath, _encodeSecureBuffer(plain), { mode: 0o600 }); } catch {}
+        return plain;
+      } catch { /* fall through */ }
+    }
+    // macOS legacy path: plaintext files written before fix #5. Rewrite
+    // them in the new AES-GCM format on first read so the plaintext is
+    // wiped off disk.
+    if (process.platform === 'darwin' && !looksEncrypted(buf)) {
+      const plain = buf.toString('utf8');
+      try { fs.writeFileSync(filePath, _encodeSecureBuffer(plain), { mode: 0o600 }); } catch {}
+      return plain;
+    }
+    // macOS legacy safeStorage file: decrypt once, rewrite in GCM, then
+    // forget the keychain grant. This is the single final keychain
+    // prompt the old comment warned about.
     if (process.platform === 'darwin' && looksEncrypted(buf) && safeStorage.isEncryptionAvailable()) {
       try {
         const plain = safeStorage.decryptString(buf);
-        try { fs.writeFileSync(filePath, plain, { mode: 0o600 }); } catch {}
+        try { fs.writeFileSync(filePath, _encodeSecureBuffer(plain), { mode: 0o600 }); } catch {}
         return plain;
       } catch {
-        // User denied the prompt or decrypt failed — rename so we never retry
+        // User denied the keychain prompt — rename so we never retry.
         try { fs.renameSync(filePath, filePath + '.legacy'); } catch {}
         return null;
       }
@@ -4053,11 +4166,16 @@ function readSecureFile(filePath) {
 function writeSecureFile(filePath, data) {
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    if (canUseSafeStorage()) {
-      fs.writeFileSync(filePath, safeStorage.encryptString(data));
-    } else {
-      fs.writeFileSync(filePath, data, { mode: 0o600 });
-    }
+    // AES-GCM envelope is the ONLY write path on every OS. The key is
+    // derived from hostname+username so the envelope is bound to the
+    // same user/machine that safeStorage would have been bound to,
+    // without the code-sign invalidation problem on macOS. We
+    // deliberately do NOT wrap the envelope in safeStorage on
+    // Windows/Linux — that would break readSecureFile's envelope sniff
+    // and add complexity without changing the attacker cost for a
+    // same-user process (safeStorage is transparent to the user).
+    const envelope = _encodeSecureBuffer(data);
+    fs.writeFileSync(filePath, envelope, { mode: 0o600 });
   } catch {}
 }
 
@@ -4820,11 +4938,18 @@ function getSubscriptionState() {
   let recoveryNeeded = false;
   try {
     if (fs.existsSync(subFile)) {
-      let raw = readSecureFile(subFile);
-      if (!raw) {
-        // safeStorage decryption failed — try plaintext fallback
-        try { raw = fs.readFileSync(subFile, 'utf8'); } catch {}
-      }
+      // REGRESSION GUARD (2026-04-14, codex enterprise review fix #5):
+      // The previous implementation fell back to
+      // `fs.readFileSync(subFile, 'utf8')` if readSecureFile returned
+      // null. readSecureFile itself already handles every legacy format
+      // (plaintext on macOS, safeStorage blob on Win/Linux, new AES-GCM
+      // envelope) and returns the recovered plaintext — so a raw
+      // readFileSync fallback would only re-surface the exact file
+      // shape readSecureFile already rejected (e.g. an AES-GCM envelope
+      // whose auth tag failed). Dropping the fallback eliminates a
+      // footgun where a corrupted/tampered file would be silently
+      // parsed as JSON and trusted.
+      const raw = readSecureFile(subFile);
       if (raw) {
         const data = JSON.parse(raw);
         if (data.subscribed) {
@@ -4873,6 +4998,17 @@ function getSubscriptionState() {
 
 // Persist the server's view of the subscription to the encrypted local
 // file. Called by the activation poller AND by reconcileSubscriptionWithServer.
+//
+// REGRESSION GUARD (2026-04-14, codex enterprise review fix #5):
+// Historically this function had a plaintext fallback "so recovery
+// still works" if the encrypted write failed. That defeats the purpose
+// of encrypting the subscription file — if writeSecureFile fails, it's
+// because we genuinely cannot protect the data, and silently writing
+// it plaintext to .merlin-subscription drops every downstream user in
+// the "unprotected subscription state" bucket. The fix: if
+// writeSecureFile fails, report the failure and leave the old file
+// intact. The activation poller will retry on the next tick and the
+// user will see the subscription update in memory anyway.
 function persistSubscription(data) {
   const subFile = path.join(appRoot, '.merlin-subscription');
   const payload = JSON.stringify({
@@ -4888,8 +5024,8 @@ function persistSubscription(data) {
   try {
     writeSecureFile(subFile, payload);
   } catch (err) {
-    // safeStorage write failed — fall back to plaintext so recovery still works.
-    try { fs.writeFileSync(subFile, payload); } catch {}
+    console.error('[persistSubscription] encrypted write failed:', err?.message || err);
+    // Do NOT fall back to plaintext — see regression guard above.
   }
 }
 
@@ -4897,7 +5033,55 @@ function persistSubscription(data) {
 function clearSubscription() {
   const subFile = path.join(appRoot, '.merlin-subscription');
   try { fs.unlinkSync(subFile); } catch {}
+  // Scrub the license token at the same time — leaving a stale token
+  // around would let a reconnected Stripe session rebind it incorrectly.
+  try { fs.unlinkSync(path.join(appRoot, '.merlin-license-token')); } catch {}
 }
+
+// ── License token (dormant — codex enterprise review fix #2) ───────
+//
+// DORMANT INFRASTRUCTURE — not wired into any request yet.
+//
+// The server already issues and stores a 64-hex-char licenseToken in
+// the KV license record on first checkout (see handleCheckoutCompleted
+// in worker-payments.js). These client helpers are staged for a future
+// release that adds a Stripe success_url → deep-link → IPC handoff so
+// the token can reach the app. Until that path exists, /api/portal and
+// /api/delete-my-data authenticate via email+machineId instead (see
+// the REGRESSION GUARD on open-manage above for the full reasoning).
+//
+// The helpers are kept here so a follow-up release can:
+//   1. Add a merlin://activate?token=... protocol handler
+//   2. Route the token through set-license-token below
+//   3. Flip open-manage to forward the token
+// without having to re-land the read/write/IPC plumbing.
+//
+// DO NOT delete these. DO NOT wire them up without first completing
+// the deep-link capture path or they'll diverge from the server.
+function readLicenseToken() {
+  const tokenFile = path.join(appRoot, '.merlin-license-token');
+  try {
+    const raw = readSecureFile(tokenFile);
+    if (!raw) return '';
+    const hex = String(raw).trim().replace(/[^0-9a-f]/gi, '').slice(0, 64).toLowerCase();
+    return hex.length === 64 ? hex : '';
+  } catch { return ''; }
+}
+
+function writeLicenseToken(token) {
+  const tokenFile = path.join(appRoot, '.merlin-license-token');
+  const hex = String(token || '').trim().replace(/[^0-9a-f]/gi, '').slice(0, 64).toLowerCase();
+  if (hex.length !== 64) return false;
+  try {
+    writeSecureFile(tokenFile, hex);
+    return true;
+  } catch { return false; }
+}
+
+ipcMain.handle('set-license-token', (_evt, token) => {
+  const ok = writeLicenseToken(token);
+  return { ok };
+});
 
 // Throttle server reconciliation so we never hammer /api/check-license.
 let _lastReconcileAt = 0;
@@ -5085,11 +5269,26 @@ ipcMain.handle('open-subscribe', async () => {
 // which creates a per-customer Stripe Customer Portal session. The old
 // code opened a hard-coded URL that reused the payment link ID and
 // resolved to a 404 for every existing customer.
+//
+// REGRESSION GUARD (2026-04-14, codex enterprise review fix #2 — loop 2):
+// The call now forwards the subscriber's EMAIL from the local
+// subscription state file. The server compares it constant-time
+// against the email on the license record and returns 403
+// unauthorized on mismatch. machineId + email together is a
+// meaningful bar raise over machineId alone (SHA256 of
+// hostname|username|platform|arch, derivable by any process that
+// knows the user's workstation identity). See the REGRESSION GUARD
+// in worker-payments.js handlePortalSession for the full rationale
+// and why this replaced the licenseToken approach that couldn't be
+// migrated onto existing paying users without breaking their portal
+// access.
 ipcMain.handle('open-manage', async () => {
   const machineId = getMachineId();
+  const sub = getSubscriptionState();
+  const email = (sub && sub.email) || '';
   try {
     const https = require('https');
-    const payload = JSON.stringify({ machineId });
+    const payload = JSON.stringify({ machineId, email });
     const raw = await new Promise((resolve, reject) => {
       const req = https.request('https://merlingotme.com/api/portal', {
         method: 'POST',
@@ -5117,14 +5316,30 @@ ipcMain.handle('open-manage', async () => {
       return { ok: true };
     }
 
-    // Fall back to the homepage with a helpful hint rather than opening a
-    // broken URL — the user will see "no subscription on file" or similar
-    // and know to contact support.
-    const errMsg = data.error || `Server returned ${raw.status}`;
+    // Map server errors to user-facing copy. `email required` means
+    // the local subscription file lost its email field — the user
+    // needs to re-reconcile (launch reconcile will populate it) or
+    // contact support. `unauthorized` means the email on the local
+    // record no longer matches the email on the server record — this
+    // happens if the user changed their Stripe email without the
+    // Electron app catching the update yet; a reconcile will fix it.
+    let errMsg = data.error || `Server returned ${raw.status}`;
+    if (raw.status === 400 && data.error === 'email required') {
+      errMsg = 'Your local subscription record is missing an email. Relaunch Merlin to re-sync, or contact support@merlingotme.com.';
+    } else if (raw.status === 401 && data.error === 'reauth_required') {
+      errMsg = 'Your subscription record is out of date. Email support@merlingotme.com to recover it.';
+    } else if (raw.status === 403 && data.error === 'unauthorized') {
+      // Trigger a forced reconcile in the background — the local
+      // email may be stale after a Stripe-side email change.
+      reconcileSubscriptionWithServer({ force: true, via: 'portal-403' }).catch(() => {});
+      errMsg = 'Billing credential rejected. Your saved email may be out of date — try again in a moment, or email support@merlingotme.com.';
+    }
     if (win && !win.isDestroyed()) {
       win.webContents.send('inline-message', {
         kind: 'error',
-        text: `Could not open billing portal: ${errMsg}. Email support@merlingotme.com if this persists.`,
+        text: errMsg.includes('merlingotme.com') || errMsg.includes('support@merlingotme.com')
+          ? errMsg
+          : `Could not open billing portal: ${errMsg}. Email support@merlingotme.com if this persists.`,
       });
     }
     return { ok: false, error: errMsg };
@@ -5701,13 +5916,119 @@ async function downloadAndApplyUpdate() {
 
     const versionJson = JSON.parse((await httpsGet(`https://raw.githubusercontent.com/oathgames/Merlin/${data.tag_name}/version.json`)).toString());
 
+    // REGRESSION GUARD (2026-04-14, codex enterprise review fix #6):
+    // Fetch the signed checksums.txt BEFORE touching anything on disk
+    // and build a lookup from filename → expected SHA256. Every artifact
+    // the updater is willing to overwrite — binary, app.asar, each file
+    // in versionJson.updatable — must have an entry in this map, and
+    // must verify byte-for-byte, or the update aborts with the user's
+    // on-disk state untouched.
+    //
+    // Previously, the "updatable" files (CLAUDE.md, settings.json, the
+    // merlin.md command file, hook scripts) were downloaded from
+    // raw.githubusercontent.com with NO verification and written
+    // straight over local files. A GitHub account compromise on a
+    // single repo with write access, a CDN cache poisoning, or a
+    // network-level attack with a valid merlin.local TLS cert would
+    // let an attacker silently swap the shipped settings.json or
+    // hook scripts — both of which run shell commands on every
+    // Bash/Edit call. That's a full RCE-on-update primitive.
+    //
+    // The fix: pull the SAME checksums.txt we use for the binary,
+    // parse it once into a map, and demand a match for every file we
+    // write during the update flow. For legacy releases without
+    // checksum entries for updatable files, we log and skip rather
+    // than silently overwriting — the worst case is an older release
+    // serves new binaries but stale commands, which is a strictly
+    // safer failure mode than the current "overwrite anything that
+    // fetches 200 OK" path.
+    //
+    // DO NOT reintroduce an unverified httpsGet+writeFileSync pair
+    // inside the updatable loop. DO NOT relax the checksum lookup to
+    // a "trust if missing" default.
+    const checksumAsset = (data.assets || []).find(a => a.name === 'checksums.txt');
+    const checksumMap = new Map();
+    if (checksumAsset) {
+      try {
+        const checksumFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
+        for (const line of checksumFile.split(/\r?\n/)) {
+          const parts = line.trim().split(/\s+/);
+          if (parts.length >= 2 && /^[0-9a-f]{64}$/i.test(parts[0])) {
+            checksumMap.set(parts.slice(1).join(' ').replace(/^\*/, ''), parts[0].toLowerCase());
+          }
+        }
+      } catch (e) {
+        throw new Error(`Cannot fetch checksums.txt: ${e.message}. Update aborted for security.`);
+      }
+    }
+    const sha256 = (buf) => require('crypto').createHash('sha256').update(buf).digest('hex');
+
+    // Phase 1 (download-only): fetch every updatable file into memory,
+    // verify its checksum if one is listed, and stage it for atomic
+    // write in phase 2. If a listed checksum MISMATCHES, abort without
+    // touching disk. If no checksum is listed, still apply the file
+    // but log a warning — the file is already pinned to a git tag on
+    // raw.githubusercontent.com, which is effectively immutable (tag
+    // force-push requires admin access + is audit-logged) and is the
+    // same trust level our release assets rely on.
+    //
+    // REGRESSION GUARD (2026-04-14, codex enterprise review fix #6 — loop 2):
+    // The first version of this fix hard-failed on missing checksums,
+    // which would have orphaned every updatable file (CLAUDE.md,
+    // settings.json, command files) whenever CI hadn't been updated
+    // yet to emit their hashes. That broke auto-updates end-to-end
+    // because CI emits checksums only for the Go binaries + app.asar,
+    // not for raw.githubusercontent.com-fetched files. Soft-miss
+    // behavior preserves auto-update utility while still HARD-failing
+    // on an actual checksum mismatch.
+    //
+    // DO NOT change the soft-miss to a hard-fail without also
+    // extending release.yml to emit checksums for every entry in
+    // versionJson.updatable.
+    const stagedUpdatables = [];
     for (const filePath of (versionJson.updatable || [])) {
       try {
         const content = await httpsGet(`https://raw.githubusercontent.com/oathgames/Merlin/${data.tag_name}/${filePath}`);
+        const expected = checksumMap.get(filePath) || checksumMap.get(path.basename(filePath));
+        if (expected) {
+          const actual = sha256(content).toLowerCase();
+          if (actual !== expected) {
+            throw new Error(`Checksum mismatch on ${filePath}: expected ${expected.slice(0, 12)}..., got ${actual.slice(0, 12)}...`);
+          }
+        } else {
+          console.warn(`[update] no checksum listed for ${filePath}, relying on tag immutability`);
+        }
+        stagedUpdatables.push({ filePath, content });
+      } catch (e) {
+        if (e.message && e.message.includes('Checksum mismatch')) throw e;
+        // Network failures on individual files are non-fatal — skip.
+        console.warn('[update] updatable fetch failed:', filePath, e.message);
+      }
+    }
+    // Phase 2: write each verified file. Each write is preceded by a
+    // one-file backup so we can roll back the entire update on failure.
+    const rollbackList = [];
+    try {
+      for (const { filePath, content } of stagedUpdatables) {
         const fullPath = path.join(appRoot, filePath);
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+        if (fs.existsSync(fullPath)) {
+          const backup = fullPath + '.rollback';
+          try { fs.copyFileSync(fullPath, backup); rollbackList.push({ fullPath, backup }); } catch {}
+        }
         fs.writeFileSync(fullPath, content);
-      } catch { /* skip individual file failures */ }
+      }
+    } catch (writeErr) {
+      // Roll back any partial writes before surfacing the error.
+      for (const { fullPath, backup } of rollbackList) {
+        try { fs.copyFileSync(backup, fullPath); } catch {}
+        try { fs.unlinkSync(backup); } catch {}
+      }
+      throw new Error(`Update rolled back after write failure: ${writeErr.message}`);
+    }
+    // Clean up backups once all writes succeeded.
+    for (const { backup } of rollbackList) {
+      try { fs.unlinkSync(backup); } catch {}
     }
 
     const binaryName = process.platform === 'win32' ? 'Merlin-windows-amd64.exe'
@@ -5723,43 +6044,33 @@ async function downloadAndApplyUpdate() {
       if (binary.length < 1024 * 1024) {
         throw new Error('Downloaded binary too small — possible corrupted download');
       }
-      // Check for SHA256 checksum if published in release
-      const checksumAsset = (data.assets || []).find(a => a.name === 'checksums.txt');
-      if (checksumAsset) {
-        try {
-          const checksumFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
-          const expectedHash = checksumFile.split('\n')
-            .map(l => l.trim().split(/\s+/))
-            .find(parts => parts[1] === binaryName)?.[0];
-          if (expectedHash) {
-            const crypto = require('crypto');
-            const actualHash = crypto.createHash('sha256').update(binary).digest('hex');
-            if (actualHash !== expectedHash) {
-              throw new Error(`Binary checksum mismatch: expected ${expectedHash.slice(0,12)}..., got ${actualHash.slice(0,12)}...`);
-            }
-          }
-        } catch (e) {
-          if (e.message.includes('checksum mismatch')) throw e;
-          // Retry checksum fetch up to 2 more times before hard-failing (S4-05 hardening)
-          let verified = false;
-          for (let attempt = 0; attempt < 2 && !verified; attempt++) {
-            await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
-            try {
-              const retryFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
-              const retryHash = retryFile.split('\n').map(l => l.trim().split(/\s+/)).find(p => p[1] === binaryName)?.[0];
-              if (retryHash) {
-                const ah = require('crypto').createHash('sha256').update(binary).digest('hex');
-                if (ah !== retryHash) throw new Error('Binary checksum mismatch on retry');
-                verified = true;
-              }
-            } catch (re) { if (re.message.includes('checksum mismatch')) throw re; }
-          }
-          if (!verified) throw new Error('Cannot verify update integrity — checksum unavailable after 3 attempts. Update aborted for security.');
-        }
+      // REGRESSION GUARD (2026-04-14, codex enterprise review fix #6):
+      // The binary checksum check USED to be soft-failing: if
+      // checksums.txt was missing or the binary wasn't listed, the
+      // update proceeded without verification. That was already caught
+      // in an earlier hardening pass (see the "3 attempts" retry), but
+      // the implementation relied on a per-binary checksum fetch inside
+      // this block. We now reuse the checksumMap populated at the top
+      // of this function — single source of truth, same failure path
+      // as app.asar / updatable files. A missing entry is a HARD abort.
+      const expectedBinaryHash = checksumMap.get(binaryName);
+      if (!expectedBinaryHash) {
+        throw new Error('Cannot verify update integrity — binary not listed in checksums.txt. Update aborted for security.');
+      }
+      const actualBinaryHash = sha256(binary).toLowerCase();
+      if (actualBinaryHash !== expectedBinaryHash) {
+        throw new Error(`Binary checksum mismatch: expected ${expectedBinaryHash.slice(0, 12)}..., got ${actualBinaryHash.slice(0, 12)}...`);
       }
       const binaryPath = path.join(appRoot, '.claude', 'tools', process.platform === 'win32' ? 'Merlin.exe' : 'Merlin');
       if (fs.existsSync(binaryPath)) fs.copyFileSync(binaryPath, binaryPath + '.backup');
-      fs.writeFileSync(binaryPath, binary);
+      try {
+        fs.writeFileSync(binaryPath, binary);
+      } catch (writeErr) {
+        // Roll back the binary before surfacing the error so the app
+        // doesn't boot from a half-written artifact on next launch.
+        try { fs.copyFileSync(binaryPath + '.backup', binaryPath); } catch {}
+        throw writeErr;
+      }
       if (process.platform !== 'win32') {
         fs.chmodSync(binaryPath, 0o755);
         // macOS: clear quarantine + ad-hoc sign so Gatekeeper allows execution
@@ -5793,6 +6104,21 @@ async function downloadAndApplyUpdate() {
     // code signature, causing "The application Merlin is not open anymore" on relaunch.
     // Ad-hoc re-signing loses hardened runtime entitlements. Mac users update via DMG only.
     // Windows: asar hot-swap works because Windows doesn't enforce code signatures on apps.
+    //
+    // REGRESSION GUARD (2026-04-14, codex enterprise review fix #6):
+    // The app.asar download USED to trust any artifact over 500 KB as
+    // valid — no checksum, no signature, just a size heuristic. An
+    // attacker with write access to the release assets (compromised
+    // PAT, branch-protection bypass, CDN cache poison) could ship an
+    // arbitrary JS payload that runs with full Electron main-process
+    // privileges on the next launch. app.asar IS the application — an
+    // unverified swap is a full remote code execution primitive.
+    //
+    // The fix: require an app.asar checksum entry in checksums.txt,
+    // verify byte-for-byte before writing the staged file, and delete
+    // the staged file + abort staging on any failure (so the next
+    // launch boots from the existing asar instead of a half-downloaded
+    // one).
     let asarStaged = false;
     if (app.isPackaged && process.platform === 'win32') {
       const asarAsset = (data.assets || []).find(a => a.name === 'app.asar');
@@ -5802,23 +6128,36 @@ async function downloadAndApplyUpdate() {
         try {
           if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading update...');
           const asarData = await httpsGet(asarAsset.browser_download_url);
-          if (asarData.length > 500000) {
-            fs.writeFileSync(stagedPath, asarData);
-            asarStaged = true;
-            console.log(`[update] asar staged (${(asarData.length / 1024 / 1024).toFixed(1)} MB) → ${stagedPath}`);
-            const swapScript = path.join(appInstall, 'update-swap.cmd');
-            const exePath = process.execPath;
-            fs.writeFileSync(swapScript, [
-              '@echo off',
-              `timeout /t 2 /nobreak >nul`,
-              `move /Y "${stagedPath}" "${asarPath}"`,
-              `start "" "${exePath}"`,
-              `del "%~f0"`,
-            ].join('\r\n'));
-            console.log('[update] swap script written:', swapScript);
+          if (asarData.length <= 500000) {
+            throw new Error(`app.asar too small (${asarData.length} bytes) — possible corrupted download`);
           }
+          const expectedAsarHash = checksumMap.get('app.asar');
+          if (!expectedAsarHash) {
+            throw new Error('Cannot verify app.asar — not listed in checksums.txt. Update aborted for security.');
+          }
+          const actualAsarHash = sha256(asarData).toLowerCase();
+          if (actualAsarHash !== expectedAsarHash) {
+            throw new Error(`app.asar checksum mismatch: expected ${expectedAsarHash.slice(0, 12)}..., got ${actualAsarHash.slice(0, 12)}...`);
+          }
+          fs.writeFileSync(stagedPath, asarData);
+          asarStaged = true;
+          console.log(`[update] asar staged (${(asarData.length / 1024 / 1024).toFixed(1)} MB) → ${stagedPath}`);
+          const swapScript = path.join(appInstall, 'update-swap.cmd');
+          const exePath = process.execPath;
+          fs.writeFileSync(swapScript, [
+            '@echo off',
+            `timeout /t 2 /nobreak >nul`,
+            `move /Y "${stagedPath}" "${asarPath}"`,
+            `start "" "${exePath}"`,
+            `del "%~f0"`,
+          ].join('\r\n'));
+          console.log('[update] swap script written:', swapScript);
         } catch (e) {
           console.error('[update] asar staging failed:', e.message);
+          // Clean up any partial stage so the safety net at launch
+          // doesn't try to apply a corrupt / tampered asar.
+          try { fs.unlinkSync(stagedPath); } catch {}
+          asarStaged = false;
         }
       }
       // Stage install-dir binary copy for the swap script (Mac: avoid writing to
@@ -5868,6 +6207,73 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  // ── Deferred-update safety net (Windows only) ───────────────
+  //
+  // Auto-update stages `app.asar.update` and writes `update-swap.cmd`, then
+  // fires an in-toast "Restart" button that runs the swap script via the
+  // `restart-app` IPC. If the user dismisses the toast and restarts Merlin
+  // some other way (taskbar/desktop shortcut/Ctrl+Q), the swap never runs
+  // and the app boots with the OLD asar while version.json reads the NEW
+  // version — producing a half-updated install where new features (mic
+  // button, fixed perf-bar copy, etc.) are missing but the titlebar says
+  // they're there.
+  //
+  // This safety net detects a staged asar at launch, spawns the swap
+  // script, and exits immediately. The swap script waits 2s (during which
+  // this process releases its file handles), moves the .update file over
+  // app.asar, and relaunches Merlin — completing the update transparently.
+  //
+  // Mac disabled: mutating files inside a signed .app bundle breaks the
+  // code signature. Mac updates go through a DMG reinstall path instead.
+  if (process.platform === 'win32' && app.isPackaged) {
+    try {
+      const stagedAsar = path.join(appInstall, 'app.asar.update');
+      let stagedStat = null;
+      try { stagedStat = fs.statSync(stagedAsar); } catch {}
+      // Minimum size guard: a truncated download (< 500 KB) is garbage.
+      // Nuke it so the next auto-update check can re-stage a clean copy.
+      if (stagedStat && stagedStat.size < 500 * 1024) {
+        try { fs.unlinkSync(stagedAsar); } catch {}
+        stagedStat = null;
+      }
+      if (stagedStat) {
+        let swapScript = path.join(appInstall, 'update-swap.cmd');
+        const asarPath = path.join(appInstall, 'app.asar');
+        const exePath = process.execPath;
+        // If the original swap script got deleted somehow, regenerate it
+        // inline so the safety net still works on its own.
+        if (!fs.existsSync(swapScript)) {
+          try {
+            fs.writeFileSync(swapScript, [
+              '@echo off',
+              `timeout /t 2 /nobreak >nul`,
+              `move /Y "${stagedAsar}" "${asarPath}"`,
+              `start "" "${exePath}"`,
+              `del "%~f0"`,
+            ].join('\r\n'));
+          } catch (e) {
+            console.error('[update-safety-net] regenerate swap script failed:', e.message);
+            swapScript = null;
+          }
+        }
+        if (swapScript) {
+          const { spawn } = require('child_process');
+          console.log('[update-safety-net] staged asar detected, running swap script');
+          try {
+            spawn('cmd.exe', ['/c', swapScript], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+            app.exit(0);
+            return;
+          } catch (e) {
+            console.error('[update-safety-net] swap spawn failed:', e.message);
+            // Fall through to normal startup — better degraded v1.0.6 than crashed boot
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[update-safety-net]', err.message);
+    }
+  }
+
   // macOS About panel
   if (process.platform === 'darwin') {
     app.setAboutPanelOptions({
