@@ -57,7 +57,11 @@ html,body{
   animation:tip-in .15s ease;
 }
 @keyframes tip-in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
-body{display:flex;flex-direction:column}
+/* Reserve fixed space for the right sidebar (archive/magic panels, both
+   position:fixed, width:340px). Keeping this reservation always-on means
+   opening a panel never reflows or visually shifts the main content —
+   chat, input, and status bars stay put whether a panel is open or not. */
+body{display:flex;flex-direction:column;padding-right:340px}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 ::selection{background:rgba(167,139,250,.3)}
@@ -787,6 +791,10 @@ a:hover{text-decoration:underline}
   border-bottom:1px solid var(--border);
   flex-shrink:0;
   user-select:none;
+  /* Cancel body's 340px right reservation so the titlebar (and its
+     window controls at the far right) still spans the full viewport.
+     Sidebar panels start at top:40px so they never overlap titlebar. */
+  margin-right:-340px;
 }
 .titlebar-drag{
   flex:1;

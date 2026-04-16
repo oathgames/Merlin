@@ -120,3 +120,33 @@ When the user asks about "marketing calendar", "launch schedule", or content pla
 mcp__merlin__dashboard({action: "calendar", brand: "X"})
 ```
 Returns: launch history, average cadence, seasonal signals, and gaps.
+
+---
+
+## HeyGen Video Agent (one-shot prompt → video)
+
+When the user says "make a video from a prompt", "generate a video about X", "quick HeyGen video", or any one-shot video request that doesn't need a custom script/avatar flow:
+
+### Generate
+```
+mcp__merlin__video({action: "heygen-agent", prompt: "30s demo of our skincare line, warm tones, upbeat"})
+```
+
+HeyGen's Video Agent API (`POST /v3/video-agents`) auto-selects avatar, voice, and style from a natural-language prompt. No manual script, no timeline. Output lands in `results/video/YYYY-MM/<brand>/ad_<runID>/video.mp4` (same layout as fal/veo/heygen).
+
+### Optional overrides (all optional — omit to let HeyGen auto-select)
+- `avatarId` — specific HeyGen avatar ID (use `list-avatars` to browse)
+- `voiceId` — specific voice ID
+- `styleId` — visual template from HeyGen's style catalog
+- `orientation` — `"portrait"` or `"landscape"` (auto-derived from `format` if blank: `9:16` → portrait, `16:9`/`1:1` → landscape)
+- `incognitoMode` — `true` to disable HeyGen session memory
+- `callbackUrl` — webhook URL; when set, Merlin returns immediately after submission and HeyGen POSTs the finished video to this URL
+
+### Requires
+- `heygenApiKey` in config (same key as the existing `heygen` video action)
+- Prompt length 1–10,000 characters
+
+### How to pick between actions
+- **`heygen-agent`** — user gives a natural-language idea; agent picks everything. Fastest path.
+- **`heygen`** (existing) — user wants Avatar IV with a specific script + talking-head photo. More control, more config.
+- **`fal` / `veo`** — non-avatar video (product showcase, kinetic, generative).

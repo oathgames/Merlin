@@ -5360,9 +5360,42 @@ merlin.onTrialExpired(() => {
   document.body.appendChild(overlay);
   document.getElementById('trial-subscribe-btn').addEventListener('click', () => merlin.openSubscribe());
   document.getElementById('trial-key-btn').addEventListener('click', () => {
-    overlay.remove();
-    addUserBubble('I have a license key');
-    merlin.sendMessage('I have a license key to activate');
+    // Show the license-key input modal directly. Previously this removed
+    // the overlay and called merlin.sendMessage(), which delegates to the
+    // Claude SDK — on Mac the SDK isn't always ready right after trial
+    // expiry, so the screen just went blank with no input field. The
+    // modal flow below mirrors the gate in sendMessage() (line ~3324) so
+    // the experience is identical whether the user clicks the button or
+    // tries to type into the chat.
+    showModal({
+      title: 'Activate License Key',
+      body: 'Enter your license key to unlock Merlin Pro.',
+      inputPlaceholder: 'License key (e.g. XXXX-XXXX)',
+      confirmLabel: 'Activate',
+      cancelLabel: 'Cancel',
+      onConfirm: (key) => {
+        if (!key || key.length === 0) return;
+        merlin.activateKey(key).then((result) => {
+          if (result.success) {
+            const btn = document.getElementById('subscribe-btn');
+            btn.classList.remove('hidden-sub');
+            btn.classList.add('subscribed');
+            btn.style.borderColor = '';
+            btn.style.animation = '';
+            document.getElementById('trial-text').textContent = '✦ Pro';
+            document.querySelector('.subscribe-cta').textContent = 'Manage';
+            _trialExpired = false;
+            overlay.remove();
+            const bubble = addClaudeBubble();
+            textBuffer = '✦ Welcome to Merlin Pro — all features unlocked.';
+            finalizeBubble();
+          } else {
+            showModal({ title: 'Invalid Key', body: result.error || 'That key didn\'t work. Check for typos and try again.', confirmLabel: 'OK', onConfirm: () => {} });
+          }
+        });
+      },
+      onCancel: () => {},
+    });
   });
 });
 
