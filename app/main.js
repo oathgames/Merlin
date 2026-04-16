@@ -5,41 +5,44 @@ const os = require('os');
 const wsServer = require('./ws-server');
 const { generateQRDataUri } = require('./qr');
 
-// macOS requires an application menu with Edit role entries for Cmd+C/V/X/A to work
-// in ANY input field. Without this, users cannot paste API keys, auth codes, or copy
-// text from the chat. Windows doesn't need this — the OS handles it natively.
-if (process.platform === 'darwin') {
-  Menu.setApplicationMenu(Menu.buildFromTemplate([
-    { label: app.name, submenu: [
-      { role: 'about' },
-      { type: 'separator' },
-      { role: 'hide' },
-      { role: 'hideOthers' },
-      { role: 'unhide' },
-      { type: 'separator' },
-      { role: 'quit' },
-    ]},
-    { label: 'Edit', submenu: [
-      { role: 'undo' },
-      { role: 'redo' },
-      { type: 'separator' },
-      { role: 'cut' },
-      { role: 'copy' },
-      { role: 'paste' },
-      { role: 'selectAll' },
-    ]},
-    { label: 'View', submenu: [
-      { role: 'toggleDevTools', accelerator: 'Cmd+Option+I', visible: false },
-    ]},
-    { label: 'Window', submenu: [
-      { role: 'minimize' },
-      { role: 'zoom' },
-      { type: 'separator' },
-      { role: 'front' },
-    ]},
-  ]));
-} else {
-  Menu.setApplicationMenu(null);
+function installApplicationMenu() {
+  // macOS requires an application menu with Edit role entries for Cmd+C/V/X/A
+  // to work in any input field. Electron 41 on recent macOS builds has been
+  // observed crashing during early bootstrap when native menu/icon work happens
+  // before app readiness, so we install the mac menu only after whenReady().
+  if (process.platform === 'darwin') {
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { label: app.name, submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' },
+      ]},
+      { label: 'Edit', submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ]},
+      { label: 'View', submenu: [
+        { role: 'toggleDevTools', accelerator: 'Cmd+Option+I', visible: false },
+      ]},
+      { label: 'Window', submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        { type: 'separator' },
+        { role: 'front' },
+      ]},
+    ]));
+  } else {
+    Menu.setApplicationMenu(null);
+  }
 }
 
 // ── BFF Architecture ─────────────────────────────────────────
@@ -878,12 +881,11 @@ const APPROVAL_TIMEOUT_MS = 15 * 60 * 1000;
 async function createWindow() {
   nativeTheme.themeSource = 'dark';
 
-  win = new BrowserWindow({
+  const windowOptions = {
     width: 900,
     height: 670,
     minWidth: 500,
     minHeight: 400,
-    icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     backgroundColor: '#1a1a1c',
     frame: false,
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
@@ -898,7 +900,14 @@ async function createWindow() {
       sandbox: false,
       spellcheck: true,
     },
-  });
+  };
+  // macOS uses the bundle icon from the signed .app. Passing a PNG here forces
+  // Electron through its runtime PNG decoder during startup, which is the crash
+  // path reported in production on Electron 41 / macOS 26.
+  if (process.platform !== 'darwin') {
+    windowOptions.icon = path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  }
+  win = new BrowserWindow(windowOptions);
 
   // Register protocol for inline media — images, video, audio, PDFs.
   //
@@ -1146,28 +1155,31 @@ async function createWindow() {
   };
 
   try {
-    const { nativeImage } = require('electron');
-    const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
-    // Try multiple paths: asar, unpacked asar, __dirname
-    let trayIcon;
-    for (const base of [__dirname, path.join(__dirname, '..'), appInstall]) {
-      const p = path.join(base, iconFile);
-      if (fs.existsSync(p)) { trayIcon = p; break; }
+    // On macOS we keep the app in the Dock when the window is hidden, which is
+    // the native pattern and avoids decoding a PNG-backed tray icon during
+    // startup. Windows/Linux still use the tray for background behavior.
+    if (process.platform !== 'darwin') {
+      const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
+      let trayIcon;
+      for (const base of [__dirname, path.join(__dirname, '..'), appInstall]) {
+        const p = path.join(base, iconFile);
+        if (fs.existsSync(p)) { trayIcon = p; break; }
+      }
+      if (!trayIcon) trayIcon = path.join(__dirname, iconFile);
+      tray = new Tray(trayIcon);
+      tray.setToolTip('Merlin — AI CMO');
+      tray.setContextMenu(Menu.buildFromTemplate([
+        { label: 'Open Merlin', click: showWindow },
+        { type: 'separator' },
+        { label: 'Quit', click: () => { forceQuit = true; app.quit(); } },
+      ]));
+      tray.on('double-click', showWindow);
     }
-    if (!trayIcon) trayIcon = path.join(__dirname, iconFile); // fallback
-    tray = new Tray(trayIcon);
-    tray.setToolTip('Merlin — AI CMO');
-    tray.setContextMenu(Menu.buildFromTemplate([
-      { label: 'Open Merlin', click: showWindow },
-      { type: 'separator' },
-      { label: 'Quit', click: () => { forceQuit = true; app.quit(); } },
-    ]));
-    tray.on('double-click', showWindow);
   } catch (err) {
     console.warn('[tray] System tray not available:', err.message);
     // Linux without tray support — fall back to normal window behavior
     // Re-enable close-to-quit so the user isn't stuck with a zombie process
-    win.removeAllListeners('close');
+    if (process.platform !== 'darwin') win.removeAllListeners('close');
   }
 
   // Start WebSocket server for PWA mobile clients
@@ -2012,13 +2024,11 @@ async function startSession() {
 // ── IPC Handlers ────────────────────────────────────────────
 
 ipcMain.handle('get-version', () => {
-  const version = getCurrentVersion();
-  let whatsNew = [];
-  try {
-    const vj = JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8'));
-    whatsNew = vj.whatsNew || [];
-  } catch {}
-  return { version, whatsNew };
+  const manifest = readVersionManifest();
+  return {
+    version: getCurrentVersion(),
+    whatsNew: manifest?.whatsNew || [],
+  };
 });
 
 ipcMain.handle('check-setup', async (_, force) => {
@@ -2413,6 +2423,7 @@ ipcMain.handle('get-account-info', async () => {
 async function runOAuthFlow(platform, brandName, extra) {
   let binaryPath = getBinaryPath();
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  const isGlobalPlatform = platform === 'discord' || platform === 'slack';
   // Defensive fallback: if neither install nor workspace has the binary,
   // try to download. This shouldn't happen now that the binary is bundled
   // in the installer, but kept as a safety net for upgrade edge cases.
@@ -2428,6 +2439,14 @@ async function runOAuthFlow(platform, brandName, extra) {
   try { fs.accessSync(configPath); } catch { return { error: 'Config not found. Run preflight first.' }; }
   await maybeHydrateBinaryLicenseToken(`oauth-${platform}`);
 
+  if (!brandName && !isGlobalPlatform) {
+    return {
+      error: platform === 'shopify'
+        ? 'Set up a brand with Merlin before connecting your store.'
+        : 'Set up a brand with Merlin before connecting this platform.',
+    };
+  }
+
   // Slack requires HTTPS redirect URI — binary handles token exchange (secrets stay in binary)
   if (platform === 'slack') {
     const slackClientId = '8988877007078.10822045906036'; // Public client ID (not a secret)
@@ -2438,7 +2457,7 @@ async function runOAuthFlow(platform, brandName, extra) {
     const stateHex = require('crypto').randomBytes(16).toString('hex');
     const fullState = `${stateHex}|${port}`;
 
-    const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${slackClientId}&scope=chat:write,files:write,channels:read,channels:join&redirect_uri=${encodeURIComponent(slackRedirect)}&state=${encodeURIComponent(fullState)}`;
+    const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${slackClientId}&scope=chat:write,files:write,channels:read,channels:join,incoming-webhook&redirect_uri=${encodeURIComponent(slackRedirect)}&state=${encodeURIComponent(fullState)}`;
     shell.openExternal(authUrl);
 
     return new Promise((resolve) => {
@@ -2481,7 +2500,10 @@ async function runOAuthFlow(platform, brandName, extra) {
             if (!jsonStr) throw new Error('No JSON in output');
             const result = JSON.parse(jsonStr);
             const cfg = readConfig();
-            Object.assign(cfg, result);
+            for (const [k, v] of Object.entries(result || {})) {
+              if (VAULT_SENSITIVE_KEYS.includes(k) && isVaultRedactionMarker(v)) continue;
+              cfg[k] = v;
+            }
             if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
             cfg._tokenTimestamps.slack = Date.now();
             writeConfig(cfg);
@@ -2546,18 +2568,11 @@ async function runOAuthFlow(platform, brandName, extra) {
       }
       if (!cmdObj.brand) {
         return {
-          error: `${brandName} has no website URL configured. Edit assets/brands/${brandName}/brand.md and set the URL field to your store's domain (e.g. URL: https://yourstore.com).`,
+          error: `${brandName} needs a website before Shopify can connect. Ask Merlin to finish setting up this brand first, then try Shopify again.`,
         };
       }
     } else {
-      // Step 4: no active brand — fall back to global productUrl (legacy)
-      const globalCfg = readConfig();
-      if (globalCfg.productUrl) {
-        cmdObj.brand = globalCfg.productUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
-      }
-      if (!cmdObj.brand) {
-        return { error: 'No active brand selected. Choose a brand from the dropdown first.' };
-      }
+      return { error: 'Set up a brand with Merlin before connecting your store.' };
     }
   }
   const cmd = JSON.stringify(cmdObj);
@@ -2592,18 +2607,8 @@ async function runOAuthFlow(platform, brandName, extra) {
         // console.log(`[oauth] parsed result:`, JSON.stringify(result));
         // Save tokens — sensitive values go to the vault, metadata goes
         // to the brand config with @@VAULT@@ placeholders.
-        const isGlobalPlatform = platform === 'discord' || platform === 'slack';
         const vaultBrand = (brandName && !isGlobalPlatform) ? brandName : '_global';
-        const publicFields = {};
-        const placeholders = {};
-        for (const [k, v] of Object.entries(result)) {
-          if (VAULT_SENSITIVE_KEYS.includes(k)) {
-            vaultPut(vaultBrand, k, v);
-            placeholders[k] = `@@VAULT:${k}@@`;
-          } else {
-            publicFields[k] = v;
-          }
-        }
+        const { publicFields, placeholders } = splitOAuthPersistFields(vaultBrand, result);
         if (brandName && !isGlobalPlatform) {
           writeBrandTokens(brandName, { ...publicFields, ...placeholders });
         } else {
@@ -2626,10 +2631,17 @@ async function runOAuthFlow(platform, brandName, extra) {
           try {
             const parsed = JSON.parse(line.trim());
             if (parsed && typeof parsed === 'object') {
-              const cfg = brandName ? {} : readConfig();
-              Object.assign(cfg, parsed);
-              if (brandName) writeBrandTokens(brandName, parsed);
-              else writeConfig(cfg);
+              const vaultBrand = (brandName && !isGlobalPlatform) ? brandName : '_global';
+              const { publicFields, placeholders } = splitOAuthPersistFields(vaultBrand, parsed);
+              if (brandName && !isGlobalPlatform) {
+                writeBrandTokens(brandName, { ...publicFields, ...placeholders });
+              } else {
+                const cfg = readConfig();
+                Object.assign(cfg, publicFields, placeholders);
+                if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
+                cfg._tokenTimestamps[platform] = Date.now();
+                writeConfig(cfg);
+              }
               if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
               return resolve({ success: true, platform });
             }
@@ -3941,6 +3953,25 @@ const VAULT_SENSITIVE_KEYS = [
   'slackBotToken',
   'slackWebhookUrl',
 ];
+
+function isVaultRedactionMarker(value) {
+  return typeof value === 'string' && value.trim().toLowerCase() === '[stored securely]';
+}
+
+function splitOAuthPersistFields(vaultBrand, result) {
+  const publicFields = {};
+  const placeholders = {};
+  for (const [k, v] of Object.entries(result || {})) {
+    if (VAULT_SENSITIVE_KEYS.includes(k)) {
+      if (isVaultRedactionMarker(v)) continue;
+      vaultPut(vaultBrand, k, v);
+      placeholders[k] = `@@VAULT:${k}@@`;
+    } else {
+      publicFields[k] = v;
+    }
+  }
+  return { publicFields, placeholders };
+}
 
 // ── Config helpers ──────────────────────────────────────────
 // Brand-specific token field names (used by migratePerBrand)
@@ -5850,7 +5881,14 @@ ipcMain.handle('apply-referral-code', async (_, code) => {
   }
 });
 
-ipcMain.handle('apply-update', () => { downloadAndApplyUpdate(); });
+ipcMain.handle('apply-update', async () => {
+  // Best practice: packaged shell updates should go through the signed
+  // installer/DMG, not an in-place network mutation of app.asar/resources.
+  // The legacy downloadAndApplyUpdate path is kept for dev/unpackaged builds.
+  if (app.isPackaged) return installUpdateFromLatestRelease();
+  await downloadAndApplyUpdate();
+  return { ok: true };
+});
 ipcMain.handle('restart-app', () => {
   // If an asar update was staged, run the swap script instead of plain relaunch.
   // asar hot-swap is Windows-only (macOS disabled to preserve code signature).
@@ -5872,7 +5910,7 @@ ipcMain.handle('restart-app', () => {
 // it detached, then quit. The installer's customInit kills any leftover
 // Merlin processes, installs over the old build, and customInstall launches
 // the new version. Net effect: a one-click in-app update for shell changes.
-ipcMain.handle('install-update', async () => {
+async function installUpdateFromLatestRelease() {
   try {
     const raw = await httpsGet('https://api.github.com/repos/oathgames/Merlin/releases/latest');
     const data = JSON.parse(raw.toString());
@@ -5920,9 +5958,24 @@ ipcMain.handle('install-update', async () => {
     }
 
     const asset = data.assets.find(x => x.name === assetName);
+    const checksumAsset = data.assets.find(x => x.name === 'checksums.txt');
+    if (!checksumAsset) throw new Error('checksums.txt missing from release');
+
+    const checksumFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
+    const expectedInstallerHash = checksumFile.split(/\r?\n/)
+      .map(line => line.trim().split(/\s+/))
+      .find(parts => parts.length >= 2 && parts.slice(1).join(' ').replace(/^\*/, '') === assetName)?.[0]?.toLowerCase();
+    if (!expectedInstallerHash) {
+      throw new Error(`Installer ${assetName} is not listed in checksums.txt`);
+    }
+
     if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading installer...');
     const installer = await httpsGet(asset.browser_download_url);
     if (installer.length < 1024 * 1024) throw new Error('Installer download too small');
+    const actualInstallerHash = require('crypto').createHash('sha256').update(installer).digest('hex').toLowerCase();
+    if (actualInstallerHash !== expectedInstallerHash) {
+      throw new Error(`Installer checksum mismatch: expected ${expectedInstallerHash.slice(0, 12)}..., got ${actualInstallerHash.slice(0, 12)}...`);
+    }
 
     const tmpFile = path.join(os.tmpdir(), assetName);
     fs.writeFileSync(tmpFile, installer);
@@ -5942,7 +5995,9 @@ ipcMain.handle('install-update', async () => {
     if (win && !win.isDestroyed()) win.webContents.send('update-error', err.message || 'Install failed');
     return { ok: false, error: err.message };
   }
-});
+}
+
+ipcMain.handle('install-update', async () => installUpdateFromLatestRelease());
 // Manual "check for updates" trigger from the UI. Returns the result so the
 // caller can show a toast like "You're on the latest version" when no update
 // exists, instead of the auto-check's silent no-op behavior.
@@ -5987,11 +6042,96 @@ function httpsGet(url, _depth = 0) {
   });
 }
 
+function readVersionManifest() {
+  const installedVersion = (() => {
+    try { return app.isPackaged ? app.getVersion() : null; } catch { return null; }
+  })();
+
+  const candidatePaths = [];
+  if (app.isPackaged) candidatePaths.push(path.join(appInstall, 'version.json'));
+  candidatePaths.push(path.join(appRoot, 'version.json'));
+  candidatePaths.push(path.join(__dirname, '..', 'version.json'));
+
+  let fallback = null;
+  for (const candidate of candidatePaths) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(candidate, 'utf8'));
+      if (!fallback) fallback = parsed;
+      if (!installedVersion || parsed.version === installedVersion) return parsed;
+    } catch {}
+  }
+
+  if (installedVersion) {
+    return { version: installedVersion, whatsNew: fallback?.whatsNew || [] };
+  }
+  return fallback;
+}
+
+function normalizeManifestEntry(relPath) {
+  return String(relPath || '').replace(/\\/g, '/').replace(/\/+$/, '');
+}
+
+function syncWorkspaceFromInstalledResources() {
+  if (!app.isPackaged) return { ok: true, skipped: true, reason: 'dev-build' };
+
+  let installedManifest = null;
+  try {
+    installedManifest = JSON.parse(fs.readFileSync(path.join(appInstall, 'version.json'), 'utf8'));
+  } catch {
+    return { ok: false, skipped: true, reason: 'missing-installed-manifest' };
+  }
+
+  const installedVersion = String(installedManifest.version || app.getVersion() || '').trim();
+  let workspaceVersion = '';
+  try {
+    workspaceVersion = String(JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8')).version || '').trim();
+  } catch {}
+
+  if (installedVersion && workspaceVersion === installedVersion) {
+    return { ok: true, skipped: true, reason: 'already-synced', version: installedVersion };
+  }
+
+  const updatables = Array.isArray(installedManifest.updatable) ? installedManifest.updatable : [];
+  const versionEntry = updatables.find(entry => normalizeManifestEntry(entry) === 'version.json');
+  const primaryEntries = updatables.filter(entry => normalizeManifestEntry(entry) !== 'version.json');
+
+  const copyEntry = (relPath) => {
+    const src = path.join(appInstall, relPath);
+    const dest = path.join(appRoot, relPath);
+    if (!fs.existsSync(src)) {
+      console.warn('[workspace-sync] installed entry missing:', relPath);
+      return false;
+    }
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.cpSync(src, dest, { recursive: true, force: true });
+    return true;
+  };
+
+  let copied = 0;
+  for (const relPath of primaryEntries) {
+    if (copyEntry(relPath)) copied += 1;
+  }
+  if (versionEntry && copyEntry(versionEntry)) copied += 1;
+
+  console.log(`[workspace-sync] synced ${copied} entry(s) from installed ${installedVersion || 'unknown'} to workspace`);
+  return { ok: true, copied, version: installedVersion };
+}
+
 function getCurrentVersion() {
-  // Workspace version.json is the source of truth — the update process writes
-  // here reliably. The asar's bundled package.json may be stale if the hot-swap
-  // failed (locked file, non-writable install dir, AV interference).
-  try { return JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8')).version; } catch {}
+  // Packaged apps should report the version of the RUNNING shell, not the
+  // workspace mirror. The workspace copy can move ahead during a staged update
+  // before app.asar or the installer has actually been applied, which creates a
+  // misleading "new version label, old UI" state.
+  try {
+    if (app.isPackaged) {
+      const installed = app.getVersion();
+      if (installed) return installed;
+    }
+  } catch {}
+
+  const manifest = readVersionManifest();
+  if (manifest?.version) return manifest.version;
+
   // Fallback: asar package.json (first install before any update)
   if (app.isPackaged) {
     try { return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version; } catch {}
@@ -6269,6 +6409,7 @@ async function ensureBinary(opts = {}) {
 // when CI minutes were exhausted and the build was done locally on Windows).
 function releaseHasInstallerForPlatform(assets) {
   if (!Array.isArray(assets)) return false;
+  if (!assets.some(a => a && a.name === 'checksums.txt')) return false;
   if (process.platform === 'win32') return assets.some(a => /^Merlin\.Setup\..*\.exe$/i.test(a.name));
   if (process.platform === 'darwin') return assets.some(a => /\.dmg$/i.test(a.name) || /-mac.*\.zip$/i.test(a.name));
   return true;
@@ -6575,10 +6716,11 @@ async function downloadAndApplyUpdate() {
       }
     }
 
-    // Never trigger the installer-download path (which downloads an .exe to
-    // temp and triggers Defender). The asar hot-swap + binary replace handles
-    // everything. Just restart to apply.
-    if (win && !win.isDestroyed()) win.webContents.send('update-ready', { latest: latestVersion, needsReinstall: false });
+    // Packaged macOS builds must finish through the installer path because we
+    // cannot mutate a signed .app bundle in place. Windows can restart directly
+    // only when the shell asar was successfully staged for swap.
+    const needsReinstall = app.isPackaged && (process.platform !== 'win32' || !asarStaged);
+    if (win && !win.isDestroyed()) win.webContents.send('update-ready', { latest: latestVersion, needsReinstall });
   } catch (err) {
     if (win && !win.isDestroyed()) win.webContents.send('update-error', err.message || String(err));
   }
@@ -6598,6 +6740,7 @@ app.on('second-instance', () => {
 });
 
 app.whenReady().then(async () => {
+  installApplicationMenu();
   // ── Deferred-update safety net (Windows only) ───────────────
   //
   // Auto-update stages `app.asar.update` and writes `update-swap.cmd`, then
@@ -6672,6 +6815,17 @@ app.whenReady().then(async () => {
       applicationVersion: getCurrentVersion(),
       copyright: '© Oath Games',
     });
+  }
+
+  // Keep the user workspace aligned with the INSTALLED bundle resources after
+  // every upgrade. This replaces the old "download files from the network into
+  // the workspace" approach for packaged builds with a simpler rule:
+  // installer updates the app bundle, then startup sync copies only the
+  // explicit allowlisted resources into Documents/Application Support.
+  try {
+    syncWorkspaceFromInstalledResources();
+  } catch (err) {
+    console.error('[workspace-sync]', err.message);
   }
 
   // Migrate global tokens to per-brand (runs once, idempotent)

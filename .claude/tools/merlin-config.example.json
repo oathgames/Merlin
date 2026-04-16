@@ -45,6 +45,14 @@
   "googleRefreshToken": "",
   "googleAdsCustomerId": "",
 
+  "linkedinAccessToken": "",
+  "linkedinRefreshToken": "",
+  "linkedinAdAccountId": "",
+
+  "_oauthLinkedIn": {
+    "clientID": "86p3wa6kt80r7z"
+  },
+
   "productName": "My Brand",
   "productUrl": "https://mybrand.com",
   "productDescription": "A short description of your brand.",

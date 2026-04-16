@@ -133,7 +133,7 @@ a:hover{text-decoration:underline}
   gap:14px;
   min-height:100%;
   justify-content:flex-end;
-  max-width:720px;
+  max-width:1000px;
   margin:0 auto;
   width:100%;
 }
@@ -142,6 +142,18 @@ a:hover{text-decoration:underline}
 .msg{
   max-width:85%;
   animation:fadeUp .25s ease;
+}
+/* Messages containing a table or artifact get extra width so tabular data
+   and embedded previews can use the available screen. Prose-only bubbles
+   stay at the narrower default for readability. */
+.msg-claude:has(table),
+.msg-claude:has(.artifact){
+  max-width:100%;
+  align-self:stretch;
+}
+.msg-claude:has(table) .msg-bubble,
+.msg-claude:has(.artifact) .msg-bubble{
+  width:100%;
 }
 .msg-user{
   align-self:flex-end;
@@ -970,6 +982,15 @@ body.platform-mac .titlebar-drag{
 .magic-tile.expired{border-color:#b45309;background:rgba(180,83,9,.08)}
 .magic-tile.expired .tile-name{color:#f59e0b}
 .magic-tile.expired .tile-name::after{content:' · expired';font-size:9px;opacity:.8}
+.magic-tile.needs-brand{
+  border-color:rgba(251,191,36,.22);
+  background:rgba(251,191,36,.05);
+}
+.magic-tile.needs-brand:hover{
+  border-color:rgba(251,191,36,.42);
+  background:rgba(251,191,36,.08);
+}
+.magic-tile.needs-brand .tile-name{color:#fbbf24}
 
 .magic-tile.unavailable,
 .magic-tile[data-stubbed]{
@@ -989,13 +1010,6 @@ body.platform-mac .titlebar-drag{
 .magic-tile[data-stubbed] .tile-icon{filter:saturate(0) brightness(.75)}
 .magic-tile.unavailable .tile-name,
 .magic-tile[data-stubbed] .tile-name{color:var(--text-dim)}
-.magic-tile.unavailable .tile-name::after,
-.magic-tile[data-stubbed] .tile-name::after{
-  content:' · soon';
-  font-size:9px;
-  opacity:.8;
-  letter-spacing:.02em;
-}
 
 .magic-empty{
   font-size:12px;color:var(--text-dim);

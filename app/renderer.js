@@ -303,7 +303,7 @@ async function init() {
     // Native progress bar handles onboarding status — no duplicate in chat
   } else {
     // New user — clean welcome, native progress bar handles status
-    welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Drop your website below and I\'ll work some magic.';
+    welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Tell me your brand or website first, and I\'ll set everything up before we connect stores or ad accounts.';
   }
 
   // Don't start the SDK session here. The user sees the chat immediately and can
@@ -315,6 +315,15 @@ async function init() {
   // When SDK sends first real message, DON'T remove the welcome —
   // let the conversation continue naturally below it
   window._welcomeShown = true;
+
+  // Proactively trigger Claude sign-in on first run instead of waiting for
+  // the user's first real message to fail. The existing auth-required flow
+  // already handles the browser login + recovery cleanly, so we reuse it.
+  merlin.checkSetup(false).then((setup) => {
+    if (setup?.needsLogin) {
+      merlin.startSession();
+    }
+  }).catch(() => {});
 }
 
 
@@ -1672,8 +1681,18 @@ async function loadBrands() {
     const select = document.getElementById('brand-select');
     const state = await merlin.loadState();
     select.innerHTML = '';
+    const addBrandOption = () => {
+      const addOpt = document.createElement('option');
+      addOpt.value = '__add__';
+      addOpt.textContent = '+ New Brand';
+      select.appendChild(addOpt);
+    };
     if (!brands || brands.length === 0) {
       select.innerHTML = '<option value="">No brand</option>';
+      addBrandOption();
+      select.value = '';
+      select.dataset.lastValue = '';
+      updateVertical('');
       return;
     }
     const savedBrand = state?.activeBrand || '';
@@ -1685,13 +1704,10 @@ async function loadBrands() {
       if (b.name === savedBrand) { opt.selected = true; selectedBrand = b; }
       select.appendChild(opt);
     });
-    // "+ New Brand" at the bottom
-    const addOpt = document.createElement('option');
-    addOpt.value = '__add__';
-    addOpt.textContent = '+ New Brand';
-    select.appendChild(addOpt);
+    addBrandOption();
 
     if (!savedBrand && brands[0]) select.querySelector('option').selected = true;
+    select.dataset.lastValue = selectedBrand?.name || brands[0]?.name || '';
     if (selectedBrand?.vertical) updateVertical(selectedBrand.vertical);
   } catch (err) { console.warn('[brands]', err); }
 }
@@ -1720,19 +1736,14 @@ document.getElementById('brand-select').addEventListener('change', (e) => {
   // Handle "+ New Brand" option
   if (e.target.value === '__add__') {
     // Reset to previous selection
-    e.target.value = '';
-    addUserBubble('Set up a new brand for me');
-    showTypingIndicator();
-    turnStartTime = Date.now();
-    turnTokens = 0;
-    sessionActive = true;
-    startTickingTimer();
-    merlin.sendMessage('Set up a new brand for me');
+    e.target.value = e.target.dataset.lastValue || '';
+    startBrandSetupConversation();
     return;
   }
 
   // Persist active brand selection
   merlin.saveState({ activeBrand: e.target.value });
+  e.target.dataset.lastValue = e.target.value || '';
   merlin.getBrands().then((brands) => {
     const brand = brands.find(b => b.name === e.target.value);
     if (brand?.vertical) updateVertical(brand.vertical);
@@ -1752,6 +1763,41 @@ document.getElementById('brand-select').addEventListener('change', (e) => {
 });
 
 // add-brand-btn moved into brand dropdown as "+ New Brand" option
+
+function startBrandSetupConversation(prompt = 'Set up a new brand for me') {
+  addUserBubble(prompt);
+  showTypingIndicator();
+  turnStartTime = Date.now();
+  turnTokens = 0;
+  sessionActive = true;
+  startTickingTimer();
+  merlin.sendMessage(prompt);
+}
+
+function getActiveBrandSelection() {
+  const value = document.getElementById('brand-select')?.value || '';
+  return value && value !== '__add__' ? value : '';
+}
+
+function getBrandRequiredMessage(platform) {
+  if (platform === 'shopify') {
+    return 'Set up a brand with Merlin before connecting your store.';
+  }
+  return 'Set up a brand with Merlin before connecting this platform.';
+}
+
+function promptBrandSetupBeforeConnect(platform) {
+  const body = platform === 'shopify'
+    ? 'Set up a brand with Merlin before connecting your store. Merlin will grab the website, product context, and brand details first so Shopify lands in the right place.'
+    : `Set up a brand with Merlin before connecting ${platform.charAt(0).toUpperCase() + platform.slice(1)}. Merlin needs a brand context first so this connection is saved to the right business.`;
+  showModal({
+    title: 'Set Up A Brand First',
+    body,
+    confirmLabel: 'Set Up Brand',
+    cancelLabel: 'Not Now',
+    onConfirm: () => startBrandSetupConversation(),
+  });
+}
 
 // ── Revenue Tracker (Merlin Made Me) ────────────────────────
 function fmtMoney(n) {
@@ -2114,7 +2160,7 @@ document.getElementById('stats-share').addEventListener('click', async () => {
 // accent) shows without re-parenting the DOM. Stubbed / unavailable tiles
 // stay in their original position and render dark gray via `.unavailable`.
 function loadConnections() {
-  const brand = document.getElementById('brand-select')?.value;
+  const brand = getActiveBrandSelection();
   merlin.getConnectedPlatforms(brand).then((connected) => {
     const allTiles = document.querySelectorAll('#universal-tiles .magic-tile, #brand-tiles .magic-tile');
 
@@ -2123,11 +2169,17 @@ function loadConnections() {
     // connection state — you can't be "connected" to something that isn't
     // shipped yet.
     allTiles.forEach(t => {
-      t.classList.remove('connected', 'expired');
+      t.classList.remove('connected', 'expired', 'needs-brand');
+      if (!t.dataset.baseTip && t.dataset.tip) t.dataset.baseTip = t.dataset.tip;
       if (t.dataset.stubbed === 'true') {
         t.classList.add('unavailable');
       } else {
         t.classList.remove('unavailable');
+        t.dataset.tip = t.dataset.baseTip || t.dataset.tip;
+        if (!brand && t.dataset.scope === 'brand') {
+          t.classList.add('needs-brand');
+          t.dataset.tip = getBrandRequiredMessage(t.dataset.platform);
+        }
       }
     });
 
@@ -2145,6 +2197,7 @@ function loadConnections() {
       const platform = tile.dataset.platform;
       if (!platform) return;
       if (tile.dataset.stubbed === 'true') return; // unavailable wins
+      if (tile.classList.contains('needs-brand')) return;
       const status = state.get(platform);
       if (!status) return;
       tile.classList.add('connected');
@@ -2229,25 +2282,104 @@ document.addEventListener('click', (e) => {
 });
 
 // Connect platform tiles — ALL connections handled directly in UI, zero chat involvement
-const OAUTH_PLATFORMS = new Set(['tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit']);
+const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit']);
 const API_KEY_PLATFORMS = {
-  // Meta: manual token entry while app is in review. Users get their token
-  // from developers.facebook.com → Graph API Explorer. Once App Review
-  // passes, move meta back to OAUTH_PLATFORMS for one-click OAuth login.
-  meta:       { key: 'metaAccessToken', label: 'Meta Ads', placeholder: 'EAAL...', url: 'https://developers.facebook.com/tools/explorer/' },
   fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx...', url: 'https://fal.ai/dashboard/keys' },
   elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx...', url: 'https://elevenlabs.io/app/settings/api-keys' },
   heygen:     { key: 'heygenApiKey', label: 'HeyGen', placeholder: 'your-api-key', url: 'https://app.heygen.com/settings?nav=API' },
   arcads:     { key: 'arcadsApiKey', label: 'Arcads', placeholder: 'your-api-key', url: 'https://app.arcads.ai/settings' },
 };
 
+// Shopify-specific helpers — extracted so the context-menu "Use my API key"
+// override can reuse the same OAuth retry and manual-credential paths.
+function runShopifyOAuthWithStore(activeBrand, store) {
+  const extra = store ? { store } : undefined;
+  return merlin.runOAuth('shopify', activeBrand, extra).then(result => {
+    if (result.error) {
+      // "needs a website" — the brand has no URL set in brand.md. Prompt for
+      // the store URL inline and retry. This is the flow Shopify reviewers
+      // hit when they haven't gone through brand setup. Must land them on the
+      // Merlin install page, not a dead-end error.
+      if (/needs a website|set up a brand|Store name required/i.test(result.error)) {
+        showModal({
+          title: 'Connect Shopify',
+          body: 'Enter your Shopify store URL to continue.',
+          inputPlaceholder: 'your-store.myshopify.com',
+          confirmLabel: 'Continue',
+          onConfirm: async (value) => {
+            if (!value || value.length < 3) { showModalError('Enter your store URL'); throw new Error('validation'); }
+            const cleaned = value.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+            // Fire-and-forget retry after modal closes — runOAuth opens a
+            // browser and can take a few minutes, we shouldn't block the modal.
+            setTimeout(() => runShopifyOAuthWithStore(activeBrand, cleaned), 0);
+          },
+        });
+        return;
+      }
+      showModal({ title: 'Connection Failed', body: friendlyError(result.error, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
+    } else {
+      loadConnections();
+    }
+  }).catch(err => {
+    showModal({ title: 'Connection Failed', body: friendlyError(err.message, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
+  });
+}
+
+function showShopifyApiKeyModal(activeBrand) {
+  // Two-step manual credential entry: store URL, then access token. This is
+  // the "Use my API key" override for users who have a private app / custom
+  // app token and want to skip the OAuth browser round-trip.
+  showModal({
+    title: 'Shopify — Store URL',
+    body: 'Enter your Shopify store URL. (Step 1 of 2)',
+    inputPlaceholder: 'your-store.myshopify.com',
+    confirmLabel: 'Next',
+    onConfirm: async (storeValue) => {
+      if (!storeValue || storeValue.length < 3) { showModalError('Enter your store URL'); throw new Error('validation'); }
+      const store = storeValue.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
+      setTimeout(() => {
+        showModal({
+          title: 'Shopify — Access Token',
+          body: 'Paste your Admin API access token (starts with shpat_). (Step 2 of 2)',
+          inputPlaceholder: 'shpat_xxxxxxxxxxxxxxxx',
+          confirmLabel: 'Save',
+          onConfirm: async (tokenValue) => {
+            if (!tokenValue || !tokenValue.trim().startsWith('shpat_')) {
+              showModalError('Token must start with shpat_');
+              throw new Error('validation');
+            }
+            const r1 = await merlin.saveConfigField('shopifyStore', store, activeBrand);
+            if (!r1.success) { showModalError(r1.error || 'Failed to save store'); throw new Error('save'); }
+            const r2 = await merlin.saveConfigField('shopifyAccessToken', tokenValue.trim(), activeBrand);
+            if (!r2.success) { showModalError(r2.error || 'Failed to save token'); throw new Error('save'); }
+            loadConnections();
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
 document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
   if (tile.dataset.stubbed === 'true') return;
   const platform = tile.dataset.platform;
-  const activeBrand = document.getElementById('brand-select')?.value || '';
+  const activeBrand = getActiveBrandSelection();
   const displayName = platform.charAt(0).toUpperCase() + platform.slice(1);
+
+  if (tile.classList.contains('needs-brand')) {
+    promptBrandSetupBeforeConnect(platform);
+    return;
+  }
+
+  if (platform === 'shopify') {
+    // Always try OAuth first — landing on the Merlin install page on the
+    // merchant's store is the review-friendly default. The brand.md URL is
+    // consulted inside main.js runOAuthFlow; missing → we prompt inline.
+    runShopifyOAuthWithStore(activeBrand);
+    return;
+  }
 
   if (OAUTH_PLATFORMS.has(platform)) {
     // Launch OAuth — don't dim the tile, let it complete in background
@@ -2294,14 +2426,6 @@ document.addEventListener('click', async (e) => {
         const result = await merlin.saveConfigField(apiDef.key, value.trim(), activeBrand);
         if (result.success) {
           loadConnections();
-          // Meta: after saving the access token, auto-discover the ad account,
-          // page, and pixel IDs. Without these, meta-push fails with
-          // "metaAdAccountId required". Run discover in the background.
-          if (platform === 'meta') {
-            try {
-              merlin.sendMessage(`Run meta discover for ${activeBrand || 'this brand'} to find the ad account, page, and pixel. Save the discovered IDs to the brand config. Do this silently — don't ask the user anything.`, { silent: true });
-            } catch {}
-          }
         } else {
           showModal({ title: 'Error', body: result.error || 'Failed to save', confirmLabel: 'OK', onConfirm: () => {} });
           throw new Error('save-failed');
@@ -2310,6 +2434,89 @@ document.addEventListener('click', async (e) => {
     });
     return;
   }
+});
+
+// Manual API key modal for Meta — escape hatch for users with a long-lived
+// access token (e.g. from Graph API Explorer, System User, or a pre-existing
+// business integration). Collects access token + ad account ID; Page/Pixel
+// can be discovered later via `meta-discover`.
+function showMetaApiKeyModal(activeBrand) {
+  showModal({
+    title: 'Meta — Access Token',
+    body: 'Paste your Meta access token (from Graph API Explorer or a System User). (Step 1 of 2)',
+    inputPlaceholder: 'EAAL...',
+    confirmLabel: 'Next',
+    onConfirm: async (tokenValue) => {
+      if (!tokenValue || tokenValue.trim().length < 20) { showModalError('Token looks too short'); throw new Error('validation'); }
+      const token = tokenValue.trim();
+      setTimeout(() => {
+        showModal({
+          title: 'Meta — Ad Account ID',
+          body: 'Enter your Meta Ad Account ID (starts with act_). (Step 2 of 2)',
+          inputPlaceholder: 'act_1234567890',
+          confirmLabel: 'Save',
+          onConfirm: async (acctValue) => {
+            let acct = (acctValue || '').trim();
+            if (!acct) { showModalError('Ad account ID required'); throw new Error('validation'); }
+            if (!acct.startsWith('act_')) acct = 'act_' + acct.replace(/^act_/, '');
+            const r1 = await merlin.saveConfigField('metaAccessToken', token, activeBrand);
+            if (!r1.success) { showModalError(r1.error || 'Failed to save token'); throw new Error('save'); }
+            const r2 = await merlin.saveConfigField('metaAdAccountId', acct, activeBrand);
+            if (!r2.success) { showModalError(r2.error || 'Failed to save ad account'); throw new Error('save'); }
+            loadConnections();
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
+// Platforms that support a "Use my API key" right-click override. Each entry
+// maps the platform data attribute to its manual-credential modal.
+const MANUAL_KEY_HANDLERS = {
+  shopify: showShopifyApiKeyModal,
+  meta: showMetaApiKeyModal,
+};
+
+// Tile context menu — right-click to use a manual API key instead of OAuth.
+// Review-friendly escape hatch for users with an existing access token.
+document.addEventListener('contextmenu', (e) => {
+  const tile = e.target.closest('.magic-tile');
+  if (!tile) return;
+  if (tile.dataset.stubbed === 'true') return;
+  const platform = tile.dataset.platform;
+  const handler = MANUAL_KEY_HANDLERS[platform];
+  if (!handler) return;
+  e.preventDefault();
+  const activeBrand = getActiveBrandSelection();
+  // Dismiss any existing menu
+  document.querySelectorAll('.tile-context-menu').forEach(m => m.remove());
+  const menu = document.createElement('div');
+  menu.className = 'tile-context-menu';
+  menu.style.cssText = 'position:fixed;z-index:400;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);font-size:13px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - 60) + 'px';
+  menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
+  const btn = document.createElement('button');
+  btn.textContent = 'Use my API key';
+  btn.style.cssText = 'display:block;width:100%;padding:8px 14px;border:none;background:transparent;color:var(--text);text-align:left;cursor:pointer;border-radius:4px;font-size:13px';
+  btn.onmouseenter = () => { btn.style.background = 'var(--accent-bg)'; };
+  btn.onmouseleave = () => { btn.style.background = 'transparent'; };
+  btn.onclick = () => {
+    menu.remove();
+    handler(activeBrand);
+  };
+  menu.appendChild(btn);
+  document.body.appendChild(menu);
+  const dismiss = (ev) => {
+    if (menu.contains(ev.target)) return;
+    menu.remove();
+    document.removeEventListener('click', dismiss);
+    document.removeEventListener('contextmenu', dismiss);
+  };
+  setTimeout(() => {
+    document.addEventListener('click', dismiss);
+    document.addEventListener('contextmenu', dismiss);
+  }, 10);
 });
 
 // Request a platform
@@ -4722,8 +4929,23 @@ function createArchiveCard(item) {
 
   if (item.thumbnail) {
     card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(item.thumbnail))}" alt="" loading="lazy">`;
+  } else if (isVideo) {
+    // No sibling _thumbnail.{jpg,png,webp} exists — fall back to the video
+    // file itself with preload="metadata" so Chromium paints the first frame.
+    // This is the fix for video cards rendering as a blank dark tile.
+    const files = item.files || [];
+    const best =
+      files.find(f => f === 'captioned.mp4') ||
+      files.find(f => f === 'final.mp4') ||
+      files.find(f => /\.(mp4|mov|webm|m4v)$/i.test(f));
+    if (best) {
+      const videoPath = merlinUrl((item.folder ? item.folder + '/' : '') + best);
+      card.innerHTML = `<video class="archive-card-thumb" src="${escapeHtml(videoPath)}" muted preload="metadata" playsinline></video>`;
+    } else {
+      card.innerHTML = `<div class="archive-card-thumb" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text-dim)">▶</div>`;
+    }
   } else {
-    card.innerHTML = `<div class="archive-card-thumb" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text-dim)">${isVideo ? '▶' : '✦'}</div>`;
+    card.innerHTML = `<div class="archive-card-thumb" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text-dim)">✦</div>`;
   }
 
   // Extra badges: QA status (when explicitly known) and "loose" marker for
@@ -4985,7 +5207,15 @@ async function updateProgressBar() {
       if (el) el.className = `progress-step ${s.done ? 'done' : 'active'}`;
     });
 
-    document.getElementById('progress-next').textContent = '';
+    const nextStep = steps.find(s => !s.done)?.key;
+    const nextLabels = {
+      brand: 'Next: Set up a brand with Merlin before connecting your store.',
+      products: 'Next: add at least one product so Merlin can create creative.',
+      sales: 'Next: connect your sales platform so Merlin can see store performance.',
+      platform: 'Next: connect an ad platform like Meta, Google, or TikTok.',
+      automation: 'Next: turn on your first automation.',
+    };
+    document.getElementById('progress-next').textContent = nextLabels[nextStep] || '';
   } catch {}
 }
 
