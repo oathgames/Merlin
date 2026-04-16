@@ -5,9 +5,21 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { execSync } = require('child_process');
+const { app } = require('electron');
 
 // Generate a session token — random, never stored to disk
 const sessionToken = crypto.randomBytes(16).toString('hex');
+const sessionTokenBuf = Buffer.from(sessionToken, 'utf8');
+
+// Constant-time comparison for the session token. String `===` short-circuits
+// on the first differing byte which leaks per-byte timing; this matters more
+// once the listener moves off 127.0.0.1 (see TODO in startServer).
+function tokensMatch(candidate) {
+  if (typeof candidate !== 'string') return false;
+  const candBuf = Buffer.from(candidate, 'utf8');
+  if (candBuf.length !== sessionTokenBuf.length) return false;
+  return crypto.timingSafeEqual(candBuf, sessionTokenBuf);
+}
 
 let wss = null;
 let httpServer = null;
@@ -22,20 +34,41 @@ let onApproveTool = null;
 let onDenyTool = null;
 let onAnswerQuestion = null;
 
+function getCertDir() {
+  // Prefer the per-user Electron userData dir so the private key never lands
+  // in a world-readable /tmp. Fall back to tmpdir only if userData is not
+  // available (unit tests, non-Electron context).
+  try {
+    if (app && typeof app.getPath === 'function') {
+      return path.join(app.getPath('userData'), '.merlin-certs');
+    }
+  } catch { /* fall through */ }
+  return path.join(os.tmpdir(), '.merlin-certs');
+}
+
 function getOrCreateCert() {
-  const certDir = path.join(os.tmpdir(), '.merlin-certs');
+  const certDir = getCertDir();
   const keyPath = path.join(certDir, 'key.pem');
   const certPath = path.join(certDir, 'cert.pem');
 
   if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
     try {
+      // Best-effort tightening in case an earlier version created the files
+      // with default umask. chmod is a no-op on Windows but harmless.
+      try { fs.chmodSync(keyPath, 0o600); } catch {}
       return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
     } catch { /* regenerate */ }
   }
 
   try {
-    fs.mkdirSync(certDir, { recursive: true });
+    // 0700 on the dir so only the current user can enumerate cert files.
+    fs.mkdirSync(certDir, { recursive: true, mode: 0o700 });
+    try { fs.chmodSync(certDir, 0o700); } catch {}
     execSync(`openssl req -x509 -newkey rsa:2048 -keyout "${keyPath}" -out "${certPath}" -days 365 -nodes -subj "/CN=localhost" 2>/dev/null`, { stdio: 'pipe' });
+    // openssl writes key.pem with default umask (typically 0644). Tighten to
+    // 0600 so other local users cannot read the RSA private key.
+    try { fs.chmodSync(keyPath, 0o600); } catch {}
+    try { fs.chmodSync(certPath, 0o644); } catch {}
     return { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) };
   } catch {
     return null; // openssl not available, fall back to HTTP
@@ -97,7 +130,7 @@ function setupConnectionHandler() {
 
       // Auth handshake — must be first message
       if (!authed) {
-        if (msg.type === 'auth' && msg.token === sessionToken) {
+        if (msg.type === 'auth' && tokensMatch(msg.token)) {
           authed = true;
           authenticatedClients.add(ws);
           ws.send(JSON.stringify({ type: 'auth-ok' }));

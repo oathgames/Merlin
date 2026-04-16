@@ -66,12 +66,34 @@ function isLikelyToken(str) {
 
 const LONG_TOKEN_RE = /[A-Za-z0-9_\-+/]{32,}={0,2}/g;
 
+// Apply prefix + heuristic redaction to a single string. Shared by object
+// properties and array elements so tokens inside JSON arrays (e.g.
+// {"logs":["Bearer EAA..."]}) are never emitted verbatim.
+function redactStringValue(value) {
+  if (typeof value !== 'string') return value;
+  if (isLikelyToken(value)) return '[REDACTED]';
+  let redacted = value;
+  for (const re of TOKEN_PREFIXES) {
+    re.lastIndex = 0;
+    redacted = redacted.replace(re, '[REDACTED]');
+  }
+  return redacted;
+}
+
 /**
- * Redact a parsed JSON object in-place. Replaces sensitive field values
- * and any string value that looks like a token.
+ * Redact a parsed JSON value. Returns the redacted value — callers MUST use
+ * the return value (arrays are rebuilt, objects are mutated and returned).
+ *
+ * REGRESSION GUARD (2026-04-16): do not drop the return value when recursing
+ * into an array — `obj.map(...)` produces a new array and mutating the
+ * original is not possible. Previous version discarded the map result and
+ * also failed to run string-level redaction on array elements, so tokens
+ * inside arrays (e.g. {"logs":["Bearer EAA..."]}) round-tripped unchanged.
  */
 function redactJsonObj(obj) {
-  if (!obj || typeof obj !== 'object') return obj;
+  if (obj === null || obj === undefined) return obj;
+  if (typeof obj === 'string') return redactStringValue(obj);
+  if (typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) {
     return obj.map(item => redactJsonObj(item));
   }
@@ -79,19 +101,13 @@ function redactJsonObj(obj) {
     if (typeof value === 'string') {
       if (SENSITIVE_FIELD_NAMES.has(key)) {
         obj[key] = '[REDACTED]';
-      } else if (isLikelyToken(value)) {
-        obj[key] = '[REDACTED]';
       } else {
-        // Check for known token prefixes inline
-        let redacted = value;
-        for (const re of TOKEN_PREFIXES) {
-          re.lastIndex = 0;
-          redacted = redacted.replace(re, '[REDACTED]');
-        }
-        obj[key] = redacted;
+        obj[key] = redactStringValue(value);
       }
     } else if (typeof value === 'object' && value !== null) {
-      redactJsonObj(value);
+      // Reassign: Array.prototype.map returns a NEW array, so in-place
+      // mutation of the parent is required for array children.
+      obj[key] = redactJsonObj(value);
     }
   }
   return obj;
@@ -150,9 +166,12 @@ function redactOutput(stdout, stderr) {
         const jsonStr = lines.slice(jsonStart, jsonEnd + 1).join('\n');
         const parsed = JSON.parse(jsonStr);
         const redacted = redactJsonObj(parsed);
-        // Reconstruct: status lines (redacted) + JSON (redacted)
+        // Reconstruct: status lines (redacted) + JSON (redacted).
+        // Run redactText over the stringified JSON as a belt-and-braces pass —
+        // catches anything the field-level walker missed (e.g. tokens embedded
+        // in large free-text fields, unknown container shapes).
         const statusLines = lines.slice(0, jsonStart).join('\n');
-        result = redactText(statusLines) + '\n' + JSON.stringify(redacted, null, 2);
+        result = redactText(statusLines) + '\n' + redactText(JSON.stringify(redacted, null, 2));
       } else {
         result = redactText(stdout);
       }

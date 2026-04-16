@@ -13,7 +13,11 @@ function assertStr(v, max = MAX_STR) {
   return v;
 }
 function assertBrand(v) {
-  if (v === undefined || v === null) return v;
+  // Empty string is a legitimate "no brand / global scope" marker used
+  // throughout the renderer (e.g. `brandSelect?.value || ''`) and matched
+  // in main by `brand || ''`. Treat it identically to null/undefined so
+  // first-run and global-config flows don't throw synchronously here.
+  if (v === undefined || v === null || v === '') return v;
   if (typeof v !== 'string' || !BRAND_RE.test(v)) throw new Error('invalid brand');
   return v;
 }

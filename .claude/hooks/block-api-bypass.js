@@ -59,8 +59,14 @@ const RAW_SOCKET_PATTERNS = [
 ];
 
 // ── Inline-script interpreters that can make network calls ───────────────
+// REGRESSION GUARD (2026-04-16): `node -p` / `--print` executes arbitrary JS
+// just like `-e` / `--eval` — it evaluates the expression and prints the
+// result. Combined forms `-pe` / `-ep` are also accepted by Node. The
+// previous list only caught `-e|--eval`, so `node -p "require('https').get(…)"`
+// sailed through both INLINE_SCRIPT_PATTERNS and SCRIPT_FILE_PATTERNS
+// (the latter explicitly excludes `-p`). Keep all four forms here.
 const INLINE_SCRIPT_PATTERNS = [
-  /\bnode\s+(-e|--eval)\b/,
+  /\bnode\s+(-e|--eval|-p|--print|-pe|-ep)\b/,
   /\bpython3?\s+-c\b/,
   /\bruby\s+-e\b/,
   /\bperl\s+-e\b/,
@@ -145,6 +151,17 @@ const PROTECTED_PATH_PATTERNS = [
   /mcp-server\.js$/i,
   /mcp-tools\.js$/i,
   /mcp-redact\.js$/i,
+  // REGRESSION GUARD (2026-04-16): parity with the inline Read-hook
+  // blocklist in .claude/settings.json. Without these, cat/grep of
+  // app/main.js, app/preload.js, app/ws-server.js, etc. from Bash sails
+  // through this hook (the settings.json inline regex catches Read/Edit
+  // but not Bash). Leaking these files reveals the IPC surface, auth
+  // handshake, and redaction patterns.
+  /[/\\]app[/\\](main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact)\.js$/i,
+  // Claude Code's own OAuth credentials file. Combined with the broad
+  // `Bash(cp *)` allow-list, an unprotected path would let an adversary
+  // cp it elsewhere and then Read it.
+  /[/\\]\.claude[/\\]\.credentials\.json$/i,
   // Grep directory check — block searching the entire tools directory
   // Matches both absolute (C:\...\tools) and relative (.claude/tools) paths
   /\.claude[/\\]tools\/?$/i,
@@ -171,6 +188,13 @@ const PROTECTED_COMMAND_PATTERNS = [
   /\.claude[/\\]hooks[/\\]/i,
   /\.claude[/\\]commands[/\\]/i,
   /\.claude[/\\]settings\.json\b/i,
+  // REGRESSION GUARD (2026-04-16): Bash parity with the settings.json
+  // inline Read-hook blocklist. Blocks `cat app/ws-server.js`,
+  // `grep <pat> app/preload.js`, `cp app/main.js /tmp/x`, etc.
+  /[/\\]app[/\\](main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact)\.js\b/i,
+  // Claude Code OAuth token file. Without this, `cp ~/.claude/.credentials.json /tmp/x`
+  // (allowed by `Bash(cp *)`) followed by Read would exfiltrate the token.
+  /[/\\]\.claude[/\\]\.credentials\.json\b/i,
 ];
 
 // ── Audit log path ────────────────────────────────────────────────────────
@@ -311,18 +335,59 @@ function block(reason, toolName, cmd) {
   process.exit(2);
 }
 
+// Read the PreToolUse hook payload. Per the Claude Code / Agent SDK hook
+// contract, payloads are delivered on stdin as a single JSON document of the
+// form { session_id, tool_name, tool_input: {...}, ... }. Older / alternate
+// harnesses sometimes populate TOOL_INPUT / TOOL_NAME env vars instead, so we
+// prefer stdin and fall back to env only if stdin is empty / a TTY.
+function readHookPayload() {
+  let raw = '';
+  try {
+    if (!process.stdin.isTTY) {
+      raw = fs.readFileSync(0, 'utf8');
+    }
+  } catch { /* fall through to env fallback */ }
+  if (!raw) {
+    const envRaw = process.env.TOOL_INPUT;
+    if (envRaw) return { tool_input: JSON.parse(envRaw), tool_name: process.env.TOOL_NAME || '' };
+    // No input at all — caller is not a real hook invocation.
+    return null;
+  }
+  return JSON.parse(raw);
+}
+
 // ── Entry point ───────────────────────────────────────────────────────────
 function main() {
-  let input;
+  // REGRESSION GUARD (2026-04-16): fail CLOSED on missing or malformed hook
+  // input. The prior version read `process.env.TOOL_INPUT || '{}'` and
+  // `process.exit(0)` on parse failure, which was doubly fail-open: the SDK
+  // delivers payloads on stdin (not env), so TOOL_INPUT was always unset,
+  // `'{}'` parsed cleanly to {}, every matcher short-circuited on empty
+  // strings, and every Bash/WebFetch/Edit/Write/Read call sailed through.
+  // Two-part fix: (1) read stdin per the hook spec; (2) exit 2 on any
+  // parse / empty-payload path so the outer try/catch's fail-closed promise
+  // (line ~407) actually holds. If the harness ever changes, a hang here
+  // is preferable to a silent allow.
+  let payload;
   try {
-    input = JSON.parse(process.env.TOOL_INPUT || '{}');
-  } catch {
-    // Bad input — don't block, let the SDK handle it
-    process.exit(0);
+    payload = readHookPayload();
+  } catch (err) {
+    process.stderr.write('block-api-bypass: malformed hook payload — failing closed: ' + (err && err.message || err) + '\n');
+    process.exit(2);
+  }
+  if (!payload || typeof payload !== 'object') {
+    process.stderr.write('block-api-bypass: no hook payload received — failing closed\n');
+    process.exit(2);
   }
 
+  // Claude Code hook spec wraps the tool args under `tool_input`. Older
+  // harnesses put them at the top level — accept both.
+  const input = (payload.tool_input && typeof payload.tool_input === 'object')
+    ? payload.tool_input
+    : payload;
+
   // Figure out which matcher fired this hook
-  const toolName = process.env.TOOL_NAME || '';
+  const toolName = payload.tool_name || process.env.TOOL_NAME || '';
   const cmd = input.command || '';
   const url = input.url || '';
   const filePath = input.file_path || '';
