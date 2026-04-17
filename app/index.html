@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' merlin: data: blob:; media-src 'self' merlin: data: blob:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.merlingotme.com https://merlingotme.com https://api.github.com https://fonts.googleapis.com https://fonts.gstatic.com wss://127.0.0.1:* ws://127.0.0.1:*">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' merlin: data: blob: https://*.fbcdn.net https://*.cdninstagram.com https://graph.facebook.com; media-src 'self' merlin: data: blob:; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://api.merlingotme.com https://merlingotme.com https://api.github.com https://fonts.googleapis.com https://fonts.gstatic.com wss://127.0.0.1:* ws://127.0.0.1:*">
 <title>Merlin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -76,44 +76,17 @@
     <span class="magic-title">✦ Magic</span>
     <div class="magic-header-right">
       <button id="subscribe-btn" class="subscribe-header-btn"><span id="trial-text">7D Left</span> &nbsp; <span class="subscribe-cta">Get Pro</span></button>
-      <button id="magic-close" class="magic-close">&times;</button>
+      <button id="magic-close" class="magic-close" aria-label="Close Magic panel">&times;</button>
     </div>
   </div>
 
   <div class="magic-panel-scroll">
-  <!-- Brand vertical tag (brand selector moved to perf bar) -->
-  <div id="brand-vertical" class="brand-vertical" style="display:none"></div>
-
   <!-- Spellbook (Scheduled Tasks) -->
   <div class="magic-section">
     <div class="magic-section-label">Spellbook <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:.5">(Automated Tasks)</span></div>
     <div id="spellbook-warning" class="spellbook-warning" style="display:none">Claude Desktop is closed — spells are paused</div>
     <div id="spellbook-list" class="spellbook-list"></div>
     <div id="spellbook-empty" class="spellbook-empty" style="display:none"></div>
-    <div id="spell-templates" class="spell-templates" style="display:none">
-      <button class="spell-template" data-spell="daily-ads" data-cron="0 9 * * 1-5" data-desc="Create fresh ad creatives every weekday morning">
-        <span class="spell-template-info"><span class="spell-template-name">Daily Ads</span><span class="spell-template-desc">Fresh creatives every morning</span></span>
-      </button>
-      <button class="spell-template" data-spell="performance-check" data-cron="0 10 * * 1-5" data-desc="Review ad performance, kill losers, scale winners">
-        <span class="spell-template-info"><span class="spell-template-name">Performance Check</span><span class="spell-template-desc">Kill losers, scale winners</span></span>
-      </button>
-      <button class="spell-template" data-spell="morning-briefing" data-cron="0 5 * * 1-5" data-desc="Overnight results ready at 5 AM" data-prompt="Pull overnight ad results, revenue, and content activity — cache as a morning briefing card that shows instantly when you open Merlin. Save output as JSON to .merlin-briefing.json with fields: date, ads, content, revenue, recommendation.">
-        <span class="spell-template-info"><span class="spell-template-name">Morning Briefing</span><span class="spell-template-desc">Overnight results ready at 5 AM</span></span>
-      </button>
-      <button class="spell-template" data-spell="weekly-digest" data-cron="0 9 * * 1" data-desc="Weekly summary of spend, revenue, and wins">
-        <span class="spell-template-info"><span class="spell-template-name">Weekly Digest</span><span class="spell-template-desc">Monday morning summary</span></span>
-      </button>
-      <button class="spell-template" data-spell="seo-blog" data-cron="0 9 * * 2,4" data-desc="Write and publish SEO blog posts">
-        <span class="spell-template-info"><span class="spell-template-name">SEO Blog Writer</span><span class="spell-template-desc">Publish posts Tue + Thu</span></span>
-      </button>
-      <button class="spell-template" data-spell="competitor-scan" data-cron="0 9 * * 5" data-desc="Scan competitor ads and report new trends">
-        <span class="spell-template-info"><span class="spell-template-name">Competitor Watch</span><span class="spell-template-desc">Friday intel report</span></span>
-      </button>
-      <button class="spell-template" data-spell="email-flows" data-cron="0 9 * * 3" data-desc="Build and optimize email flows — welcome series, abandoned cart, win-back">
-        <span class="spell-template-info"><span class="spell-template-name">Email Flows</span><span class="spell-template-desc">Build + optimize automations</span></span>
-      </button>
-    </div>
-    <button id="add-task-btn" class="add-task-btn">+ Cast a new spell</button>
   </div>
 
   <!-- Universal integrations — one key covers every brand in the workspace.
@@ -168,7 +141,7 @@
         <input id="request-input" type="text" placeholder="e.g. Snapchat, X, LinkedIn..." maxlength="100">
         <button id="request-send" class="request-send">Send</button>
       </div>
-      <div id="request-thanks" class="request-thanks hidden">✦ Sent! We'll look into it.</div>
+      <div id="request-thanks" class="request-thanks hidden" role="status" aria-live="polite">✦ Sent! We'll look into it.</div>
     </div>
   </div>
 
@@ -213,13 +186,14 @@
     <div class="magic-header-right">
       <button id="archive-expand" class="magic-close" aria-label="Expand" data-tip="Expand" data-tip-pos="bottom">←</button>
       <button id="activity-btn" class="subscribe-header-btn"><span class="subscribe-cta">Activity</span></button>
-      <button id="archive-close" class="magic-close">&times;</button>
+      <button id="archive-close" class="magic-close" aria-label="Close Archive panel">&times;</button>
     </div>
   </div>
   <div class="archive-panel-scroll">
     <div class="archive-filters">
       <div class="archive-filter-row">
         <button class="archive-filter active" data-filter="live">Ads</button>
+        <button class="archive-filter" data-filter="all">All</button>
         <button class="archive-filter" data-filter="image">Images</button>
         <button class="archive-filter" data-filter="video">Videos</button>
         <button class="archive-filter" data-filter="swipes">Swipes</button>
@@ -250,9 +224,20 @@
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12" y2="18"/></svg>
   </button>
   <textarea id="input" placeholder="Message Merlin..." rows="1" spellcheck="true"></textarea>
-  <button id="mic-btn" aria-label="Voice input" data-tip="Voice input" class="mic-btn">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
-  </button>
+  <!-- Voice controls: mic button (always visible) + speaker button that
+       slides up on hover (discoverable without cluttering the resting state).
+       The speaker button is the voice-output toggle for TTS; clicking it
+       latches the .on state so it stays visible after mouse-leave until
+       toggled off again. See renderer.js "Voice Output" section. -->
+  <div class="voice-controls">
+    <button id="speaker-btn" aria-label="Toggle voice output" data-tip="Voice output" class="speaker-btn" aria-pressed="false">
+      <svg class="speaker-icon-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+      <svg class="speaker-icon-on" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/></svg>
+    </button>
+    <button id="mic-btn" aria-label="Voice input" data-tip="Voice input" class="mic-btn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+    </button>
+  </div>
   <button id="send-btn" aria-label="Send">
     <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 L11 13"/><path d="M22 2 L15 22 L11 13 L2 9 Z"/></svg>
   </button>
@@ -261,7 +246,7 @@
 <!-- Revenue Tracker (Merlin Made Me) -->
 <div id="stats-overlay" class="overlay hidden">
   <div class="stats-card">
-    <button id="stats-close" class="qr-close">&times;</button>
+    <button id="stats-close" class="qr-close" aria-label="Close revenue tracker">&times;</button>
     <div id="stats-brand-name" class="stats-brand"></div>
     <div class="stats-header">
       <span class="stats-sparkle">✦</span>
@@ -305,13 +290,19 @@
 </div>
 
 <!-- Wisdom Overlay (full-frame takeover) -->
-<div id="wisdom-overlay" class="wisdom-fullframe hidden">
+<div id="wisdom-overlay" class="wisdom-fullframe hidden" role="dialog" aria-modal="true" aria-labelledby="wisdom-title">
   <div class="wisdom-header">
     <div class="wisdom-title-row">
-      <span class="magic-title">✦ Wisdom</span>
-      <span id="wisdom-sample" style="font-size:11px;color:var(--text-dim);margin-left:8px"></span>
+      <span id="wisdom-title" class="magic-title">✦ Wisdom</span>
+      <span id="wisdom-sample" class="wisdom-sample"></span>
     </div>
-    <button id="wisdom-close" class="magic-close">&times;</button>
+    <div class="wisdom-header-actions">
+      <button id="wisdom-info-btn" class="wisdom-info-btn" aria-label="About Wisdom data" data-tip="Wisdom is built from anonymized, aggregated metrics (CTR, CPC, format, timing) shared across all Merlin users. No brand names, ad copy, or personal data is shared.">&#9432;</button>
+      <button id="wisdom-refresh-btn" class="wisdom-icon-btn" aria-label="Refresh Wisdom data" title="Refresh">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+      </button>
+      <button id="wisdom-close" class="magic-close" aria-label="Close Wisdom panel">&times;</button>
+    </div>
   </div>
   <div class="wisdom-scroll">
     <div id="wisdom-grid" class="wisdom-grid"></div>

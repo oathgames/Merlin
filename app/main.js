@@ -1822,6 +1822,34 @@ async function startSession() {
     console.error('[mcp] Failed to create Merlin MCP server:', err.message);
   }
 
+  // Voice-output tag instruction. Opt-in by design: default is silent, and
+  // Claude opts into TTS by prefixing a substantive response with
+  // <voice>speak</voice>. Omission → silent → safe. We always send the
+  // instruction (cheap) even if the user hasn't toggled voice on, because
+  // the user can flip the toggle mid-session and we don't want to rebuild
+  // the query to add the instruction retroactively. Renderer always strips
+  // the tag from display regardless of toggle state.
+  const VOICE_TAG_INSTRUCTION = [
+    '',
+    '## Voice-output tagging (UI metadata — never describe or render visibly)',
+    '',
+    'If a response is substantive — an insight, analysis, recommendation,',
+    'explanation, warning, report, or dashboard the user benefits from hearing',
+    'aloud — begin it with a single line containing exactly:',
+    '',
+    '    <voice>speak</voice>',
+    '',
+    'Omit the tag entirely for:',
+    '- Brief confirmations ("Pushed ✓", "Done", "Scheduled", "Created")',
+    '- Tool-call progress or status updates',
+    '- One-liner acknowledgements',
+    '- Anything 1–2 sentences that is just closure',
+    '',
+    'The tag is consumed by the UI and stripped before display. Never',
+    'reference, acknowledge, or explain it. Continue your response normally',
+    'on the next line.',
+  ].join('\n');
+
   activeQuery = query({
     prompt: messageGenerator(),
     options: {
@@ -1832,6 +1860,7 @@ async function startSession() {
       canUseTool: handleToolApproval,
       env: { ...sessionEnv, CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '360000' },
       mcpServers: mcpConfig,
+      appendSystemPrompt: VOICE_TAG_INSTRUCTION,
     },
   });
 
@@ -2807,33 +2836,17 @@ ipcMain.handle('transcribe-audio', async (_, audioBytes) => {
   const whisperBin = findTool(isWin ? 'whisper-cli.exe' : 'whisper-cli');
   const modelPath = findTool('ggml-tiny.en.bin');
 
-  if (!ffmpegPath) {
-    // ffmpeg is intentionally excluded from the Electron installer (~200MB
-    // per exe would bloat the download). On Windows we offer auto-install
-    // via `install-voice-tools` — renderer sees `installable: true` and
-    // triggers the download flow. Mac/Linux still get a manual pointer
-    // since whisper.cpp only publishes Windows binaries upstream.
+  // Voice binaries are bundled with the installer under
+  // <appInstall>/.claude/tools/ (see release.yml's "Bundle voice tools" step
+  // and package.json's extraResources). If any are missing here, the install
+  // is damaged — tell the user to reinstall rather than silently degrading.
+  const missing = [];
+  if (!ffmpegPath) missing.push('audio transcoder');
+  if (!whisperBin) missing.push('speech engine');
+  if (!modelPath)  missing.push('voice model');
+  if (missing.length > 0) {
     return {
-      error: 'Audio transcoder (ffmpeg) not installed yet.',
-      installable: isWin,
-      missing: ['ffmpeg'],
-    };
-  }
-  if (!whisperBin) {
-    // Return a structured error so the renderer can offer auto-install instead
-    // of just showing a wall of text with a download link. `installable: true`
-    // is the renderer's cue to surface the "Set up voice input?" flow.
-    return {
-      error: 'Voice transcription tool not installed yet.',
-      installable: isWin,
-      missing: ['whisper'],
-    };
-  }
-  if (!modelPath) {
-    return {
-      error: 'Voice model not installed yet.',
-      installable: isWin,
-      missing: ['model'],
+      error: `Voice input is unavailable — ${missing.join(', ')} missing from install. Reinstall Merlin to restore.`,
     };
   }
 
@@ -2896,253 +2909,204 @@ ipcMain.handle('transcribe-audio', async (_, audioBytes) => {
   }
 });
 
-// ── Voice Tools Auto-Install (Windows) ──────────────────────
-// Fetches whisper-cli.exe, the ggml-tiny.en model, and ffmpeg.exe into
-// <appRoot>/.claude/tools/ so voice input "just works" after first-run
-// instead of dropping the user at a Github/HuggingFace treasure hunt.
+// Voice tools (ffmpeg, whisper-cli, ggml-tiny.en.bin) are bundled into the
+// Electron installer at build time — see "Bundle voice tools" in
+// autocmo-core/.github/workflows/release.yml and package.json extraResources.
+// The runtime no longer fetches anything; transcribe-audio just uses the
+// binaries already sitting in <appInstall>/.claude/tools/.
+
+// ── Voice Output: Kokoro TTS ─────────────────────────────────
+// On-device text-to-speech via kokoro-js (wraps HuggingFace transformers.js
+// + onnxruntime-node). Verified to load with Electron 41's Node 24 ABI
+// without electron-rebuild — the prebuilt onnxruntime-node binary is
+// ABI-compatible out of the box. If that ever changes on a future Electron
+// bump, we'd pivot to the WASM backend (env.backends.onnx.wasm) — no
+// integration code here would need to change beyond the init.
 //
-// Security / supply chain:
-//   - Download URLs are hardcoded (no user-supplied paths, no redirects off
-//     the pinned hosts). Whisper.cpp tag is pinned — upgrades are a
-//     deliberate source change, not a silent "latest" pull.
-//   - HTTPS only (Node's agent enforces cert validation).
-//   - Zip extraction uses PowerShell Expand-Archive, which refuses
-//     path-traversal entries ("..\..\foo"). We only COPY specific filenames
-//     out of the extracted tree — never by relative path from the zip.
-//   - Total disk footprint: ~150 MB (whisper ~10 MB, model 74 MB,
-//     ffmpeg ~60 MB). Progress events stream to the renderer so the user
-//     sees movement instead of a frozen modal.
-const VOICE_TOOL_SOURCES = {
-  // Pin to a specific whisper.cpp release so a bad upstream build or a
-  // renamed asset doesn't brick voice input for every user overnight.
-  // Bump here + verify manually before shipping.
-  whisperZip: 'https://github.com/ggerganov/whisper.cpp/releases/download/v1.7.6/whisper-bin-x64.zip',
-  model:      'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
-  // gyan.dev is the canonical ffmpeg Windows builder recommended by the
-  // ffmpeg project itself (https://ffmpeg.org/download.html#build-windows).
-  ffmpegZip:  'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip',
-};
+// Model: onnx-community/Kokoro-82M-v1.0-ONNX (q8 quantized, ~92 MB).
+// First speak triggers a one-time download to .claude/tools/kokoro-cache/
+// with progress events streamed to the renderer. Subsequent synths are
+// instant-init (~700ms) + ~2-3s per insight on a modern CPU.
+//
+// Voices: only bm_george (British male, en-gb) wired in v1. The voice file
+// is already bundled inside the base model — adding Lewis / Fenrir / etc.
+// later is a one-line change in the renderer's voice picker. No extra
+// download.
+const KOKORO_DEFAULT_VOICE = 'bm_george';
 
-// Stream an HTTPS download to disk with percent progress. Follows redirects
-// (HuggingFace and github.com both 302 to CDN hosts). 10-redirect cap + per-
-// request timeout keeps a stuck CDN from hanging the install forever.
-function downloadWithProgress(url, destPath, onProgress, depth = 0) {
-  return new Promise((resolve, reject) => {
-    if (depth > 10) return reject(new Error('Too many redirects'));
-    const https = require('https');
-    const req = https.get(url, {
-      headers: { 'User-Agent': 'Merlin-Desktop' },
-      timeout: 60000,
-    }, (res) => {
-      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-        res.resume();
-        const next = new URL(res.headers.location, url).toString();
-        downloadWithProgress(next, destPath, onProgress, depth + 1).then(resolve, reject);
-        return;
-      }
-      if (res.statusCode !== 200) {
-        res.resume();
-        return reject(new Error(`HTTP ${res.statusCode} fetching ${url}`));
-      }
-      const total = parseInt(res.headers['content-length'] || '0', 10);
-      let got = 0;
-      const out = fs.createWriteStream(destPath);
-      res.on('data', (chunk) => {
-        got += chunk.length;
-        if (total > 0 && typeof onProgress === 'function') {
-          onProgress(Math.min(100, (got / total) * 100), got, total);
-        }
-      });
-      res.on('error', (err) => { try { out.destroy(); fs.unlinkSync(destPath); } catch {} reject(err); });
-      res.pipe(out);
-      out.on('finish', () => out.close(() => resolve()));
-      out.on('error', (err) => { try { fs.unlinkSync(destPath); } catch {} reject(err); });
-    });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(); reject(new Error('Download timeout')); });
+// Pick the fastest ONNX Runtime Execution Provider available on this OS.
+// DirectML (Windows) and CoreML (macOS) drop first-chunk latency from the
+// 2–3 s CPU baseline to ~400–700 ms on typical laptops. Linux stays on CPU
+// because the prebuilt binary doesn't ship CUDA and most users won't have it.
+function getTtsDevice() {
+  if (process.platform === 'win32') return 'dml';
+  if (process.platform === 'darwin') return 'coreml';
+  return 'cpu';
+}
+
+// ─────────────────────────────────────────────────────────────
+// TTS runs in a child utility process (app/tts-worker.js). The main
+// process MUST NOT block on ONNX inference or phonemization — it pumps
+// the Windows message loop, and any stall there is what caused the
+// "Not Responding" flag during synthesis. The utility process owns
+// kokoro-js + @huggingface/transformers + onnxruntime-node; main only
+// routes messages and forwards chunks to the active renderer.
+// ─────────────────────────────────────────────────────────────
+let _ttsWorker = null;
+let _ttsWorkerReady = null;        // resolves when the worker emits { type: "ready" } after init
+let _currentSynthSender = null;    // webContents for the in-flight speak-text (chunk destination)
+let _currentSynthReqId = 0;        // tracks the reqId of the in-flight synth so crash/exit messages
+                                   // carry the ID — without it the renderer's per-request guard drops
+                                   // the final packet on the floor, leaking the listener + blob URLs.
+
+function spawnTtsWorker() {
+  if (_ttsWorker) return _ttsWorker;
+  const { utilityProcess } = require('electron');
+  const workerPath = path.join(__dirname, 'tts-worker.js');
+  _ttsWorker = utilityProcess.fork(workerPath, [], {
+    serviceName: 'merlin-tts',
+    stdio: 'inherit',
   });
-}
 
-// Extract a zip via PowerShell Expand-Archive. Ships with every supported
-// Windows version (PowerShell 5+ / Windows 10+), so no external dependency.
-// Path is passed via -LiteralPath to stop PowerShell globbing on brackets.
-function extractZipWindows(zipPath, destDir) {
-  return new Promise((resolve, reject) => {
-    fs.mkdirSync(destDir, { recursive: true });
-    const { spawn } = require('child_process');
-    // LiteralPath wants single-quoted strings; escape embedded single quotes
-    // by doubling them per PowerShell convention.
-    const psQuote = (s) => s.replace(/'/g, "''");
-    const ps = spawn('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-Command',
-      `Expand-Archive -LiteralPath '${psQuote(zipPath)}' -DestinationPath '${psQuote(destDir)}' -Force`,
-    ], { windowsHide: true });
-    let stderr = '';
-    ps.stderr.on('data', (d) => { stderr += d.toString(); });
-    ps.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`Extraction failed (exit ${code}): ${stderr.slice(0, 300).trim()}`));
-    });
-    ps.on('error', reject);
-  });
-}
-
-// Walk a directory and return absolute paths of files whose basename matches
-// the predicate. Used after extraction to locate whisper-cli.exe / ffmpeg.exe
-// regardless of how deep the upstream zip nests them.
-function walkFindFiles(rootDir, predicate) {
-  const out = [];
-  const walk = (d) => {
-    let entries;
-    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
-    for (const e of entries) {
-      const p = path.join(d, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile() && predicate(e.name, p)) out.push(p);
-    }
-  };
-  walk(rootDir);
-  return out;
-}
-
-ipcMain.handle('install-voice-tools', async () => {
-  const isWin = process.platform === 'win32';
-  if (!isWin) {
-    // whisper.cpp publishes only Windows prebuilt binaries. Mac/Linux users
-    // still get a clear pointer — we don't silently succeed.
-    return {
-      error: 'Auto-install is available on Windows only right now. On macOS or Linux, build whisper.cpp from source and drop the binaries into .claude/tools/.',
+  _ttsWorker.on('message', (msg) => {
+    if (!msg || typeof msg.type !== 'string') return;
+    const sendToRenderer = (channel, payload) => {
+      if (_currentSynthSender && !_currentSynthSender.isDestroyed()) {
+        _currentSynthSender.send(channel, payload);
+      }
     };
-  }
+    // Progress events fire during the at-boot prewarm, well before any
+    // speak-text IPC sets `_currentSynthSender` — so we broadcast them to
+    // the main window instead. Without this, the first-run 92 MB model
+    // download is invisible to the user.
+    const sendProgress = (payload) => {
+      if (win && !win.isDestroyed() && win.webContents && !win.webContents.isDestroyed()) {
+        win.webContents.send('voice-output-progress', payload);
+      }
+    };
+    if (msg.type === 'progress') {
+      sendProgress({
+        stage: 'init',
+        file: msg.file,
+        loaded: msg.loaded,
+        total: msg.total,
+        progress: msg.progress,
+        status: msg.status,
+      });
+    } else if (msg.type === 'chunk') {
+      sendToRenderer('voice-output-chunk', {
+        requestId: msg.reqId,
+        seq: msg.seq,
+        audio: msg.audio,
+        final: false,
+      });
+    } else if (msg.type === 'final') {
+      sendToRenderer('voice-output-chunk', {
+        requestId: msg.reqId,
+        seq: msg.seq || 0,
+        audio: null,
+        final: true,
+        aborted: !!msg.aborted,
+        error: msg.error,
+      });
+      _currentSynthSender = null;
+      _currentSynthReqId = 0;
+    } else if (msg.type === 'error') {
+      // Fall back to the tracked reqId when the worker didn't attach one
+      // (e.g. init-time error before the first synth). Without a requestId
+      // the renderer ignores the message and leaks its listener.
+      sendToRenderer('voice-output-chunk', {
+        requestId: typeof msg.reqId === 'number' ? msg.reqId : _currentSynthReqId,
+        final: true,
+        error: msg.message,
+      });
+      console.error('[tts] worker error:', msg.message);
+      _currentSynthSender = null;
+      _currentSynthReqId = 0;
+    }
+  });
 
-  const toolsDir = path.join(appRoot, '.claude', 'tools');
-  const tmpDir = path.join(os.tmpdir(), `merlin-voice-install-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+  _ttsWorker.on('exit', (code) => {
+    console.warn('[tts] worker exited with code', code);
+    if (_currentSynthSender && !_currentSynthSender.isDestroyed()) {
+      _currentSynthSender.send('voice-output-chunk', {
+        requestId: _currentSynthReqId,
+        final: true,
+        error: 'voice worker exited',
+      });
+    }
+    _ttsWorker = null;
+    _ttsWorkerReady = null;
+    _currentSynthSender = null;
+    _currentSynthReqId = 0;
+  });
+
+  return _ttsWorker;
+}
+
+// Lazy + idempotent. Fires the init handshake exactly once per worker
+// lifetime; subsequent calls return the cached promise so speak-text and
+// the at-boot prewarm both converge on a single model load.
+async function ensureTtsReady() {
+  if (_ttsWorkerReady) return _ttsWorkerReady;
+  const worker = spawnTtsWorker();
+  const cacheDir = path.join(appRoot, '.claude', 'tools', 'kokoro-cache');
+  try { fs.mkdirSync(cacheDir, { recursive: true }); } catch {}
+  _ttsWorkerReady = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      worker.off('message', onMsg);
+      reject(new Error('tts worker init timeout (120s)'));
+    }, 120000);
+    const onMsg = (msg) => {
+      if (msg && msg.type === 'ready') {
+        clearTimeout(timeout);
+        worker.off('message', onMsg);
+        resolve(true);
+      } else if (msg && msg.type === 'error') {
+        clearTimeout(timeout);
+        worker.off('message', onMsg);
+        reject(new Error(msg.message || 'tts worker init failed'));
+      }
+    };
+    worker.on('message', onMsg);
+    worker.postMessage({ type: 'init', cacheDir, device: getTtsDevice() });
+  });
+  return _ttsWorkerReady;
+}
+
+// Fire-and-forget: main resolves the IPC as soon as the worker accepts the
+// synth request. Chunks stream back asynchronously on `voice-output-chunk`,
+// the renderer plays them as they arrive. Last-writer-wins — a new synth
+// or stop-speaking invalidates any in-flight run by flipping the worker's
+// current-token, so stray chunks are suppressed before they're sent.
+ipcMain.handle('speak-text', async (event, args) => {
+  const text = args && typeof args.text === 'string' ? args.text.trim() : '';
+  const voice = (args && args.voice) || KOKORO_DEFAULT_VOICE;
+  const requestId = args && typeof args.requestId === 'number' ? args.requestId : 0;
+  if (!text) return { error: 'empty text' };
+  if (text.length > 5000) return { error: 'text too long (5000 char max)' };
+
   try {
-    fs.mkdirSync(toolsDir, { recursive: true });
-    fs.mkdirSync(tmpDir, { recursive: true });
+    await ensureTtsReady();
   } catch (err) {
-    return { error: `Cannot create install directory: ${err.message}` };
+    console.error('[tts] ensureTtsReady failed:', err);
+    return { error: String(err && err.message ? err.message : err) };
   }
 
-  const send = (stage, pct, note) => {
-    if (win && !win.isDestroyed()) {
-      win.webContents.send('voice-install-progress', {
-        stage,
-        pct: Math.max(0, Math.min(100, Math.round(pct))),
-        note: note || '',
-      });
-    }
-  };
+  // Abort any prior synth before re-pointing the sender — otherwise late
+  // chunks from the previous synth could leak to whatever renderer is now
+  // "current" for the new one.
+  _ttsWorker.postMessage({ type: 'abort' });
+  _currentSynthSender = event.sender;
+  _currentSynthReqId = requestId;
+  _ttsWorker.postMessage({ type: 'synth', reqId: requestId, text, voice });
+  return { success: true };
+});
 
-  // Re-check presence at install time (not just at the transcribe call) —
-  // the user might have manually dropped one of the three files in by hand
-  // between the error toast and clicking "Install". Skip what we don't need.
-  const has = (name) => fs.existsSync(path.join(toolsDir, name));
-  const needWhisper = !has('whisper-cli.exe');
-  const needModel   = !has('ggml-tiny.en.bin');
-  const needFfmpeg  = !has('ffmpeg.exe');
-
-  // Progress budget: each stage gets a slice of 0-100 proportional to its
-  // download size so the bar moves smoothly end-to-end instead of stalling
-  // at 30% while the model grinds through 74 MB.
-  const budget = {
-    whisper: needWhisper ? 10 : 0,   // ~10 MB
-    model:   needModel   ? 74 : 0,   // 74 MB
-    ffmpeg:  needFfmpeg  ? 60 : 0,   // ~60 MB
-  };
-  const totalBudget = budget.whisper + budget.model + budget.ffmpeg;
-  if (totalBudget === 0) {
-    send('done', 100, 'Voice input is already set up.');
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-    return { success: true, already: true };
-  }
-  let completed = 0;
-  const stagePct = (stage, frac) => ((completed + budget[stage] * frac) / totalBudget) * 100;
-
-  try {
-    // ── Whisper binary + DLLs ──
-    if (needWhisper) {
-      send('whisper', stagePct('whisper', 0), 'Downloading whisper-cli...');
-      const zipPath = path.join(tmpDir, 'whisper.zip');
-      await downloadWithProgress(VOICE_TOOL_SOURCES.whisperZip, zipPath, (pct) => {
-        send('whisper', stagePct('whisper', pct / 100 * 0.8), 'Downloading whisper-cli...');
-      });
-      send('whisper', stagePct('whisper', 0.85), 'Extracting whisper-cli...');
-      const extractDir = path.join(tmpDir, 'whisper-extracted');
-      await extractZipWindows(zipPath, extractDir);
-
-      // The release zip nests binaries under Release/ (or similar). Grab
-      // whisper-cli.exe + every .dll we can find — whisper depends on
-      // ggml-*.dll, whisper.dll, and sometimes SDL2.dll. Missing any DLL
-      // makes whisper-cli.exe fail to even start, so copy them all.
-      const cliFiles = walkFindFiles(extractDir, (n) => /^whisper-cli\.exe$/i.test(n));
-      if (cliFiles.length === 0) {
-        throw new Error('whisper-cli.exe not found in downloaded zip — upstream layout may have changed.');
-      }
-      fs.copyFileSync(cliFiles[0], path.join(toolsDir, 'whisper-cli.exe'));
-      const dllFiles = walkFindFiles(extractDir, (n) => /\.dll$/i.test(n));
-      for (const dll of dllFiles) {
-        fs.copyFileSync(dll, path.join(toolsDir, path.basename(dll)));
-      }
-      completed += budget.whisper;
-      send('whisper', stagePct('whisper', 1), 'whisper-cli installed');
-    }
-
-    // ── Model ──
-    if (needModel) {
-      send('model', stagePct('model', 0), 'Downloading voice model (74 MB)...');
-      // Write to a .partial file then rename atomically so a crash mid-
-      // download doesn't leave a corrupt ggml-tiny.en.bin that whisper
-      // will load and segfault on next launch.
-      const tmpModel = path.join(toolsDir, 'ggml-tiny.en.bin.partial');
-      await downloadWithProgress(VOICE_TOOL_SOURCES.model, tmpModel, (pct) => {
-        send('model', stagePct('model', pct / 100), `Downloading voice model... ${Math.round(pct)}%`);
-      });
-      try { fs.renameSync(tmpModel, path.join(toolsDir, 'ggml-tiny.en.bin')); }
-      catch (err) { try { fs.unlinkSync(tmpModel); } catch {} throw err; }
-      completed += budget.model;
-      send('model', stagePct('model', 1), 'Voice model installed');
-    }
-
-    // ── FFmpeg ──
-    if (needFfmpeg) {
-      send('ffmpeg', stagePct('ffmpeg', 0), 'Downloading ffmpeg...');
-      const zipPath = path.join(tmpDir, 'ffmpeg.zip');
-      await downloadWithProgress(VOICE_TOOL_SOURCES.ffmpegZip, zipPath, (pct) => {
-        send('ffmpeg', stagePct('ffmpeg', pct / 100 * 0.85), `Downloading ffmpeg... ${Math.round(pct)}%`);
-      });
-      send('ffmpeg', stagePct('ffmpeg', 0.9), 'Extracting ffmpeg...');
-      const extractDir = path.join(tmpDir, 'ffmpeg-extracted');
-      await extractZipWindows(zipPath, extractDir);
-
-      // gyan.dev zip nests under ffmpeg-X.X-essentials_build/bin/. Locate by
-      // filename so a version bump on their side doesn't break the copy.
-      const ffmpegExe = walkFindFiles(extractDir, (n) => /^ffmpeg\.exe$/i.test(n))[0];
-      if (!ffmpegExe) {
-        throw new Error('ffmpeg.exe not found in downloaded zip.');
-      }
-      fs.copyFileSync(ffmpegExe, path.join(toolsDir, 'ffmpeg.exe'));
-      // ffprobe is optional but useful for any future audio-duration checks.
-      const ffprobeExe = walkFindFiles(extractDir, (n) => /^ffprobe\.exe$/i.test(n))[0];
-      if (ffprobeExe) fs.copyFileSync(ffprobeExe, path.join(toolsDir, 'ffprobe.exe'));
-      completed += budget.ffmpeg;
-      send('ffmpeg', stagePct('ffmpeg', 1), 'ffmpeg installed');
-    }
-
-    send('done', 100, 'Voice input ready');
-    return { success: true };
-  } catch (err) {
-    // Surface a human-readable reason — the renderer passes this straight
-    // through friendlyError(), so don't leak stack traces or raw paths.
-    const msg = String(err && err.message ? err.message : err);
-    return { error: `Voice install failed: ${msg}` };
-  } finally {
-    // ALWAYS wipe the temp scratch dir, even if the install threw.
-    // Leftover zips and extracted folders on every failed attempt would
-    // balloon %TEMP% quickly — whisper zip alone is ~10 MB.
-    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
-  }
+ipcMain.handle('stop-speaking', () => {
+  if (_ttsWorker) _ttsWorker.postMessage({ type: 'abort' });
+  _currentSynthSender = null;
+  return { stopped: true };
 });
 
 ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
@@ -3510,21 +3474,46 @@ ipcMain.handle('create-spell', (_, taskId, cron, description, prompt, brandName)
 });
 // suppress-next-response removed — handled inline by send-message with { silent: true }
 
-ipcMain.handle('delete-file', async (_, folderPath) => {
+// Accepts either a single relative path (string) — legacy call sites — or a
+// list of paths (array). Each path is validated independently before any
+// deletion runs, so a bad entry fails the whole batch rather than corrupting
+// the archive halfway through.
+//
+// REGRESSION GUARD (2026-04-16, loose-delete data-loss incident): previously
+// the renderer always handed us `folderPath = filePath.split('/').slice(0,-1)`
+// for right-click → Delete on an archive card. For run folders
+// (`ad_YYYYMMDD_HHMMSS/`) that was the run folder itself — correct. For loose
+// files that was the loose file's PARENT directory, and because this handler
+// uses `fs.rm(..., {recursive: true})` we wiped every sibling clip in the
+// folder along with the one the user clicked on. The renderer now passes an
+// explicit list — file paths for loose items, the run folder for run items —
+// so the batch matches user intent exactly. Do not restore the "just take
+// whatever string comes in and rm -rf it" behaviour.
+ipcMain.handle('delete-file', async (_, target) => {
   try {
-    if (!folderPath || typeof folderPath !== 'string') return { success: false };
-    const fullPath = path.resolve(appRoot, folderPath);
+    const rawTargets = Array.isArray(target) ? target : [target];
+    if (rawTargets.length === 0) return { success: false };
     const resolvedRoot = path.resolve(appRoot);
-    if (!fullPath.startsWith(resolvedRoot)) return { success: false };
     const resultsDir = path.join(resolvedRoot, 'results');
-    if (!fullPath.startsWith(resultsDir) || fullPath === resultsDir) return { success: false };
-    try {
-      const realPath = fs.realpathSync(fullPath);
-      if (!realPath.startsWith(path.resolve(appRoot))) return { success: false };
-    } catch { return { success: false }; }
-    if (!fs.existsSync(fullPath)) return { success: false };
-    // Use async rm to avoid blocking the main process (prevents "Not Responding")
-    await fs.promises.rm(fullPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+
+    const resolved = [];
+    for (const t of rawTargets) {
+      if (!t || typeof t !== 'string') return { success: false };
+      const fullPath = path.resolve(appRoot, t);
+      if (!fullPath.startsWith(resultsDir + path.sep) && fullPath !== resultsDir) return { success: false };
+      if (fullPath === resultsDir) return { success: false };
+      try {
+        const realPath = fs.realpathSync(fullPath);
+        if (!realPath.startsWith(resolvedRoot + path.sep) && realPath !== resolvedRoot) return { success: false };
+      } catch { return { success: false }; }
+      if (!fs.existsSync(fullPath)) return { success: false };
+      resolved.push(fullPath);
+    }
+
+    for (const fullPath of resolved) {
+      // Use async rm to avoid blocking the main process (prevents "Not Responding")
+      await fs.promises.rm(fullPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    }
     // Invalidate archive index so it rebuilds
     try { await fs.promises.unlink(path.join(resultsDir, 'archive-index.json')); } catch {}
     return { success: true };
@@ -3812,6 +3801,99 @@ ipcMain.handle('get-perf-summary', (_, requestedDays, brandName) => {
     perfCache[key][days] = { data: result, fetchedAt: Date.now() };
     return result;
   } catch { return null; }
+});
+
+// ── Agency Report: aggregate per-brand dashboards for the Reports tab ──
+//
+// REGRESSION GUARD (2026-04-16, reports audit — findings #1 and #2):
+// The Reports overlay used to call get-perf-summary with no brand arg, which
+// scans results/ at the root (not per-brand) — in brand-scoped installs this
+// always returned null and the "All Brands" summary silently showed $0 / $0.
+// Per-brand pages were also hard-coded to "--". This handler reads each
+// selected brand's latest dashboard_*.json for the requested period and
+// aggregates them, so the report surfaces real revenue, spend, customers,
+// and blended MER — not placeholders.
+//
+// DO NOT collapse this back into get-perf-summary. The perf bar is
+// single-brand and its cache shape would fight with multi-brand aggregation.
+ipcMain.handle('get-agency-report', (_, requestedDays, brandNames) => {
+  const days = requestedDays || 7;
+  // Input validation — preload validates the array as an object/array shape,
+  // but the main process re-validates each entry as defense-in-depth.
+  const BRAND_RE = /^[a-z0-9_-]{1,100}$/i;
+  const brands = Array.isArray(brandNames)
+    ? brandNames.filter(b => typeof b === 'string' && BRAND_RE.test(b)).slice(0, 200)
+    : [];
+
+  const perBrand = brands.map(brandName => {
+    let data = null;
+    try {
+      const summary = computePerfSummary(days, brandName);
+      if (summary) {
+        // computePerfSummary already filters to files whose period_days
+        // matches `days`, so the per-brand numbers are truly scoped to the
+        // requested window. We additionally pull new_customers directly
+        // from the underlying dashboard file since the perf bar doesn't
+        // surface that field.
+        let newCustomers = 0;
+        try {
+          const resultsDir = path.join(appRoot, 'results', brandName);
+          const files = fs.readdirSync(resultsDir)
+            .filter(f => f.startsWith('dashboard_') && f.endsWith('.json'))
+            .sort();
+          for (let i = files.length - 1; i >= 0; i--) {
+            const parsed = JSON.parse(fs.readFileSync(path.join(resultsDir, files[i]), 'utf8'));
+            if (parsed.period_days === days) {
+              newCustomers = parsed.new_customers || 0;
+              break;
+            }
+          }
+        } catch {}
+
+        const roas = summary.spend > 0 ? summary.revenue / summary.spend : 0;
+        const generatedMs = summary.generatedAt ? Date.parse(summary.generatedAt) : 0;
+        const ageHours = generatedMs ? (Date.now() - generatedMs) / 3600000 : null;
+        data = {
+          revenue: summary.revenue || 0,
+          spend: summary.spend || 0,
+          mer: summary.mer || 0,
+          roas,
+          newCustomers,
+          generatedAt: summary.generatedAt || null,
+          stale: ageHours !== null && ageHours > 48,
+        };
+      }
+    } catch {}
+    return { name: brandName, hasData: !!data, data };
+  });
+
+  // Aggregate across brands with data. Sum money/customer fields; compute
+  // blended MER from the totals (never average per-brand MERs — that's
+  // mathematically wrong when spend is uneven).
+  let revenue = 0, spend = 0, newCustomers = 0, activeBrandsCount = 0;
+  for (const b of perBrand) {
+    if (!b.data) continue;
+    revenue += b.data.revenue;
+    spend += b.data.spend;
+    newCustomers += b.data.newCustomers;
+    if (b.data.spend > 0 || b.data.revenue > 0) activeBrandsCount++;
+  }
+  const mer = spend > 0 ? revenue / spend : 0;
+
+  return {
+    period: days,
+    generatedAt: new Date().toISOString(),
+    summary: {
+      revenue,
+      spend,
+      mer,
+      newCustomers,
+      activeBrandsCount,
+      brandsRequested: brands.length,
+      brandsWithData: perBrand.filter(b => b.hasData).length,
+    },
+    perBrand,
+  };
 });
 
 // ── Activity feed: read brand's activity.jsonl ──────────────
@@ -5200,9 +5282,24 @@ ipcMain.handle('refresh-live-ads', async (_, brandName) => {
   const results = [];
   await maybeHydrateBinaryLicenseToken('live-ads');
 
+  // Pre-compute how many platforms we'll actually hit so the renderer can
+  // render an honest "X of N" progress label instead of counting through all
+  // six even when only two are connected.
+  const connectedCount = platformJobs.filter(([, c]) => c).length;
+  const platformLabel = (action) => action.replace(/-insights$|-campaigns$/, '');
+
   try {
     for (const [action, connected] of platformJobs) {
       if (!connected) { results.push({ action, skipped: true, reason: 'not connected' }); continue; }
+      const attemptedSoFar = results.filter(r => !r.skipped).length;
+      if (win && !win.isDestroyed()) {
+        win.webContents.send('live-ads-refresh-progress', {
+          platform: platformLabel(action),
+          done: attemptedSoFar,
+          total: connectedCount,
+          brand: brandName || '',
+        });
+      }
       const cmdObj = { action, batchCount: 7 };
       if (brandName) cmdObj.brand = brandName;
       const cmd = JSON.stringify(cmdObj);
@@ -5406,6 +5503,22 @@ function invalidateWisdomCache(vertical) {
 ipcMain.handle('invalidate-wisdom-cache', (_, vertical) => {
   invalidateWisdomCache(vertical);
   return { ok: true };
+});
+
+// Read seasonal hints (12 months → strategy text) bundled with the app.
+// Renderer used to fetch('seasonal.json') from the file:// origin which
+// silently breaks when packaged inside asar. Going through IPC means the
+// main process resolves the path with app.getAppPath() and works in both
+// dev and production builds.
+let _seasonalCache = null;
+ipcMain.handle('get-seasonal', async () => {
+  if (_seasonalCache) return _seasonalCache;
+  try {
+    const seasonalPath = path.join(app.getAppPath(), 'seasonal.json');
+    const raw = fs.readFileSync(seasonalPath, 'utf8');
+    _seasonalCache = JSON.parse(raw);
+    return _seasonalCache;
+  } catch { return null; }
 });
 
 ipcMain.handle('win-minimize', () => { if (win) win.minimize(); });
@@ -6808,8 +6921,26 @@ async function downloadAndApplyUpdate() {
     // DO NOT change the soft-miss to a hard-fail without also
     // extending release.yml to emit checksums for every entry in
     // versionJson.updatable.
+    // Reject any manifest entry that could resolve outside appRoot. A hostile
+    // or corrupted version.json must never let the updater write /etc/passwd,
+    // ../../something, or an absolute path. GitHub tag immutability is the
+    // first line of defense; this is the second. Applied before network fetch
+    // so we don't waste bandwidth on a doomed entry.
+    const rootResolved = path.resolve(appRoot);
+    const isSafeUpdatablePath = (entry) => {
+      if (typeof entry !== 'string' || entry.length === 0) return false;
+      if (path.isAbsolute(entry)) return false;
+      if (/(^|[/\\])\.\.([/\\]|$)/.test(entry)) return false;
+      const resolved = path.resolve(appRoot, entry);
+      return resolved === rootResolved || resolved.startsWith(rootResolved + path.sep);
+    };
+
     const stagedUpdatables = [];
     for (const filePath of (versionJson.updatable || [])) {
+      if (!isSafeUpdatablePath(filePath)) {
+        console.warn('[update] refusing unsafe manifest entry:', filePath);
+        continue;
+      }
       try {
         const content = await httpsGet(`https://raw.githubusercontent.com/oathgames/Merlin/${data.tag_name}/${filePath}`);
         const expected = checksumMap.get(filePath) || checksumMap.get(path.basename(filePath));
@@ -6833,7 +6964,13 @@ async function downloadAndApplyUpdate() {
     const rollbackList = [];
     try {
       for (const { filePath, content } of stagedUpdatables) {
-        const fullPath = path.join(appRoot, filePath);
+        // Re-check at write time — belt and braces. If something bypassed the
+        // staging guard (it can't today, but the invariant is load-bearing),
+        // refuse the write rather than let it escape appRoot.
+        if (!isSafeUpdatablePath(filePath)) {
+          throw new Error(`Refusing to write outside appRoot: ${filePath}`);
+        }
+        const fullPath = path.resolve(appRoot, filePath);
         fs.mkdirSync(path.dirname(fullPath), { recursive: true });
         if (fs.existsSync(fullPath)) {
           const backup = fullPath + '.rollback';
@@ -7032,6 +7169,12 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   installApplicationMenu();
+  // Prewarm Kokoro TTS in the background — spawns the utility process and
+  // loads the model + weights so the first user-triggered speak skips the
+  // ~700 ms init cost and goes straight to synthesis. Errors are swallowed;
+  // if prewarm fails the on-demand speak-text handler surfaces the real
+  // error when the user actually invokes voice.
+  setTimeout(() => { ensureTtsReady().catch(() => {}); }, 1500);
   // ── Deferred-update safety net (Windows only) ───────────────
   //
   // Auto-update stages `app.asar.update` and writes `update-swap.cmd`, then

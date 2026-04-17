@@ -1,10 +1,12 @@
 {
-  "version": "1.2.1",
+  "version": "1.3.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
     ".claude/commands/cmo.md",
     ".claude/commands/merlin.md",
+    ".claude/commands/merlin-platforms.md",
+    ".claude/commands/merlin-setup.md",
     ".claude/commands/update.md",
     ".claude/settings.json",
     ".claude/hooks/block-api-bypass.js",
@@ -23,8 +25,14 @@
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
   "repo": "oathgames/Merlin",
-  "notes": "v1.2.1: Auto-update reliability fix — partial downloads now fail loudly instead of producing misleading \"update file corrupted\" errors on flaky networks.",
+  "notes": "v1.3.0: Brain upgrade — Merlin's instructions are now 56% leaner (faster cold start, lower token cost) with new statistical winner test, copy quality gate, conversion rubric, and SEO scoring framework. On-demand reference files are now distributed to existing users via /update.",
   "whatsNew": [
-    "Auto-update downloads now verify the full file arrived before hashing — fixes rare \"update file looks corrupted\" errors caused by truncated downloads on unstable networks"
+    "Faster cold start — merlin.md trimmed from 45KB to 20KB by moving on-demand content into reference files (loaded only when needed)",
+    "New Promotion Gate: stat-test before scaling winners (p<0.05 AND ≥15% lift) — no more scaling on noise",
+    "New Copy Quality Gate: 7-expert panel scoring with AI-detector weighting and banned-vocabulary list before any ad copy ships",
+    "Conversion Rubric: 8-dimension landing page audit applied automatically when you ask Merlin why ads aren't converting",
+    "SEO Rubric: Impact×Confidence keyword scoring with BOFU/MOFU/TOFU classifier and striking-distance band (positions 4-20)",
+    "Cold-email benchmarks (40% open / 3% reply / 1% positive) and email attribution model picker (first-touch / linear / time-decay) wired into email audit",
+    "Routing fix: existing users now receive merlin-platforms.md and merlin-setup.md on /update (previously only shipped via fresh installer)"
   ]
 }

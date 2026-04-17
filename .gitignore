@@ -44,6 +44,9 @@ assets/music/*.zip
 # Quality benchmarks (brand-specific)
 extract_colors.ps1
 
+# TTS model cache (fetched from HF on first voice-output use, ~92 MB)
+.claude/tools/kokoro-cache/
+
 # Node/Electron
 node_modules/
 dist/
@@ -71,3 +74,7 @@ Thumbs.db
 .merlin-wisdom.json
 .merlin-state.json
 .merlin-briefing.json
+.merlin-license-token
+.merlin-referral-bonus
+.merlin-errors.log
+.merlin-errors.log.old

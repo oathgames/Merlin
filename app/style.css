@@ -32,6 +32,7 @@ html,body{
 /* ── Custom Tooltips (JS-driven, fixed position, never clipped) ── */
 .merlin-tooltip{
   position:fixed;
+  pointer-events:none; /* never block the cursor path to nearby controls */
   background:#1e1e22;
   color:var(--text-muted);
   font-size:11px;font-weight:500;
@@ -57,11 +58,7 @@ html,body{
   animation:tip-in .15s ease;
 }
 @keyframes tip-in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
-/* Reserve fixed space for the right sidebar (archive/magic panels, both
-   position:fixed, width:340px). Keeping this reservation always-on means
-   opening a panel never reflows or visually shifts the main content —
-   chat, input, and status bars stay put whether a panel is open or not. */
-body{display:flex;flex-direction:column;padding-right:340px}
+body{display:flex;flex-direction:column}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
 ::selection{background:rgba(167,139,250,.3)}
@@ -488,6 +485,97 @@ a:hover{text-decoration:underline}
 }
 @keyframes mic-pulse{0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,.3)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)}}
 
+/* ── Voice Output (Kokoro TTS) ─────────────────────────────
+   Speaker button sits above the mic, hidden until hover OR until the
+   user has turned voice output on (.on latches it visible). The hover
+   reveal is an affordance, not a gate — once toggled on, the button
+   stays visible so the user has a clear way to toggle it back off. */
+.voice-controls{
+  position:relative;
+  display:flex;align-items:center;
+  flex-shrink:0;
+}
+.speaker-btn{
+  position:absolute;
+  bottom:calc(100% + 6px);
+  left:50%;
+  width:32px;height:32px;
+  padding:0;
+  border:1px solid var(--border);
+  background:var(--bg);
+  color:var(--text-dim);
+  border-radius:10px;
+  cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  opacity:0;
+  pointer-events:none;
+  transform:translate(-50%,8px);
+  transition:opacity .18s ease, transform .18s ease, border-color .2s, color .2s;
+  z-index:2;
+}
+/* Invisible bridge across the 6px gap between mic and speaker so
+   .voice-controls:hover stays active during the upward mouse travel —
+   without it the speaker would hide mid-flight and snap back. */
+.speaker-btn::before{
+  content:"";
+  position:absolute;
+  left:-4px;right:-4px;
+  top:100%;
+  height:10px;
+}
+.voice-controls:hover .speaker-btn,
+.speaker-btn:focus-visible,
+.speaker-btn.on{
+  opacity:1;
+  pointer-events:auto;
+  transform:translate(-50%,0);
+}
+.speaker-btn:hover{border-color:var(--accent-border);color:var(--accent)}
+.speaker-btn.on{border-color:#a78bfa;color:#a78bfa}
+.speaker-btn.speaking{animation:speaker-pulse 1.4s ease-in-out infinite}
+@keyframes speaker-pulse{0%,100%{box-shadow:0 0 0 0 rgba(167,139,250,.35)}50%{box-shadow:0 0 0 8px rgba(167,139,250,0)}}
+/* Swap speaker icon based on toggle state — "off" shows muted speaker with X,
+   "on" shows speaker with sound waves. Only one is visible at a time. */
+.speaker-btn .speaker-icon-on{display:none}
+.speaker-btn.on .speaker-icon-off{display:none}
+.speaker-btn.on .speaker-icon-on{display:block}
+
+/* Per-message replay button — appears on hover in the top-right of each
+   assistant bubble. Low-friction re-listen without disturbing layout. */
+.msg-claude{position:relative}
+.msg-bubble .replay-btn{
+  position:absolute;
+  top:6px;right:6px;
+  width:26px;height:26px;
+  padding:0;
+  border:1px solid transparent;
+  background:transparent;
+  color:var(--text-dim);
+  border-radius:8px;
+  cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  opacity:0;
+  transition:opacity .15s, border-color .2s, color .2s, background .2s;
+}
+.msg-claude:hover .replay-btn{opacity:.9}
+.msg-bubble .replay-btn:hover{
+  opacity:1;
+  border-color:var(--border);
+  color:#a78bfa;
+  background:var(--bg-elev,rgba(255,255,255,.04));
+}
+.msg-bubble.speaking .replay-btn{
+  opacity:1;
+  color:#a78bfa;
+  border-color:#a78bfa;
+}
+/* Subtle border pulse on the bubble actively being spoken — gives the
+   user a clear "this is what's playing right now" anchor while audio runs. */
+.msg-bubble.speaking{
+  box-shadow:0 0 0 1px rgba(167,139,250,.35), 0 0 18px -6px rgba(167,139,250,.35);
+  transition:box-shadow .3s;
+}
+
 #send-btn{
   flex-shrink:0;
   width:38px;height:38px;
@@ -791,10 +879,6 @@ a:hover{text-decoration:underline}
   border-bottom:1px solid var(--border);
   flex-shrink:0;
   user-select:none;
-  /* Cancel body's 340px right reservation so the titlebar (and its
-     window controls at the far right) still spans the full viewport.
-     Sidebar panels start at top:40px so they never overlap titlebar. */
-  margin-right:-340px;
 }
 .titlebar-drag{
   flex:1;
@@ -1117,6 +1201,11 @@ body.platform-mac .titlebar-drag{
   border:1px solid rgba(239,68,68,.4);
   color:#ef4444;
 }
+.spell-toast-info{
+  background:rgba(20,20,22,.95);
+  border:1px solid rgba(96,165,250,.4);
+  color:#93c5fd;
+}
 /* ── Spellbook ──────────────────────────────────────────── */
 .spellbook-list{display:flex;flex-direction:column;gap:4px}
 .spellbook-list:empty{display:none}
@@ -1248,6 +1337,128 @@ body.platform-mac .titlebar-drag{
 .wisdom-rank-sub{font-size:10px;color:var(--text-dim);margin-top:1px}
 .wisdom-timing-label{font-size:10px;color:var(--text-dim);margin-bottom:2px}
 .wisdom-timing-value{font-size:16px;font-weight:600;color:var(--text);margin-bottom:10px}
+.wisdom-timing-value.last{margin-bottom:0}
+
+/* Sample-size pill in the Wisdom header. */
+.wisdom-sample{font-size:11px;color:var(--text-dim);margin-left:8px}
+
+/* Header actions: refresh, info, close. */
+.wisdom-header-actions{display:flex;align-items:center;gap:8px}
+
+/* Card title can include a tiny "(unit)" hint after the label. */
+.wisdom-card-unit{
+  font-size:9px;font-weight:500;letter-spacing:.4px;
+  color:var(--text-dim);margin-left:6px;text-transform:none;
+  -webkit-text-fill-color:var(--text-dim);
+}
+
+/* Empty/loading states inside individual wisdom cards. */
+.wisdom-empty{
+  font-size:12px;color:var(--text-dim);font-style:italic;
+  padding:6px 0;line-height:1.5;
+}
+.wisdom-loading{
+  display:flex;align-items:center;gap:8px;
+  font-size:12px;color:var(--text-dim);padding:6px 0;
+}
+.wisdom-loading::before{
+  content:'';width:10px;height:10px;border-radius:50%;
+  border:1.5px solid var(--text-dim);border-right-color:transparent;
+  animation:wisdomSpin .9s linear infinite;
+}
+@keyframes wisdomSpin{to{transform:rotate(360deg)}}
+
+/* Callouts (intel = purple/teal accent, seasonal = warm). */
+.wisdom-callout{
+  margin-top:12px;padding:10px 12px;border-radius:8px;
+  font-size:11px;line-height:1.45;
+}
+.wisdom-callout.intel{
+  background:rgba(139,92,246,.08);
+  border:1px solid rgba(139,92,246,.18);
+  color:var(--text-muted);
+}
+.wisdom-callout.seasonal{
+  background:rgba(251,191,36,.06);
+  border:1px solid rgba(251,191,36,.18);
+  color:var(--text-muted);
+}
+.wisdom-callout strong{color:var(--text);font-weight:600}
+
+/* Benchmark rows (your value vs collective). */
+.wisdom-benchmark{margin-top:6px}
+.wisdom-benchmark-row{
+  display:flex;justify-content:space-between;align-items:baseline;
+  margin-bottom:4px;
+}
+.wisdom-benchmark-row:last-child{margin-bottom:0}
+.wisdom-benchmark-label{font-size:11px;color:var(--text-dim)}
+.wisdom-benchmark-value{font-size:12px;font-weight:600;color:var(--text)}
+.wisdom-benchmark-value.positive{color:#34d399}
+.wisdom-benchmark-value.negative{color:#f87171}
+.wisdom-benchmark-sub{font-size:10px;color:var(--text-dim);margin-top:2px}
+
+/* Refresh icon button. */
+.wisdom-icon-btn{
+  display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:0;
+  border-radius:6px;border:1px solid var(--border);
+  background:transparent;color:var(--text-muted);cursor:pointer;
+  transition:all .2s;
+}
+.wisdom-icon-btn:hover{
+  border-color:rgba(139,92,246,.4);
+  color:var(--text);
+  background:rgba(139,92,246,.08);
+}
+.wisdom-icon-btn.refreshing svg{
+  animation:wisdomSpin 1s linear infinite;
+  transform-origin:center;
+}
+
+/* Info button with tooltip explaining anonymization. */
+.wisdom-info-btn{
+  position:relative;
+  width:22px;height:22px;padding:0;
+  border-radius:50%;border:1px solid var(--border);
+  background:transparent;color:var(--text-dim);cursor:help;
+  font-size:13px;line-height:1;font-family:inherit;
+  display:flex;align-items:center;justify-content:center;
+  transition:all .2s;
+}
+.wisdom-info-btn:hover,.wisdom-info-btn:focus-visible{
+  border-color:rgba(139,92,246,.4);
+  color:var(--text);
+  outline:none;
+}
+.wisdom-info-btn::after{
+  content:attr(data-tip);
+  position:absolute;top:calc(100% + 8px);right:0;
+  width:260px;padding:10px 12px;
+  background:var(--bg);
+  border:1px solid var(--border);border-radius:8px;
+  font-size:11px;line-height:1.45;color:var(--text-muted);
+  text-align:left;white-space:normal;
+  box-shadow:0 6px 24px rgba(0,0,0,.4);
+  opacity:0;pointer-events:none;transform:translateY(-4px);
+  transition:opacity .15s,transform .15s;
+  z-index:60;
+}
+.wisdom-info-btn:hover::after,.wisdom-info-btn:focus-visible::after{
+  opacity:1;transform:translateY(0);
+}
+
+/* Color classes for rank values + bar fills (replaces inline color). */
+.wisdom-rank-value.color-hooks,.color-hooks{color:#a78bfa}
+.wisdom-rank-value.color-platforms,.color-platforms{color:#34d399}
+.wisdom-rank-value.color-formats,.color-formats{color:#fbbf24}
+.wisdom-rank-value.color-img,.color-img{color:#60a5fa}
+.wisdom-rank-value.color-vid,.color-vid{color:#f472b6}
+.wisdom-bar-fill.color-hooks{background:#a78bfa}
+.wisdom-bar-fill.color-platforms{background:#34d399}
+.wisdom-bar-fill.color-formats{background:#fbbf24}
+.wisdom-bar-fill.color-img{background:#60a5fa}
+.wisdom-bar-fill.color-vid{background:#f472b6}
 
 /* ── Perf Bar Shimmer (loading state) ──────────────────── */
 .perf-shimmer{
@@ -1308,10 +1519,6 @@ body.platform-mac .titlebar-drag{
 .stats-share-btn:hover{opacity:.85;transform:scale(1.02)}
 .stats-share-btn:active{transform:scale(.98)}
 .stats-watermark{font-size:11px;color:var(--text-muted);opacity:.6}
-.brand-vertical{
-  font-size:10px;color:var(--text-dim);
-  margin-top:6px;padding-left:2px;
-}
 
 /* ── Vertical Tag ────────────────────────────────────────── */
 .magic-section-label-row{
@@ -1365,37 +1572,6 @@ body.platform-mac .titlebar-drag{
 
 .autopilot-row{cursor:pointer;padding:6px 8px;border-radius:8px;transition:background .2s}
 .autopilot-row:hover{background:var(--surface)}
-/* Spell templates */
-.spell-templates{
-  display:flex;flex-direction:column;
-  background:var(--surface);
-  border:1px solid var(--border);
-  border-radius:10px;
-  overflow:hidden;
-}
-.spell-template{
-  display:flex;align-items:center;
-  padding:7px 12px;
-  background:none;border:none;border-bottom:1px solid var(--border);
-  cursor:pointer;transition:background .15s;text-align:left;
-  font-family:var(--font);
-}
-.spell-template:last-child{border-bottom:none}
-.spell-template:hover{background:var(--surface-hover)}
-.spell-template-active{opacity:.35;pointer-events:none}
-.spell-template-active .spell-template-name::after{content:' ✓';color:var(--success)}
-.spell-template-info{display:flex;flex-direction:column;min-width:0}
-.spell-template-name{font-size:12px;font-weight:600;color:var(--text);line-height:1.3}
-.spell-template-desc{font-size:10px;color:var(--text-dim);line-height:1.3}
-
-.add-task-btn{
-  width:100%;margin-top:8px;padding:8px;
-  background:transparent;border:1px dashed var(--border);
-  border-radius:10px;color:var(--text-dim);
-  font-size:11px;font-weight:500;font-family:var(--font);
-  cursor:pointer;transition:all .2s;
-}
-.add-task-btn:hover{border-color:var(--accent-border);color:var(--accent);background:var(--surface-hover)}
 .autopilot-last:empty{display:none}
 
 /* ── Drag-Drop ───────────────────────────────────────────── */
@@ -1692,7 +1868,11 @@ body.platform-mac .titlebar-drag{
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
-  padding-right: 4px;
+  /* Reserve scrollbar space at all times so the filter row + search bar
+     don't resize when content goes from empty → overflowing. Without this,
+     `Images` tab (empty state) renders wider filters than `Ads` tab
+     (overflow causes 4px scrollbar + 4px padding-right = visible shift). */
+  scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: rgba(255,255,255,.08) transparent;
 }
@@ -1706,12 +1886,15 @@ body.platform-mac .titlebar-drag{
 }
 .archive-filter-row { display: flex; gap: 6px; margin-bottom: 8px; align-items: center; flex-wrap: wrap; }
 .archive-filter {
-  padding: 4px 12px;
+  height: 26px;
+  padding: 0 12px;
+  box-sizing: border-box;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: transparent;
   color: var(--text-muted);
   font-size: 12px;
+  line-height: 1;
   cursor: pointer;
   transition: all .2s;
 }
@@ -1729,6 +1912,7 @@ body.platform-mac .titlebar-drag{
   width: 26px;
   height: 26px;
   padding: 0;
+  box-sizing: border-box;
   border-radius: 6px;
   border: 1px solid var(--border);
   background: transparent;
@@ -1948,25 +2132,13 @@ body.platform-mac .titlebar-drag{
 }
 .archive-preview-close:hover { background: rgba(255,255,255,.2); }
 
-/* ── Agency Report Button ─────────────────────────────────── */
-.agency-report-btn {
-  margin-left: 6px;
-  padding: 2px 8px;
-  border-radius: 5px;
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-dim);
-  font-size: 9.5px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all .15s;
-  flex-shrink: 0;
-}
-.agency-report-btn:hover {
-  background: var(--accent-bg);
-  color: var(--accent);
-  border-color: var(--accent-border);
-}
+/* ── Reports Button ───────────────────────────────────────────
+   The toolbar button (#agency-report-btn) uses .magic-btn-inline for its
+   visual styling — it sits next to the Wisdom, Archive, and Magic buttons
+   and shares their size/hover treatment. A dead `.agency-report-btn` rule
+   previously lived here but was never applied in markup; removing it
+   prevents future edits to a selector that never matched. Edit
+   .magic-btn-inline above to change the button's appearance. */
 
 /* Live Ads status pills */
 .status-live { background: rgba(52,211,153,.15); color: #34d399; }

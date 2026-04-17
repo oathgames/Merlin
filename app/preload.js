@@ -39,6 +39,14 @@ function assertObj(v) {
   if (typeof v !== 'object' || Array.isArray(v)) throw new Error('invalid object');
   return v;
 }
+function assertBrandArray(v) {
+  if (!Array.isArray(v)) throw new Error('invalid brand array');
+  if (v.length > 200) throw new Error('too many brands');
+  for (const b of v) {
+    if (typeof b !== 'string' || !BRAND_RE.test(b)) throw new Error('invalid brand in array');
+  }
+  return v;
+}
 function assertCron(v) {
   if (typeof v !== 'string' || v.length > 50) throw new Error('invalid cron');
   const parts = v.trim().split(/\s+/);
@@ -96,6 +104,7 @@ contextBridge.exposeInMainWorld('merlin', {
 
   // Performance + Activity
   getPerfSummary: (days, brand) => ipcRenderer.invoke('get-perf-summary', assertInt(days, 7), assertBrand(brand)),
+  getAgencyReport: (days, brands) => ipcRenderer.invoke('get-agency-report', assertInt(days, 7), assertBrandArray(brands)),
   refreshPerf: (brand, days) => ipcRenderer.invoke('refresh-perf', assertBrand(brand), Number.isInteger(days) && days > 0 && days <= 365 ? days : undefined),
   getPerfUpdated: (brand) => ipcRenderer.invoke('get-perf-updated', assertBrand(brand)),
   getActivityFeed: (brand, limit) => ipcRenderer.invoke('get-activity-feed', assertBrand(brand), assertInt(limit, 50)),
@@ -106,10 +115,21 @@ contextBridge.exposeInMainWorld('merlin', {
   refreshLiveAds: (brand) => ipcRenderer.invoke('refresh-live-ads', assertBrand(brand)),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', assertStr(folderPath, 500)),
   copyImage: (filePath) => ipcRenderer.invoke('copy-image', assertStr(filePath, 500)),
-  deleteFile: (folderPath) => ipcRenderer.invoke('delete-file', assertStr(folderPath, 500)),
+  // Accepts either a single relative path (legacy — used by context menus on
+  // message images) or an array of paths (archive cards — the renderer
+  // decides whether to delete a whole run folder or just the loose file(s)).
+  deleteFile: (target) => {
+    if (Array.isArray(target)) {
+      if (target.length === 0 || target.length > 20) throw new Error('invalid delete batch');
+      for (const t of target) assertStr(t, 500);
+      return ipcRenderer.invoke('delete-file', target);
+    }
+    return ipcRenderer.invoke('delete-file', assertStr(target, 500));
+  },
 
   // Wisdom
-  getWisdom: (brandName) => ipcRenderer.invoke('get-wisdom', assertBrand(brandName)),
+  getWisdom: (brandName, opts) => ipcRenderer.invoke('get-wisdom', assertBrand(brandName), opts ? { force: !!opts.force } : undefined),
+  getSeasonal: () => ipcRenderer.invoke('get-seasonal'),
 
   // Disconnect platform
   disconnectPlatform: (platform, brand) => ipcRenderer.invoke('disconnect-platform', assertPlatform(platform), assertBrand(brand)),
@@ -211,6 +231,10 @@ contextBridge.exposeInMainWorld('merlin', {
     const h = (_, data) => cb(data); ipcRenderer.on('live-ads-changed', h);
     return () => ipcRenderer.removeListener('live-ads-changed', h);
   },
+  onLiveAdsRefreshProgress: (cb) => {
+    const h = (_, data) => cb(data); ipcRenderer.on('live-ads-refresh-progress', h);
+    return () => ipcRenderer.removeListener('live-ads-refresh-progress', h);
+  },
   onUpdateAvailable: (cb) => {
     const h = (_, info) => cb(info); ipcRenderer.on('update-available', h);
     return () => ipcRenderer.removeListener('update-available', h);
@@ -275,15 +299,30 @@ contextBridge.exposeInMainWorld('merlin', {
     if (bytes.length > 50 * 1024 * 1024) throw new Error('audio too large');
     return ipcRenderer.invoke('transcribe-audio', bytes);
   },
-  // Auto-install whisper-cli + ggml-tiny.en.bin + ffmpeg into
-  // .claude/tools/. Main-process handler streams 'voice-install-progress'
-  // events so the renderer can show a live bar; returns { success } or
-  // { error } at the end. Windows only today — mac/linux return an error
-  // with manual instructions.
-  installVoiceTools: () => ipcRenderer.invoke('install-voice-tools'),
-  onVoiceInstallProgress: (cb) => {
-    const h = (_, data) => cb(data);
-    ipcRenderer.on('voice-install-progress', h);
-    return () => ipcRenderer.removeListener('voice-install-progress', h);
+
+  // Voice output: text → Kokoro TTS → WAV bytes for playback in renderer.
+  // Returns { success: true, audio: Uint8Array } | { aborted: true } | { error }.
+  // Main process handles download, caching, and synthesis; renderer plays
+  // the WAV via <audio> with a Blob URL.
+  speakText: (text, voice, requestId) => {
+    if (typeof text !== 'string') throw new Error('text must be a string');
+    if (text.length > 5000) throw new Error('text too long (5000 char max)');
+    return ipcRenderer.invoke('speak-text', { text, voice, requestId });
+  },
+  stopSpeaking: () => ipcRenderer.invoke('stop-speaking'),
+  onVoiceOutputProgress: (callback) => {
+    if (typeof callback !== 'function') throw new Error('callback must be a function');
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('voice-output-progress', handler);
+    return () => ipcRenderer.removeListener('voice-output-progress', handler);
+  },
+  // Streaming TTS: one event per synthesised sentence. Payload shape:
+  // { requestId, seq, audio: Uint8Array, final: false } for each sentence,
+  // then { requestId, seq, audio: null, final: true } to close.
+  onVoiceOutputChunk: (callback) => {
+    if (typeof callback !== 'function') throw new Error('callback must be a function');
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('voice-output-chunk', handler);
+    return () => ipcRenderer.removeListener('voice-output-chunk', handler);
   },
 });

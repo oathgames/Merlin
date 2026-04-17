@@ -609,3 +609,56 @@ Audited: YYYY-MM-DD | Store: <url>
 ### After each scheduled task completes
 
 Check if `assets/brands/brands-index.json` exists. If it does not exist, regenerate it by scanning `assets/brands/` for all brand folders (excluding `example`) and writing the index with each brand's name, vertical, status, and productCount. This is a lightweight check — only write if the file is missing.
+
+---
+
+## Folder Structure
+
+```
+assets/brands/
+└── <brand>/                    ← brand folder (e.g., "madchill")
+    ├── brand.md                ← voice, audience, CTA style, brand colors
+    ├── memory.md               ← what works/fails, run log, MER trend
+    ├── briefing.json           ← latest ROAS, best hook/format, active ads
+    ├── competitors.md          ← auto-discovered competitors
+    ├── seo.md                  ← SEO audit (if Shopify connected)
+    ├── quality-benchmark/      ← S-tier ad examples (user drops these)
+    ├── voices/                 ← voice samples (.mp3/.wav)
+    ├── avatars/                ← creator faces/videos
+    └── products/
+        └── <product>/          ← e.g., "full-zip"
+            ├── references/     ← product photos (auto-pulled from store)
+            └── product.md      ← product details (auto-generated)
+```
+
+## Detection Logic
+
+1. **List brands** — scan `assets/brands/` for subdirs containing `brand.md`.
+2. **List products** — scan `assets/brands/<brand>/products/` for subdirs with a `references/` folder.
+3. **Route from user input:**
+   - `/merlin cream-set video` → find which brand contains `cream-set`, use it
+   - `/merlin madchill pink-set images` → explicit brand + product
+   - `/merlin make a video` → if only one brand+product, use it. Ambiguous → ask.
+4. **No brand exists** → run Setup Flow above.
+
+## Auto-generate `product.md`
+
+When a product folder has `references/` with photos but no `product.md`:
+1. Read all images in `<brand>/<product>/references/`.
+2. Write `product.md`:
+```markdown
+# [Product Name]   (from folder name, Title Case)
+- **Type**: [hoodie, joggers, set, etc. — from photos]
+- **Colors**: [what you see]
+- **Key details**: [stitching, fabric, fit, logo placement — what you see]
+- **Vibe**: [casual, premium, sporty, etc.]
+```
+
+## Auto-generate `brand.md`
+
+On first run with a new brand, ask for the website URL and scrape it. Write `brand.md` inside the brand folder. During scrape, detect:
+- **Store locator / "Find a store" page** → set `channels:retail,online`
+- **Single location** → set `channels:retail,online` + `locations:1`
+- **No physical store signals** → set `channels:online`
+
+If unsure, ask: "Do you have a physical store or is this online-only?" (affects ad targeting strategy).

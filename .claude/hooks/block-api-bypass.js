@@ -157,7 +157,7 @@ const PROTECTED_PATH_PATTERNS = [
   // through this hook (the settings.json inline regex catches Read/Edit
   // but not Bash). Leaking these files reveals the IPC surface, auth
   // handshake, and redaction patterns.
-  /[/\\]app[/\\](main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact)\.js$/i,
+  /[/\\]app[/\\](main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact|tts-worker)\.js$/i,
   // Claude Code's own OAuth credentials file. Combined with the broad
   // `Bash(cp *)` allow-list, an unprotected path would let an adversary
   // cp it elsewhere and then Read it.
@@ -191,7 +191,7 @@ const PROTECTED_COMMAND_PATTERNS = [
   // REGRESSION GUARD (2026-04-16): Bash parity with the settings.json
   // inline Read-hook blocklist. Blocks `cat app/ws-server.js`,
   // `grep <pat> app/preload.js`, `cp app/main.js /tmp/x`, etc.
-  /[/\\]app[/\\](main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact)\.js\b/i,
+  /[/\\]app[/\\](main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact|tts-worker)\.js\b/i,
   // Claude Code OAuth token file. Without this, `cp ~/.claude/.credentials.json /tmp/x`
   // (allowed by `Bash(cp *)`) followed by Read would exfiltrate the token.
   /[/\\]\.claude[/\\]\.credentials\.json\b/i,

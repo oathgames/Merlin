@@ -28,9 +28,9 @@ let sessionTotalTokens = 0;
 // Modal queue prevents stacking — nested calls are deferred until the current modal closes.
 let _modalQueue = [];
 let _modalActive = false;
-function showModal({ title, body, bodyHTML, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel }) {
+function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel }) {
   if (_modalActive) {
-    _modalQueue.push({ title, body, bodyHTML, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel });
+    _modalQueue.push({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel });
     return;
   }
   _modalActive = true;
@@ -44,7 +44,11 @@ function showModal({ title, body, bodyHTML, inputPlaceholder, confirmLabel, canc
   const closeBtn = document.getElementById('merlin-modal-close');
 
   titleEl.textContent = title || '';
-  if (bodyHTML !== undefined) {
+  if (bodyNode instanceof Node) {
+    // Prefer a real DOM node over innerHTML — avoids any interpolation foot-gun
+    // for callers that want to embed dynamic content (e.g. links).
+    bodyEl.replaceChildren(bodyNode);
+  } else if (bodyHTML !== undefined) {
     bodyEl.innerHTML = bodyHTML;
   } else {
     bodyEl.textContent = body || '';
@@ -370,7 +374,10 @@ function appendText(text) {
     rafPending = true;
     requestAnimationFrame(() => {
       if (currentBubble && textBuffer.length !== lastRenderedLength) {
-        currentBubble.innerHTML = renderMarkdown(textBuffer);
+        // Strip leading <voice>speak|silent</voice> before render so the
+        // UI metadata tag never flashes visibly during streaming.
+        const { cleaned } = stripVoiceTag(textBuffer);
+        currentBubble.innerHTML = renderMarkdown(cleaned);
         lastRenderedLength = textBuffer.length;
       }
       scrollToBottom();
@@ -413,7 +420,17 @@ let typingStuckTimeout = null;
 function finalizeBubble() {
   if (currentBubble) {
     currentBubble.classList.remove('streaming');
-    currentBubble.innerHTML = renderMarkdown(textBuffer);
+    const { speak, cleaned } = stripVoiceTag(textBuffer);
+    currentBubble.innerHTML = renderMarkdown(cleaned);
+    // Assistant bubbles get a replay button + stored raw text so the user
+    // can hear any past message even when the global toggle was off.
+    if (cleaned && cleaned.trim().length > 0) {
+      currentBubble.dataset.speakText = cleaned;
+      addReplayButton(currentBubble, cleaned);
+    }
+    if (voiceEnabled && speak && cleaned && cleaned.trim().length > 0) {
+      speakMessage(cleaned, currentBubble);
+    }
   }
   currentBubble = null;
   textBuffer = '';
@@ -649,7 +666,13 @@ function escapeHtml(text) {
 // — the custom merlin:// protocol handler already handles decoding.
 function merlinUrl(relPath) {
   if (relPath == null) return '';
-  const clean = String(relPath).replace(/^merlin:\/\//, '');
+  const raw = String(relPath);
+  // Pass absolute remote URLs through unchanged — used for platform-hosted
+  // thumbnails like Meta CDN creative images that ship into ads-live.json
+  // as `creativeUrl`. Encoding them through merlin:// would corrupt the
+  // scheme and break the <img src>.
+  if (/^https?:\/\//i.test(raw)) return raw;
+  const clean = raw.replace(/^merlin:\/\//, '');
   return 'merlin://' + clean.split('/').map(encodeURIComponent).join('/');
 }
 
@@ -1666,13 +1689,35 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
 });
 
 // ── Magic Panel ─────────────────────────────────────────────
+// Display names for the brand/platform tiles. Naive capitalize()
+// mangles "Tiktok", "Linkedin", "Elevenlabs", "Heygen" — use the
+// canonical brand casing instead. Falls back to capitalize() for
+// platforms not listed here.
+const PLATFORM_DISPLAY_NAMES = {
+  meta: 'Meta', tiktok: 'TikTok', google: 'Google Ads', amazon: 'Amazon',
+  reddit: 'Reddit', linkedin: 'LinkedIn', shopify: 'Shopify', etsy: 'Etsy',
+  klaviyo: 'Klaviyo', pinterest: 'Pinterest', snapchat: 'Snapchat',
+  twitter: 'X', slack: 'Slack', discord: 'Discord',
+  fal: 'fal.ai', elevenlabs: 'ElevenLabs', heygen: 'HeyGen', arcads: 'Arcads',
+};
+function platformDisplayName(platform) {
+  if (!platform) return '';
+  if (PLATFORM_DISPLAY_NAMES[platform]) return PLATFORM_DISPLAY_NAMES[platform];
+  return platform.charAt(0).toUpperCase() + platform.slice(1);
+}
+
 // ── Brand + Integration Filtering ────────────────────────────
+// Vertical → integrations whitelist. Every platform shipped on a tile
+// MUST appear in at least one vertical if it's generally useful — otherwise
+// selecting a known vertical hides it entirely. Previously reddit/etsy/arcads/
+// linkedin/snapchat/twitter were missing from every list, so any ecom/agency
+// brand couldn't see Reddit or Etsy even though they're fully connected.
 const verticalIntegrations = {
-  ecom:    ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','fal','elevenlabs','heygen','slack','discord'],
-  game:    ['meta','tiktok','google','fal','heygen','elevenlabs','slack','discord'],
-  saas:    ['meta','google','klaviyo','fal','elevenlabs','slack','discord'],
-  local:   ['meta','google','fal','slack','discord'],
-  agency:  ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','fal','elevenlabs','heygen','slack','discord'],
+  ecom:    ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','fal','elevenlabs','heygen','arcads','slack','discord'],
+  game:    ['meta','tiktok','google','reddit','snapchat','twitter','fal','heygen','elevenlabs','arcads','slack','discord'],
+  saas:    ['meta','google','klaviyo','linkedin','reddit','twitter','fal','elevenlabs','heygen','arcads','slack','discord'],
+  local:   ['meta','google','reddit','fal','slack','discord'],
+  agency:  ['meta','tiktok','shopify','klaviyo','google','pinterest','amazon','reddit','etsy','linkedin','snapchat','twitter','fal','elevenlabs','heygen','arcads','slack','discord'],
 };
 
 async function loadBrands() {
@@ -1714,21 +1759,22 @@ async function loadBrands() {
 
 function updateVertical(vertical) {
   const tag = document.getElementById('vertical-tag');
-  const v = document.getElementById('brand-vertical');
+  const tiles = document.querySelectorAll('.magic-tile');
   if (vertical) {
     tag.textContent = vertical;
-    v.textContent = `Category: ${vertical}`;
-    // Filter integrations
     const allowed = verticalIntegrations[vertical.toLowerCase()] || null;
     if (allowed) {
-      document.querySelectorAll('.magic-tile').forEach(tile => {
+      tiles.forEach(tile => {
         tile.style.display = allowed.includes(tile.dataset.platform) ? '' : 'none';
       });
+    } else {
+      // Unknown vertical — reset filter so tiles from a prior known-vertical
+      // selection don't stay hidden when the user switches brands.
+      tiles.forEach(t => { t.style.display = ''; });
     }
   } else {
     tag.textContent = '';
-    v.textContent = '';
-    document.querySelectorAll('.magic-tile').forEach(t => t.style.display = '');
+    tiles.forEach(t => { t.style.display = ''; });
   }
 }
 
@@ -1789,7 +1835,7 @@ function getBrandRequiredMessage(platform) {
 function promptBrandSetupBeforeConnect(platform) {
   const body = platform === 'shopify'
     ? 'Set up a brand with Merlin before connecting your store. Merlin will grab the website, product context, and brand details first so Shopify lands in the right place.'
-    : `Set up a brand with Merlin before connecting ${platform.charAt(0).toUpperCase() + platform.slice(1)}. Merlin needs a brand context first so this connection is saved to the right business.`;
+    : `Set up a brand with Merlin before connecting ${platformDisplayName(platform)}. Merlin needs a brand context first so this connection is saved to the right business.`;
   showModal({
     title: 'Set Up A Brand First',
     body,
@@ -1857,163 +1903,194 @@ document.getElementById('stats-close').addEventListener('click', () => {
 });
 
 // ── Wisdom Overlay ─────────────────────────────────────────
-document.getElementById('wisdom-header-btn').addEventListener('click', async () => {
-  document.getElementById('magic-panel').classList.add('hidden');
-  document.getElementById('archive-panel').classList.add('hidden');
-  closeAgencyOverlay();
-  const overlay = document.getElementById('wisdom-overlay');
+//
+// Wisdom server schema — the client reads BOTH the current and legacy
+// shapes so it keeps working during a worker redeploy window.
+//
+// Current (autocmo-core/wisdom-api/worker.js:aggregate):
+//   hooks:     { [name]: {ctr, cpc, roas, win, cpa?, n} }
+//   formats?:  { [name]: {ctr, roas, win, n} }
+//   timing:    { days: [topDowIndexes], hours: [topHourIndexes] }
+//   platforms: { [name]: {ctr, roas?, n} }
+//   models?:   { [name]: {roas, win, n} }   (min 2 samples)
+//
+// Legacy (pre-2026-04-14 worker):
+//   timing:    { best_days: [...], best_hours: [...] }
+//   platforms: { [name]: {avg_ctr, sample} }
+//
+// REGRESSION GUARD (2026-04-15, wisdom-collecting incident):
+// Shipping a client that only understood the NEW keys made every panel show
+// "Collecting..." even when the API returned real numbers. The normalizers
+// below read the new key first and fall back to the legacy name so both
+// worker versions render the same UI. Don't remove the fallbacks until the
+// server redeploy has been verified live (curl the endpoint, confirm `days`
+// not `best_days`, `n` not `sample`).
 
-  // Toggle — if already open, just close
-  if (!overlay.classList.contains('hidden')) {
-    overlay.classList.add('hidden');
+// Known video-generation models. Word-token matching (NOT substring) so a
+// name like "taiwan-img" never matches "wan" and "stable-diffusion-luminous"
+// never matches "luma". Versioned tokens like "veo3" / "seedance-2" still
+// match by stripping trailing digits.
+const WISDOM_VIDEO_MODELS = new Set([
+  'veo', 'veo2', 'veo3', 'kling', 'seedance', 'minimax', 'hunyuan', 'wan',
+  'hailuo', 'luma', 'heygen', 'arcads',
+]);
+
+function wisdomIsVideoModel(name) {
+  if (!name) return false;
+  const lower = String(name).toLowerCase();
+  if (WISDOM_VIDEO_MODELS.has(lower)) return true;
+  const tokens = lower.split(/[^a-z0-9]+/).filter(Boolean);
+  for (const tok of tokens) {
+    if (WISDOM_VIDEO_MODELS.has(tok)) return true;
+    const stripped = tok.replace(/\d+$/, '');
+    if (stripped && WISDOM_VIDEO_MODELS.has(stripped)) return true;
+  }
+  return false;
+}
+
+function wisdomNormalizeRow(row) {
+  if (!row || typeof row !== 'object') return {};
+  const out = { ...row };
+  if (out.ctr === undefined && row.avg_ctr !== undefined) out.ctr = row.avg_ctr;
+  if (out.cpc === undefined && row.avg_cpc !== undefined) out.cpc = row.avg_cpc;
+  if (out.roas === undefined && row.avg_roas !== undefined) out.roas = row.avg_roas;
+  if (out.win === undefined && row.win_rate !== undefined) out.win = row.win_rate;
+  if (out.cpa === undefined && row.avg_cpa !== undefined) out.cpa = row.avg_cpa;
+  if (out.n === undefined && row.sample !== undefined) out.n = row.sample;
+  if (out.n === undefined && row.samples !== undefined) out.n = row.samples;
+  return out;
+}
+
+// Server returns "YYYY-MM-DD HH:MM:SS" without a timezone — D1's
+// datetime('now') is UTC, so re-attach 'Z' before parsing.
+function wisdomRelTime(iso) {
+  if (!iso || typeof iso !== 'string') return '';
+  const ms = Date.parse(iso.replace(' ', 'T') + 'Z');
+  if (!Number.isFinite(ms)) return '';
+  const ageMin = Math.max(0, Math.round((Date.now() - ms) / 60000));
+  if (ageMin < 1) return 'just now';
+  if (ageMin < 60) return `${ageMin}m ago`;
+  const hr = Math.round(ageMin / 60);
+  if (hr < 24) return `${hr}h ago`;
+  return `${Math.round(hr / 24)}d ago`;
+}
+
+function wisdomEscHandler(e) {
+  if (e.key !== 'Escape') return;
+  const overlay = document.getElementById('wisdom-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  e.preventDefault();
+  closeWisdom();
+}
+
+function closeWisdom() {
+  document.getElementById('wisdom-overlay').classList.add('hidden');
+  document.removeEventListener('keydown', wisdomEscHandler);
+}
+
+async function loadWisdom({ force = false } = {}) {
+  const grid = document.getElementById('wisdom-grid');
+  const sampleEl = document.getElementById('wisdom-sample');
+  const refreshBtn = document.getElementById('wisdom-refresh-btn');
+
+  grid.innerHTML = '<div class="wisdom-loading">Loading…</div>';
+  if (refreshBtn) refreshBtn.classList.add('refreshing');
+
+  let w = null;
+  try { w = await merlin.getWisdom(undefined, { force }); } catch {}
+
+  if (refreshBtn) refreshBtn.classList.remove('refreshing');
+
+  if (!w) {
+    sampleEl.textContent = '';
+    grid.innerHTML = '<div class="wisdom-loading">No data yet — Wisdom grows as ads run.</div>';
     return;
   }
 
+  await renderWisdom(w);
+}
+
+async function renderWisdom(w) {
   const grid = document.getElementById('wisdom-grid');
   const sampleEl = document.getElementById('wisdom-sample');
 
-  grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-dim);padding:20px">Loading...</div>';
-  overlay.classList.remove('hidden');
-
-  let w = null;
-  try { w = await merlin.getWisdom(); } catch {}
-  if (!w) {
-    grid.innerHTML = '<div style="grid-column:1/-1;text-align:center;color:var(--text-dim);padding:20px">No data yet — Wisdom grows as ads run.</div>';
-    return;
+  const sample = Number(w.sample_size) || 0;
+  const ageStr = wisdomRelTime(w.updated);
+  if (sample > 0) {
+    sampleEl.textContent = `From ${sample.toLocaleString()} anonymized ads${ageStr ? ' · updated ' + ageStr : ''}`;
+  } else {
+    sampleEl.textContent = 'Collecting data…';
   }
 
-  const sample = w.sample_size || 0;
-  sampleEl.textContent = sample > 0 ? `From ${sample.toLocaleString()} anonymized ads` : 'Collecting data...';
+  // Object-shape guards — reject arrays and null masquerading as objects.
+  const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const hooksObj = isPlainObject(w.hooks) ? w.hooks : {};
+  const formatsObj = isPlainObject(w.formats) ? w.formats : {};
+  const modelsObj = isPlainObject(w.models) ? w.models : {};
+  const platformsObj = isPlainObject(w.platforms) ? w.platforms : {};
+  const timing = isPlainObject(w.timing) ? w.timing : {};
 
-  // Wisdom server schema — the client reads BOTH the current and legacy
-  // shapes so it keeps working during a worker redeploy window.
-  //
-  // Current (autocmo-core/wisdom-api/worker.js:aggregate):
-  //   hooks:     { [name]: {ctr, cpc, roas, win, cpa?, n} }
-  //   formats?:  { [name]: {ctr, roas, win, n} }
-  //   timing:    { days: [topDowIndexes], hours: [topHourIndexes] }
-  //   platforms: { [name]: {ctr, roas?, n} }
-  //   models?:   { [name]: {roas, win, n} }   (min 2 samples)
-  //
-  // Legacy (older deployed worker, still live as of 2026-04-15):
-  //   timing:    { best_days: [...], best_hours: [...] }
-  //   platforms: { [name]: {avg_ctr, sample} }
-  //   quality:   { avg_pass_rate, top_fail_reasons }
-  //
-  // REGRESSION GUARD (2026-04-15, wisdom-collecting incident):
-  // The deployed wisdom API worker is a version behind the source tree —
-  // the 2026-04-14 rewrite that renamed `best_days`→`days`, `avg_ctr`→`ctr`,
-  // and `sample`→`n` hasn't hit production yet. Shipping a client that
-  // only understood the NEW keys made every panel show "Collecting..."
-  // even when the API returned real numbers. The normalizers below read
-  // the new key first and fall back to the legacy name so both worker
-  // versions render the same UI. Don't remove the fallbacks until the
-  // server redeploy has been verified live (curl the endpoint, confirm
-  // `days` not `best_days`).
-  const hooksObj = (w.hooks && typeof w.hooks === 'object') ? w.hooks : {};
-  const formatsObj = (w.formats && typeof w.formats === 'object') ? w.formats : {};
-  const modelsObj = (w.models && typeof w.models === 'object') ? w.models : {};
-  const platformsObj = (w.platforms && typeof w.platforms === 'object') ? w.platforms : {};
-  const timing = w.timing || {};
-
-  // Key-name normalizer: copy legacy field names onto their new equivalents
-  // if only the old one is present. Leaves new-shape objects untouched.
-  const normalizeRow = (row) => {
-    if (!row || typeof row !== 'object') return {};
-    const out = { ...row };
-    if (out.ctr === undefined && row.avg_ctr !== undefined) out.ctr = row.avg_ctr;
-    if (out.cpc === undefined && row.avg_cpc !== undefined) out.cpc = row.avg_cpc;
-    if (out.roas === undefined && row.avg_roas !== undefined) out.roas = row.avg_roas;
-    if (out.win === undefined && row.win_rate !== undefined) out.win = row.win_rate;
-    if (out.cpa === undefined && row.avg_cpa !== undefined) out.cpa = row.avg_cpa;
-    if (out.n === undefined && row.sample !== undefined) out.n = row.sample;
-    if (out.n === undefined && row.samples !== undefined) out.n = row.samples;
-    return out;
-  };
-
-  // Object-keyed → sorted array by roas desc. Fall through defensively on
-  // partial rows (e.g. server adds a new field later).
   const objToSortedArray = (obj, nameKey) => Object.entries(obj)
-    .map(([name, v]) => ({ [nameKey]: name, ...normalizeRow(v) }))
+    .map(([name, v]) => ({ [nameKey]: name, ...wisdomNormalizeRow(v) }))
     .sort((a, b) => (b.roas || 0) - (a.roas || 0));
 
   const topHooks = objToSortedArray(hooksObj, 'hook').slice(0, 4);
   const formatList = objToSortedArray(formatsObj, 'name').slice(0, 4);
-
-  // Server's `models` object isn't tagged by type (no image vs video). Use a
-  // known-video-model list to split — anything not in the list is treated as
-  // an image model. Covers the current fal.ai + Google + HeyGen + Arcads set
-  // that Merlin supports for video generation.
-  const VIDEO_MODELS = new Set([
-    'veo', 'veo2', 'veo3', 'kling', 'seedance', 'seedance-2', 'minimax', 'hunyuan', 'wan', 'hailuo', 'luma', 'heygen', 'arcads',
-  ]);
-  const isVideoModel = (name) => {
-    if (!name) return false;
-    const lower = String(name).toLowerCase();
-    if (VIDEO_MODELS.has(lower)) return true;
-    // Substring check catches fal-style names like "fal-ai/veo3" and "veo-3.0-fast"
-    for (const v of VIDEO_MODELS) if (lower.includes(v)) return true;
-    return false;
-  };
   const allModels = objToSortedArray(modelsObj, 'model');
-  const imageModels = allModels.filter(m => !isVideoModel(m.model)).slice(0, 3);
-  const videoModels = allModels.filter(m => isVideoModel(m.model)).slice(0, 3);
-
-  // (Removed dead "Creative Styles" slot — the server has no `scene`
-  // dimension and the card was always empty. Replaced with "Top Platforms"
-  // in the grid below, which renders real data from `w.platforms`.)
+  const imageModels = allModels.filter(m => !wisdomIsVideoModel(m.model)).slice(0, 3);
+  const videoModels = allModels.filter(m => wisdomIsVideoModel(m.model)).slice(0, 3);
+  const platformItems = objToSortedArray(platformsObj, 'platform').slice(0, 4);
 
   const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-  // topKeys in wisdom-api returns numeric day-of-week (0-6) / hour (0-23);
-  // defensively coerce in case a stray string slips through.
-  // Accept both the new (`days`, `hours`) and legacy (`best_days`,
-  // `best_hours`) field names — see REGRESSION GUARD at top of wisdom block.
-  const timingDays = Array.isArray(timing.days) ? timing.days
+  // Validate dow ∈ [0,6] and hour ∈ [0,23] before display — server SHOULD
+  // clamp these (sanitizeAds in worker.js), but a malformed/legacy row
+  // shouldn't render "undefined" or stray indexes to users.
+  const timingDaysRaw = Array.isArray(timing.days) ? timing.days
     : Array.isArray(timing.best_days) ? timing.best_days : [];
-  const timingHours = Array.isArray(timing.hours) ? timing.hours
+  const timingHoursRaw = Array.isArray(timing.hours) ? timing.hours
     : Array.isArray(timing.best_hours) ? timing.best_hours : [];
-  const bestDays = timingDays
-    .map(i => dayNames[Number(i)] || String(i))
+  const bestDays = timingDaysRaw
+    .map(i => Number(i))
+    .filter(i => Number.isInteger(i) && i >= 0 && i <= 6)
+    .map(i => dayNames[i])
     .join(', ');
-  const bestHours = timingHours
-    .map(h => {
-      const hh = Number(h);
-      if (!Number.isFinite(hh)) return '';
+  const bestHours = timingHoursRaw
+    .map(i => Number(i))
+    .filter(i => Number.isInteger(i) && i >= 0 && i <= 23)
+    .map(hh => {
       const ampm = hh >= 12 ? 'PM' : 'AM';
       return (hh === 0 ? 12 : hh > 12 ? hh - 12 : hh) + ampm;
     })
-    .filter(Boolean)
     .join(', ');
 
-  // Platform breakdown — render a card even when hooks/formats/models
-  // aren't populated, so users see SOME data instead of all-"Collecting..."
-  // tiles. Uses the same old/new key tolerance as everything else.
-  const platformItems = objToSortedArray(platformsObj, 'platform').slice(0, 4);
+  // Empty-state copy depends on whether the server has ANY samples for
+  // the vertical. With samples > 0 but no rows in a dimension, the truth
+  // is "not enough variety" not "still collecting" — be honest.
+  const emptyMsg = sample > 0
+    ? '<div class="wisdom-empty">Not enough variety yet — needs more reports.</div>'
+    : '<div class="wisdom-empty">Collecting…</div>';
 
-  const empty = '<div style="color:var(--text-dim);font-size:12px">Collecting...</div>';
-
-  function rankRows(items, valFn, color, maxVal) {
-    if (!items.length) return empty;
+  function rankRows(items, valFn, colorClass, maxVal) {
+    if (!items.length) return emptyMsg;
+    const safeMax = Math.max(Number(maxVal) || 0, 0.0001);
     return items.map(item => {
-      const val = valFn(item);
-      const pct = maxVal > 0 ? Math.min(100, (val / maxVal) * 100) : 0;
+      const val = Math.max(0, Number(valFn(item)) || 0);
+      const pct = Math.min(100, (val / safeMax) * 100);
       return `<div class="wisdom-rank">
         <div class="wisdom-rank-row">
           <span class="wisdom-rank-label">${escapeHtml(item.label)}</span>
-          <span class="wisdom-rank-value" style="color:${color}">${item.display}</span>
+          <span class="wisdom-rank-value ${colorClass}">${escapeHtml(item.display)}</span>
         </div>
-        <div class="wisdom-bar"><div class="wisdom-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+        <div class="wisdom-bar"><div class="wisdom-bar-fill ${colorClass}" style="width:${pct.toFixed(2)}%"></div></div>
         ${item.sub ? `<div class="wisdom-rank-sub">${escapeHtml(item.sub)}</div>` : ''}
       </div>`;
     }).join('');
   }
 
-  // Format helpers matching the server shape: `roas` (not avg_roas), `n`
-  // (not sample), `win` in 0..1 ratio (not win_rate percentage).
   const fmtRoas = (r) => (Number(r) || 0).toFixed(2) + 'x';
-  const fmtWinPct = (w) => Math.round((Number(w) || 0) * 100) + '% wins';
+  const fmtCtr = (c) => (Number(c) || 0).toFixed(2) + '% CTR';
+  const fmtWinPct = (wn) => Math.round((Number(wn) || 0) * 100) + '% wins';
 
-  // Prettify raw platform IDs for display ("meta" → "Meta", "tiktok" → "TikTok")
   const prettyPlatform = (p) => {
     if (!p) return '';
     const map = { meta: 'Meta', tiktok: 'TikTok', google: 'Google', amazon: 'Amazon', reddit: 'Reddit', linkedin: 'LinkedIn', shopify: 'Shopify' };
@@ -2032,41 +2109,46 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
   const fmtItems = formatList.map(f => ({
     label: f.name, display: fmtRoas(f.roas), sub: fmtWinPct(f.win), val: f.roas || 0,
   }));
-  // Platform rows — prefer ROAS as the bar value, fall back to CTR for the
-  // legacy schema where most platform rows have no ROAS field.
+
+  // Platform card: prefer ROAS as the bar value when ANY platform reports it,
+  // else fall back to CTR (legacy worker schema). Once the worker redeploy
+  // lands, every platform row carries ROAS and the inconsistency closes.
   const platformHasRoas = platformItems.some(p => (p.roas || 0) > 0);
   const platItems = platformItems.map(p => {
-    const ctrDisplay = p.ctr !== undefined ? (Number(p.ctr) || 0).toFixed(2) + '% CTR' : '—';
-    const display = platformHasRoas ? fmtRoas(p.roas) : ctrDisplay;
-    const sub = (p.n || 0) + ' ads' + (platformHasRoas && p.ctr !== undefined ? ` · ${ctrDisplay}` : '');
+    const ctrPart = p.ctr !== undefined ? fmtCtr(p.ctr) : '';
+    const display = platformHasRoas ? fmtRoas(p.roas) : (ctrPart || '—');
+    const subParts = [(p.n || 0) + ' ads'];
+    if (platformHasRoas && ctrPart) subParts.push(ctrPart);
     return {
       label: prettyPlatform(p.platform),
       display,
-      sub,
+      sub: subParts.join(' · '),
       val: platformHasRoas ? (p.roas || 0) : (Number(p.ctr) || 0),
     };
   });
 
-  // Benchmark: compare user's brand to collective averages
+  // Benchmark vs network. Limited to top hooks (4) — the 7-day brand MER is a
+  // rough proxy; a precise benchmark would need server-side per-vertical
+  // averages (tracked separately).
   const brand = document.getElementById('brand-select')?.value || '';
   const userPerf = perfState.cache[brand]?.[7] || perfState.cache[brand]?.[perfState.currentPeriod];
   let benchmarkHtml = '';
   if (userPerf && topHooks.length > 0) {
-    const avgROAS = topHooks.reduce((s, h) => s + (h.roas || 0), 0) / topHooks.length;
-    const userMER = userPerf.mer || 0;
-    benchmarkHtml = `<div style="grid-column:1/-1;padding:12px 0;border-bottom:1px solid var(--border);margin-bottom:4px">
+    const avgROAS = topHooks.reduce((s, h) => s + (Number(h.roas) || 0), 0) / topHooks.length;
+    const userMER = Number(userPerf.mer) || 0;
+    const above = userMER >= avgROAS;
+    benchmarkHtml = `<div class="wisdom-benchmark">
       <div class="wisdom-card-title">Your Performance vs Network</div>
-      <div style="display:flex;gap:24px;flex-wrap:wrap">
-        <div><span style="font-size:18px;font-weight:700;color:${userMER >= avgROAS ? '#22c55e' : '#f59e0b'}">${userMER > 0 ? userMER.toFixed(1) + 'x' : '—'}</span>
-          <span style="font-size:11px;color:var(--text-dim)"> your MER vs ${avgROAS > 0 ? avgROAS.toFixed(1) + 'x' : '—'} avg</span></div>
-        <div><span style="font-size:12px;color:var(--text-dim)">${userMER >= avgROAS ? '✦ Above network average' : '↑ Room to improve — check top hooks'}</span></div>
+      <div class="wisdom-benchmark-row">
+        <div>
+          <span class="wisdom-benchmark-value ${above ? 'positive' : 'negative'}">${userMER > 0 ? userMER.toFixed(1) + 'x' : '—'}</span>
+          <span class="wisdom-benchmark-sub">your MER vs ${avgROAS > 0 ? avgROAS.toFixed(1) + 'x' : '—'} top-hook avg</span>
+        </div>
+        <div class="wisdom-benchmark-sub">${above ? '✦ Above network top-hook average' : '↑ Room to improve — check top hooks'}</div>
       </div>
     </div>`;
   }
 
-  // Creative intelligence: actionable insight from top data.
-  // (Fixed field name — old code read `avg_roas` which never existed on the
-  // current server shape, so this block was dead for every user.)
   let intelHtml = '';
   if (topHooks.length >= 2) {
     const best = topHooks[0];
@@ -2075,21 +2157,20 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
     const worstR = Number(worst.roas) || 0;
     const diff = bestR > 0 && worstR > 0 ? Math.round(((bestR - worstR) / worstR) * 100) : 0;
     if (diff > 10) {
-      intelHtml = `<div style="grid-column:1/-1;padding:10px 14px;background:rgba(139,92,246,.06);border:1px solid rgba(139,92,246,.15);border-radius:8px;margin-bottom:8px">
-        <span style="font-size:12px;color:var(--text-muted)">✦ <strong>${escapeHtml(best.hook)}</strong> hooks outperform <strong>${escapeHtml(worst.hook)}</strong> by ${diff}% in your vertical right now.</span>
-      </div>`;
+      intelHtml = `<div class="wisdom-callout intel">✦ <strong>${escapeHtml(best.hook)}</strong> hooks outperform <strong>${escapeHtml(worst.hook)}</strong> by ${diff}% in your vertical right now.</div>`;
     }
   }
 
-  // Seasonal insight
+  // Seasonal insight loaded via IPC from app root — fetch('seasonal.json')
+  // resolved relative to app/index.html, which 404'd because the file lives
+  // one directory above. IPC reads from app.getAppPath() so the file is
+  // packaged in both dev and shipped builds.
   const month = String(new Date().getMonth() + 1);
   let seasonalHtml = '';
   try {
-    const seasonal = await fetch('seasonal.json').then(r => r.ok ? r.json() : null).catch(() => null);
-    if (seasonal && seasonal[month]) {
-      seasonalHtml = `<div style="grid-column:1/-1;padding:10px 14px;background:rgba(52,211,153,.06);border:1px solid rgba(52,211,153,.15);border-radius:8px;margin-bottom:8px">
-        <span style="font-size:12px;color:var(--text-muted)">📅 ${escapeHtml(seasonal[month])}</span>
-      </div>`;
+    const seasonal = await merlin.getSeasonal();
+    if (seasonal && typeof seasonal === 'object' && typeof seasonal[month] === 'string') {
+      seasonalHtml = `<div class="wisdom-callout seasonal">📅 ${escapeHtml(seasonal[month])}</div>`;
     }
   } catch {}
 
@@ -2098,37 +2179,55 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
     ${intelHtml}
     ${seasonalHtml}
     <div>
-      <div class="wisdom-card-title">Top Hooks</div>
-      ${rankRows(hookItems, i => i.val, '#22c55e', hookItems.length ? Math.max(...hookItems.map(i => i.val)) : 1)}
+      <div class="wisdom-card-title">Top Hooks <span class="wisdom-card-unit">avg ROAS</span></div>
+      ${rankRows(hookItems, i => i.val, 'color-hooks', hookItems.length ? Math.max(...hookItems.map(i => i.val)) : 1)}
     </div>
     <div>
-      <div class="wisdom-card-title">Top Platforms</div>
-      ${rankRows(platItems, i => i.val, '#8b5cf6', platItems.length ? Math.max(...platItems.map(i => i.val)) : 1)}
+      <div class="wisdom-card-title">Top Platforms <span class="wisdom-card-unit">${platformHasRoas ? 'avg ROAS' : 'avg CTR'}</span></div>
+      ${rankRows(platItems, i => i.val, 'color-platforms', platItems.length ? Math.max(...platItems.map(i => i.val)) : 1)}
     </div>
     <div>
-      <div class="wisdom-card-title">Best Formats</div>
-      ${rankRows(fmtItems, i => i.val, '#06b6d4', fmtItems.length ? Math.max(...fmtItems.map(i => i.val)) : 1)}
+      <div class="wisdom-card-title">Best Formats <span class="wisdom-card-unit">avg ROAS</span></div>
+      ${rankRows(fmtItems, i => i.val, 'color-formats', fmtItems.length ? Math.max(...fmtItems.map(i => i.val)) : 1)}
     </div>
     <div>
-      <div class="wisdom-card-title">Image Models</div>
-      ${rankRows(imgItems, i => i.val, '#3b82f6', imgItems.length ? Math.max(...imgItems.map(i => i.val)) : 1)}
+      <div class="wisdom-card-title">Image Models <span class="wisdom-card-unit">avg ROAS</span></div>
+      ${rankRows(imgItems, i => i.val, 'color-img', imgItems.length ? Math.max(...imgItems.map(i => i.val)) : 1)}
     </div>
     <div>
-      <div class="wisdom-card-title">Video Models</div>
-      ${rankRows(vidItems, i => i.val, '#f59e0b', vidItems.length ? Math.max(...vidItems.map(i => i.val)) : 1)}
+      <div class="wisdom-card-title">Video Models <span class="wisdom-card-unit">avg ROAS</span></div>
+      ${rankRows(vidItems, i => i.val, 'color-vid', vidItems.length ? Math.max(...vidItems.map(i => i.val)) : 1)}
     </div>
     <div>
       <div class="wisdom-card-title">Best Timing</div>
       <div class="wisdom-timing-label">BEST DAYS</div>
-      <div class="wisdom-timing-value">${escapeHtml(bestDays || 'Collecting...')}</div>
+      <div class="wisdom-timing-value">${escapeHtml(bestDays || (sample > 0 ? '—' : 'Collecting…'))}</div>
       <div class="wisdom-timing-label">BEST HOURS</div>
-      <div class="wisdom-timing-value" style="margin-bottom:0">${escapeHtml(bestHours || 'Collecting...')}</div>
+      <div class="wisdom-timing-value last">${escapeHtml(bestHours || (sample > 0 ? '—' : 'Collecting…'))}</div>
     </div>
   `;
+}
+
+document.getElementById('wisdom-header-btn').addEventListener('click', async () => {
+  document.getElementById('magic-panel').classList.add('hidden');
+  document.getElementById('archive-panel').classList.add('hidden');
+  closeAgencyOverlay();
+  const overlay = document.getElementById('wisdom-overlay');
+
+  if (!overlay.classList.contains('hidden')) {
+    closeWisdom();
+    return;
+  }
+
+  overlay.classList.remove('hidden');
+  document.addEventListener('keydown', wisdomEscHandler);
+  await loadWisdom();
 });
 
-document.getElementById('wisdom-close').addEventListener('click', () => {
-  document.getElementById('wisdom-overlay').classList.add('hidden');
+document.getElementById('wisdom-close').addEventListener('click', closeWisdom);
+
+document.getElementById('wisdom-refresh-btn').addEventListener('click', () => {
+  loadWisdom({ force: true });
 });
 document.getElementById('stats-overlay').addEventListener('click', (e) => {
   if (e.target.id === 'stats-overlay') document.getElementById('stats-overlay').classList.add('hidden');
@@ -2159,6 +2258,12 @@ document.getElementById('stats-share').addEventListener('click', async () => {
 // toggle a `.connected` class on each tile so the visual indicator (green
 // accent) shows without re-parenting the DOM. Stubbed / unavailable tiles
 // stay in their original position and render dark gray via `.unavailable`.
+// Platforms that support a right-click "Use my API key" override — used
+// to surface a hint in the tile tooltip so users know the escape hatch
+// exists. The canonical list is MANUAL_KEY_HANDLERS (defined below); this
+// Set must stay in sync. Kept as a Set for O(1) lookup in loadConnections.
+const MANUAL_KEY_PLATFORMS = new Set(['meta', 'shopify']);
+
 function loadConnections() {
   const brand = getActiveBrandSelection();
   merlin.getConnectedPlatforms(brand).then((connected) => {
@@ -2179,6 +2284,10 @@ function loadConnections() {
         if (!brand && t.dataset.scope === 'brand') {
           t.classList.add('needs-brand');
           t.dataset.tip = getBrandRequiredMessage(t.dataset.platform);
+        } else if (MANUAL_KEY_PLATFORMS.has(t.dataset.platform)) {
+          // Surface the right-click escape hatch — otherwise users with an
+          // existing access token have no affordance that it's available.
+          t.dataset.tip = `${t.dataset.baseTip || t.dataset.tip} (right-click to paste a token)`;
         }
       }
     });
@@ -2201,7 +2310,13 @@ function loadConnections() {
       const status = state.get(platform);
       if (!status) return;
       tile.classList.add('connected');
-      if (status === 'expired') tile.classList.add('expired');
+      const name = tile.querySelector('.tile-name')?.textContent || platformDisplayName(platform);
+      if (status === 'expired') {
+        tile.classList.add('expired');
+        tile.dataset.tip = `${name} · expired — click to reconnect`;
+      } else {
+        tile.dataset.tip = `${name} · connected (right-click to disconnect)`;
+      }
     });
 
     // Re-attach (once) the right-click → disconnect handler. We use
@@ -2270,15 +2385,37 @@ document.getElementById('magic-close').addEventListener('click', () => {
   document.getElementById('magic-panel').classList.add('hidden');
 });
 
-// Close panel ONLY when clicking into the chat area (not overlays, previews, menus, perf bar)
+// Escape closes the Magic panel when open and nothing more urgent (modal,
+// streaming response, recording) is in-flight. Escape is already bound for
+// stop-generation on the input; we only claim it here when the panel is the
+// top-most dismissable surface.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const panel = document.getElementById('magic-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  // Don't steal Escape from an open modal, an active stream, or the recorder.
+  const modalOpen = !document.getElementById('merlin-modal')?.classList.contains('hidden');
+  if (modalOpen) return;
+  if (typeof isStreaming !== 'undefined' && isStreaming) return;
+  if (typeof sessionActive !== 'undefined' && sessionActive) return;
+  if (typeof isRecording !== 'undefined' && isRecording) return;
+  panel.classList.add('hidden');
+});
+
+// Close panel on any outside click (except on the Magic button itself,
+// which toggles it, and except on the tile context menu which lives outside
+// the panel DOM but is part of the panel UX).
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('magic-panel');
   const btn = document.getElementById('magic-btn');
-  if (!panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== btn) {
-    // Only close if clicking in chat or input area — nowhere else
-    if (!e.target.closest('#chat') && !e.target.closest('#input-bar')) return;
-    panel.classList.add('hidden');
-  }
+  if (panel.classList.contains('hidden')) return;
+  if (panel.contains(e.target)) return;
+  if (e.target === btn || e.target.closest('#magic-btn')) return;
+  // Don't close while an overlaid modal or the tile context menu is open —
+  // the user is interacting with a child of the panel UX.
+  if (e.target.closest('#merlin-modal')) return;
+  if (e.target.closest('.tile-context-menu')) return;
+  panel.classList.add('hidden');
 });
 
 // Connect platform tiles — ALL connections handled directly in UI, zero chat involvement
@@ -2360,29 +2497,37 @@ function showShopifyApiKeyModal(activeBrand) {
   });
 }
 
+// In-flight guard — prevents a double-click from launching two OAuth
+// browser windows for the same platform. Cleared when the OAuth promise
+// settles (success, error, or rejection).
+const _oauthInFlight = new Set();
+
 document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
   if (tile.dataset.stubbed === 'true') return;
   const platform = tile.dataset.platform;
   const activeBrand = getActiveBrandSelection();
-  const displayName = platform.charAt(0).toUpperCase() + platform.slice(1);
+  const displayName = platformDisplayName(platform);
 
   if (tile.classList.contains('needs-brand')) {
     promptBrandSetupBeforeConnect(platform);
     return;
   }
 
+  const inFlightKey = `${platform}:${activeBrand || ''}`;
+  if (_oauthInFlight.has(inFlightKey)) return;
+
   if (platform === 'shopify') {
-    // Always try OAuth first — landing on the Merlin install page on the
-    // merchant's store is the review-friendly default. The brand.md URL is
-    // consulted inside main.js runOAuthFlow; missing → we prompt inline.
-    runShopifyOAuthWithStore(activeBrand);
+    _oauthInFlight.add(inFlightKey);
+    Promise.resolve(runShopifyOAuthWithStore(activeBrand)).finally(() => {
+      _oauthInFlight.delete(inFlightKey);
+    });
     return;
   }
 
   if (OAUTH_PLATFORMS.has(platform)) {
-    // Launch OAuth — don't dim the tile, let it complete in background
+    _oauthInFlight.add(inFlightKey);
     merlin.runOAuth(platform, activeBrand).then(result => {
       if (result.error) {
         showModal({ title: 'Connection Failed', body: friendlyError(result.error, displayName), confirmLabel: 'OK', onConfirm: () => {} });
@@ -2391,33 +2536,34 @@ document.addEventListener('click', async (e) => {
       }
     }).catch(err => {
       showModal({ title: 'Connection Failed', body: friendlyError(err.message, displayName), confirmLabel: 'OK', onConfirm: () => {} });
+    }).finally(() => {
+      _oauthInFlight.delete(inFlightKey);
     });
     return;
   }
 
   const apiDef = API_KEY_PLATFORMS[platform];
   if (apiDef) {
-    // API key entry via modal — no chat
-    // Build body as DOM nodes (safer than innerHTML interpolation, no escaping bugs)
-    const bodyFrag = document.createDocumentFragment();
+    // API key entry via modal — build body as real DOM nodes and pass the
+    // wrapper directly via bodyNode. Prior version stringified to innerHTML,
+    // which defeated the point.
+    const wrapper = document.createElement('div');
     if (apiDef.url) {
-      bodyFrag.appendChild(document.createTextNode('Paste your API key below. '));
+      wrapper.appendChild(document.createTextNode('Paste your API key below. '));
       const link = document.createElement('a');
       link.href = apiDef.url;
       link.target = '_blank';
       link.rel = 'noopener noreferrer';
       link.style.color = 'var(--accent)';
       link.textContent = 'Get your key here';
-      bodyFrag.appendChild(link);
+      wrapper.appendChild(link);
     } else {
-      bodyFrag.appendChild(document.createTextNode('Paste your API key or webhook URL below.'));
+      wrapper.appendChild(document.createTextNode('Paste your API key or webhook URL below.'));
     }
-    const wrapper = document.createElement('div');
-    wrapper.appendChild(bodyFrag);
 
     showModal({
       title: `Connect ${apiDef.label}`,
-      bodyHTML: wrapper.innerHTML,
+      bodyNode: wrapper,
       inputPlaceholder: apiDef.placeholder,
       confirmLabel: 'Save',
       cancelLabel: 'Cancel',
@@ -2523,31 +2669,60 @@ document.addEventListener('contextmenu', (e) => {
 document.getElementById('request-toggle').addEventListener('click', () => {
   document.getElementById('request-form').classList.toggle('hidden');
 });
-document.getElementById('request-send').addEventListener('click', () => {
-  const text = document.getElementById('request-input').value.trim();
+async function sendPlatformRequest() {
+  const input = document.getElementById('request-input');
+  const sendBtn = document.getElementById('request-send');
+  const thanks = document.getElementById('request-thanks');
+  const text = input.value.trim();
   if (!text) return;
-  // Send silently via fetch to a webhook (no window/email popup)
-  fetch('https://merlingotme.com/api/feedback', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'platform-request', text }),
-  }).catch(() => {});
-  document.getElementById('request-form').classList.add('hidden');
-  document.getElementById('request-thanks').classList.remove('hidden');
-  document.getElementById('request-input').value = '';
-  setTimeout(() => document.getElementById('request-thanks').classList.add('hidden'), 3000);
-});
+  sendBtn.disabled = true;
+  const origLabel = sendBtn.textContent;
+  sendBtn.textContent = 'Sending…';
+  try {
+    const res = await fetch('https://merlingotme.com/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'platform-request', text }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    document.getElementById('request-form').classList.add('hidden');
+    thanks.textContent = "✦ Sent! We'll look into it.";
+    thanks.style.color = '';
+    thanks.classList.remove('hidden');
+    input.value = '';
+    setTimeout(() => thanks.classList.add('hidden'), 3000);
+  } catch {
+    thanks.textContent = "Couldn't send — check your connection and try again.";
+    thanks.style.color = '#f87171';
+    thanks.classList.remove('hidden');
+    setTimeout(() => { thanks.classList.add('hidden'); thanks.style.color = ''; }, 4000);
+  } finally {
+    sendBtn.disabled = false;
+    sendBtn.textContent = origLabel;
+  }
+}
+document.getElementById('request-send').addEventListener('click', sendPlatformRequest);
 document.getElementById('request-input').addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') document.getElementById('request-send').click();
+  if (e.key === 'Enter') sendPlatformRequest();
 });
 
 // ── Share Merlin (Referrals) ────────────────────────────────
 async function loadReferralInfo() {
+  const linkInput = document.getElementById('referral-link');
+  const stats = document.getElementById('referral-stats');
+  const copyBtn = document.getElementById('referral-copy');
   try {
     const info = await merlin.getReferralInfo();
-    const linkInput = document.getElementById('referral-link');
-    const stats = document.getElementById('referral-stats');
-    linkInput.value = `merlingotme.com?ref=${info.referralCode || ''}`;
+    // Don't render a broken `?ref=` URL when the code hasn't loaded yet —
+    // the copy button would paste an empty-reference link. Fall back to the
+    // bare domain, and disable the copy button until a real code shows up.
+    if (info.referralCode) {
+      linkInput.value = `merlingotme.com?ref=${info.referralCode}`;
+      if (copyBtn) copyBtn.disabled = false;
+    } else {
+      linkInput.value = 'merlingotme.com';
+      if (copyBtn) copyBtn.disabled = true;
+    }
 
     // R2-2: split registered vs subscribed counts so the user sees both
     // "3 friends installed" and "+21 bonus days locked in".
@@ -2578,13 +2753,32 @@ async function loadReferralInfo() {
       if (applyInput) applyInput.disabled = true;
       if (applyBtn) applyBtn.disabled = true;
     }
-  } catch {}
+  } catch (err) {
+    // Surface an inline retry instead of leaving the input stuck at "loading…"
+    if (linkInput) linkInput.value = 'Could not load — click to retry';
+    if (stats) stats.textContent = '';
+    if (copyBtn) copyBtn.disabled = true;
+    if (linkInput && !linkInput.dataset.retryHooked) {
+      linkInput.dataset.retryHooked = '1';
+      linkInput.addEventListener('click', () => {
+        if (linkInput.value === 'Could not load — click to retry') {
+          linkInput.value = 'loading...';
+          loadReferralInfo();
+        }
+      });
+    }
+    console.warn('[referral]', err);
+  }
 }
 
 document.getElementById('referral-copy').addEventListener('click', () => {
   const linkInput = document.getElementById('referral-link');
+  const btn = document.getElementById('referral-copy');
+  // Guard against copying a placeholder value (loading / error / bare domain
+  // without a ref code). The input-disabled / button-disabled state keeps this
+  // reachable only as a defensive check.
+  if (!linkInput.value || !linkInput.value.includes('?ref=')) return;
   navigator.clipboard.writeText('https://' + linkInput.value).then(() => {
-    const btn = document.getElementById('referral-copy');
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
     setTimeout(() => { btn.textContent = 'Copy'; btn.classList.remove('copied'); }, 2000);
@@ -2730,12 +2924,6 @@ async function loadSpells() {
   }
 
   list.innerHTML = '';
-
-  // Hide the old templates section — we merge everything into the unified list
-  const oldTemplates = document.getElementById('spell-templates');
-  if (oldTemplates) oldTemplates.style.display = 'none';
-  const addBtn = document.getElementById('add-task-btn');
-  if (addBtn) addBtn.style.display = 'none';
 
   // Build set of active spell IDs for deduplication
   const activeIds = new Set((spells || []).map(s => s.id));
@@ -3279,7 +3467,14 @@ function showContextMenu(e, items) {
 
 function closeAgencyOverlay() {
   const o = document.getElementById('agency-overlay');
-  if (o) o.remove();
+  if (!o) return;
+  // Fire the teardown event so the Reports modal can unregister its
+  // document-level Escape/Tab listeners before the element is removed.
+  // The handler is registered with {once:true}, so the recursive call
+  // from inside cleanup() won't re-fire it.
+  o.dispatchEvent(new CustomEvent('report:cleanup'));
+  const still = document.getElementById('agency-overlay');
+  if (still) still.remove();
 }
 
 function clearStatusLabel() {
@@ -3360,6 +3555,8 @@ function sendMessage() {
   }
 
   checkFrustration(text);
+  // New turn cancels any in-flight TTS so the wizard never talks over itself.
+  stopSpeaking();
   _userMessageCount = (_userMessageCount || 0) + 1;
   _lastUserMessage = text;
   addUserBubble(text);
@@ -3383,6 +3580,7 @@ input.addEventListener('keydown', (e) => {
   // Escape to stop generation
   if (e.key === 'Escape' && (isStreaming || sessionActive)) {
     e.preventDefault();
+    stopSpeaking();
     merlin.stopGeneration();
     finalizeBubble();
     removeTypingIndicator();
@@ -3435,18 +3633,11 @@ async function transcribeCurrent(isInterim) {
       else input.classList.remove('voice-interim');
       autoResize();
     } else if (result && result.error && !isInterim) {
-      // If the main-process tagged the failure as installable, switch into
-      // the auto-install flow instead of showing a dead-end "go download
-      // these three files" wall. Keeps the UX close to "just works".
-      if (result.installable) {
-        offerVoiceAutoInstall(result, bytes);
-      } else {
-        showModal({
-          title: 'Transcription failed',
-          body: result.error,
-          confirmLabel: 'OK',
-        });
-      }
+      showModal({
+        title: 'Transcription failed',
+        body: result.error,
+        confirmLabel: 'OK',
+      });
     }
   } catch (err) {
     // Interim failures are silent — next chunk will retry. Only surface
@@ -3459,119 +3650,6 @@ async function transcribeCurrent(isInterim) {
         confirmLabel: 'OK',
       });
     }
-  }
-}
-
-// Offer a one-click auto-install for voice input dependencies (whisper-cli,
-// voice model, ffmpeg) and, on success, automatically retry the transcription
-// the user was trying to do — so from their perspective it "just worked" with
-// a single confirmation dialog + a progress bar.
-//
-// `missing` from the main-process tells us which components are gone, so the
-// download-size estimate we show the user is accurate (it'd be rude to warn
-// about 150 MB when they only need the 10 MB whisper binary).
-function offerVoiceAutoInstall(errorResult, originalAudioBytes) {
-  const missing = Array.isArray(errorResult.missing) ? errorResult.missing : ['whisper', 'model', 'ffmpeg'];
-  const sizeMap = { whisper: 10, model: 74, ffmpeg: 60 };
-  const estMB = missing.reduce((sum, k) => sum + (sizeMap[k] || 0), 0);
-  const componentLabels = {
-    whisper: 'speech-to-text engine',
-    model:   'voice recognition model',
-    ffmpeg:  'audio transcoder',
-  };
-  const itemList = missing.map(k => `• ${componentLabels[k] || k}`).join('\n');
-
-  showModal({
-    title: 'Set up voice input?',
-    body: `Merlin needs to install the voice tools before it can transcribe audio:\n\n${itemList}\n\nTotal download: ~${estMB} MB. Takes a minute or two on a normal connection.`,
-    confirmLabel: 'Install',
-    cancelLabel: 'Not now',
-    onConfirm: () => runVoiceAutoInstall(originalAudioBytes),
-  });
-}
-
-async function runVoiceAutoInstall(originalAudioBytes) {
-  // Build a live-updating progress modal. Using bodyHTML lets us write in
-  // a <progress> element and a status line, then mutate them from the
-  // install-progress event handler — without re-rendering the whole modal
-  // every tick (which would steal focus and feel janky).
-  showModal({
-    title: 'Installing voice tools...',
-    bodyHTML: `
-      <div id="voice-install-status" style="margin-bottom:10px;color:var(--text-dim);font-size:12px">Preparing...</div>
-      <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;height:8px;overflow:hidden">
-        <div id="voice-install-bar" style="height:100%;width:0%;background:linear-gradient(90deg,#8b5cf6,#10b981);transition:width .3s"></div>
-      </div>
-      <div id="voice-install-pct" style="margin-top:6px;font-size:11px;color:var(--text-dim);text-align:right">0%</div>
-    `,
-    // Hide confirm/cancel while install runs — it completes on its own.
-    // We close the modal programmatically via the close button's click
-    // once the final result comes back.
-    confirmLabel: ' ',
-    cancelLabel: 'Hide',
-  });
-
-  // Hide the confirm button during install — it's not actionable.
-  const confirmBtn = document.getElementById('merlin-modal-confirm');
-  if (confirmBtn) confirmBtn.style.display = 'none';
-
-  const setProgress = (data) => {
-    const statusEl = document.getElementById('voice-install-status');
-    const barEl = document.getElementById('voice-install-bar');
-    const pctEl = document.getElementById('voice-install-pct');
-    if (statusEl && data.note) statusEl.textContent = data.note;
-    if (barEl && typeof data.pct === 'number') barEl.style.width = data.pct + '%';
-    if (pctEl && typeof data.pct === 'number') pctEl.textContent = Math.round(data.pct) + '%';
-  };
-
-  const unsub = merlin.onVoiceInstallProgress(setProgress);
-
-  let result;
-  try {
-    result = await merlin.installVoiceTools();
-  } catch (err) {
-    result = { error: String(err && err.message ? err.message : err) };
-  } finally {
-    if (typeof unsub === 'function') unsub();
-  }
-
-  // Restore the confirm button's display BEFORE closing so the next modal
-  // (the result dialog) shows its OK button. showModal's cleanup doesn't
-  // reset element styles between invocations, so this leak is on us.
-  if (confirmBtn) confirmBtn.style.display = '';
-
-  // Tear down the progress modal before showing the result — avoids a
-  // queued-modal flicker where the progress bar briefly reappears behind
-  // the success/failure dialog.
-  const closeBtn = document.getElementById('merlin-modal-close');
-  if (closeBtn) closeBtn.click();
-
-  if (result && result.success) {
-    // Auto-retry the transcription the user kicked off originally, so the
-    // whole flow feels like "I hit record, it asked to install, then my
-    // words appeared" — zero extra clicks.
-    if (Array.isArray(originalAudioBytes) && originalAudioBytes.length > 0) {
-      try {
-        const retry = await merlin.transcribeAudio(originalAudioBytes);
-        if (retry && retry.transcript && retry.transcript.trim()) {
-          input.value = (voiceBaseText + retry.transcript.trim()).replace(/^\s+/, '');
-          input.classList.remove('voice-interim');
-          autoResize();
-          return;
-        }
-      } catch {}
-    }
-    showModal({
-      title: 'Voice input ready',
-      body: 'Voice tools are installed. Hit the mic and try again.',
-      confirmLabel: 'OK',
-    });
-  } else {
-    showModal({
-      title: 'Install failed',
-      body: (result && result.error) || 'Voice tools install failed. Try again, or check your internet connection.',
-      confirmLabel: 'OK',
-    });
   }
 }
 
@@ -3670,6 +3748,321 @@ micBtn.addEventListener('click', () => {
 // Escape cancels recording entirely (restores pre-recording text)
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isRecording) cancelRecording();
+});
+
+// ── Voice Output (Kokoro TTS → bm_george wizard voice) ──────
+// Claude opts into speaking a response via a leading `<voice>speak</voice>`
+// metadata tag. The tag is stripped before render (during streaming and on
+// finalize) so the user never sees it. When the speaker is toggled on AND
+// Claude opted in, the cleaned text is synthesized in main.js and played
+// via Blob URL + HTMLAudioElement. Every assistant bubble also gets a
+// replay button so the user can hear any past message on demand, even when
+// the global toggle is off. Last-writer-wins: a new playback aborts the
+// prior one, and any of (Escape, toggle off, new message send) stops audio.
+const speakerBtn = document.getElementById('speaker-btn');
+let voiceEnabled = localStorage.getItem('merlin.voiceOutput') === '1';
+let currentAudio = null;
+let currentSpeakingBubble = null;
+let _speakReqSeq = 0;          // monotonic id per speakMessage — lets chunks from a stale request be ignored
+let _activeSpeakReqId = null;  // only chunks tagged with this id are queued
+
+function stripVoiceTag(raw) {
+  if (!raw) return { speak: false, cleaned: '', resolved: true };
+  const m = raw.match(/^<voice>(speak|silent)<\/voice>\s*\n?/);
+  if (m) return { speak: m[1] === 'speak', cleaned: raw.slice(m[0].length), resolved: true };
+  // Partial tag still streaming in — suppress the first line until we
+  // know whether Claude is opening with a voice tag or real content.
+  // The tag is at most 21 chars; beyond 30 we assume it was never there.
+  if (raw.length < 30) {
+    if ('<voice>speak</voice>'.startsWith(raw) || '<voice>silent</voice>'.startsWith(raw)) {
+      return { speak: false, cleaned: '', resolved: false };
+    }
+  }
+  return { speak: false, cleaned: raw, resolved: true };
+}
+
+function applySpeakerState() {
+  if (!speakerBtn) return;
+  if (voiceEnabled) speakerBtn.classList.add('on');
+  else speakerBtn.classList.remove('on');
+  speakerBtn.setAttribute('aria-pressed', voiceEnabled ? 'true' : 'false');
+  speakerBtn.title = voiceEnabled
+    ? 'Voice on — Merlin speaks insights aloud. Click to mute.'
+    : 'Voice off — Click to let Merlin speak insights aloud.';
+}
+applySpeakerState();
+
+if (speakerBtn) {
+  speakerBtn.addEventListener('click', () => {
+    voiceEnabled = !voiceEnabled;
+    localStorage.setItem('merlin.voiceOutput', voiceEnabled ? '1' : '0');
+    applySpeakerState();
+    if (!voiceEnabled) stopSpeaking();
+  });
+}
+
+function clearSpeakingIndicator(bubbleEl) {
+  if (!bubbleEl) return;
+  bubbleEl.classList.remove('speaking');
+  const btn = bubbleEl.querySelector('.replay-btn');
+  if (btn) btn.classList.remove('speaking');
+}
+
+function stopSpeaking() {
+  if (currentAudio) {
+    try { currentAudio.pause(); } catch {}
+    try {
+      if (currentAudio.src && currentAudio.src.startsWith('blob:')) {
+        URL.revokeObjectURL(currentAudio.src);
+      }
+    } catch {}
+    currentAudio = null;
+  }
+  // Invalidate any in-flight streaming request — stray chunks that arrive
+  // after this point will be rejected by the onVoiceOutputChunk guard.
+  _activeSpeakReqId = null;
+  if (currentSpeakingBubble) {
+    clearSpeakingIndicator(currentSpeakingBubble);
+    currentSpeakingBubble = null;
+  }
+  try { merlin.stopSpeaking && merlin.stopSpeaking(); } catch {}
+}
+
+// speakMessage kicks off a streamed synthesis: main.js synthesises sentence
+// by sentence and ships each WAV back via onVoiceOutputChunk. We queue them
+// here and play in order — first audio starts in ~2 s even for long texts,
+// while later sentences are still being generated.
+async function speakMessage(text, bubbleEl) {
+  if (!text || !text.trim()) return;
+  if (!merlin.speakText) return;
+  // Last-writer-wins: a new message cancels the prior playback.
+  stopSpeaking();
+  const reqId = ++_speakReqSeq;
+  _activeSpeakReqId = reqId;
+  currentSpeakingBubble = bubbleEl;
+  if (bubbleEl) {
+    bubbleEl.classList.add('speaking');
+    const replayBtn = bubbleEl.querySelector('.replay-btn');
+    if (replayBtn) replayBtn.classList.add('speaking');
+  }
+
+  const queue = [];          // FIFO of {url, audio} ready to play
+  let playing = false;
+  let streamDone = false;
+
+  // Drain any still-queued blob URLs — called from the error/abort paths so
+  // we don't leak Object URLs for sentences the user will never hear.
+  const drainQueue = () => {
+    while (queue.length) {
+      const { url } = queue.shift();
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+  };
+
+  const finishIfDrained = () => {
+    if (!streamDone || playing || queue.length > 0) return;
+    if (_activeSpeakReqId === reqId) _activeSpeakReqId = null;
+    if (currentSpeakingBubble === bubbleEl) {
+      clearSpeakingIndicator(bubbleEl);
+      currentSpeakingBubble = null;
+    }
+  };
+
+  // Convert a raw TTS error string into something a non-technical user
+  // can act on. Voice-specific branches take priority; everything else
+  // falls through to the generic friendlyError.
+  const voiceFriendly = (raw) => {
+    const s = String(raw || '').toLowerCase();
+    if (s.includes('voice worker exited') || s.includes('uncaught')) {
+      return 'Voice engine crashed. Restart Merlin and try again.';
+    }
+    if (s.includes('init timeout') || s.includes('ensuretts')) {
+      return 'Voice model is still loading (first run downloads ~92 MB).\nTry again in a moment — or check your internet connection.';
+    }
+    if (s.includes('text too long')) {
+      return 'That message is too long to read aloud (5000-char cap).';
+    }
+    return friendlyError(raw, 'voice');
+  };
+
+  const surfaceTtsError = (raw) => {
+    if (!raw) return;
+    const msg = voiceFriendly(raw);
+    // Split on first newline so the toast's strong/detail structure renders
+    // the "Try: …" line as the detail row.
+    const [title, detail] = msg.split('\n', 2);
+    showSpellToast(title || 'Voice output failed', detail || '', 'error');
+  };
+
+  const playNext = () => {
+    if (playing) return;
+    if (_activeSpeakReqId !== reqId) return;   // superseded
+    if (queue.length === 0) { finishIfDrained(); return; }
+    playing = true;
+    const { url, audio } = queue.shift();
+    currentAudio = audio;
+    const afterChunk = () => {
+      try { URL.revokeObjectURL(url); } catch {}
+      if (currentAudio === audio) currentAudio = null;
+      playing = false;
+      playNext();
+    };
+    audio.onended = afterChunk;
+    audio.onerror = afterChunk;
+    audio.play().catch((err) => {
+      console.warn('audio.play failed:', err);
+      afterChunk();
+    });
+  };
+
+  const unsubscribe = merlin.onVoiceOutputChunk((payload) => {
+    if (!payload) return;
+    // The main-process worker-exit/error path now includes requestId, so the
+    // per-request guard works for all terminal messages. Any packet without a
+    // requestId indicates a pre-requestId main.js — still drop it rather than
+    // poison a request with foreign chunks, but don't log (would be spammy).
+    if (payload.requestId !== reqId) return;
+    if (_activeSpeakReqId !== reqId) {
+      // Request was superseded. Unsubscribe and drain anything that arrived
+      // after cancellation so the blob URLs don't leak for the window's life.
+      if (payload.final) { unsubscribe(); drainQueue(); }
+      return;
+    }
+    if (payload.final) {
+      streamDone = true;
+      unsubscribe();
+      if (payload.error) {
+        // Surface to the user and revoke any un-played chunks — the remaining
+        // audio won't render so there's no value in holding the blob URLs.
+        surfaceTtsError(payload.error);
+        drainQueue();
+      }
+      playNext();
+      return;
+    }
+    if (!payload.audio) return;
+    const bytes = payload.audio instanceof Uint8Array
+      ? payload.audio
+      : new Uint8Array(payload.audio);
+    const blob = new Blob([bytes], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    queue.push({ url, audio: new Audio(url) });
+    playNext();
+  });
+
+  let result;
+  try {
+    result = await merlin.speakText(text, undefined, reqId);
+  } catch (err) {
+    unsubscribe();
+    streamDone = true;
+    drainQueue();
+    surfaceTtsError(err && err.message ? err.message : err);
+    if (_activeSpeakReqId === reqId) _activeSpeakReqId = null;
+    if (currentSpeakingBubble === bubbleEl) {
+      clearSpeakingIndicator(bubbleEl);
+      currentSpeakingBubble = null;
+    }
+    return;
+  }
+
+  // Main process finished dispatching chunks. If no chunk arrived at all
+  // (error or aborted before first sentence) we clean up here — otherwise
+  // playNext() drains the queue and calls finishIfDrained naturally.
+  if (!result || !result.success) {
+    unsubscribe();
+    streamDone = true;
+    if (result && result.error && !result.aborted) {
+      drainQueue();
+      surfaceTtsError(result.error);
+    }
+    // If playback already started, let it drain; otherwise reset state.
+    if (_activeSpeakReqId === reqId && !playing && queue.length === 0) {
+      _activeSpeakReqId = null;
+      if (currentSpeakingBubble === bubbleEl) {
+        clearSpeakingIndicator(bubbleEl);
+        currentSpeakingBubble = null;
+      }
+    }
+  }
+}
+
+function addReplayButton(bubbleEl, text) {
+  if (!bubbleEl || bubbleEl.querySelector('.replay-btn')) return;
+  const btn = document.createElement('button');
+  btn.className = 'replay-btn';
+  btn.type = 'button';
+  btn.title = 'Play this message aloud';
+  btn.setAttribute('aria-label', 'Play this message aloud');
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (currentSpeakingBubble === bubbleEl) {
+      stopSpeaking();
+      return;
+    }
+    const stored = bubbleEl.dataset.speakText || text;
+    speakMessage(stored, bubbleEl);
+  });
+  bubbleEl.appendChild(btn);
+}
+
+// Model download progress (first run only — ~92 MB one-time fetch).
+// Show a single persistent toast that updates in place so the user sees
+// "downloading voice model 12 MB / 92 MB" instead of nothing happening after
+// clicking the speaker button. Auto-dismisses when progress hits 100% or the
+// worker emits its 'ready' event (which the main process no longer forwards
+// as progress — we dismiss on status === 'done' and on the first chunk).
+let _ttsDownloadToast = null;
+let _ttsDownloadSeenFiles = new Set();
+function _ttsEnsureToast() {
+  if (_ttsDownloadToast && document.body.contains(_ttsDownloadToast)) return _ttsDownloadToast;
+  const el = document.createElement('div');
+  el.className = 'spell-toast spell-toast-info';
+  el.style.bottom = '80px';
+  el.innerHTML = '<strong>Voice model loading…</strong><br><span class="tts-dl-detail" style="font-size:11px;opacity:.8">First-run fetch — about 92 MB.</span>';
+  document.body.appendChild(el);
+  _ttsDownloadToast = el;
+  return el;
+}
+function _ttsDismissToast() {
+  if (!_ttsDownloadToast) return;
+  const el = _ttsDownloadToast;
+  _ttsDownloadToast = null;
+  _ttsDownloadSeenFiles = new Set();
+  el.style.opacity = '0';
+  setTimeout(() => { try { el.remove(); } catch {} }, 300);
+}
+if (merlin.onVoiceOutputProgress) {
+  merlin.onVoiceOutputProgress((payload) => {
+    if (!payload) return;
+    const status = String(payload.status || '');
+    const file = String(payload.file || '');
+    const pct = typeof payload.progress === 'number' ? Math.round(payload.progress) : null;
+    console.log('[kokoro]', status, file, pct !== null ? pct + '%' : '');
+    // HF emits { status: 'progress' } during download, 'done' per file, and
+    // 'ready' (rare) at the end. Only show the toast while a real download
+    // is happening — skip cache-hit signals that never surface a %.
+    if (status === 'progress' && pct !== null) {
+      _ttsDownloadSeenFiles.add(file);
+      const el = _ttsEnsureToast();
+      const detail = el.querySelector('.tts-dl-detail');
+      if (detail) detail.textContent = `${file || 'model'} — ${pct}%`;
+    } else if (status === 'done' || status === 'ready') {
+      // Dismiss once the last tracked file completes. Small grace delay so
+      // users see the 100% state land before it fades.
+      setTimeout(() => _ttsDismissToast(), 600);
+    }
+  });
+}
+
+// Escape stops speaking when nothing more urgent is in flight.
+// Recording Escape and stream-stop Escape handlers run first and match
+// their own conditions, so this only fires during standalone playback.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && currentAudio && !isRecording && !isStreaming && !sessionActive) {
+    stopSpeaking();
+  }
 });
 
 // Auto-resize textarea.
@@ -3890,11 +4283,37 @@ document.addEventListener('contextmenu', (e) => {
     || archiveCard?.dataset?.type === 'video'
     || archiveCard?.querySelector('.badge-video');
 
+  // Pick the correct delete targets based on the item's source.
+  //
+  // REGRESSION GUARD (2026-04-16, loose-delete data-loss incident): this
+  // used to always pass `folderPath` (the parent directory) to delete-file.
+  // For run items (`ad_YYYYMMDD_HHMMSS/`) that's the run folder itself and
+  // deleting it is correct. For LOOSE files (seedance_*.mp4 dropped into a
+  // brand folder shared with other clips), `folderPath` was the brand folder
+  // — deleting it wiped every sibling clip the user never asked to remove.
+  // Loose items now carry an explicit `data-files` JSON array of their own
+  // file(s) so we delete exactly what was shown on the card.
+  const cardSource = archiveCard?.dataset?.source || '';
+  let deleteTargets = [];
+  if (cardSource === 'loose' && archiveCard?.dataset?.files) {
+    try {
+      const parsed = JSON.parse(archiveCard.dataset.files);
+      if (Array.isArray(parsed)) deleteTargets = parsed.filter(p => typeof p === 'string' && p);
+    } catch {}
+    if (deleteTargets.length === 0 && filePath) deleteTargets = [filePath];
+  } else if (cardSource === 'run' && archiveCard?.dataset?.folder) {
+    deleteTargets = [archiveCard.dataset.folder];
+  } else if (folderPath) {
+    // Fallback for non-card contexts (chat message images, preview overlay
+    // before source is set): legacy behaviour — delete the folder.
+    deleteTargets = [folderPath];
+  }
+
   let menuItems = '';
   if (!isVideo && filePath) menuItems += '<button data-action="copy">Copy Image</button>';
   if (filePath) menuItems += '<button data-action="save">Save As...</button>';
   if (folderPath) menuItems += '<button data-action="folder">Open Folder</button>';
-  if (folderPath) menuItems += '<div class="img-context-divider"></div><button data-action="delete" class="img-context-danger">Delete</button>';
+  if (deleteTargets.length > 0) menuItems += '<div class="img-context-divider"></div><button data-action="delete" class="img-context-danger">Delete</button>';
   if (!menuItems) return;
 
   _ctxMenu = document.createElement('div');
@@ -3926,7 +4345,12 @@ document.addEventListener('contextmenu', (e) => {
       merlin.openFolder(folderPath);
       closeCtxMenu();
     } else if (action === 'delete') {
-      const result = await merlin.deleteFile(folderPath);
+      // Pass the array form when we have multiple targets (loose items: the
+      // clip + its paired thumbnail). Single-path call sites (chat message
+      // images, legacy folder delete) still pass a string for backwards
+      // compatibility with the main-process handler.
+      const target = deleteTargets.length > 1 ? deleteTargets : (deleteTargets[0] || folderPath);
+      const result = await merlin.deleteFile(target);
       closeCtxMenu();
       if (result?.success) {
         showCopyToast('Deleted');
@@ -4281,148 +4705,356 @@ document.querySelectorAll('.perf-period-btn').forEach(btn => {
   });
 });
 
-// Agency Report
+// ── Reports (Agency-wide performance) ───────────────────────
+// Aggregates each selected brand's latest dashboard JSON for the chosen
+// period and renders a printable report. See main.js:get-agency-report
+// REGRESSION GUARD for the per-brand sourcing rules.
+const REPORT_PERIODS = [
+  { days: 7, label: 'Last 7 Days' },
+  { days: 30, label: 'Last 30 Days' },
+  { days: 90, label: 'Last 90 Days' },
+  { days: 365, label: 'Last 12 Months' },
+];
+
+function reportPeriodLabel(days) {
+  return REPORT_PERIODS.find(p => p.days === days)?.label || `Last ${days} Days`;
+}
+
 document.getElementById('agency-report-btn').addEventListener('click', async (e) => {
   e.stopPropagation();
-  // Toggle — if already open, just close
+  // Toggle — if already open, close. closeAgencyOverlay() dispatches the
+  // report:cleanup event before removing the element, so the modal's
+  // Escape/Tab document listeners are torn down cleanly.
   if (document.getElementById('agency-overlay')) { closeAgencyOverlay(); return; }
-  // Close other panels
+  // Close sibling surfaces so they don't render behind the modal.
   document.getElementById('magic-panel').classList.add('hidden');
   document.getElementById('archive-panel').classList.add('hidden');
   document.getElementById('wisdom-overlay').classList.add('hidden');
+  document.getElementById('stats-overlay')?.classList.add('hidden');
 
-  // Get brands
   let brands = [];
   try { brands = await merlin.getBrands(); } catch {}
 
-  const period = document.querySelector('.perf-period-btn.active')?.dataset.days || '7';
-  const periodLabel = { '7': 'Last 7 Days', '30': 'Last 30 Days', '90': 'Last 90 Days', '365': 'Last 12 Months' }[period] || `Last ${period} Days`;
+  // Initial period pulls from the perf bar so the report matches what the
+  // user was just looking at, but can be changed inside the overlay.
+  const initialPeriod = parseInt(document.querySelector('.perf-period-btn.active')?.dataset.days, 10) || 7;
+  let currentPeriod = initialPeriod;
 
-  // Remove any existing overlay first (prevents stacking)
+  // Safety net — shouldn't stack since we return early above, but guards
+  // against a prior overlay lingering from a DOM exception.
   closeAgencyOverlay();
 
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
   overlay.id = 'agency-overlay';
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
+  overlay.setAttribute('aria-labelledby', 'report-title');
+
+  const periodButtons = REPORT_PERIODS.map(p => `
+    <button type="button" class="report-period-btn" data-days="${p.days}"
+      style="flex:1;padding:6px 8px;border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--text-dim);font-size:11px;font-weight:600;cursor:pointer;transition:all .15s">${escapeHtml(p.label)}</button>
+  `).join('');
+
+  const brandRows = brands.map(b => `
+    <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;color:var(--text-muted)">
+      <input type="checkbox" checked data-brand="${escapeHtml(b.name)}" style="accent-color:var(--accent)">
+      ${escapeHtml(b.displayName || b.name)}
+    </label>
+  `).join('');
+
   overlay.innerHTML = `
-    <div class="setup-card" style="max-width:420px;text-align:left">
+    <div class="setup-card" style="max-width:460px;text-align:left">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-        <h2 style="font-size:18px;font-weight:700;color:var(--text);margin:0">Agency Report</h2>
-        <button class="agency-x magic-close">&times;</button>
-      </div>
-      <p style="font-size:12px;color:var(--text-dim);margin-bottom:16px">${periodLabel} — select brands to include</p>
-
-      <div id="agency-brands" style="margin-bottom:16px">
-        ${brands.map(b => `
-          <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;color:var(--text-muted)">
-            <input type="checkbox" checked data-brand="${b.name.replace(/"/g, '&quot;')}" style="accent-color:var(--accent)">
-            ${escapeHtml(b.displayName || b.name)}
-          </label>
-        `).join('')}
-        ${brands.length === 0 ? '<p style="color:var(--text-dim);font-size:12px">No brands found</p>' : ''}
+        <h2 id="report-title" style="font-size:18px;font-weight:700;color:var(--text);margin:0">Reports</h2>
+        <button type="button" class="agency-x magic-close" aria-label="Close">&times;</button>
       </div>
 
-      <button class="agency-gen btn-primary" style="width:100%">Generate Report</button>
+      <div style="display:flex;gap:6px;margin-bottom:14px" role="group" aria-label="Report period">
+        ${periodButtons}
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+        <p style="font-size:12px;color:var(--text-dim);margin:0">Select brands to include</p>
+        ${brands.length > 1 ? `
+          <div style="display:flex;gap:8px">
+            <button type="button" class="agency-select-all" style="background:none;border:none;color:var(--accent);font-size:11px;font-weight:600;cursor:pointer;padding:2px 4px">All</button>
+            <button type="button" class="agency-select-none" style="background:none;border:none;color:var(--text-dim);font-size:11px;font-weight:600;cursor:pointer;padding:2px 4px">None</button>
+          </div>
+        ` : ''}
+      </div>
+
+      <div id="agency-brands" style="margin-bottom:16px;max-height:240px;overflow-y:auto">
+        ${brandRows}
+        ${brands.length === 0 ? '<p style="color:var(--text-dim);font-size:12px;margin:6px 0">No brands found. Run onboarding to add a brand first.</p>' : ''}
+      </div>
+
+      <div class="agency-status" style="font-size:12px;color:var(--text-dim);margin-bottom:12px;min-height:16px" role="status" aria-live="polite"></div>
+
+      <button type="button" class="agency-gen btn-primary" style="width:100%">Generate Report</button>
     </div>
   `;
 
   document.body.appendChild(overlay);
 
-  const close = () => closeAgencyOverlay();
-
-  // Close: X button, backdrop click, Escape key — all paths clean up the escape handler
-  const escHandler = (e) => { if (e.key === 'Escape') cleanup(); };
-  const cleanup = () => { close(); document.removeEventListener('keydown', escHandler); };
+  // ── Close plumbing (single cleanup path, no listener leaks) ──
+  const escHandler = (ev) => { if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); } };
+  const trapHandler = (ev) => {
+    if (ev.key !== 'Tab') return;
+    const focusables = overlay.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusables.length === 0) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (ev.shiftKey && document.activeElement === first) {
+      ev.preventDefault();
+      last.focus();
+    } else if (!ev.shiftKey && document.activeElement === last) {
+      ev.preventDefault();
+      first.focus();
+    }
+  };
+  const cleanup = () => {
+    document.removeEventListener('keydown', escHandler);
+    document.removeEventListener('keydown', trapHandler);
+    closeAgencyOverlay();
+  };
+  // {once:true} — closeAgencyOverlay() re-dispatches report:cleanup from
+  // within cleanup() itself, so the listener must auto-remove after first
+  // fire to avoid re-entry.
+  overlay.addEventListener('report:cleanup', cleanup, { once: true });
   overlay.querySelector('.agency-x').addEventListener('click', cleanup);
-  overlay.addEventListener('click', (e) => { if (e.target === overlay) cleanup(); });
+  overlay.addEventListener('click', (ev) => { if (ev.target === overlay) cleanup(); });
   document.addEventListener('keydown', escHandler);
+  document.addEventListener('keydown', trapHandler);
 
-  overlay.querySelector('.agency-gen').addEventListener('click', async () => {
+  // ── State UI ──
+  const statusEl = overlay.querySelector('.agency-status');
+  const genBtn = overlay.querySelector('.agency-gen');
+  const setStatus = (msg, tone) => {
+    statusEl.textContent = msg || '';
+    statusEl.style.color = tone === 'error' ? 'var(--danger, #ef4444)' : 'var(--text-dim)';
+  };
+  const updateGenState = () => {
+    const hasBrands = brands.length > 0;
+    const selectedCount = overlay.querySelectorAll('#agency-brands input:checked').length;
+    genBtn.disabled = !hasBrands || selectedCount === 0;
+    genBtn.style.opacity = genBtn.disabled ? '0.5' : '1';
+    genBtn.style.cursor = genBtn.disabled ? 'not-allowed' : 'pointer';
+    if (!hasBrands) {
+      genBtn.textContent = 'No brands to report';
+    } else if (selectedCount === 0) {
+      genBtn.textContent = 'Select at least one brand';
+    } else {
+      genBtn.textContent = `Generate Report (${selectedCount})`;
+    }
+  };
+
+  const setActivePeriodBtn = () => {
+    overlay.querySelectorAll('.report-period-btn').forEach(b => {
+      const active = parseInt(b.dataset.days, 10) === currentPeriod;
+      b.style.background = active ? 'var(--accent-bg)' : 'transparent';
+      b.style.color = active ? 'var(--accent)' : 'var(--text-dim)';
+      b.style.borderColor = active ? 'var(--accent-border)' : 'var(--border)';
+      b.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  };
+  setActivePeriodBtn();
+
+  overlay.querySelectorAll('.report-period-btn').forEach(b => {
+    b.addEventListener('click', () => {
+      currentPeriod = parseInt(b.dataset.days, 10);
+      setActivePeriodBtn();
+    });
+  });
+
+  overlay.querySelector('.agency-select-all')?.addEventListener('click', () => {
+    overlay.querySelectorAll('#agency-brands input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+    updateGenState();
+  });
+  overlay.querySelector('.agency-select-none')?.addEventListener('click', () => {
+    overlay.querySelectorAll('#agency-brands input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+    updateGenState();
+  });
+  overlay.querySelectorAll('#agency-brands input[type="checkbox"]').forEach(cb => {
+    cb.addEventListener('change', updateGenState);
+  });
+  updateGenState();
+
+  // Move focus into the modal for keyboard users.
+  setTimeout(() => {
+    const firstFocusable = overlay.querySelector('.report-period-btn') || genBtn;
+    firstFocusable?.focus();
+  }, 0);
+
+  // ── Generate ──
+  genBtn.addEventListener('click', async () => {
     const selectedBrands = [...overlay.querySelectorAll('#agency-brands input:checked')].map(cb => cb.dataset.brand);
     if (selectedBrands.length === 0) return;
 
-    const btn = overlay.querySelector('.agency-gen');
-    btn.disabled = true;
-    btn.textContent = 'Generating...';
+    genBtn.disabled = true;
+    genBtn.style.opacity = '0.5';
+    genBtn.textContent = 'Generating…';
+    setStatus('Aggregating brand dashboards…');
 
+    let report;
     try {
-      const perf = await merlin.getPerfSummary(parseInt(period));
-      const reportHtml = buildAgencyReport(selectedBrands, perf, periodLabel, brands);
-      const reportWindow = window.open('', 'Agency Report', 'width=800,height=1000');
-      if (reportWindow) {
-        reportWindow.document.write(reportHtml);
-        reportWindow.document.close();
-      }
+      report = await merlin.getAgencyReport(currentPeriod, selectedBrands);
     } catch (err) {
       console.error('[report]', err);
+      setStatus(friendlyError(err?.message || String(err), 'report'), 'error');
+      updateGenState();
+      return;
     }
-    close();
+
+    if (!report || report.summary.brandsWithData === 0) {
+      setStatus('No dashboard data found for the selected brands and period. Run "dashboard" for each brand first.', 'error');
+      updateGenState();
+      return;
+    }
+
+    const reportHtml = buildReportHtml(report, brands);
+    // Unique window name per click so two reports can coexist instead of
+    // clobbering each other.
+    const windowName = `Merlin_Report_${Date.now()}`;
+    const reportWindow = window.open('', windowName, 'width=900,height=1100,resizable=yes,scrollbars=yes');
+    if (!reportWindow) {
+      setStatus('Your popup blocker prevented the report from opening. Allow popups for Merlin and try again.', 'error');
+      updateGenState();
+      return;
+    }
+    try {
+      reportWindow.document.open();
+      reportWindow.document.write(reportHtml);
+      reportWindow.document.close();
+      // Belt-and-suspenders: sever opener so the popup can't navigate this
+      // window. The HTML we wrote is ours, but this guards against a future
+      // change adding user-controlled href content.
+      try { reportWindow.opener = null; } catch {}
+      reportWindow.focus?.();
+    } catch (err) {
+      console.error('[report]', err);
+      try { reportWindow.close(); } catch {}
+      setStatus(friendlyError(err?.message || String(err), 'report'), 'error');
+      updateGenState();
+      return;
+    }
+
+    cleanup();
   });
 });
 
-function buildAgencyReport(selectedBrands, perf, periodLabel, allBrands) {
-  const revenue = perf?.revenue || 0;
-  const spend = perf?.spend || 0;
-  const mer = perf?.mer || 0;
+function buildReportHtml(report, allBrands) {
+  const periodLabel = reportPeriodLabel(report.period);
+  const s = report.summary;
+  const fmtMoney = (n) => '$' + Math.round(n || 0).toLocaleString();
+  const fmtMer = (n) => (n > 0 ? n.toFixed(2) + 'x' : '—');
+  const fmtRoas = (n) => (n > 0 ? n.toFixed(2) + 'x' : '—');
+  const fmtInt = (n) => Math.round(n || 0).toLocaleString();
 
-  let brandPages = selectedBrands.map(brandName => {
-    const brand = allBrands.find(b => b.name === brandName) || { name: brandName, displayName: brandName };
-    const displayName = brand.displayName || brand.name.split(/[-_]/).map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  // Single consistent timestamp derived from the report's generatedAt.
+  // Using one source avoids the "header local / footer UTC" mismatch the
+  // prior version could hit near midnight.
+  const genDate = report.generatedAt ? new Date(report.generatedAt) : new Date();
+  const genLabel = genDate.toLocaleString(undefined, {
+    year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit',
+  });
 
+  const brandPages = report.perBrand.map(b => {
+    const meta = allBrands.find(a => a.name === b.name);
+    const displayName = meta?.displayName || b.name;
+    if (!b.hasData || !b.data) {
+      return `
+        <section class="page-break">
+          <h2>${escapeHtml(displayName)}</h2>
+          <p class="subtitle">${escapeHtml(periodLabel)}</p>
+          <div class="empty">No dashboard data for this period. Run "dashboard" for this brand to populate the report.</div>
+        </section>
+      `;
+    }
+    const d = b.data;
+    const staleBadge = d.stale
+      ? `<span class="stale" title="Data older than 48 hours">Stale</span>`
+      : '';
+    const brandGen = d.generatedAt
+      ? new Date(d.generatedAt).toLocaleString(undefined, { year:'numeric', month:'short', day:'numeric', hour:'numeric', minute:'2-digit' })
+      : '—';
     return `
-      <div class="page-break">
-        <h2>${escapeHtml(displayName)}</h2>
-        <p class="subtitle">${escapeHtml(periodLabel)}</p>
+      <section class="page-break">
+        <h2>${escapeHtml(displayName)} ${staleBadge}</h2>
+        <p class="subtitle">${escapeHtml(periodLabel)} · Dashboard refreshed ${escapeHtml(brandGen)}</p>
         <div class="kpi-grid">
-          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">Revenue</span></div>
-          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">Ad Spend</span></div>
-          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">ROAS</span></div>
-          <div class="kpi"><span class="kpi-value">--</span><span class="kpi-label">New Customers</span></div>
+          <div class="kpi"><span class="kpi-value">${escapeHtml(fmtMoney(d.revenue))}</span><span class="kpi-label">Revenue</span></div>
+          <div class="kpi"><span class="kpi-value">${escapeHtml(fmtMoney(d.spend))}</span><span class="kpi-label">Ad Spend</span></div>
+          <div class="kpi"><span class="kpi-value">${escapeHtml(fmtRoas(d.roas))}</span><span class="kpi-label">ROAS</span></div>
+          <div class="kpi"><span class="kpi-value">${escapeHtml(fmtInt(d.newCustomers))}</span><span class="kpi-label">New Customers</span></div>
         </div>
-        <p class="note">Detailed per-brand metrics require running "dashboard" for this brand.</p>
-      </div>
+      </section>
     `;
   }).join('');
 
+  const missingNote = s.brandsRequested > s.brandsWithData
+    ? `<p class="note">${escapeHtml(String(s.brandsRequested - s.brandsWithData))} of ${escapeHtml(String(s.brandsRequested))} selected brands had no dashboard data for this period and appear as empty sections.</p>`
+    : '';
+
   return `<!DOCTYPE html>
-<html><head><title>Performance Report — ${periodLabel}</title>
+<html lang="en"><head>
+<meta charset="utf-8">
+<title>Merlin Performance Report — ${escapeHtml(periodLabel)}</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1a1a1a; padding: 40px; max-width: 800px; margin: 0 auto; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1a1a1a; background: #fff; padding: 40px; max-width: 820px; margin: 0 auto; }
   h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
-  h2 { font-size: 20px; font-weight: 700; margin-bottom: 4px; border-bottom: 2px solid #e5e5e5; padding-bottom: 8px; }
-  .subtitle { font-size: 13px; color: #888; margin-bottom: 24px; }
+  h2 { font-size: 20px; font-weight: 700; margin-bottom: 4px; border-bottom: 2px solid #e5e5e5; padding-bottom: 8px; display: flex; align-items: center; gap: 10px; }
+  .subtitle { font-size: 13px; color: #888; margin-bottom: 20px; }
   .summary { background: #f8f8f8; border-radius: 12px; padding: 24px; margin-bottom: 32px; }
   .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 20px 0; }
   .kpi { text-align: center; }
-  .kpi-value { display: block; font-size: 24px; font-weight: 700; color: #1a1a1a; }
+  .kpi-value { display: block; font-size: 22px; font-weight: 700; color: #1a1a1a; }
   .kpi-label { display: block; font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .05em; margin-top: 4px; }
   .page-break { page-break-before: always; margin-top: 40px; }
   .page-break:first-of-type { page-break-before: auto; }
-  .note { font-size: 12px; color: #aaa; margin-top: 16px; font-style: italic; }
-  .footer { margin-top: 40px; text-align: center; font-size: 11px; color: #ccc; }
-  @media print { .no-print { display: none; } body { padding: 20px; } }
+  .note { font-size: 12px; color: #777; margin-top: 16px; }
+  .empty { font-size: 13px; color: #999; padding: 24px; background: #fafafa; border-radius: 8px; text-align: center; }
+  .stale { display: inline-block; font-size: 10px; font-weight: 600; background: #fef3c7; color: #92400e; padding: 2px 6px; border-radius: 4px; border: 1px solid #fde68a; }
+  .footer { margin-top: 48px; text-align: center; font-size: 11px; color: #aaa; }
+  .toolbar { margin-bottom: 20px; text-align: right; }
+  #print-btn { padding: 8px 16px; border-radius: 6px; border: 1px solid #ddd; background: #fff; cursor: pointer; font-size: 13px; font-family: inherit; color: #1a1a1a; }
+  #print-btn:hover { background: #f5f5f5; }
+  @media print { .no-print { display: none !important; } body { padding: 20px; } }
 </style></head><body>
-  <div class="no-print" style="margin-bottom:20px;text-align:right">
-    <button onclick="window.print()" style="padding:8px 16px;border-radius:6px;border:1px solid #ddd;background:#fff;cursor:pointer;font-size:13px">Print / Save as PDF</button>
+  <div class="toolbar no-print">
+    <button id="print-btn" type="button">Print / Save as PDF</button>
   </div>
 
   <h1>Performance Report</h1>
-  <p class="subtitle">${periodLabel} — Generated ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}</p>
+  <p class="subtitle">${escapeHtml(periodLabel)} · Generated ${escapeHtml(genLabel)}</p>
 
   <div class="summary">
     <h2 style="border:none;padding:0;margin-bottom:16px">Summary — All Brands</h2>
     <div class="kpi-grid">
-      <div class="kpi"><span class="kpi-value">$${revenue.toLocaleString()}</span><span class="kpi-label">Revenue</span></div>
-      <div class="kpi"><span class="kpi-value">$${Math.round(spend).toLocaleString()}</span><span class="kpi-label">Total Spend</span></div>
-      <div class="kpi"><span class="kpi-value">${mer > 0 ? mer.toFixed(1) + 'x' : '--'}</span><span class="kpi-label">MER</span></div>
-      <div class="kpi"><span class="kpi-value">${selectedBrands.length}</span><span class="kpi-label">Active Brands</span></div>
+      <div class="kpi"><span class="kpi-value">${escapeHtml(fmtMoney(s.revenue))}</span><span class="kpi-label">Revenue</span></div>
+      <div class="kpi"><span class="kpi-value">${escapeHtml(fmtMoney(s.spend))}</span><span class="kpi-label">Total Spend</span></div>
+      <div class="kpi"><span class="kpi-value">${escapeHtml(fmtMer(s.mer))}</span><span class="kpi-label">Blended MER</span></div>
+      <div class="kpi"><span class="kpi-value">${escapeHtml(String(s.activeBrandsCount))}</span><span class="kpi-label">Active Brands</span></div>
     </div>
+    <div class="kpi-grid" style="grid-template-columns:repeat(2,1fr);margin-top:4px">
+      <div class="kpi"><span class="kpi-value">${escapeHtml(fmtInt(s.newCustomers))}</span><span class="kpi-label">New Customers</span></div>
+      <div class="kpi"><span class="kpi-value">${escapeHtml(String(s.brandsWithData))} / ${escapeHtml(String(s.brandsRequested))}</span><span class="kpi-label">Brands With Data</span></div>
+    </div>
+    ${missingNote}
   </div>
 
   ${brandPages}
 
-  <div class="footer">Generated ${new Date().toISOString().slice(0, 10)}</div>
+  <div class="footer">Merlin · Generated ${escapeHtml(genLabel)}</div>
+
+  <script>
+    // No inline handlers — satisfies strict CSP if the popup ever inherits one.
+    document.getElementById('print-btn').addEventListener('click', function () { window.print(); });
+  </script>
 </body></html>`;
 }
 
@@ -4690,18 +5322,57 @@ document.getElementById('archive-expand').addEventListener('click', (e) => {
   const refreshBtn = document.getElementById('archive-refresh-btn');
   if (!refreshBtn) return;
   refreshBtn.style.display = 'none';
+
+  // Ephemeral status pill for refresh progress/results. Injected next to the
+  // button so it's visible without competing with chat toasts. Before this,
+  // the refresh click gave zero feedback during a 10-30s platform sweep and
+  // no confirmation that anything changed afterwards.
+  const statusPill = document.createElement('span');
+  statusPill.className = 'archive-refresh-status';
+  statusPill.style.cssText = 'margin-left:8px;font-size:11px;color:var(--text-dim);display:none;align-items:center;gap:4px;';
+  refreshBtn.parentNode.insertBefore(statusPill, refreshBtn.nextSibling);
+
+  let statusTimer = null;
+  const showStatus = (text, autoHideMs) => {
+    if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; }
+    statusPill.textContent = text || '';
+    statusPill.style.display = text ? 'inline-flex' : 'none';
+    if (autoHideMs && text) {
+      statusTimer = setTimeout(() => { statusPill.textContent = ''; statusPill.style.display = 'none'; statusTimer = null; }, autoHideMs);
+    }
+  };
+
+  if (merlin.onLiveAdsRefreshProgress) {
+    merlin.onLiveAdsRefreshProgress((data) => {
+      if (!data || typeof data !== 'object') return;
+      if (!refreshBtn.classList.contains('refreshing')) return;
+      const platform = (data.platform || '').toString().replace(/[<>]/g, '').slice(0, 30);
+      const done = Number(data.done) || 0;
+      const total = Number(data.total) || 0;
+      if (platform && total) showStatus(`Checking ${platform}… (${done}/${total})`);
+      else if (platform) showStatus(`Checking ${platform}…`);
+    });
+  }
+
   refreshBtn.addEventListener('click', async (e) => {
     e.preventDefault();
     if (refreshBtn.classList.contains('refreshing')) return;
     refreshBtn.classList.add('refreshing');
+    refreshBtn.setAttribute('aria-busy', 'true');
+    showStatus('Refreshing…');
     const brand = document.getElementById('brand-select')?.value || '';
+    const startedAt = Date.now();
+    let ok = false;
     try {
       await merlin.refreshLiveAds(brand || null);
+      ok = true;
     } catch (err) {
       console.warn('[archive] refresh failed', err);
     }
-    // Reload the panel so users see the fresh data immediately.
     refreshBtn.classList.remove('refreshing');
+    refreshBtn.removeAttribute('aria-busy');
+    const secs = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+    showStatus(ok ? `✓ Refreshed in ${secs}s` : '⚠ Refresh failed — check connections', 3500);
     loadArchive();
   });
   if (merlin.onLiveAdsChanged) {
@@ -4747,8 +5418,16 @@ async function loadArchive() {
   grid.innerHTML = '';
   empty.style.display = 'none';
 
+  // Race guard: every call bumps a sequence token; async results from a
+  // stale call (user rapidly switched tabs/brands) bail out instead of
+  // appending cards into a grid that already belongs to a newer load.
+  const mySeq = (window._archiveLoadSeq = (window._archiveLoadSeq || 0) + 1);
+  const isStale = () => window._archiveLoadSeq !== mySeq;
+
   const typeFilter = document.querySelector('.archive-filter.active')?.dataset.filter || 'all';
-  const search = document.getElementById('archive-search').value.trim();
+  const search = document.getElementById('archive-search').value.trim().toLowerCase();
+  const activeBrandRaw = document.getElementById('brand-select')?.value || '';
+  const brandLabel = activeBrandRaw ? activeBrandRaw.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : '';
 
   // Clear multi-select on tab switch
   window._archiveSelected = [];
@@ -4757,17 +5436,28 @@ async function loadArchive() {
 
   if (typeFilter === 'swipes') {
     // Show competitor swipe files
-    const brand = document.getElementById('brand-select')?.value || '';
+    const brand = activeBrandRaw;
     loading.style.display = 'none';
 
     let swipes = [];
     try {
       swipes = await merlin.getSwipes(brand);
     } catch {}
+    if (isStale()) return;
+
+    // Client-side search filter — match brand, hook, or platform
+    if (search) {
+      swipes = swipes.filter(s => {
+        const hay = `${s.brand || ''} ${s.hook || ''} ${s.platform || ''}`.toLowerCase();
+        return hay.includes(search);
+      });
+    }
 
     if (!swipes || swipes.length === 0) {
-      empty.querySelector('p').textContent = 'No swipes yet';
-      empty.querySelector('.archive-empty-sub').textContent = 'Run a competitor scan to collect ad swipes';
+      empty.querySelector('p').textContent = search ? 'No swipes match that search' : 'No swipes yet';
+      empty.querySelector('.archive-empty-sub').textContent = search
+        ? 'Try a different brand, hook, or platform name'
+        : (brandLabel ? `Run a competitor scan for ${brandLabel} to collect ad swipes` : 'Run a competitor scan to collect ad swipes');
       empty.style.display = 'block';
       return;
     }
@@ -4797,14 +5487,24 @@ async function loadArchive() {
 
   if (typeFilter === 'live') {
     // Show live ads instead of archive items
-    const brand = document.getElementById('brand-select')?.value;
-    const activeBrand = brand || null;
+    const activeBrand = activeBrandRaw || null;
     let ads = await merlin.getLiveAds(activeBrand);
+    if (isStale()) return;
     loading.style.display = 'none';
 
+    // Client-side search filter — match product, ad name, brand, platform, or status
+    if (search) {
+      ads = (ads || []).filter(a => {
+        const hay = `${a.product || ''} ${a.adName || ''} ${a.brand || ''} ${a.platform || ''} ${a.status || ''}`.toLowerCase();
+        return hay.includes(search);
+      });
+    }
+
     if (!ads || ads.length === 0) {
-      empty.querySelector('p').textContent = 'No live ads cached yet';
-      empty.querySelector('.archive-empty-sub').textContent = 'Click ↻ to pull your current ads from Meta, TikTok, Google, Amazon, Reddit and LinkedIn';
+      empty.querySelector('p').textContent = search ? 'No live ads match that search' : (brandLabel ? `No live ads cached for ${brandLabel}` : 'No live ads cached yet');
+      empty.querySelector('.archive-empty-sub').textContent = search
+        ? 'Try a different product, platform, or status'
+        : 'Click ↻ to pull your current ads from Meta, TikTok, Google, Amazon, Reddit and LinkedIn';
       empty.style.display = 'block';
       return;
     }
@@ -4847,7 +5547,12 @@ async function loadArchive() {
       const ctr = Number(ad.ctr) || 0;
       const cpa = Number(ad.cpa) || 0;
       const hasMetrics = spend > 0 || impressions > 0;
-      const isDormant = !hasMetrics && !ad.creativePath;
+      // A card is "dormant" (visually de-emphasized) only when there are no
+      // metrics AND no image to show. Either a local creative path OR a remote
+      // platform thumbnail counts as "has a visual", so externally-run Meta
+      // ads with live impressions now render at full opacity.
+      const hasThumb = !!(ad.creativePath || ad.creativeUrl);
+      const isDormant = !hasMetrics && !hasThumb;
 
       // ROAS coloring: green >= 2x, amber 1-2x, red < 1x, dim for no data
       let roasClass = 'kpi-dim';
@@ -4859,17 +5564,29 @@ async function loadArchive() {
       // clearly deprioritized so users don't mistake it for a live winner.
       if (isDormant) card.classList.add('archive-card-dormant');
 
-      if (ad.creativePath) {
-        card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(ad.creativePath))}" alt="" loading="lazy">`;
-      } else {
-        // Render a richer placeholder — platform initial + ad name preview
-        // gives far more at-a-glance info than a generic megaphone.
-        const platformInitial = (ad.platform || '?').charAt(0).toUpperCase();
-        const labelPreview = escapeHtml((ad.adName || ad.product || '').slice(0, 40));
-        card.innerHTML = `<div class="archive-card-thumb archive-card-thumb-placeholder">
+      // Prefer local creativePath (ads pushed through Merlin) since it's
+      // permanent; fall back to creativeUrl (Meta CDN thumbnail) for ads the
+      // user launched outside Merlin — those URLs are signed and expire in
+      // ~24h but get re-fetched on every insights refresh.
+      // Always materialize the placeholder HTML up front so we can swap it in
+      // as an onerror fallback when a CDN URL expires between refreshes —
+      // otherwise the browser paints its default broken-image icon.
+      const platformInitial = (ad.platform || '?').charAt(0).toUpperCase();
+      const labelPreview = escapeHtml((ad.adName || ad.product || '').slice(0, 40));
+      const placeholderHTML = `<div class="archive-card-thumb archive-card-thumb-placeholder">
           <div class="placeholder-platform">${escapeHtml(platformInitial)}</div>
           ${labelPreview ? `<div class="placeholder-label">${labelPreview}</div>` : ''}
         </div>`;
+      const altText = escapeHtml(ad.adName || ad.product || 'Ad creative');
+      if (ad.creativePath) {
+        card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(ad.creativePath))}" alt="${altText}" loading="lazy">`;
+      } else if (ad.creativeUrl) {
+        card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(ad.creativeUrl)}" alt="${altText}" loading="lazy" referrerpolicy="no-referrer">`;
+        // CSP blocks inline onerror — bind via addEventListener after insertion.
+        const _img = card.querySelector('img.archive-card-thumb');
+        if (_img) _img.addEventListener('error', () => { card.innerHTML = placeholderHTML; }, { once: true });
+      } else {
+        card.innerHTML = placeholderHTML;
       }
 
       const brandLabel = ad.brand ? ad.brand.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) : '';
@@ -4904,14 +5621,15 @@ async function loadArchive() {
             ${budgetText ? `<span>${budgetText}</span>` : ''}
           </div>
           ${kpiChips.length ? `<div class="archive-card-kpis">${kpiChips.join('')}</div>` :
-            hasMetrics ? '' : `<div class="archive-card-meta archive-card-hint">Awaiting first impressions</div>`}
+            hasMetrics ? '' : `<div class="archive-card-meta archive-card-hint">0 impressions</div>`}
           ${brandLabel ? `<div class="archive-card-meta archive-card-brand">${escapeHtml(brandLabel)}</div>` : ''}
         </div>`;
 
-      // Left click: preview the creative
+      // Left click: preview the creative. Prefer local path over remote URL.
       card.addEventListener('click', () => {
-        if (ad.creativePath) {
-          openArchivePreview({ type: 'image', thumbnail: ad.creativePath, folder: '', files: [] });
+        const previewSrc = ad.creativePath || ad.creativeUrl;
+        if (previewSrc) {
+          openArchivePreview({ type: 'image', thumbnail: previewSrc, folder: '', files: [] });
         }
       });
       card.style.cursor = 'pointer';
@@ -4934,12 +5652,32 @@ async function loadArchive() {
         menu.style.left = e.clientX + 'px';
         menu.style.top = e.clientY + 'px';
 
+        // Map a platform name to the Go binary's kill action. When we can't
+        // match (new platform, typo, or missing `platform` field) we fall
+        // back to a natural-language instruction — Claude can still route
+        // it, but we prefer naming the exact action when we know it.
+        const killActionByPlatform = {
+          meta: 'meta-kill',
+          facebook: 'meta-kill',
+          instagram: 'meta-kill',
+          tiktok: 'tiktok-kill',
+          google: 'google-ads-kill',
+          'google ads': 'google-ads-kill',
+          amazon: 'amazon-ads-kill',
+          'amazon ads': 'amazon-ads-kill',
+          reddit: 'reddit-kill',
+          linkedin: 'linkedin-kill',
+        };
+        const platformKey = (ad.platform || '').toLowerCase().trim();
+        const killAction = killActionByPlatform[platformKey] || '';
+
         if (ad.status === 'live') {
           const pauseItem = document.createElement('div');
           pauseItem.className = 'context-menu-item';
           pauseItem.textContent = '⏸ Pause this ad';
           pauseItem.addEventListener('click', () => {
             menu.remove();
+            document.querySelectorAll('.context-submenu').forEach(s => s.remove());
             document.getElementById('archive-panel').classList.add('hidden');
             addUserBubble(`Pause ${ad.product || 'ad'} on ${ad.platform}`);
             showTypingIndicator();
@@ -4947,7 +5685,10 @@ async function loadArchive() {
             turnTokens = 0;
             sessionActive = true;
             startTickingTimer();
-            merlin.sendMessage(`Pause the ad "${ad.product || 'ad'}" on ${ad.platform} (Ad ID: ${ad.adId}). Use meta-kill with adId "${ad.adId}".`);
+            const killHint = killAction
+              ? `Use ${killAction} with adId "${ad.adId}".`
+              : `Use the appropriate pause action for ${ad.platform} with adId "${ad.adId}".`;
+            merlin.sendMessage(`Pause the ad "${ad.product || 'ad'}" on ${ad.platform} (Ad ID: ${ad.adId}). ${killHint}`);
           });
           menu.appendChild(pauseItem);
         }
@@ -4958,6 +5699,7 @@ async function loadArchive() {
           resumeItem.textContent = '▶ Resume this ad';
           resumeItem.addEventListener('click', () => {
             menu.remove();
+            document.querySelectorAll('.context-submenu').forEach(s => s.remove());
             document.getElementById('archive-panel').classList.add('hidden');
             addUserBubble(`Resume ${ad.product || 'ad'} on ${ad.platform}`);
             showTypingIndicator();
@@ -4965,7 +5707,7 @@ async function loadArchive() {
             turnTokens = 0;
             sessionActive = true;
             startTickingTimer();
-            merlin.sendMessage(`Resume the paused ad "${ad.product || 'ad'}" on ${ad.platform} (Ad ID: ${ad.adId}). Re-enable it with the same budget.`);
+            merlin.sendMessage(`Resume the paused ad "${ad.product || 'ad'}" on ${ad.platform} (Ad ID: ${ad.adId}). Re-enable it at the same budget using the appropriate resume/update action for ${ad.platform}.`);
           });
           menu.appendChild(resumeItem);
         }
@@ -4977,12 +5719,21 @@ async function loadArchive() {
           copyItem.className = 'context-menu-item';
           copyItem.textContent = '🚀 Copy to...';
           copyItem.style.position = 'relative';
+          // Track the current submenu on the copy item so mouseleave, menu
+          // close, and option-click all have a single source of truth to
+          // remove from the document body. Before this, submenus leaked
+          // after Copy→option clicks (menu removed, submenu orphaned).
+          const removeSubmenu = () => {
+            if (copyItem._submenu) {
+              try { copyItem._submenu.remove(); } catch {}
+              copyItem._submenu = null;
+            }
+          };
           copyItem.addEventListener('mouseenter', () => {
-            let sub = copyItem.querySelector('.context-submenu');
-            if (sub) return;
-            sub = document.createElement('div');
+            if (copyItem._submenu) return;
+            const sub = document.createElement('div');
             sub.className = 'context-submenu';
-            // Position after appending so we can measure
+            copyItem._submenu = sub;
             const positionSub = () => {
               const r = copyItem.getBoundingClientRect();
               const sw = sub.offsetWidth || 140;
@@ -4994,12 +5745,13 @@ async function loadArchive() {
               sub.style.left = Math.max(4, left) + 'px';
               sub.style.top = Math.max(4, top) + 'px';
             };
+            const closeAll = () => { removeSubmenu(); menu.remove(); };
             // "All" option at top
             const allOpt = document.createElement('div');
             allOpt.className = 'context-menu-item';
             allOpt.textContent = 'All platforms';
             allOpt.addEventListener('click', () => {
-              menu.remove();
+              closeAll();
               addUserBubble(`Copy "${ad.product}" ad to all platforms`);
               showTypingIndicator(); turnStartTime = Date.now(); sessionActive = true; startTickingTimer();
               merlin.sendMessage(`Duplicate the winning ad "${ad.product}" (Ad ID: ${ad.adId}, platform: ${ad.platform}) to ALL other connected platforms. Use the same creative and budget. Report what was created.`);
@@ -5010,7 +5762,7 @@ async function loadArchive() {
               opt.className = 'context-menu-item';
               opt.textContent = p;
               opt.addEventListener('click', () => {
-                menu.remove();
+                closeAll();
                 addUserBubble(`Copy "${ad.product}" ad to ${p}`);
                 showTypingIndicator(); turnStartTime = Date.now(); sessionActive = true; startTickingTimer();
                 merlin.sendMessage(`Duplicate the winning ad "${ad.product}" (Ad ID: ${ad.adId}, platform: ${ad.platform}) to ${p}. Use the same creative and budget.`);
@@ -5020,6 +5772,14 @@ async function loadArchive() {
             document.body.appendChild(sub);
             requestAnimationFrame(positionSub);
           });
+          // Hide the submenu when the pointer leaves BOTH the copy row
+          // and the submenu itself — use relatedTarget so moving INTO
+          // the submenu does not trigger a close.
+          copyItem.addEventListener('mouseleave', (ev) => {
+            const next = ev.relatedTarget;
+            if (next && copyItem._submenu && copyItem._submenu.contains(next)) return;
+            removeSubmenu();
+          });
           menu.appendChild(copyItem);
         }
 
@@ -5028,29 +5788,29 @@ async function loadArchive() {
         detailsItem.textContent = '📋 View details';
         detailsItem.addEventListener('click', () => {
           menu.remove();
-          if (ad.creativePath) openArchivePreview({ type: 'image', thumbnail: ad.creativePath, folder: '', files: [] });
+          document.querySelectorAll('.context-submenu').forEach(s => s.remove());
+          const src = ad.creativePath || ad.creativeUrl;
+          if (src) openArchivePreview({ type: 'image', thumbnail: src, folder: '', files: [] });
         });
         menu.appendChild(detailsItem);
 
         document.body.appendChild(menu);
         // Close on click outside (or Escape)
         setTimeout(() => {
+          const cleanup = () => {
+            try { menu.remove(); } catch {}
+            document.querySelectorAll('.context-submenu').forEach(s => s.remove());
+            document.removeEventListener('click', dismiss);
+            document.removeEventListener('contextmenu', dismiss);
+            document.removeEventListener('keydown', escDismiss);
+          };
           const dismiss = (ev) => {
             if (!menu.contains(ev.target) && !ev.target.closest('.context-submenu')) {
-              menu.remove();
-              document.querySelectorAll('.context-submenu').forEach(s => s.remove());
-              document.removeEventListener('click', dismiss);
-              document.removeEventListener('contextmenu', dismiss);
-              document.removeEventListener('keydown', escDismiss);
+              cleanup();
             }
           };
           const escDismiss = (ev) => {
-            if (ev.key === 'Escape') {
-              menu.remove();
-              document.removeEventListener('click', dismiss);
-              document.removeEventListener('contextmenu', dismiss);
-              document.removeEventListener('keydown', escDismiss);
-            }
+            if (ev.key === 'Escape') cleanup();
           };
           document.addEventListener('click', dismiss);
           document.addEventListener('contextmenu', dismiss);
@@ -5064,15 +5824,27 @@ async function loadArchive() {
   }
 
   try {
-    const activeBrand = document.getElementById('brand-select')?.value || '';
     const items = await merlin.getArchiveItems({
       type: typeFilter === 'all' ? '' : typeFilter,
       search,
-      brand: activeBrand,
+      brand: activeBrandRaw,
     });
+    if (isStale()) return;
     loading.style.display = 'none';
 
     if (!items || items.length === 0) {
+      const p = empty.querySelector('p');
+      const sub = empty.querySelector('.archive-empty-sub');
+      if (search) {
+        if (p) p.textContent = 'Nothing matches that search';
+        if (sub) sub.textContent = 'Try a different product, brand, or model name';
+      } else if (brandLabel) {
+        if (p) p.textContent = `No ${typeFilter === 'all' ? 'creatives' : typeFilter + 's'} for ${brandLabel} yet`;
+        if (sub) sub.textContent = `Generate an image or video for ${brandLabel} to see it here`;
+      } else {
+        if (p) p.textContent = 'Nothing here yet';
+        if (sub) sub.textContent = 'Generated images and videos will appear here';
+      }
       empty.style.display = 'block';
       return;
     }
@@ -5090,8 +5862,10 @@ async function loadArchive() {
       }
       grid.appendChild(createArchiveCard(item));
     });
+    observeLazyVideos(grid);
   } catch (err) {
     console.warn('[archive]', err);
+    if (isStale()) return;
     loading.style.display = 'none';
     empty.style.display = 'block';
   }
@@ -5114,6 +5888,11 @@ function createArchiveCard(item) {
   card.className = 'archive-card';
   card.dataset.folder = item.folder || '';
   card.dataset.type = item.type || 'image';
+  card.dataset.source = item.source || '';
+  if (item.source === 'loose' && Array.isArray(item.files) && item.files.length) {
+    try { card.dataset.files = JSON.stringify(item.files.filter(f => typeof f === 'string')); } catch {}
+  }
+  card._archiveItem = item;
 
   const isVideo = item.type === 'video';
   const badgeClass = isVideo ? 'badge-video' : 'badge-image';
@@ -5126,12 +5905,17 @@ function createArchiveCard(item) {
   else title = isVideo ? 'Video Ad' : 'Ad Image';
   const time = new Date(item.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
+  card.setAttribute('tabindex', '0');
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', `${title}, ${badgeText}, ${time}`);
+
   if (item.thumbnail) {
     card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(item.thumbnail))}" alt="" loading="lazy">`;
   } else if (isVideo) {
     // No sibling _thumbnail.{jpg,png,webp} exists — fall back to the video
     // file itself with preload="metadata" so Chromium paints the first frame.
-    // This is the fix for video cards rendering as a blank dark tile.
+    // Lazy-loaded via IntersectionObserver (observeLazyVideos) to keep
+    // scroll/first-paint cheap when dozens of videos are on screen.
     const files = item.files || [];
     const best =
       files.find(f => f === 'captioned.mp4') ||
@@ -5139,7 +5923,7 @@ function createArchiveCard(item) {
       files.find(f => /\.(mp4|mov|webm|m4v)$/i.test(f));
     if (best) {
       const videoPath = merlinUrl((item.folder ? item.folder + '/' : '') + best);
-      card.innerHTML = `<video class="archive-card-thumb" src="${escapeHtml(videoPath)}" muted preload="metadata" playsinline></video>`;
+      card.innerHTML = `<video class="archive-card-thumb archive-card-thumb-lazy" data-lazy-src="${escapeHtml(videoPath)}" muted preload="none" playsinline></video>`;
     } else {
       card.innerHTML = `<div class="archive-card-thumb" style="display:flex;align-items:center;justify-content:center;font-size:24px;color:var(--text-dim)">▶</div>`;
     }
@@ -5166,8 +5950,57 @@ function createArchiveCard(item) {
       ${extraBadges ? `<div class="archive-card-meta" style="margin-top:2px;gap:4px">${extraBadges}</div>` : ''}
     </div>`;
 
-  card.addEventListener('click', () => openArchivePreview(item));
+  const activate = (e) => {
+    // Pairing mode: if at least one swipe-card (competitor) is already selected,
+    // clicks on archive cards toggle multi-select instead of opening preview.
+    const sel = window._archiveSelected || [];
+    if (sel.some(s => s.item && s.item.brand)) {
+      if (e) { e.stopPropagation(); e.preventDefault(); }
+      toggleArchiveSelect(card, item);
+      return;
+    }
+    openArchivePreview(item);
+  };
+  card.addEventListener('click', activate);
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      activate(e);
+    }
+  });
   return card;
+}
+
+// Lazy-load video <source>s inside an archive grid. Hydrates `data-lazy-src`
+// onto `src` only when the card scrolls near the viewport, which keeps the
+// first paint cheap even with hundreds of video cards. IntersectionObserver
+// disconnects per-card once the src is set.
+function observeLazyVideos(root) {
+  if (!root) return;
+  const videos = root.querySelectorAll('video.archive-card-thumb-lazy[data-lazy-src]');
+  if (!videos.length) return;
+  if (typeof IntersectionObserver === 'undefined') {
+    videos.forEach(v => {
+      const src = v.getAttribute('data-lazy-src');
+      if (src) { v.src = src; v.preload = 'metadata'; v.removeAttribute('data-lazy-src'); v.classList.remove('archive-card-thumb-lazy'); }
+    });
+    return;
+  }
+  const io = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const v = entry.target;
+      const src = v.getAttribute('data-lazy-src');
+      if (src) {
+        v.src = src;
+        v.preload = 'metadata';
+        v.removeAttribute('data-lazy-src');
+        v.classList.remove('archive-card-thumb-lazy');
+      }
+      io.unobserve(v);
+    }
+  }, { root: root.closest('.archive-content') || null, rootMargin: '200px 0px', threshold: 0.01 });
+  videos.forEach(v => io.observe(v));
 }
 
 // ── Multi-select + Merge for creative pairing ──────────────
@@ -5248,21 +6081,6 @@ function mergeCreatives() {
   );
 }
 
-// Also enable multi-select on regular archive cards (All/Images/Videos tabs)
-function enableArchiveMultiSelect() {
-  document.querySelectorAll('.archive-card:not(.swipe-card)').forEach(card => {
-    card.addEventListener('click', (e) => {
-      // Only multi-select if Swipes tab has a selection (pairing mode)
-      if ((window._archiveSelected || []).some(s => s.item.brand)) {
-        e.stopPropagation();
-        e.preventDefault();
-        const item = card._archiveItem || {};
-        toggleArchiveSelect(card, item);
-      }
-    });
-  });
-}
-
 function openArchivePreview(item) {
   // Don't close the sidebar — just overlay on top
 
@@ -5295,11 +6113,11 @@ function openArchivePreview(item) {
     const verdictColor = tags.verdict === 'winner' ? '#22c55e' : tags.verdict === 'kill' ? '#ef4444' : 'var(--text-dim)';
     statsHtml = `<div class="preview-stats">
       ${tags.verdict ? `<div class="preview-stat"><span class="preview-stat-label">Verdict</span><span style="color:${verdictColor};font-weight:700;text-transform:uppercase">${escapeHtml(tags.verdict)}</span></div>` : ''}
-      ${tags.roas ? `<div class="preview-stat"><span class="preview-stat-label">ROAS</span><span style="color:#22c55e;font-weight:700">${tags.roas}x</span></div>` : ''}
+      ${tags.roas ? `<div class="preview-stat"><span class="preview-stat-label">ROAS</span><span style="color:#22c55e;font-weight:700">${escapeHtml(String(tags.roas))}x</span></div>` : ''}
       ${tags.hook ? `<div class="preview-stat"><span class="preview-stat-label">Hook</span><span>${escapeHtml(tags.hook)}</span></div>` : ''}
       ${tags.scene ? `<div class="preview-stat"><span class="preview-stat-label">Style</span><span>${escapeHtml(tags.scene)}</span></div>` : ''}
       ${tags.platform ? `<div class="preview-stat"><span class="preview-stat-label">Platform</span><span>${escapeHtml(tags.platform)}</span></div>` : ''}
-      ${tags.daysRunning ? `<div class="preview-stat"><span class="preview-stat-label">Running</span><span>${tags.daysRunning} days</span></div>` : ''}
+      ${tags.daysRunning ? `<div class="preview-stat"><span class="preview-stat-label">Running</span><span>${escapeHtml(String(tags.daysRunning))} days</span></div>` : ''}
     </div>`;
   }
 
@@ -5329,15 +6147,37 @@ function openArchivePreview(item) {
   document.body.appendChild(overlay);
 }
 
-// Close archive ONLY when clicking into the chat area (not overlays, previews, menus, perf bar)
+// Close archive when clicking into the chat transcript. The input bar is
+// intentionally excluded — users frequently reference a visible archive
+// card while typing in chat, and clicking the textarea used to dismiss the
+// panel before they could finish their thought.
 document.addEventListener('click', (e) => {
   const panel = document.getElementById('archive-panel');
   const btn = document.getElementById('archive-btn');
   if (panel && !panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== btn && !e.target.closest('#archive-btn')) {
-    // Only close if clicking in chat or input area — nowhere else
-    if (!e.target.closest('#chat') && !e.target.closest('#input-bar')) return;
+    // Only close if clicking in the chat transcript area.
+    if (!e.target.closest('#chat')) return;
     panel.classList.add('hidden');
   }
+});
+
+// Escape key closes the archive panel when no modal/preview/context-menu is
+// already intercepting the key. Previews and context menus register their
+// own Escape handlers and call stopPropagation, so this only fires when the
+// archive is the front-most dismissible surface.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const panel = document.getElementById('archive-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  if (document.querySelector('.archive-preview')) return;
+  if (document.querySelector('.merlin-context-menu')) return;
+  if (document.querySelector('.overlay:not(.hidden)')) return;
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') && !panel.contains(active)) return;
+  panel.classList.remove('expanded');
+  const expandBtn = document.getElementById('archive-expand');
+  if (expandBtn) expandBtn.textContent = '←';
+  panel.classList.add('hidden');
 });
 
 // ── Trial Expired ──────────────────────────────────────────
