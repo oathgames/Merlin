@@ -33,12 +33,6 @@
       "node_modules/phonemizer/**/*"
     ],
     "afterSign": "build/notarize.js",
-    "files": [
-      "app/**/*",
-      "pwa/**/*",
-      "seasonal.json",
-      "package.json"
-    ],
     "extraResources": [
       {
         "from": ".claude",
@@ -77,8 +71,17 @@
       "target": "nsis",
       "icon": "app/icon-1024.png",
       "files": [
-        "!node_modules/onnxruntime-node/bin/napi-v3/darwin/**",
-        "!node_modules/onnxruntime-node/bin/napi-v3/linux/**"
+        "!.claude${/*}",
+        "!assets${/*}",
+        "!results${/*}",
+        "!.merlin-*",
+        "!test-sdk.js",
+        "!README.txt",
+        "!LICENSE.txt",
+        "!CLAUDE.md",
+        "!memory.md",
+        "!node_modules/onnxruntime-node/bin/napi-v3/darwin${/*}",
+        "!node_modules/onnxruntime-node/bin/napi-v3/linux${/*}"
       ]
     },
     "mac": {
@@ -88,8 +91,17 @@
       ],
       "icon": "app/icon-1024.png",
       "files": [
-        "!node_modules/onnxruntime-node/bin/napi-v3/win32/**",
-        "!node_modules/onnxruntime-node/bin/napi-v3/linux/**"
+        "!.claude${/*}",
+        "!assets${/*}",
+        "!results${/*}",
+        "!.merlin-*",
+        "!test-sdk.js",
+        "!README.txt",
+        "!LICENSE.txt",
+        "!CLAUDE.md",
+        "!memory.md",
+        "!node_modules/onnxruntime-node/bin/napi-v3/win32${/*}",
+        "!node_modules/onnxruntime-node/bin/napi-v3/linux${/*}"
       ],
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
