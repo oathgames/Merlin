@@ -86,12 +86,20 @@ function startServer() {
 
       let filePath = req.url.split('?')[0];
       if (filePath === '/') filePath = '/index.html';
-      const fullPath = path.join(pwaDir, filePath);
-      const ext = path.extname(fullPath);
+      // Decode percent-encoded traversal attempts (`..%2F..%2F` etc.) and
+      // resolve under pwaDir. Any resolved path that escapes pwaDir (via
+      // `..`, absolute paths, or Windows drive letters) falls through to
+      // the SPA index — never reads arbitrary files off disk.
+      let decoded;
+      try { decoded = decodeURIComponent(filePath); } catch { decoded = filePath; }
+      const resolved = path.resolve(pwaDir, '.' + decoded);
+      const pwaPrefix = pwaDir + path.sep;
+      const insidePwa = resolved === pwaDir || resolved.startsWith(pwaPrefix);
+      const ext = path.extname(resolved);
       const secHeaders = { 'Access-Control-Allow-Origin': allowedOrigin, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' };
-      if (fs.existsSync(fullPath)) {
+      if (insidePwa && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
         res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain', ...secHeaders });
-        res.end(fs.readFileSync(fullPath));
+        res.end(fs.readFileSync(resolved));
       } else {
         res.writeHead(200, { 'Content-Type': 'text/html', ...secHeaders });
         res.end(fs.readFileSync(path.join(pwaDir, 'index.html')));

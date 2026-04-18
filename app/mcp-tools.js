@@ -194,6 +194,14 @@ async function runBinary(ctx, action, args, opts = {}) {
   // The Go binary calls merlingotme.com/api/oauth/exchange directly.
   // No secrets are injected into the config from the Electron app.
 
+  // Warm the binary's license token BEFORE entering the Promise executor.
+  // The executor callback is synchronous, so `await` inside it was a
+  // SyntaxError that prevented this whole module from loading via require().
+  // runBinary is already async, so awaiting here is valid.
+  if (ctx.ensureBinaryLicenseToken) {
+    try { await ctx.ensureBinaryLicenseToken(`mcp-${action}`); } catch {}
+  }
+
   return new Promise((resolve) => {
     if (!cfg || Object.keys(cfg).length === 0) {
       return resolve({ text: 'No configuration found. Connect a platform first.', error: true });
@@ -221,9 +229,6 @@ async function runBinary(ctx, action, args, opts = {}) {
     }
 
     const timeout = opts.timeout || 300000; // 5 min default
-    if (ctx.ensureBinaryLicenseToken) {
-      try { await ctx.ensureBinaryLicenseToken(`mcp-${action}`); } catch {}
-    }
     const child = execFile(binaryPath, ['--config', tmpPath, '--cmd', JSON.stringify(cmdObj)], {
       timeout,
       cwd: ctx.appRoot,
