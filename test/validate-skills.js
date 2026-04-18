@@ -59,11 +59,14 @@ const VAGUE_WORDS = [
 
 function readFrontmatter(mdPath) {
   const raw = fs.readFileSync(mdPath, 'utf8');
-  const match = /^---\n([\s\S]*?)\n---/.exec(raw);
+  // Match LF or CRLF — Windows checkouts with core.autocrlf=true land as CRLF
+  // in the working tree, and we want `node test/validate-skills.js` to work
+  // in both local-dev and Linux CI without mutating the file on disk.
+  const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw);
   if (!match) return { raw, fm: null, body: raw };
   const fmText = match[1];
   const fm = {};
-  for (const line of fmText.split('\n')) {
+  for (const line of fmText.split(/\r?\n/)) {
     const m = /^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/.exec(line);
     if (!m) continue;
     fm[m[1]] = m[2].trim();
