@@ -4605,6 +4605,26 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isRecording) cancelRecording();
 });
 
+// Ctrl/Cmd+D toggles the microphone (mirrors mic-btn click).
+// Ctrl/Cmd+S narrates the most recent assistant bubble (mirrors replay-btn click).
+// Plain Ctrl/Cmd only — let Shift/Alt variants fall through to browser defaults.
+document.addEventListener('keydown', (e) => {
+  if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+  const k = (e.key || '').toLowerCase();
+  if (k === 'd') {
+    e.preventDefault();
+    if (isRecording) stopRecording();
+    else startRecording();
+  } else if (k === 's') {
+    e.preventDefault();
+    const bubbles = document.querySelectorAll('.msg-bubble[data-speak-text]');
+    const last = bubbles[bubbles.length - 1];
+    if (!last) return;
+    if (currentSpeakingBubble === last) stopSpeaking();
+    else speakMessage(last.dataset.speakText, last);
+  }
+});
+
 // ── Voice Output (Kokoro TTS → bm_george wizard voice) ──────
 // Claude opts into speaking a response via a leading `<voice>speak</voice>`
 // metadata tag. The tag is stripped before render (during streaming and on
