@@ -7040,15 +7040,46 @@ async function installUpdateFromLatestRelease() {
       assetName = a.name;
       runner = (filePath) => {
         const { spawn } = require('child_process');
-        // Use cmd /c start to launch the installer fully detached from this
-        // process tree. Previous approach (spawn detached) was getting killed
-        // when the parent Electron process exited on some Windows configs.
-        // cmd /c start /wait runs the installer, then start "" launches the
-        // app after the installer finishes. The /wait is critical — without
-        // it, the app launches before install completes and runs the old version.
+        // REGRESSION GUARD (2026-04-18): the previous batch had no exit, no
+        // logging, and a single `start "" appExe` with no retry. Symptoms a
+        // real user hit on v1.7.0 → v1.8.0:
+        //   1. A blank minimized cmd window stayed open forever because the
+        //      batch had no `exit` statement — if ANY line hung (AV scan, NSIS
+        //      uninstaller prompt, disk flush) the window was undismissable.
+        //   2. Install step would fail silently because `start "" appExe`
+        //      fires immediately after NSIS returns, but on slow disks /
+        //      Defender-attention paths the new Merlin.exe isn't finished
+        //      writing yet — start launches, process exits non-zero, no retry.
+        //   3. Zero visibility: batch output went to the void, so we can't
+        //      tell the difference between "installer succeeded and launched"
+        //      vs "installer silent-failed and we asked Windows to start a
+        //      file that doesn't exist yet".
+        // Fix: exit /b at the end, log to %TEMP%\merlin-update.log, retry the
+        // relaunch up to 5× with a 2s backoff so AV/disk-flush racers resolve.
         const installDir = path.dirname(app.getPath('exe'));
         const appExe = path.join(installDir, 'Merlin.exe');
-        const script = `@echo off\r\n"${filePath}" /S\r\ntimeout /t 2 /nobreak >nul\r\nstart "" "${appExe}"\r\n`;
+        const logPath = path.join(os.tmpdir(), 'merlin-update.log');
+        const script = [
+          '@echo off',
+          `echo [%DATE% %TIME%] starting installer "${filePath}" >> "${logPath}"`,
+          `"${filePath}" /S >> "${logPath}" 2>&1`,
+          `echo [%DATE% %TIME%] installer exit code=%ERRORLEVEL% >> "${logPath}"`,
+          'set RELAUNCH_TRIES=0',
+          ':retry_launch',
+          `if exist "${appExe}" goto launch_now`,
+          'set /a RELAUNCH_TRIES+=1',
+          'if %RELAUNCH_TRIES% geq 5 goto launch_failed',
+          'timeout /t 2 /nobreak >nul',
+          'goto retry_launch',
+          ':launch_now',
+          `echo [%DATE% %TIME%] launching "${appExe}" (tries=%RELAUNCH_TRIES%) >> "${logPath}"`,
+          `start "" "${appExe}"`,
+          'goto cleanup',
+          ':launch_failed',
+          `echo [%DATE% %TIME%] ERROR: appExe not found after 5 retries: "${appExe}" >> "${logPath}"`,
+          ':cleanup',
+          'exit /b 0',
+        ].join('\r\n') + '\r\n';
         const batPath = path.join(os.tmpdir(), 'merlin-update.bat');
         fs.writeFileSync(batPath, script);
         const child = spawn('cmd.exe', ['/c', 'start', '/min', '', batPath], {
