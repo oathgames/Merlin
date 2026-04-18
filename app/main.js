@@ -3016,7 +3016,21 @@ async function runOAuthFlow(platform, brandName, extra) {
           } catch {}
         }
         if (err) return resolve({ error: stderr || err.message });
-        resolve({ success: true, stdout }); // Binary ran OK, just no JSON output
+        // Binary exited 0 but Electron couldn't parse any JSON from stdout.
+        // The binary may still have persisted tokens via its own VaultPut +
+        // updateConfigField calls against the global config. Fire
+        // connections-changed so the tile re-reads disk state — without this,
+        // the renderer never refreshes and the tile stays gray even when the
+        // binary-side write succeeded.
+        //
+        // REGRESSION GUARD (2026-04-17, v1.4 Google Ads tile-not-green fix):
+        // Previously this path returned {success: true} silently with no
+        // connections-changed broadcast. If stdout parsing ever regressed
+        // (extra log lines, tool-bar interleaving, locale issues) the tile
+        // would stay gray despite tokens being on disk, and the user had to
+        // switch brands or reload to see the green state.
+        if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+        resolve({ success: true, stdout });
       }
     });
     activeChildProcesses.add(child);
@@ -4833,69 +4847,18 @@ function vaultAvailable() {
   }
 }
 
-// List of token field names that are SENSITIVE and should live in the vault
-// rather than plaintext in brand config files.
-const VAULT_SENSITIVE_KEYS = [
-  'metaAccessToken',
-  'tiktokAccessToken',
-  'tiktokRefreshToken',
-  'googleAccessToken',
-  'googleRefreshToken',
-  'shopifyAccessToken',
-  'klaviyoAccessToken',
-  'klaviyoRefreshToken',
-  'klaviyoApiKey',
-  'amazonAccessToken',
-  'amazonRefreshToken',
-  'pinterestAccessToken',
-  'pinterestRefreshToken',
-  'snapchatAccessToken',
-  'snapchatRefreshToken',
-  'linkedinAccessToken',
-  'linkedinRefreshToken',
-  'threadsAccessToken',
-  'twitterAccessToken',
-  'twitterRefreshToken',
-  'etsyAccessToken',
-  'etsyRefreshToken',
-  'redditAccessToken',
-  'redditRefreshToken',
-  // Stripe Connect read-only token — a live API key even in read-only mode.
-  // A leak exposes the connected account's full revenue stream, customer
-  // emails, subscription records, and account ID. Route through vault like
-  // every other OAuth token.
-  // REGRESSION GUARD (2026-04-17, v1.4 Stripe review Cipher #1):
-  //   Before this fix runStripeLogin wrote stripeAccessToken in plaintext
-  //   to merlin-config.json. Do NOT remove this from the list.
-  'stripeAccessToken',
-  // API keys that were previously left in plaintext — adversarial review
-  // found these are just as sensitive as OAuth tokens.
-  'falApiKey',
-  'elevenLabsApiKey',
-  'heygenApiKey',
-  'arcadsApiKey',
-  'googleApiKey',
-  'slackBotToken',
-  'slackWebhookUrl',
-];
-
-function isVaultRedactionMarker(value) {
-  return typeof value === 'string' && value.trim().toLowerCase() === '[stored securely]';
-}
+// OAuth persistence — VAULT_SENSITIVE_KEYS, isVaultRedactionMarker, and the
+// splitOAuthPersistFields logic live in ./oauth-persist.js so they can be
+// unit-tested without booting Electron. See that file for the REGRESSION
+// GUARD comment history.
+const {
+  VAULT_SENSITIVE_KEYS,
+  isVaultRedactionMarker,
+  splitOAuthPersistFields: _splitOAuthPersistFields,
+} = require('./oauth-persist');
 
 function splitOAuthPersistFields(vaultBrand, result) {
-  const publicFields = {};
-  const placeholders = {};
-  for (const [k, v] of Object.entries(result || {})) {
-    if (VAULT_SENSITIVE_KEYS.includes(k)) {
-      if (isVaultRedactionMarker(v)) continue;
-      vaultPut(vaultBrand, k, v);
-      placeholders[k] = `@@VAULT:${k}@@`;
-    } else {
-      publicFields[k] = v;
-    }
-  }
-  return { publicFields, placeholders };
+  return _splitOAuthPersistFields(vaultBrand, result, vaultPut);
 }
 
 // ── Config helpers ──────────────────────────────────────────
