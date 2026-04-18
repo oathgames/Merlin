@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "description": "False-positive exemption corpus — assistant literals that MUST pass pass-3 scanning without being replaced with checking…. Seed of 55 entries per plan §5. Grows to 500 before flag flips on in production.",
+  "groups": {
+    "A_ordinals": {
+      "passLogic": "no metric label adjacent; see §4.5 context-match algorithm",
+      "entries": [
+        {"text": "Here are the 3 tips you asked about.", "expect": "pass"},
+        {"text": "Top 5 ads by spend this week:", "expect": "pass"},
+        {"text": "Step 3 of 5 — connect Meta.", "expect": "pass"},
+        {"text": "The top 10 highest-ROAS creatives are listed.", "expect": "pass"},
+        {"text": "First 2 principles of DTC paid growth:", "expect": "pass"},
+        {"text": "I see 4 opportunities to improve retention.", "expect": "pass"},
+        {"text": "Chapter 7 covers checkout friction.", "expect": "pass"},
+        {"text": "The top 3 hook styles this week:", "expect": "pass"},
+        {"text": "Let's look at the top 6 ads for killing.", "expect": "pass"},
+        {"text": "Priority 1 is to audit the landing page.", "expect": "pass"}
+      ]
+    },
+    "B_formulas": {
+      "passLogic": "formula block tag; see D8",
+      "entries": [
+        {"text": "Target ROAS = 1 / margin.", "expect": "pass"},
+        {"text": "CAC payback = CAC / (AOV × margin × repeat rate).", "expect": "pass"},
+        {"text": "MER = revenue / ad spend.", "expect": "pass"},
+        {"text": "Contribution margin = revenue − COGS − ad spend − fulfillment − fees.", "expect": "pass"},
+        {"text": "LTV:CAC should be at least 3:1.", "expect": "pass"},
+        {"text": "If ROAS is 2 and margin is 50%, the business breaks even.", "expect": "pass"},
+        {"text": "At 20% margin, target blended ROAS ≥ 5.", "expect": "pass"},
+        {"text": "Healthy DTC: contribution margin ≥ 20%.", "expect": "pass"},
+        {"text": "If CAC payback > 12 months, subscription math is broken.", "expect": "pass"},
+        {"text": "Rule: break-even ROAS = 1 / CM.", "expect": "pass"}
+      ]
+    },
+    "C_currency_formats": {
+      "passLogic": "normalize then compare; see §4.2",
+      "entries": [
+        {"text": "Aim for $50k in month 1.", "expect": "pass_if_echo_or_formula"},
+        {"text": "Monthly cap is $300.", "expect": "pass_if_echo_or_formula"},
+        {"text": "EU pricing uses €1.000,50 format.", "expect": "pass"},
+        {"text": "UK listing shows £19.99 today.", "expect": "pass_if_echo_or_formula"},
+        {"text": "Japanese price tag is ¥2,980.", "expect": "pass_if_echo_or_formula"},
+        {"text": "Amount: US$ 1,234.56 (ISO).", "expect": "pass"},
+        {"text": "Listed at CA$49 — check exchange.", "expect": "pass"},
+        {"text": "Default cap: $5/day per platform.", "expect": "pass_if_echo_or_formula"}
+      ]
+    },
+    "D_dates_addresses_phones": {
+      "passLogic": "date/addr/phone regex fires before currency/rate detector",
+      "entries": [
+        {"text": "Support: (555) 123-4567.", "expect": "pass"},
+        {"text": "Launch was Q4 2024.", "expect": "pass"},
+        {"text": "Shipped at 14:30 UTC on 2025-03-18.", "expect": "pass"},
+        {"text": "Address: 1600 Amphitheatre Pkwy.", "expect": "pass"},
+        {"text": "Phone: +1 415 555 0199.", "expect": "pass"},
+        {"text": "2024 was the year iOS 14.5 broke attribution.", "expect": "pass"},
+        {"text": "The 4.6% unemployment rate was a 2024 BLS figure.", "expect": "pass"},
+        {"text": "Model: banana-pro-v2 shipped 2025-09-01.", "expect": "pass"}
+      ]
+    },
+    "E_idioms": {
+      "passLogic": "curated idiom list; never treated as a metric",
+      "entries": [
+        {"text": "Apply the 80/20 rule here.", "expect": "pass"},
+        {"text": "This is classic 10x-engineer output.", "expect": "pass"},
+        {"text": "It's a 5-star review — customers love it.", "expect": "pass"},
+        {"text": "That's a 360-degree view of the funnel.", "expect": "pass"},
+        {"text": "We need a 24/7 on-call rotation.", "expect": "pass"},
+        {"text": "Version 1 shipped — on to v2.", "expect": "pass"},
+        {"text": "Sleep on it — 50/50 you'll see it differently.", "expect": "pass"},
+        {"text": "It's a 9-to-5 culture, not a start-up.", "expect": "pass"},
+        {"text": "Getting 100% of attention on the launch.", "expect": "pass"},
+        {"text": "Go-to-market 101: start narrow.", "expect": "pass"}
+      ]
+    },
+    "F_sample_size_markers": {
+      "passLogic": "statistical marker class — never a money/rate",
+      "entries": [
+        {"text": "UGC averages 2.8% CTR (wisdom, N=45).", "expect": "pass_with_token_on_2.8%"},
+        {"text": "Significance threshold p < 0.05.", "expect": "pass"},
+        {"text": "With a 95% confidence interval, the lift is +12%.", "expect": "pass_with_tokens"},
+        {"text": "Sample size N = 1,247.", "expect": "pass"}
+      ]
+    },
+    "G_user_echoes": {
+      "passLogic": "echo-pass mechanism (D4); §4.5 step-4 — user said number THIS turn, assistant may echo",
+      "entries": [
+        {"text": "User: my goal is $50k. Assistant: Your goal is $50,000.", "expect": "pass_via_echo_pass"},
+        {"text": "User: daily cap $10. Assistant: Understood, $10 daily cap.", "expect": "pass_via_echo_pass"},
+        {"text": "User: CAC is $15. Assistant: Got it — CAC = $15 today.", "expect": "pass_via_echo_pass"},
+        {"text": "User: MER target is 4x. Assistant: MER target = 4×.", "expect": "pass_via_echo_pass"},
+        {"text": "User: my budget is $300/mo. Assistant: Budget $300/mo, noted.", "expect": "pass_via_echo_pass"}
+      ]
+    }
+  },
+  "negativeSamples_MUST_fail": [
+    {"text": "Your Meta ROAS is 3.2× this week.", "expect": "fail_without_token", "reason": "critical metric with label; must be bound"},
+    {"text": "CAC is trending down to $17 over 30 days.", "expect": "fail_without_token", "reason": "money+cac label"},
+    {"text": "You spent $12,430 on ads.", "expect": "fail_without_token", "reason": "money+spend"},
+    {"text": "Revenue hit $48,290 yesterday.", "expect": "fail_without_token", "reason": "money+revenue"},
+    {"text": "Your MER is 2.8× — below 3× floor.", "expect": "fail_without_token", "reason": "multiplier+mer"}
+  ]
+}

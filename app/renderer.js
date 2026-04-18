@@ -4,6 +4,97 @@ let isStreaming = false;
 let textBuffer = '';
 let rafPending = false;
 
+// ── Fact-binding pipeline (DEFAULT OFF) ──────────────────────
+// Wires facts-cache + verify-facts passes + TailQuarantine into the streaming
+// text path. See FACT-BINDING-PLAN.md + facts/SPEC.md. The flag stays false
+// in production until Phase 12 rollout-gate flips it; every helper below is
+// a no-op when disabled so behavior is bit-identical to pre-fact-binding
+// builds.
+//
+// Phase 12 rollout: `factBindingEnabled` is resolved at bundle-parse time
+// from three sources in priority order:
+//   1. `window.__merlinFactBindingForceOn` — set by main.js from version.json
+//      feature-flag (`featureFlags.factBinding === true`). This is how we
+//      turn it on for real users via a normal version-bump push.
+//   2. `globalThis.MERLIN_FACT_BINDING === '1'` — env override for dev.
+//      main.js reads `process.env.MERLIN_FACT_BINDING` and forwards it.
+//   3. false — default.
+// The flag is read ONCE at module-init; it cannot be flipped mid-session
+// (facts-cache keyed to the initial session; toggling mid-session would
+// corrupt the HMAC chain). This matches rule #12 (no runtime writes to
+// `factBindingEnabled` in release builds).
+const factBindingEnabled = (() => {
+  try {
+    if (typeof window !== 'undefined' && window.__merlinFactBindingForceOn === true) return true;
+    if (typeof globalThis !== 'undefined' && globalThis.MERLIN_FACT_BINDING === '1') return true;
+  } catch { /* isolation error — stay off */ }
+  return false;
+})();
+let _factCache = null;          // FactCache instance — assigned by initFactBinding
+let _factVerifier = null;       // Lazy-loaded verify-facts module
+let _tailQuarantine = null;     // Per-bubble TailQuarantine
+
+function _loadVerifyFacts() {
+  if (!factBindingEnabled) return null;
+  if (_factVerifier) return _factVerifier;
+  try { _factVerifier = require('./facts/verify-facts'); return _factVerifier; }
+  catch (e) { console.warn('[facts] verify-facts load failed:', e.message); return null; }
+}
+
+/**
+ * initFactBinding({sessionId, vaultKey, brand, toolsDir}) — called by main.js
+ * once the session is known. Hex-encoded vaultKey accepted for IPC safety.
+ * Safe to call even when factBindingEnabled is false (returns null).
+ */
+function initFactBinding({ sessionId, vaultKey, brand, toolsDir }) {
+  if (!factBindingEnabled) return null;
+  try {
+    const { FactCache, watchFactsFile, defaultFactsFilePath } = require('./facts/facts-cache');
+    const vk = Buffer.isBuffer(vaultKey) ? vaultKey : Buffer.from(String(vaultKey), 'hex');
+    _factCache = new FactCache({
+      sessionId, vaultKey: vk, brand,
+      onSafeMode: (info) => console.warn('[facts] SAFE MODE', info),
+    });
+    if (toolsDir) {
+      const filePath = defaultFactsFilePath({ toolsDir, sessionId });
+      watchFactsFile(filePath, _factCache, { pollMs: 120 });
+    }
+    return _factCache;
+  } catch (e) { console.error('[facts] init failed:', e); return null; }
+}
+if (typeof window !== 'undefined') window.__merlinInitFactBinding = initFactBinding;
+
+function _factStreamStart() {
+  if (!factBindingEnabled) return;
+  const vf = _loadVerifyFacts();
+  if (!vf) return;
+  _tailQuarantine = new vf.TailQuarantine({ absoluteMs: 2000 });
+}
+function _factStreamConsume(delta) {
+  if (!factBindingEnabled || !_tailQuarantine) return delta;
+  return _tailQuarantine.push(delta);
+}
+function _factStreamFinalize() {
+  if (!factBindingEnabled || !_tailQuarantine) return '';
+  const rest = _tailQuarantine.finalize();
+  _tailQuarantine = null;
+  return rest;
+}
+function _factApplyPasses(html) {
+  if (!factBindingEnabled || !_factCache) return html;
+  const vf = _loadVerifyFacts();
+  if (!vf) return html;
+  try { return vf.runAllPasses(html, _factCache).html; }
+  catch (e) { console.warn('[facts] passes failed:', e); return html; }
+}
+function _factMountCharts(rootEl) {
+  if (!factBindingEnabled || !rootEl) return;
+  try {
+    const { mountCharts } = require('./facts/chart-renderer');
+    mountCharts(rootEl);
+  } catch (e) { console.warn('[facts] chart mount failed:', e); }
+}
+
 const messages = document.getElementById('messages');
 const chat = document.getElementById('chat');
 const input = document.getElementById('input');
@@ -463,6 +554,7 @@ function addClaudeBubble() {
   currentBubble = bubble;
   textBuffer = '';
   lastRenderedLength = 0;
+  _factStreamStart(); // arms tail quarantine for this bubble; no-op when flag is off
   scrollToBottom();
   return bubble;
 }
@@ -534,7 +626,11 @@ function paintBrandThread(bubbles) {
 let lastRenderedLength = 0;
 
 function appendText(text) {
-  textBuffer += text;
+  // Fact binding: pass the delta through the tail quarantine before it joins
+  // the text buffer. When the flag is off this returns `text` unchanged, so
+  // the streaming behavior is identical to before.
+  const safeDelta = _factStreamConsume(text);
+  textBuffer += safeDelta;
   if (!rafPending) {
     rafPending = true;
     requestAnimationFrame(() => {
@@ -542,7 +638,10 @@ function appendText(text) {
         // Strip leading <voice>speak|silent</voice> before render so the
         // UI metadata tag never flashes visibly during streaming.
         const { speak, cleaned, resolved } = stripVoiceTag(textBuffer);
-        currentBubble.innerHTML = renderMarkdown(cleaned);
+        // Fact binding pass 1/2/3 applies to the rendered HTML. No-op when
+        // disabled or the cache is absent.
+        currentBubble.innerHTML = _factApplyPasses(renderMarkdown(cleaned));
+        _factMountCharts(currentBubble); // Swaps pass-2 placeholders for SVG
         lastRenderedLength = textBuffer.length;
         // Streaming TTS: feed complete sentences as they arrive so the
         // wizard starts speaking while Claude is still typing. Guarded on
@@ -592,8 +691,13 @@ let typingStuckTimeout = null;
 function finalizeBubble() {
   if (currentBubble) {
     currentBubble.classList.remove('streaming');
+    // Flush any bytes the tail quarantine was holding so the completed
+    // bubble has the full text. No-op when fact binding is disabled.
+    const tailRest = _factStreamFinalize();
+    if (tailRest) textBuffer += tailRest;
     const { speak, cleaned } = stripVoiceTag(textBuffer);
-    currentBubble.innerHTML = renderMarkdown(cleaned);
+    currentBubble.innerHTML = _factApplyPasses(renderMarkdown(cleaned));
+    _factMountCharts(currentBubble);
     // Assistant bubbles get a replay button + stored raw text so the user
     // can hear any past message even when the global toggle was off.
     if (cleaned && cleaned.trim().length > 0) {
