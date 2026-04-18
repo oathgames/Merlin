@@ -8018,32 +8018,6 @@ app.whenReady().then(async () => {
     });
   }
 
-  // Keep the user workspace aligned with the INSTALLED bundle resources after
-  // every upgrade. This replaces the old "download files from the network into
-  // the workspace" approach for packaged builds with a simpler rule:
-  // installer updates the app bundle, then startup sync copies only the
-  // explicit allowlisted resources into Documents/Application Support.
-  try {
-    syncWorkspaceFromInstalledResources();
-  } catch (err) {
-    console.error('[workspace-sync]', err.message);
-  }
-
-  // Migrate global tokens to per-brand (runs once, idempotent)
-  try { migratePerBrand(); } catch (err) { console.error('[migration]', err.message); }
-  // Migrate plaintext tokens to vault (runs once, idempotent)
-  try { migrateTokensToVault(); } catch (err) { console.error('[vault-migration]', err.message); }
-  // Rewrite legacy SKILL.md files to the brand-locked v2 format so scheduled
-  // tasks pass `brand` on every MCP call (runs once, idempotent, only touches
-  // files that match the legacy template exactly — hand edits are preserved)
-  try { migrateLegacySkills(); } catch (err) { console.error('[skill-migration]', err.message); }
-  // Move orphaned dashboard files from the legacy .claude/tools/results/
-  // location into results/_legacy/ (runs once, idempotent)
-  try { migrateLegacyResultsDir(); } catch (err) { console.error('[legacy-results-migration]', err.message); }
-  // Recover brand files stranded by the tmp-config projectRoot bug
-  // (runs once, idempotent) — see refresh-live-ads REGRESSION GUARD.
-  try { migrateStrayBrandFiles(); } catch (err) { console.error('[stray-brand-migration]', err.message); }
-
   // Kick off the engine ensure + version check BEFORE createWindow. This
   // sets _startupChecksPromise so the very first refresh-perf IPC from the
   // renderer (which could fire as soon as the window's HTML loads) can
@@ -8059,6 +8033,26 @@ app.whenReady().then(async () => {
 
   // Bootstrap workspace AFTER window is visible (prevents "Not Responding" on first launch)
   setTimeout(bootstrapWorkspace, 500);
+
+  // Warmup-perf: move workspace sync + idempotent migrations off the critical
+  // path so the window paints and the renderer's init IPCs answer immediately.
+  // These are fast no-ops after first run (version-match short-circuit + "already
+  // migrated" guards), but a fresh install or upgrade can spend several hundred
+  // ms here — enough for the user to notice a blank window before content appears.
+  // Pushed to the same deferral window as bootstrapWorkspace.
+  setTimeout(() => {
+    try { syncWorkspaceFromInstalledResources(); } catch (err) { console.error('[workspace-sync]', err.message); }
+    // Migrate global tokens to per-brand (runs once, idempotent)
+    try { migratePerBrand(); } catch (err) { console.error('[migration]', err.message); }
+    // Migrate plaintext tokens to vault (runs once, idempotent)
+    try { migrateTokensToVault(); } catch (err) { console.error('[vault-migration]', err.message); }
+    // Rewrite legacy SKILL.md files to the brand-locked v2 format
+    try { migrateLegacySkills(); } catch (err) { console.error('[skill-migration]', err.message); }
+    // Move orphaned dashboard files from legacy .claude/tools/results/
+    try { migrateLegacyResultsDir(); } catch (err) { console.error('[legacy-results-migration]', err.message); }
+    // Recover brand files stranded by the tmp-config projectRoot bug
+    try { migrateStrayBrandFiles(); } catch (err) { console.error('[stray-brand-migration]', err.message); }
+  }, 600);
 
   // Start the briefing watcher now that appRoot is guaranteed to exist and
   // `win` is set (notification click handlers focus it). Cheap, non-blocking:

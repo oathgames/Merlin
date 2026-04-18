@@ -231,19 +231,22 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 
 // ── Setup Flow ──────────────────────────────────────────────
 async function init() {
-  // Show version in titlebar
+  // Warmup-perf: every IPC in this function used to be awaited serially before
+  // the welcome bubble rendered, which left the chat blank for hundreds of ms
+  // after the window painted. Fire version in the background (cosmetic titlebar
+  // label), show the welcome immediately, then parallelize the main-process
+  // reads that personalize it.
   const vLabel = document.getElementById('version-label');
   if (vLabel && merlin.getVersion) {
-    try {
-      const info = await merlin.getVersion();
+    merlin.getVersion().then((info) => {
+      if (!info) return;
       const ver = typeof info === 'object' ? info.version : info;
       vLabel.textContent = 'v' + ver;
-      // News tooltip — pulled from version.json whatsNew array
       const bullets = (typeof info === 'object' && info.whatsNew && info.whatsNew.length)
         ? info.whatsNew.map(b => '• ' + b).join('\n')
         : '• Up to date';
       vLabel.dataset.tip = '✦ What\'s New\n' + bullets + '\n\nClick to check for updates';
-    } catch {}
+    }).catch(() => {});
 
     // Click to manually check for updates (auto-check fires every 30 min,
     // but users want a way to force it after seeing a new release land).
@@ -273,14 +276,23 @@ async function init() {
     });
   }
 
-  // Show chat immediately with a welcome message — no blank screen, no setup overlay
+  // Show chat immediately with a neutral welcome — no blank screen, no "loading…"
+  // verbiage. The bubble paints on the very first frame after the window shows,
+  // so the user's perception of "ready" lands immediately. Brand name + briefing
+  // detail fills in as soon as the parallel IPCs below resolve (~100–300 ms),
+  // and the SDK preflight's "✦ brand is ready — N products loaded" response
+  // streams in as the definitive readiness signal.
   const welcomeBubble = addClaudeBubble();
-  // Instant animated welcome — shows before SDK even connects
   welcomeBubble.classList.remove('streaming');
+  welcomeBubble.innerHTML = 'Welcome back.';
 
-  // Personalize welcome based on whether the user has brands set up
-  const existingBrands = await merlin.getBrands().catch(() => []);
-  const savedState = await merlin.loadState().catch(() => ({}));
+  // Fire the three main-process reads in parallel (previously awaited serially,
+  // ~100 ms × 3 = up to ~300 ms of chained IPC latency during first paint).
+  const [existingBrands, savedState, briefing] = await Promise.all([
+    merlin.getBrands().catch(() => []),
+    merlin.loadState().catch(() => ({})),
+    merlin.getBriefing().catch(() => null),
+  ]);
   const isReturning = existingBrands && existingBrands.length > 0;
   const activeBrand = savedState?.activeBrand || (isReturning ? existingBrands[0].name : null);
   const activeBrandObj = existingBrands?.find(b => b.name === activeBrand) || existingBrands?.[0];
@@ -350,24 +362,19 @@ async function init() {
     renderStarterChips(welcomeBubble, 'new');
   }
 
-  // Don't start the SDK session here. The user sees the chat immediately and can
-  // explore the UI freely. On their first send, main.js kicks off startSession() —
-  // if Claude isn't connected, the SDK failure is translated into a friendly
-  // "Please connect your Claude account to continue" bubble in the chat.
-  // No polling, no setup overlay, no hard blockers.
-
-  // When SDK sends first real message, DON'T remove the welcome —
-  // let the conversation continue naturally below it
   window._welcomeShown = true;
 
-  // Proactively trigger Claude sign-in on first run instead of waiting for
-  // the user's first real message to fail. The existing auth-required flow
-  // already handles the browser login + recovery cleanly, so we reuse it.
-  merlin.checkSetup(false).then((setup) => {
-    if (setup?.needsLogin) {
-      merlin.startSession();
-    }
-  }).catch(() => {});
+  // Warmup-perf: pre-warm the SDK subprocess in the background. For returning
+  // authenticated users this spawns the Claude Agent SDK, injects the OAuth
+  // token, and runs the silent /merlin preflight concurrently with the user
+  // reading the chat — so when they hit Enter on their first message, the
+  // subprocess is already hot and resolveNextMessage is wired up (input → SDK
+  // is immediate, no 1–3 s cold-start). For first-run users who aren't signed
+  // in yet, startSession triggers the unified auth-required flow (same
+  // behavior as before — user sees the browser sign-in instead of a cold
+  // failure on first send).
+  merlin.checkSetup(false).then(() => { merlin.startSession(); })
+    .catch(() => { merlin.startSession(); });
 }
 
 
