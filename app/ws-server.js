@@ -12,8 +12,11 @@ const sessionToken = crypto.randomBytes(16).toString('hex');
 const sessionTokenBuf = Buffer.from(sessionToken, 'utf8');
 
 // Constant-time comparison for the session token. String `===` short-circuits
-// on the first differing byte which leaks per-byte timing; this matters more
-// once the listener moves off 127.0.0.1 (see TODO in startServer).
+// on the first differing byte which leaks per-byte timing. The listener is
+// pinned to 127.0.0.1 (see REGRESSION GUARD in startServer), so an attacker
+// needs local code execution to probe timing — but we keep constant-time
+// compare anyway: defense in depth, and it removes a landmine if a future
+// edit widens the bind.
 function tokensMatch(candidate) {
   if (typeof candidate !== 'string') return false;
   const candBuf = Buffer.from(candidate, 'utf8');
@@ -125,7 +128,18 @@ function startServer() {
 
     wss = new WebSocketServer({ server: httpServer, maxPayload: 256 * 1024 }); // 256KB limit
 
-    httpServer.listen(0, '127.0.0.1', () => { // TODO: change to '0.0.0.0' when PWA goes live (requires firewall prompt)
+    // REGRESSION GUARD (2026-04-18): LAN server MUST bind to 127.0.0.1 only.
+    // An earlier TODO here proposed flipping to '0.0.0.0' when the PWA went
+    // live — DO NOT. Roaming is now handled by merlin-relay (outbound WSS to
+    // relay.merlingotme.com), which never opens an inbound port and therefore
+    // never triggers a Windows Firewall / macOS firewall prompt. Binding this
+    // listener to 0.0.0.0 would re-introduce the prompt for every user on
+    // first launch with zero product benefit, since the PWA reaches the
+    // desktop via the relay regardless of network. Same-WiFi fallback still
+    // works over loopback because the phone talks to the relay, not to this
+    // port directly. If a future contributor is tempted to widen the bind,
+    // read CLAUDE.md's firewall-silence guarantee first.
+    httpServer.listen(0, '127.0.0.1', () => {
       wsPort = httpServer.address().port;
       const protocol = useTLS ? 'WSS+HTTPS' : 'WS+HTTP';
       console.log(`[${protocol}] Server listening on port ${wsPort}`);

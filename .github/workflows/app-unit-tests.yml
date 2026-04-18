@@ -1,0 +1,46 @@
+name: App unit tests
+
+# Runs the node-based unit tests that live under `app/*.test.js`. These are
+# plain-Node tests (no electron runtime required), gated to PRs that touch
+# `app/` so we don't burn CI minutes on unrelated changes.
+#
+# The tests include source-scan regression checks — most importantly
+# `app/ws-server.test.js`, which enforces that every `.listen()` in
+# `app/*.js` binds to 127.0.0.1 only. Widening any bind would trigger a
+# Windows Firewall prompt for every paying user on first launch (see
+# CLAUDE.md rule 11 + the REGRESSION GUARD in `app/ws-server.js`).
+
+on:
+  push:
+    paths:
+      - 'app/**'
+      - '.github/workflows/app-unit-tests.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/app-unit-tests.yml'
+
+jobs:
+  test:
+    name: Run app/*.test.js
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # No `npm install` needed — these tests are written to use only Node
+      # stdlib plus in-file stubs (see `app/relay-client.test.js` for the
+      # Module._resolveFilename trick that stubs `ws` + `electron`).
+      # If a new test genuinely needs a dependency, add `npm ci` here AND
+      # a package-lock.json commit.
+      - name: ws-server listen-bind lockdown
+        run: node app/ws-server.test.js
+      - name: relay-client contract
+        run: node app/relay-client.test.js
+      - name: archive-scanner behavior
+        run: node app/archive-scanner.test.js
+      - name: oauth persist roundtrip
+        run: node app/oauth-persist.test.js
+      - name: sentence splitter
+        run: node app/sentence-splitter.test.js
