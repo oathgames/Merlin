@@ -38,6 +38,43 @@ Every S-tier prompt is a constraint pyramid — top-down specificity beats top-d
 
 **Freeze-frame close-out** — for video, last 1s MUST be an explicit final-frame spec: what's in frame, lighting, focus, subject expression. Prevents trailing off into blur.
 
+## Camouflage-Ad Fields — the Andromeda native-feed layer
+
+Meta's Andromeda system rewards ads that feel native to the feed, not studio pitches. The AdBrief struct exposes four structural fields (on top of the 7 locks) that every image/video brief should populate when the goal is paid social distribution. A brief missing all four scores ~30 rubric points lower than one with all four set, and the binary auto-adds anti-studio negatives when any are present.
+
+1. **`openingScenario`** — the real moment your avatar lives in (kitchen at 7am, gym locker room, back seat of an Uber). Not "beautiful woman with product" — a scene the viewer recognizes. Seeds the first 2 seconds.
+2. **`conflictBeat`** — `{timestamp, description, kind: "conflict"}`. Timestamp MUST be ≤ 5.0 or the rubric fails the core `conflict_timing` check. Description must frame the problem as felt experience ("she sighs at the 2pm mirror check"), NEVER product-first ("buy now", "$30 off", "introducing…" fail the `conflict_felt` heuristic).
+3. **`interruptBeats[]`** — 3–6 mid-ad spikes spaced ≥ 1.5s apart. Each is a scene change, tone flip, or reveal (not a repeated product shot). Fewer than 3 collapses retention past 50%; more than 6 reads as chaotic. Kind field: `"twist"`, `"reveal"`, `"interrupt"`, `"resolve"`.
+4. **`platformNative`** — `"reel"` (polished handheld), `"tiktok"` (raw, text-on-screen, trend cadence), `"feed"` (1:1 or 4:5 cleaner), `"stories"` (9:16 quick-read). The binary injects platform-specific styling cues; blank drifts toward studio polish.
+
+## Creative Rubric (pre-generation gate)
+
+Every AdBrief passed to the image pipeline is scored by `EvaluateBrief()` before a single fal credit is burned. Output is saved to `rubric.json` alongside `prompt.txt` in each run folder. Bands:
+
+- **A (≥90%)** — ship it; consider saving as a template.
+- **B (80–89%)** — pass; one polish field missing.
+- **C (70–79%)** — pass; multiple polish fields missing or one core weak.
+- **D (50–69%)** — warn; generates but flag in retrospective.
+- **F (<50%)** — fail; brief is broken, regenerate before running.
+
+**Core checks (weight 2 each, 8pts total):** `product_clarity`, `opening_scenario`, `conflict_timing` (≤5s), `interrupt_count` (3–6).
+**Polish checks (weight 1 each, 8pts total):** `conflict_felt`, `interrupt_spacing` (≥1.5s gap), `platform_native`, `has_cta`, `environment_set`, `subject_set`, `mood_set`, `negatives_nontrivial`.
+
+When a brief scores below pass, the `suggestions[]` array returns up to 3 actionable fixes ordered by weight. Use those verbatim when regenerating — don't paraphrase.
+
+## Batch Variety (Andromeda-friendly diversity)
+
+When `imageCount > 1`, the binary rotates ONE axis per image in the batch so we never ship N identical scenes. The `varyDimension` command field controls the axis:
+
+- `""` (default) or `"auto"` — picks axis from populated AdBrief fields (scenario > mood > lighting > subject).
+- `"scenario"` — rotates opening moment (morning routine / on-the-go / relaxed evening / social proof).
+- `"lighting"` — rotates register (golden hour / overcast / indoor lamp / direct sun).
+- `"subject"` — rotates framing (wide / medium / close / over-the-shoulder).
+- `"mood"` — rotates emotional register (calm / energetic / surprised / satisfied).
+- `"none"` — explicit opt-out (rare; use when you want 4 near-identical variants, e.g. A/B testing a single variable).
+
+Rotation is deterministic (idx-1 mod axisLen), wraps past 4 images, and is applied as a prompt suffix — zero extra API calls. Portrait + square of the same image index share the same variant so "image 1" is the same scene in both crops.
+
 ## Ad-Type Modules (pick ONE; compose with the 7 locks)
 
 Each module = realism register + camera family + audio family + canonical negative anchors. Merlin picks the module from `product.md` + user intent, then fills in the 7 locks.
