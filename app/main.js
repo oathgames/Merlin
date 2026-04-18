@@ -1173,6 +1173,69 @@ async function createWindow() {
     if (!launchedHidden) win.show();
     win.webContents.send('platform', process.platform);
 
+    // ── Fact-binding Phase 12 rollout bridge ─────────────────────────
+    // Runs the binary's session-prelude to mint/retrieve a per-session
+    // HKDF seed, then forwards {sessionId, vaultKey(hex), brand, toolsDir}
+    // into the renderer's initFactBinding(). Guarded by TWO switches:
+    //   (a) version.json featureFlags.factBinding === true  (production)
+    //   (b) process.env.MERLIN_FACT_BINDING === '1'         (dev override)
+    // Either suffices to turn on. Both missing → the bridge is a no-op
+    // and renderer.js keeps factBindingEnabled at its default false.
+    //
+    // Why this is safe to leave in the shipped binary with the flag off:
+    // - zero new IPC traffic when factBinding is off (the spawn never runs)
+    // - zero filesystem writes (the key-file is created only on session-prelude)
+    // - zero new event handlers in renderer (initFactBinding is idempotent)
+    //
+    // NEVER log vaultKey — it seeds the HMAC for every fact in the session.
+    try {
+      let factBindingOn = false;
+      try {
+        const v = JSON.parse(fs.readFileSync(path.join(appRoot, 'version.json'), 'utf8'));
+        if (v && v.featureFlags && v.featureFlags.factBinding === true) factBindingOn = true;
+      } catch { /* missing / malformed version.json — stay off */ }
+      if (process.env.MERLIN_FACT_BINDING === '1') factBindingOn = true;
+
+      if (factBindingOn) {
+        const toolsDir = path.join(appRoot, '.claude', 'tools');
+        const binaryPath = path.join(toolsDir, process.platform === 'win32' ? 'Merlin.exe' : 'Merlin');
+        const configPath = path.join(toolsDir, 'merlin-config.json');
+        const sessionId = 'sess-' + require('crypto').randomBytes(8).toString('hex');
+        // Brand is discovered lazily by the binary from workspace state;
+        // passing an empty string is fine — session-prelude tolerates it.
+        const cmdJson = JSON.stringify({
+          action: 'session-prelude',
+          factSessionId: sessionId,
+          brand: '',
+        });
+        const { execFile } = require('child_process');
+        execFile(binaryPath, ['--config', configPath, '--cmd', cmdJson], { timeout: 5000 }, (err, stdout) => {
+          if (err) { console.warn('[fact-binding] session-prelude failed:', err.message); return; }
+          let parsed;
+          try { parsed = JSON.parse(String(stdout || '').trim()); }
+          catch (e) { console.warn('[fact-binding] session-prelude stdout parse failed'); return; }
+          if (!parsed || parsed.ok !== true) { console.warn('[fact-binding] session-prelude not ok'); return; }
+          const { sessionId: sid, brand, vaultKeyHex } = parsed;
+          if (!sid || !vaultKeyHex) return;
+          // Push into the renderer. We set the force-on window flag first
+          // so the module-level guard in renderer.js flips true when
+          // initFactBinding runs. `toolsDir` passes the path so the cache
+          // can find the JSONL file.
+          const js = `
+            window.__merlinFactBindingForceOn = true;
+            window.__merlinInitFactBinding && window.__merlinInitFactBinding(${JSON.stringify({
+              sessionId: sid, brand: brand || '', vaultKey: vaultKeyHex, toolsDir,
+            })});
+          `;
+          win.webContents.executeJavaScript(js).catch(() => {});
+        });
+      }
+    } catch (e) {
+      // Defense-in-depth: the rollout bridge must never prevent the app
+      // from starting. Any exception here → log and continue without
+      // fact-binding; the renderer stays in its default-off state.
+      console.warn('[fact-binding] bridge setup failed:', e && e.message);
+    }
   });
 
   // ── Minimize to tray on close (keeps spells running) ──────
