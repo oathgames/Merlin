@@ -217,6 +217,18 @@ document.getElementById('btn-min').addEventListener('click', () => merlin.winMin
 document.getElementById('btn-max').addEventListener('click', () => merlin.winMaximize());
 document.getElementById('btn-close').addEventListener('click', () => merlin.winClose());
 
+// ── Theme Toggle (sun/moon in titlebar) ─────────────────────
+// Flips `data-theme` on <html>. The head-inline bootstrap script already
+// applied the persisted choice before paint — this handler just flips and
+// persists subsequent clicks.
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const root = document.documentElement;
+  const next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  if (next === 'light') root.setAttribute('data-theme', 'light');
+  else root.removeAttribute('data-theme');
+  try { localStorage.setItem('merlin.theme', next); } catch (_) { /* storage disabled */ }
+});
+
 // ── Setup Flow ──────────────────────────────────────────────
 async function init() {
   // Show version in titlebar

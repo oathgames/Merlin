@@ -16,8 +16,63 @@
   --success-bg:rgba(52,211,153,.08);
   --success-border:rgba(52,211,153,.2);
   --danger:#ef4444;
+  /* Surface effects (hovers, dividers, scrollbar thumbs). Dark mode uses
+     white-alpha; [data-theme="light"] flips each to black-alpha so the
+     same `.foo:hover` rule works in both modes. */
+  --hover-1:var(--hover-1);
+  --hover-2:var(--hover-2);
+  --hover-3:var(--hover-3);
+  --hover-4:var(--hover-4);
+  --hover-5:var(--hover-5);
+  --hover-6:var(--hover-6);
+  --hover-8:var(--hover-8);
+  --hover-10:var(--hover-10);
+  --hover-20:var(--hover-20);
+  --hover-25:var(--hover-25);
+  --shadow-sm:var(--shadow-sm);
+  --shadow-md:var(--shadow-md);
+  --shadow-lg:var(--shadow-lg);
+  --scrim:var(--scrim);
+  --tooltip-bg:#1e1e22;
   --font:'Inter',system-ui,-apple-system,sans-serif;
   --radius:16px;
+}
+
+/* Light mode — "Lavender Pearl". Faint violet-tinted white that carries the
+   Merlin brand identity into the light theme without feeling gimmicky.
+   Surfaces stay pure white; the violet→mint gradient is preserved everywhere
+   because --accent / --success keep the same hue family, just shifted for AA
+   contrast on white. */
+[data-theme="light"]{
+  --bg:#fafaff;
+  --bg-deep:#f3f1fa;
+  --surface:#ffffff;
+  --surface-hover:#f5f2fc;
+  --border:#e5e1f2;
+  --text:#1a1625;
+  --text-muted:#4a445e;
+  --text-dim:#8a84a0;
+  --accent:#7c3aed;
+  --accent-bg:rgba(124,58,237,.08);
+  --accent-border:rgba(124,58,237,.22);
+  --success:#059669;
+  --success-bg:rgba(5,150,105,.08);
+  --success-border:rgba(5,150,105,.22);
+  --hover-1:rgba(26,22,37,.015);
+  --hover-2:rgba(26,22,37,.025);
+  --hover-3:rgba(26,22,37,.035);
+  --hover-4:rgba(26,22,37,.045);
+  --hover-5:rgba(26,22,37,.045);
+  --hover-6:rgba(26,22,37,.05);
+  --hover-8:rgba(26,22,37,.06);
+  --hover-10:rgba(26,22,37,.08);
+  --hover-20:rgba(26,22,37,.12);
+  --hover-25:rgba(26,22,37,.18);
+  --shadow-sm:rgba(99,89,140,.08);
+  --shadow-md:rgba(99,89,140,.12);
+  --shadow-lg:rgba(99,89,140,.18);
+  --scrim:rgba(30,25,55,.45);
+  --tooltip-bg:#ffffff;
 }
 html,body{
   height:100%;overflow:hidden;
@@ -33,7 +88,7 @@ html,body{
 .merlin-tooltip{
   position:fixed;
   pointer-events:none; /* never block the cursor path to nearby controls */
-  background:#1e1e22;
+  background:var(--tooltip-bg);
   color:var(--text-muted);
   font-size:11px;font-weight:500;
   padding:5px 10px;
@@ -52,7 +107,7 @@ html,body{
   z-index:9999;
   pointer-events:none;
   pointer-events:none;
-  box-shadow:0 4px 12px rgba(0,0,0,.3);
+  box-shadow:0 4px 12px var(--shadow-sm);
   font-family:var(--font);
   letter-spacing:.01em;
   animation:tip-in .15s ease;
@@ -98,7 +153,7 @@ a:hover{text-decoration:underline}
   padding:16px 16px 8px;
 }
 #chat::-webkit-scrollbar{width:5px}
-#chat::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:3px}
+#chat::-webkit-scrollbar-thumb{background:var(--hover-8);border-radius:3px}
 #chat::-webkit-scrollbar-track{background:transparent}
 /* Prevent layout shift: pin scroll to bottom anchor, not reflowing messages */
 #messages .msg{overflow-anchor:none}
@@ -201,7 +256,7 @@ a:hover{text-decoration:underline}
 
 /* Markdown within bubbles */
 .msg-bubble code{
-  background:rgba(255,255,255,.08);
+  background:var(--hover-8);
   padding:2px 6px;
   border-radius:5px;
   font-size:12.5px;
@@ -214,7 +269,7 @@ a:hover{text-decoration:underline}
 }
 .msg-bubble .code-block-header{
   display:flex;justify-content:space-between;align-items:center;
-  background:rgba(255,255,255,.04);
+  background:var(--hover-4);
   border:1px solid var(--border);border-bottom:none;
   border-radius:8px 8px 0 0;
   padding:4px 12px;
@@ -227,10 +282,10 @@ a:hover{text-decoration:underline}
   color:var(--text-dim);font-size:10px;cursor:pointer;
   font-family:var(--font);transition:all .15s;
 }
-.msg-bubble .copy-btn:hover{background:rgba(255,255,255,.08);color:var(--text)}
-.msg-bubble .copy-btn.copied{color:#34d399;border-color:rgba(52,211,153,.3)}
+.msg-bubble .copy-btn:hover{background:var(--hover-8);color:var(--text)}
+.msg-bubble .copy-btn.copied{color:var(--success);border-color:rgba(52,211,153,.3)}
 .msg-bubble pre{
-  background:rgba(255,255,255,.04);
+  background:var(--hover-4);
   border:1px solid var(--border);
   border-radius:0 0 8px 8px;
   padding:10px 12px;
@@ -243,7 +298,7 @@ a:hover{text-decoration:underline}
   scrollbar-width:thin;
 }
 .msg-bubble pre::-webkit-scrollbar{height:4px}
-.msg-bubble pre::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
+.msg-bubble pre::-webkit-scrollbar-thumb{background:var(--hover-10);border-radius:2px}
 .msg-bubble .code-block:first-child pre{border-radius:8px}
 .msg-bubble .code-block:first-child .code-block-header+pre{border-radius:0 0 8px 8px}
 .msg-bubble pre code{background:none;padding:0;word-break:normal}
@@ -262,7 +317,7 @@ a:hover{text-decoration:underline}
 /* Lightbox (click-to-zoom images) */
 .lightbox{
   position:fixed;inset:0;z-index:9999;
-  background:rgba(0,0,0,.85);
+  background:var(--scrim);
   backdrop-filter:blur(20px);
   display:flex;align-items:center;justify-content:center;
   cursor:zoom-out;
@@ -271,7 +326,7 @@ a:hover{text-decoration:underline}
 .lightbox img{
   max-width:90vw;max-height:90vh;
   border-radius:12px;
-  box-shadow:0 24px 64px rgba(0,0,0,.5);
+  box-shadow:0 24px 64px var(--shadow-lg);
   object-fit:contain;
 }
 @keyframes lightbox-in{from{opacity:0}to{opacity:1}}
@@ -292,11 +347,11 @@ a:hover{text-decoration:underline}
 .briefing-content{font-size:13px;color:var(--text-muted);line-height:1.5;white-space:pre-line}
 .briefing-dismiss{
   display:block;width:100%;margin-top:10px;padding:6px;
-  background:rgba(255,255,255,.05);border:1px solid var(--border);
+  background:var(--hover-5);border:1px solid var(--border);
   border-radius:8px;color:var(--text-dim);font-size:11px;
   cursor:pointer;font-family:var(--font);transition:all .2s;
 }
-.briefing-dismiss:hover{background:rgba(255,255,255,.1);color:var(--text)}
+.briefing-dismiss:hover{background:var(--hover-10);color:var(--text)}
 
 /* Onboarding Progress */
 .onboarding-progress{
@@ -313,8 +368,8 @@ a:hover{text-decoration:underline}
 /* Tables */
 .msg-bubble table{width:100%;border-collapse:collapse;margin:8px 0;font-size:12.5px}
 .msg-bubble th{text-align:left;padding:6px 10px;border-bottom:2px solid var(--border);color:var(--text-muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
-.msg-bubble td{padding:5px 10px;border-bottom:1px solid rgba(255,255,255,.04);line-height:1.5}
-.msg-bubble tr:hover td{background:rgba(255,255,255,.02)}
+.msg-bubble td{padding:5px 10px;border-bottom:1px solid var(--hover-4);line-height:1.5}
+.msg-bubble tr:hover td{background:var(--hover-2)}
 .msg-bubble img{
   max-width:min(260px, 66%);
   max-height:320px;
@@ -326,7 +381,7 @@ a:hover{text-decoration:underline}
   display:block;
   cursor:pointer;
   transition:opacity .2s;
-  box-shadow:0 2px 8px rgba(0,0,0,.3);
+  box-shadow:0 2px 8px var(--shadow-sm);
 }
 .msg-bubble img:hover{opacity:.9}
 
@@ -356,7 +411,7 @@ a:hover{text-decoration:underline}
   vertical-align:middle;line-height:1.4;
   transition:all .15s;font-family:system-ui;
 }
-.inline-copy:hover{background:rgba(255,255,255,.08);color:var(--text)}
+.inline-copy:hover{background:var(--hover-8);color:var(--text)}
 /* Artifacts (rendered HTML previews) */
 .artifact{margin:8px 0;border-radius:8px;overflow:hidden}
 .artifact iframe{display:block}
@@ -391,7 +446,7 @@ a:hover{text-decoration:underline}
 .chip.selected{
   background:linear-gradient(135deg,#a78bfa,#34d399);
   color:#0a0a0a;
-  border-color:#a78bfa;
+  border-color:var(--accent);
 }
 .chip.selected:hover{opacity:.9}
 
@@ -458,10 +513,10 @@ a:hover{text-decoration:underline}
      approach eliminates the track entirely when scrolling isn't needed. */
   overflow-y:hidden;
   scrollbar-width:thin;
-  scrollbar-color:rgba(255,255,255,.1) transparent;
+  scrollbar-color:var(--hover-10) transparent;
 }
 #input::-webkit-scrollbar{width:4px}
-#input::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:2px}
+#input::-webkit-scrollbar-thumb{background:var(--hover-10);border-radius:2px}
 #input::-webkit-scrollbar-track{background:transparent}
 #input:focus{border-color:var(--accent-border)}
 #input::placeholder{color:var(--text-dim)}
@@ -531,7 +586,7 @@ a:hover{text-decoration:underline}
   transform:translate(-50%,0);
 }
 .speaker-btn:hover{border-color:var(--accent-border);color:var(--accent)}
-.speaker-btn.on{border-color:#a78bfa;color:#a78bfa}
+.speaker-btn.on{border-color:var(--accent);color:var(--accent)}
 .speaker-btn.speaking{animation:speaker-pulse 1.4s ease-in-out infinite}
 @keyframes speaker-pulse{0%,100%{box-shadow:0 0 0 0 rgba(167,139,250,.35)}50%{box-shadow:0 0 0 8px rgba(167,139,250,0)}}
 /* Swap speaker icon based on toggle state — "off" shows muted speaker with X,
@@ -561,13 +616,13 @@ a:hover{text-decoration:underline}
 .msg-bubble .replay-btn:hover{
   opacity:1;
   border-color:var(--border);
-  color:#a78bfa;
-  background:var(--bg-elev,rgba(255,255,255,.04));
+  color:var(--accent);
+  background:var(--bg-elev,var(--hover-4));
 }
 .msg-bubble.speaking .replay-btn{
   opacity:1;
-  color:#a78bfa;
-  border-color:#a78bfa;
+  color:var(--accent);
+  border-color:var(--accent);
 }
 /* Subtle border pulse on the bubble actively being spoken — gives the
    user a clear "this is what's playing right now" anchor while audio runs. */
@@ -809,7 +864,7 @@ a:hover{text-decoration:underline}
   color: var(--text);
   font-weight: 600;
 }
-.perf-trend-up { color: #34d399; }
+.perf-trend-up { color: var(--success); }
 .perf-trend-down { color: #ef4444; }
 .perf-period-group {
   margin-left: auto;
@@ -853,7 +908,7 @@ a:hover{text-decoration:underline}
   padding: 5px 0;
   font-size: 11px;
   color: var(--text-muted);
-  border-bottom: 1px solid rgba(255,255,255,.03);
+  border-bottom: 1px solid var(--hover-3);
 }
 .activity-item:last-child { border-bottom: none; }
 .activity-dot {
@@ -948,7 +1003,7 @@ body.platform-mac .titlebar-drag{
 
 .version-label{
   font-size:10px;
-  color:rgba(255,255,255,.25);
+  color:var(--hover-25);
   margin-right:6px;
   position:relative;
   top:1px;
@@ -977,6 +1032,28 @@ body.platform-mac .titlebar-drag{
 }
 .magic-btn-inline:hover{background:linear-gradient(135deg,rgba(167,139,250,.22),rgba(52,211,153,.22))}
 .magic-btn-inline:focus,.magic-btn-inline:focus-visible{outline:none;box-shadow:none}
+/* Theme toggle — solo sun/moon icon left of the reports button.
+   Deliberately NOT .magic-btn-inline: no border, no gradient fill, no
+   background chip — it's just the glyph, to keep the titlebar calm.
+   Icon swaps via .theme-icon-sun / .theme-icon-moon (one visible at a
+   time based on [data-theme] on <html>). */
+.theme-toggle{
+  width:24px;height:24px;
+  border:none;background:transparent;
+  color:var(--text-muted);
+  cursor:pointer;
+  display:flex;align-items:center;justify-content:center;
+  margin-right:6px;padding:0;
+  transition:color .2s,transform .2s;
+}
+.theme-toggle:hover{color:var(--text);transform:rotate(12deg)}
+.theme-toggle:focus,.theme-toggle:focus-visible{outline:none;box-shadow:none}
+/* Default (dark): show sun — clicking switches to light.
+   Light: show moon — clicking switches back to dark. */
+.theme-toggle .theme-icon-moon{display:none}
+.theme-toggle .theme-icon-sun{display:block}
+[data-theme="light"] .theme-toggle .theme-icon-sun{display:none}
+[data-theme="light"] .theme-toggle .theme-icon-moon{display:block}
 .win-ctrl{
   width:46px;height:100%;
   border:none;background:transparent;
@@ -984,7 +1061,7 @@ body.platform-mac .titlebar-drag{
   cursor:pointer;transition:background .15s;
   display:flex;align-items:center;justify-content:center;
 }
-.win-ctrl:hover{background:rgba(255,255,255,.08)}
+.win-ctrl:hover{background:var(--hover-8)}
 .win-ctrl-close:hover{background:#e81123;color:white}
 
 /* ── Magic Panel ─────────────────────────────────────────── */
@@ -1008,10 +1085,10 @@ body.platform-mac .titlebar-drag{
   overflow-x:hidden;
   padding-right:4px;
   scrollbar-width:thin;
-  scrollbar-color:rgba(255,255,255,.08) transparent;
+  scrollbar-color:var(--hover-8) transparent;
 }
 .magic-panel-scroll::-webkit-scrollbar{width:4px}
-.magic-panel-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:2px}
+.magic-panel-scroll::-webkit-scrollbar-thumb{background:var(--hover-8);border-radius:2px}
 
 .magic-header{
   display:flex;align-items:center;justify-content:space-between;
@@ -1089,14 +1166,14 @@ body.platform-mac .titlebar-drag{
   opacity:.38;
   cursor:not-allowed;
   pointer-events:auto; /* keep the tooltip reachable on hover */
-  background:rgba(255,255,255,.015);
-  border-color:rgba(255,255,255,.04);
+  background:var(--hover-1);
+  border-color:var(--hover-4);
 }
 .magic-tile.unavailable:hover,
 .magic-tile[data-stubbed]:hover{
   /* Override the generic hover rule so dark gray stays dark gray. */
-  border-color:rgba(255,255,255,.04);
-  background:rgba(255,255,255,.015);
+  border-color:var(--hover-4);
+  background:var(--hover-1);
 }
 .magic-tile.unavailable .tile-icon,
 .magic-tile[data-stubbed] .tile-icon{filter:saturate(0) brightness(.75)}
@@ -1130,7 +1207,7 @@ body.platform-mac .titlebar-drag{
   white-space:nowrap;
 }
 .referral-copy-btn:hover{background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(52,211,153,.15));color:var(--text)}
-.referral-copy-btn.copied{border-color:rgba(52,211,153,.5);color:#34d399}
+.referral-copy-btn.copied{border-color:rgba(52,211,153,.5);color:var(--success)}
 .referral-stats{font-size:11px;color:var(--text-dim)}
 .referral-hint{font-size:10px;color:var(--text-dim);opacity:.85;line-height:1.4}
 
@@ -1156,7 +1233,7 @@ body.platform-mac .titlebar-drag{
 .referral-apply-btn:disabled{opacity:.5;cursor:not-allowed}
 .referral-apply-status{font-size:11px;color:var(--text-dim);min-height:14px;line-height:1.3}
 .referral-apply-status.error{color:#f87171}
-.referral-apply-status.success{color:#34d399}
+.referral-apply-status.success{color:var(--success)}
 
 /* Community (Discord) */
 .discord-link{
@@ -1189,12 +1266,12 @@ body.platform-mac .titlebar-drag{
   max-width:280px;
   transition:opacity .3s;
   animation:fadeIn .2s ease;
-  box-shadow:0 4px 20px rgba(0,0,0,.3);
+  box-shadow:0 4px 20px var(--shadow-sm);
 }
 .spell-toast-success{
   background:rgba(20,20,22,.95);
   border:1px solid rgba(52,211,153,.4);
-  color:#34d399;
+  color:var(--success);
 }
 .spell-toast-error{
   background:rgba(20,20,22,.95);
@@ -1313,10 +1390,10 @@ body.platform-mac .titlebar-drag{
 .wisdom-title-row{display:flex;align-items:baseline}
 .wisdom-scroll{
   flex:1;overflow-y:auto;padding:16px;
-  scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.08) transparent;
+  scrollbar-width:thin;scrollbar-color:var(--hover-8) transparent;
 }
 .wisdom-scroll::-webkit-scrollbar{width:4px}
-.wisdom-scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:2px}
+.wisdom-scroll::-webkit-scrollbar-thumb{background:var(--hover-8);border-radius:2px}
 .wisdom-grid{
   display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;
 }
@@ -1394,7 +1471,7 @@ body.platform-mac .titlebar-drag{
 .wisdom-benchmark-row:last-child{margin-bottom:0}
 .wisdom-benchmark-label{font-size:11px;color:var(--text-dim)}
 .wisdom-benchmark-value{font-size:12px;font-weight:600;color:var(--text)}
-.wisdom-benchmark-value.positive{color:#34d399}
+.wisdom-benchmark-value.positive{color:var(--success)}
 .wisdom-benchmark-value.negative{color:#f87171}
 .wisdom-benchmark-sub{font-size:10px;color:var(--text-dim);margin-top:2px}
 
@@ -1439,7 +1516,7 @@ body.platform-mac .titlebar-drag{
   border:1px solid var(--border);border-radius:8px;
   font-size:11px;line-height:1.45;color:var(--text-muted);
   text-align:left;white-space:normal;
-  box-shadow:0 6px 24px rgba(0,0,0,.4);
+  box-shadow:0 6px 24px var(--shadow-md);
   opacity:0;pointer-events:none;transform:translateY(-4px);
   transition:opacity .15s,transform .15s;
   z-index:60;
@@ -1449,8 +1526,8 @@ body.platform-mac .titlebar-drag{
 }
 
 /* Color classes for rank values + bar fills (replaces inline color). */
-.wisdom-rank-value.color-hooks,.color-hooks{color:#a78bfa}
-.wisdom-rank-value.color-platforms,.color-platforms{color:#34d399}
+.wisdom-rank-value.color-hooks,.color-hooks{color:var(--accent)}
+.wisdom-rank-value.color-platforms,.color-platforms{color:var(--success)}
 .wisdom-rank-value.color-formats,.color-formats{color:#fbbf24}
 .wisdom-rank-value.color-img,.color-img{color:#60a5fa}
 .wisdom-rank-value.color-vid,.color-vid{color:#f472b6}
@@ -1463,7 +1540,7 @@ body.platform-mac .titlebar-drag{
 /* ── Perf Bar Shimmer (loading state) ──────────────────── */
 .perf-shimmer{
   display:inline-block;width:180px;height:12px;border-radius:3px;
-  background:linear-gradient(90deg,var(--surface) 25%,rgba(255,255,255,.06) 50%,var(--surface) 75%);
+  background:linear-gradient(90deg,var(--surface) 25%,var(--hover-6) 50%,var(--surface) 75%);
   background-size:200% 100%;
   animation:shimmer 1.5s infinite;
 }
@@ -1498,7 +1575,7 @@ body.platform-mac .titlebar-drag{
   color:var(--text-muted);background:transparent;border:none;cursor:pointer;
   padding:5px 9px;border-radius:6px;transition:all .15s;
 }
-.stats-period-btn:hover{color:var(--text);background:rgba(255,255,255,.04)}
+.stats-period-btn:hover{color:var(--text);background:var(--hover-4)}
 .stats-period-btn.active{
   color:#0a0a0a;font-weight:700;
   background:linear-gradient(135deg,#a78bfa,#34d399);
@@ -1510,11 +1587,11 @@ body.platform-mac .titlebar-drag{
   display:inline-flex;align-items:center;gap:4px;margin-top:10px;
   padding:4px 10px;border-radius:999px;
   font-size:11px;font-weight:700;letter-spacing:.2px;
-  background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+  background:var(--hover-6);border:1px solid var(--hover-10);
   color:var(--text-muted);
 }
 .stats-trend-pill.hidden{display:none}
-.stats-trend-pill.up{color:#34d399;background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.3)}
+.stats-trend-pill.up{color:var(--success);background:rgba(52,211,153,.1);border-color:rgba(52,211,153,.3)}
 .stats-trend-pill.down{color:#f87171;background:rgba(248,113,113,.1);border-color:rgba(248,113,113,.3)}
 .stats-trend-pill.flat{color:var(--text-muted)}
 .stats-bar-wrap{margin-bottom:20px;position:relative;z-index:1}
@@ -1618,7 +1695,7 @@ body.platform-mac .titlebar-drag{
   text-transform:uppercase;letter-spacing:.5px;font-weight:500;
   padding:6px 12px;
   background:var(--bg-deep);
-  border-color:rgba(255,255,255,.04);
+  border-color:var(--hover-4);
   animation:fadeIn .3s ease;
 }
 .tool-status::before{
@@ -1687,7 +1764,7 @@ body.platform-mac .titlebar-drag{
   border-radius:10px;
   padding:4px;
   min-width:140px;
-  box-shadow:0 8px 24px rgba(0,0,0,.5);
+  box-shadow:0 8px 24px var(--shadow-lg);
   animation:fadeUp .15s ease;
 }
 .img-context-menu button{
@@ -1731,7 +1808,7 @@ body.platform-mac .titlebar-drag{
   cursor:pointer;z-index:50;
   display:flex;align-items:center;justify-content:center;
   opacity:0;transition:opacity .2s, transform .2s;
-  box-shadow:0 4px 12px rgba(0,0,0,.4);
+  box-shadow:0 4px 12px var(--shadow-md);
   pointer-events:none;
 }
 .scroll-bottom-btn:not(.hidden){opacity:1;transform:translateX(-50%) scale(1);pointer-events:auto}
@@ -1904,10 +1981,10 @@ body.platform-mac .titlebar-drag{
      (overflow causes 4px scrollbar + 4px padding-right = visible shift). */
   scrollbar-gutter: stable;
   scrollbar-width: thin;
-  scrollbar-color: rgba(255,255,255,.08) transparent;
+  scrollbar-color: var(--hover-8) transparent;
 }
 .archive-panel-scroll::-webkit-scrollbar { width: 4px; }
-.archive-panel-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.08); border-radius: 2px; }
+.archive-panel-scroll::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 2px; }
 
 .archive-filters {
   padding: 10px 16px;
@@ -1961,7 +2038,7 @@ body.platform-mac .titlebar-drag{
 .archive-refresh-btn.refreshing svg { animation: archive-spin 1s linear infinite; }
 @keyframes archive-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .badge-qa-fail { background: rgba(239,68,68,.15); color: #f87171; }
-.badge-qa-pass { background: rgba(52,211,153,.12); color: #34d399; }
+.badge-qa-pass { background: rgba(52,211,153,.12); color: var(--success); }
 .badge-source-loose { background: rgba(251,191,36,.12); color: #fbbf24; }
 .archive-search {
   width: 100%;
@@ -2047,7 +2124,7 @@ body.platform-mac .titlebar-drag{
   font-weight: 600;
   padding: 1px 5px;
   border-radius: 4px;
-  background: rgba(255,255,255,.05);
+  background: var(--hover-5);
   color: var(--text);
   border: 1px solid var(--border);
   line-height: 1.4;
@@ -2080,7 +2157,7 @@ body.platform-mac .titlebar-drag{
   align-items: center;
   justify-content: center;
   gap: 4px;
-  background: linear-gradient(135deg, rgba(255,255,255,.02), rgba(255,255,255,.06));
+  background: linear-gradient(135deg, var(--hover-2), var(--hover-6));
   padding: 8px;
   text-align: center;
 }
@@ -2128,7 +2205,7 @@ body.platform-mac .titlebar-drag{
 .archive-preview {
   position: fixed;
   inset: 0;
-  background: rgba(0,0,0,.85);
+  background: var(--scrim);
   z-index: 300;
   display: flex;
   align-items: center;
@@ -2141,7 +2218,7 @@ body.platform-mac .titlebar-drag{
   max-width: 90%;
   max-height: 90%;
   border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+  box-shadow: 0 20px 60px var(--shadow-lg);
 }
 .archive-preview-close {
   position: fixed;
@@ -2150,7 +2227,7 @@ body.platform-mac .titlebar-drag{
   width: 36px;
   height: 36px;
   border: none;
-  background: rgba(255,255,255,.1);
+  background: var(--hover-10);
   backdrop-filter: blur(8px);
   border-radius: 50%;
   color: #fff;
@@ -2162,7 +2239,7 @@ body.platform-mac .titlebar-drag{
   transition: background .2s;
   z-index: 301;
 }
-.archive-preview-close:hover { background: rgba(255,255,255,.2); }
+.archive-preview-close:hover { background: var(--hover-20); }
 
 /* ── Reports Button ───────────────────────────────────────────
    The toolbar button (#agency-report-btn) uses .magic-btn-inline for its
@@ -2173,7 +2250,7 @@ body.platform-mac .titlebar-drag{
    .magic-btn-inline above to change the button's appearance. */
 
 /* Live Ads status pills */
-.status-live { background: rgba(52,211,153,.15); color: #34d399; }
+.status-live { background: rgba(52,211,153,.15); color: var(--success); }
 .status-paused { background: rgba(161,161,170,.15); color: #a1a1aa; }
 .status-pending { background: rgba(251,191,36,.15); color: #fbbf24; }
 
@@ -2219,7 +2296,7 @@ body.platform-mac .titlebar-drag{
   padding:8px;
   z-index:500;
   min-width:180px;
-  box-shadow:0 8px 24px rgba(0,0,0,.4);
+  box-shadow:0 8px 24px var(--shadow-md);
   animation:fadeIn .15s ease;
 }
 .platform-dd-header{font-size:10px;font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.05em;padding:2px 4px 6px;border-bottom:1px solid var(--border);margin-bottom:4px}
@@ -2234,7 +2311,7 @@ body.platform-mac .titlebar-drag{
   padding:4px;
   z-index:500;
   min-width:160px;
-  box-shadow:0 8px 24px rgba(0,0,0,.4);
+  box-shadow:0 8px 24px var(--shadow-md);
 }
 .context-menu-item {
   padding:8px 12px;
@@ -2269,7 +2346,7 @@ body.platform-mac .titlebar-drag{
 .context-submenu{
   position:fixed;
   background:var(--bg);border:1px solid var(--border);border-radius:8px;
-  min-width:140px;box-shadow:0 8px 24px rgba(0,0,0,.4);z-index:1001;
+  min-width:140px;box-shadow:0 8px 24px var(--shadow-md);z-index:1001;
 }
 
 .platform-meta { background:rgba(24,119,242,.15); color:#1877F2; }
