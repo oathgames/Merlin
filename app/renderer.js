@@ -4720,32 +4720,6 @@ function addReplayButton(bubbleEl, text) {
   bubbleEl.appendChild(btn);
 }
 
-// Model download progress (first run only — ~92 MB one-time fetch).
-// Show a single persistent toast that updates in place so the user sees
-// "downloading voice model 12 MB / 92 MB" instead of nothing happening after
-// clicking the speaker button. Auto-dismisses when progress hits 100% or the
-// worker emits its 'ready' event (which the main process no longer forwards
-// as progress — we dismiss on status === 'done' and on the first chunk).
-let _ttsDownloadToast = null;
-let _ttsDownloadSeenFiles = new Set();
-function _ttsEnsureToast() {
-  if (_ttsDownloadToast && document.body.contains(_ttsDownloadToast)) return _ttsDownloadToast;
-  const el = document.createElement('div');
-  el.className = 'spell-toast spell-toast-info';
-  el.style.bottom = '80px';
-  el.innerHTML = '<strong>Voice model loading…</strong><br><span class="tts-dl-detail" style="font-size:11px;opacity:.8">First-run fetch — about 92 MB.</span>';
-  document.body.appendChild(el);
-  _ttsDownloadToast = el;
-  return el;
-}
-function _ttsDismissToast() {
-  if (!_ttsDownloadToast) return;
-  const el = _ttsDownloadToast;
-  _ttsDownloadToast = null;
-  _ttsDownloadSeenFiles = new Set();
-  el.style.opacity = '0';
-  setTimeout(() => { try { el.remove(); } catch {} }, 300);
-}
 if (merlin.onVoiceOutputProgress) {
   merlin.onVoiceOutputProgress((payload) => {
     if (!payload) return;
@@ -4753,19 +4727,6 @@ if (merlin.onVoiceOutputProgress) {
     const file = String(payload.file || '');
     const pct = typeof payload.progress === 'number' ? Math.round(payload.progress) : null;
     console.log('[kokoro]', status, file, pct !== null ? pct + '%' : '');
-    // HF emits { status: 'progress' } during download, 'done' per file, and
-    // 'ready' (rare) at the end. Only show the toast while a real download
-    // is happening — skip cache-hit signals that never surface a %.
-    if (status === 'progress' && pct !== null) {
-      _ttsDownloadSeenFiles.add(file);
-      const el = _ttsEnsureToast();
-      const detail = el.querySelector('.tts-dl-detail');
-      if (detail) detail.textContent = `${file || 'model'} — ${pct}%`;
-    } else if (status === 'done' || status === 'ready') {
-      // Dismiss once the last tracked file completes. Small grace delay so
-      // users see the 100% state land before it fades.
-      setTimeout(() => _ttsDismissToast(), 600);
-    }
   });
 }
 
