@@ -8012,6 +8012,79 @@ app.whenReady().then(async () => {
   // new releases within half an hour without needing to restart.
   setInterval(checkForUpdates, 30 * 60 * 1000);
 
+  // ── Token auto-refresh watchdog ──────────────────────────────────────
+  // Every 4 hours, fire a `watchdog-check` against each brand's config.
+  // Binary init runs MaybeRenewAllTokens for us — that sweeps Meta (via
+  // fb_exchange_token) plus every refresh-token platform (TikTok, Google,
+  // LinkedIn, Reddit, Etsy, Amazon) and rotates any token inside its
+  // renewal threshold. This is the safety net for idle users who launch
+  // the app, leave it open overnight, and don't fire any ad-management
+  // action — without the heartbeat those tokens would expire silently and
+  // the next morning's dashboard pull would see no platforms connected.
+  //
+  // 4h is the cadence we landed on: Meta's `fb_exchange_token` still
+  // refuses requests once the original token expires, so we need to beat
+  // the 60-day window by at least one sweep; Google/Reddit/Etsy/Amazon
+  // all have 1h access tokens — in the idle-user scenario the reactive
+  // 401 path covers those, so 4h is "cheap insurance" rather than the
+  // primary defense.
+  const runTokenWatchdog = async () => {
+    const binaryPath = getBinaryPath();
+    try { fs.accessSync(binaryPath); } catch { return; }
+    const globalConfigPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+    try { fs.accessSync(globalConfigPath); } catch { return; }
+    const { execFile } = require('child_process');
+
+    // Enumerate brand directories. The global scope (no brand) is swept
+    // too because service-level OAuth tokens (Slack bot, Discord bot) and
+    // pre-brand connections live there under "_global".
+    const brandsDir = path.join(appRoot, 'assets', 'brands');
+    let brands = [];
+    try {
+      brands = fs.readdirSync(brandsDir, { withFileTypes: true })
+        .filter(d => d.isDirectory() && d.name !== 'example')
+        .map(d => d.name);
+    } catch {}
+
+    const scopes = [null, ...brands]; // null = global config sweep
+    for (const brand of scopes) {
+      let configPath = globalConfigPath;
+      let isTmpConfig = false;
+      if (brand) {
+        try {
+          const cfg = readBrandConfig(brand);
+          if (!cfg || Object.keys(cfg).length === 0) continue;
+          // Follows the same tmp-config placement rule as refresh-live-ads
+          // — must live inside .claude/tools/ so the binary's projectRoot
+          // derivation resolves back to appRoot. See the REGRESSION GUARD
+          // comment in refresh-live-ads for the full incident.
+          const toolsDir = path.join(appRoot, '.claude', 'tools');
+          try { fs.mkdirSync(toolsDir, { recursive: true }); } catch {}
+          const tmpPath = path.join(toolsDir, `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
+          fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+          configPath = tmpPath;
+          isTmpConfig = true;
+        } catch { continue; }
+      }
+      const cmdObj = { action: 'watchdog-check' };
+      if (brand) cmdObj.brand = brand;
+      try {
+        await new Promise((resolve) => {
+          const child = execFile(binaryPath, ['--config', configPath, '--cmd', JSON.stringify(cmdObj)], {
+            timeout: 60000, cwd: appRoot, windowsHide: true,
+            maxBuffer: 4 * 1024 * 1024,
+          }, () => resolve());
+          activeChildProcesses.add(child);
+          child.on('exit', () => activeChildProcesses.delete(child));
+        });
+      } catch {}
+      if (isTmpConfig) { try { fs.unlinkSync(configPath); } catch {} }
+    }
+  };
+
+  setTimeout(runTokenWatchdog, 60 * 1000);
+  setInterval(runTokenWatchdog, 4 * 60 * 60 * 1000);
+
   // Lightweight telemetry — one ping on launch, no PII
   setTimeout(() => {
     try {
