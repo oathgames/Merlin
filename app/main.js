@@ -2319,6 +2319,15 @@ ipcMain.handle('trigger-claude-login', async () => {
         finish({ success: false, timedOut: true, error: 'Login timed out. Try again or use an API key.' });
       }, 180000);
 
+      // Cap the captured CLI output. We only need the tail for error messages
+      // and the paste-prompt regex; the subprocess can run for up to the UX
+      // timeout (180s), so unbounded concatenation turns any chatty CLI into a
+      // memory leak. 64KB tail is more than enough for either use.
+      const OUTPUT_CAP = 64 * 1024;
+      const appendCapped = (buf, chunk) => {
+        const next = buf + chunk;
+        return next.length > OUTPUT_CAP ? next.slice(next.length - OUTPUT_CAP) : next;
+      };
       let stdout = '';
       let stderr = '';
       let pastePromptShown = false;
@@ -2345,7 +2354,7 @@ ipcMain.handle('trigger-claude-login', async () => {
 
       child.stdout.on('data', (d) => {
         const chunk = d.toString();
-        stdout += chunk;
+        stdout = appendCapped(stdout, chunk);
         // Log a redacted preview — first 300 chars, no repeated noise. Tokens
         // themselves are NEVER printed to stdout by the CLI; the URL contains
         // only a public client_id and PKCE challenge, so logging the prefix
@@ -2357,7 +2366,7 @@ ipcMain.handle('trigger-claude-login', async () => {
 
       child.stderr.on('data', (d) => {
         const chunk = d.toString();
-        stderr += chunk;
+        stderr = appendCapped(stderr, chunk);
         const preview = chunk.replace(/\s+/g, ' ').trim().slice(0, 300);
         if (preview) console.log('[claude-login] stderr:', preview);
         maybeShowPasteDialog(stdout + stderr);

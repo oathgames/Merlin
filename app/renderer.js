@@ -2984,6 +2984,13 @@ const MANUAL_KEY_HANDLERS = {
 
 // Tile context menu — right-click to use a manual API key instead of OAuth.
 // Review-friendly escape hatch for users with an existing access token.
+let activeTileMenuCleanup = null;
+function closeTileContextMenu() {
+  if (activeTileMenuCleanup) {
+    activeTileMenuCleanup();
+    activeTileMenuCleanup = null;
+  }
+}
 document.addEventListener('contextmenu', (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
@@ -2993,8 +3000,7 @@ document.addEventListener('contextmenu', (e) => {
   if (!handler) return;
   e.preventDefault();
   const activeBrand = getActiveBrandSelection();
-  // Dismiss any existing menu
-  document.querySelectorAll('.tile-context-menu').forEach(m => m.remove());
+  closeTileContextMenu();
   const menu = document.createElement('div');
   menu.className = 'tile-context-menu';
   menu.style.cssText = 'position:fixed;z-index:400;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);font-size:13px';
@@ -3006,21 +3012,25 @@ document.addEventListener('contextmenu', (e) => {
   btn.onmouseenter = () => { btn.style.background = 'var(--accent-bg)'; };
   btn.onmouseleave = () => { btn.style.background = 'transparent'; };
   btn.onclick = () => {
-    menu.remove();
+    closeTileContextMenu();
     handler(activeBrand);
   };
   menu.appendChild(btn);
   document.body.appendChild(menu);
   const dismiss = (ev) => {
     if (menu.contains(ev.target)) return;
-    menu.remove();
-    document.removeEventListener('click', dismiss);
-    document.removeEventListener('contextmenu', dismiss);
+    closeTileContextMenu();
   };
-  setTimeout(() => {
+  const timer = setTimeout(() => {
     document.addEventListener('click', dismiss);
     document.addEventListener('contextmenu', dismiss);
   }, 10);
+  activeTileMenuCleanup = () => {
+    clearTimeout(timer);
+    document.removeEventListener('click', dismiss);
+    document.removeEventListener('contextmenu', dismiss);
+    menu.remove();
+  };
 });
 
 // Request a platform
@@ -6510,9 +6520,13 @@ function createArchiveCard(item) {
 // Lazy-load video <source>s inside an archive grid. Hydrates `data-lazy-src`
 // onto `src` only when the card scrolls near the viewport, which keeps the
 // first paint cheap even with hundreds of video cards. IntersectionObserver
-// disconnects per-card once the src is set.
+// disconnects once every card has hydrated — and any prior observer attached
+// to the same root is disconnected first so rebuilds don't leak observers.
+const lazyVideoObservers = new WeakMap();
 function observeLazyVideos(root) {
   if (!root) return;
+  const prior = lazyVideoObservers.get(root);
+  if (prior) { prior.disconnect(); lazyVideoObservers.delete(root); }
   const videos = root.querySelectorAll('video.archive-card-thumb-lazy[data-lazy-src]');
   if (!videos.length) return;
   if (typeof IntersectionObserver === 'undefined') {
@@ -6522,6 +6536,7 @@ function observeLazyVideos(root) {
     });
     return;
   }
+  let remaining = videos.length;
   const io = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
@@ -6534,8 +6549,14 @@ function observeLazyVideos(root) {
         v.classList.remove('archive-card-thumb-lazy');
       }
       io.unobserve(v);
+      remaining -= 1;
+      if (remaining <= 0) {
+        io.disconnect();
+        lazyVideoObservers.delete(root);
+      }
     }
   }, { root: root.closest('.archive-content') || null, rootMargin: '200px 0px', threshold: 0.01 });
+  lazyVideoObservers.set(root, io);
   videos.forEach(v => io.observe(v));
 }
 
