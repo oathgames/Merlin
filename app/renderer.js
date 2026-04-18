@@ -5364,40 +5364,66 @@ document.addEventListener('contextmenu', (e) => {
 });
 
 // ── Tooltips (fixed position, never clipped by overflow) ────
+// REGRESSION GUARD (2026-04-18, tooltip-flicker incident): mouseover/mouseout
+// fire for EVERY descendant transition (e.g. moving the cursor a pixel within
+// an icon button walks between <svg>/<path> children). The previous impl
+// remove()+createElement()'d the tooltip on each of those events, which showed
+// up visually as rapid flicker whenever the mouse crossed child boundaries —
+// notably when sliding from the mic button onto the spawned speaker button.
+// Fix: track the owning [data-tip] element and (a) no-op mouseover when the
+// same element is still active, (b) reuse the tooltip DOM node across element
+// swaps (rewrite innerHTML + reposition, no remove/create), (c) use relatedTarget
+// on mouseout to distinguish "leaving to a child" from "leaving the element".
 (function() {
   let tip = null;
-  document.addEventListener('mouseover', (e) => {
-    const el = e.target.closest('[data-tip]');
-    if (!el) return;
-    if (tip) tip.remove();
-    tip = document.createElement('div');
-    tip.className = 'merlin-tooltip';
-    const tipText = el.getAttribute('data-tip');
-    tip.innerHTML = escapeHtml(tipText).replace(/\n/g, '<br>');
-    document.body.appendChild(tip);
+  let tipEl = null;
 
+  function positionTip(el) {
     const rect = el.getBoundingClientRect();
     const pos = el.getAttribute('data-tip-pos');
     const tipW = tip.offsetWidth;
     let left = rect.left + rect.width / 2 - tipW / 2;
-    // Clamp to viewport
     if (left < 4) left = 4;
     if (left + tipW > window.innerWidth - 4) left = window.innerWidth - tipW - 4;
 
     const tipH = tip.offsetHeight;
     const spaceAbove = rect.top;
     const spaceBelow = window.innerHeight - rect.bottom;
-    // Auto-flip: prefer requested position, but flip if not enough room
     const showBelow = pos === 'bottom' || (spaceAbove < tipH + 10 && spaceBelow > tipH + 10);
-    if (showBelow) {
-      tip.style.top = (rect.bottom + 6) + 'px';
-    } else {
-      tip.style.top = (rect.top - tipH - 6) + 'px';
-    }
+    tip.style.top = (showBelow ? rect.bottom + 6 : rect.top - tipH - 6) + 'px';
     tip.style.left = left + 'px';
+  }
+
+  function showTip(el) {
+    if (tipEl === el) return;
+    const tipText = el.getAttribute('data-tip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.className = 'merlin-tooltip';
+      document.body.appendChild(tip);
+    }
+    tip.innerHTML = escapeHtml(tipText).replace(/\n/g, '<br>');
+    tipEl = el;
+    positionTip(el);
+  }
+
+  function hideTip() {
+    if (tip) { tip.remove(); tip = null; }
+    tipEl = null;
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const el = e.target.closest('[data-tip]');
+    if (!el) return;
+    showTip(el);
   });
   document.addEventListener('mouseout', (e) => {
-    if (e.target.closest('[data-tip]') && tip) { tip.remove(); tip = null; }
+    if (!tipEl) return;
+    const rel = e.relatedTarget;
+    const relTipEl = rel && rel.nodeType === 1 ? rel.closest('[data-tip]') : null;
+    if (relTipEl === tipEl) return; // moved to a child of the same tip owner
+    if (!relTipEl) hideTip();
+    // If moving to a different [data-tip], mouseover will swap content in place.
   });
 })();
 
