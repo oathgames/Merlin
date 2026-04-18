@@ -2236,21 +2236,54 @@ body.platform-mac .titlebar-drag{
 /* Richer placeholder when there's no thumbnail yet — platform initial
    plus ad name preview beats a generic megaphone every time. */
 .archive-card-thumb-placeholder {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  background: linear-gradient(135deg, var(--hover-2), var(--hover-6));
-  padding: 8px;
+  gap: 8px;
+  background:
+    radial-gradient(circle at 28% 28%, rgba(167,139,250,.22), transparent 55%),
+    radial-gradient(circle at 78% 78%, rgba(52,211,153,.18), transparent 55%),
+    linear-gradient(135deg, rgba(167,139,250,.08), rgba(52,211,153,.06));
+  padding: 10px;
   text-align: center;
+  overflow: hidden;
 }
-.placeholder-platform {
-  font-size: 26px;
-  font-weight: 700;
-  color: var(--text-dim);
+.archive-card-thumb-placeholder::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(135deg, transparent 35%, rgba(255,255,255,.04) 50%, transparent 65%);
+  pointer-events: none;
+}
+.placeholder-mark {
+  font-size: 40px;
   line-height: 1;
-  opacity: .5;
+  background: linear-gradient(135deg, #a78bfa, #34d399);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  filter: drop-shadow(0 0 10px rgba(167,139,250,.4));
+  position: relative;
+  z-index: 1;
+}
+.placeholder-platform-chip {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  padding: 2px 7px;
+  border-radius: 10px;
+  background: rgba(10,10,10,.45);
+  color: rgba(255,255,255,.78);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 2;
 }
 .placeholder-label {
   font-size: 9px;
@@ -2259,7 +2292,10 @@ body.platform-mac .titlebar-drag{
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  opacity: .8;
+  opacity: .85;
+  padding: 0 4px;
+  position: relative;
+  z-index: 1;
 }
 
 .archive-date-header {
