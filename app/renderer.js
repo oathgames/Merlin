@@ -6581,21 +6581,29 @@ async function loadArchive() {
       // ~24h but get re-fetched on every insights refresh.
       // Always materialize the placeholder HTML up front so we can swap it in
       // as an onerror fallback when a CDN URL expires between refreshes —
-      // otherwise the browser paints its default broken-image icon.
-      const platformInitial = (ad.platform || '?').charAt(0).toUpperCase();
-      const labelPreview = escapeHtml((ad.adName || ad.product || '').slice(0, 40));
+      // otherwise the browser paints its default broken-image icon. Catalog /
+      // dynamic-product ads also get swapped when the loaded image is tiny
+      // (< 80px) — Meta returns a generic silhouette stub for DPA creatives
+      // that loads successfully but looks like a broken image in the grid.
+      const platformName = escapeHtml(ad.platform || '');
       const placeholderHTML = `<div class="archive-card-thumb archive-card-thumb-placeholder">
-          <div class="placeholder-platform">${escapeHtml(platformInitial)}</div>
-          ${labelPreview ? `<div class="placeholder-label">${labelPreview}</div>` : ''}
+          <div class="placeholder-mark" aria-hidden="true">✦</div>
+          ${platformName ? `<div class="placeholder-platform-chip">${platformName}</div>` : ''}
         </div>`;
       const altText = escapeHtml(ad.adName || ad.product || 'Ad creative');
+      const bindThumbFallbacks = (img) => {
+        if (!img) return;
+        img.addEventListener('error', () => { card.innerHTML = placeholderHTML; }, { once: true });
+        img.addEventListener('load', () => {
+          if (img.naturalWidth > 0 && img.naturalWidth < 80) card.innerHTML = placeholderHTML;
+        }, { once: true });
+      };
       if (ad.creativePath) {
         card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(ad.creativePath))}" alt="${altText}" loading="lazy">`;
       } else if (ad.creativeUrl) {
         card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(ad.creativeUrl)}" alt="${altText}" loading="lazy" referrerpolicy="no-referrer">`;
         // CSP blocks inline onerror — bind via addEventListener after insertion.
-        const _img = card.querySelector('img.archive-card-thumb');
-        if (_img) _img.addEventListener('error', () => { card.innerHTML = placeholderHTML; }, { once: true });
+        bindThumbFallbacks(card.querySelector('img.archive-card-thumb'));
       } else {
         card.innerHTML = placeholderHTML;
       }
