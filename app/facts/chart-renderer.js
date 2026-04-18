@@ -167,7 +167,14 @@ function svgFrame(p, inner) {
 }
 
 function renderFallbackHTML(payload) {
-  const title = payload && payload.title || 'Chart';
+  // Must escape: `payload.title` originates from Claude's chart config JSON
+  // and lands in innerHTML. The happy path runs through svgFrame which
+  // calls escapeXML; the empty-data fallback used to interpolate the raw
+  // string. A chart config with empty `data` plus a title like
+  // `<img src onerror=alert(1)>` would fire the XSS here. Same escape
+  // function the SVG path uses — keeps the two rendering code paths in
+  // lockstep on untrusted-input hygiene.
+  const title = escapeXML((payload && payload.title) || 'Chart');
   return `<p><em>${title}</em> — no data available.</p>`;
 }
 

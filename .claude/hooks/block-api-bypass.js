@@ -162,6 +162,13 @@ const PROTECTED_PATH_PATTERNS = [
   // every message the PWA sends. Apply the same (\.|$) atomic-write guard
   // as the other blobs.
   /\.merlin-relay-creds(\.|$)/i,
+  // Fact-binding HMAC session key (hex-on-disk) + signed envelope log. The
+  // key file seeds every fact envelope's HMAC; the JSONL log carries the
+  // signed envelopes the renderer verifies on ingest. Either one in wrong
+  // hands = fact forgery for that session. `(\.|$)` covers .bak/.tmp
+  // atomic-write siblings per Rule 7.
+  /\.merlin-facts-key(\.|$)/i,
+  /\.merlin-facts\.[a-z0-9_-]+\.jsonl(\.|$)/i,
   /\.rate-state(\.|$)/i,
   /\.rate-secret(\.|$)/i,
   // REGRESSION GUARD (2026-04-14, adversary loop 2):
@@ -204,6 +211,8 @@ const PROTECTED_COMMAND_PATTERNS = [
   /\.merlin-vault\b/i,
   /\.merlin-ratelimit\b/i,
   /\.merlin-audit\b/i,
+  /\.merlin-facts-key\b/i,
+  /\.merlin-facts\.[a-z0-9_-]+\.jsonl\b/i,
   /\.merlin-reddit-cache\b/i,
   /\.rate-state\b/i,
   /\.rate-secret\b/i,

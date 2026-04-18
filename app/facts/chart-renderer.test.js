@@ -110,3 +110,21 @@ test('mountCharts escapes special chars in title and labels', () => {
   assert.ok(el.innerHTML.includes('&lt;script&gt;'));
   assert.ok(el.innerHTML.includes('A&amp;B'));
 });
+
+// Regression: the empty-data fallback path previously interpolated
+// payload.title into innerHTML without escaping — a config with empty
+// `data` plus a title containing HTML would have injected raw tags. The
+// happy path (svgFrame) was always safe; only this fallback leaked. If
+// this test ever regresses, fallback rendering is back on an XSS path.
+test('mountCharts fallback path escapes title (AI review WARN regression guard)', () => {
+  const payload = encodePayload({
+    title: '<img src=x onerror=alert(1)>', kind: 'bar', data: [], // empty triggers fallback
+  });
+  const el = makeEl(payload);
+  mountCharts(makeRoot([el]));
+  assert.ok(el.innerHTML.includes('no data available'));
+  assert.ok(!el.innerHTML.includes('<img src=x'),
+    `fallback path leaked raw HTML: ${el.innerHTML}`);
+  assert.ok(el.innerHTML.includes('&lt;img'),
+    `fallback path did not escape: ${el.innerHTML}`);
+});
