@@ -14,10 +14,12 @@ on:
   push:
     paths:
       - 'app/**'
+      - 'test/**'
       - '.github/workflows/app-unit-tests.yml'
   pull_request:
     paths:
       - 'app/**'
+      - 'test/**'
       - '.github/workflows/app-unit-tests.yml'
 
 jobs:
@@ -50,3 +52,39 @@ jobs:
         run: node --test app/tts-worker.test.js
       - name: transcription error humanizer
         run: node --test app/transcribe-error.test.js
+      # MCP reliability primitives — the refactor that lets Merlin scale
+      # from a single-SKU brand to a 30k-product catalog without getting
+      # a client banned. Every primitive + its plumb-through has a test.
+      - name: MCP envelope shape
+        run: node --test app/mcp-envelope.test.js
+      - name: MCP error code vocabulary
+        run: node --test app/mcp-errors.test.js
+      - name: MCP idempotency store
+        run: node --test app/mcp-idempotency.test.js
+      - name: MCP concurrency semaphore
+        run: node --test app/mcp-concurrency.test.js
+      - name: MCP preview/confirm gate
+        run: node --test app/mcp-preview.test.js
+      - name: MCP redact helpers
+        run: node --test app/mcp-redact.test.js
+      - name: MCP jobs store
+        run: node --test app/mcp-jobs.test.js
+      - name: MCP defineTool wrapper
+        run: node --test app/mcp-define-tool.test.js
+      - name: MCP tools registration
+        run: node --test app/mcp-tools.test.js
+      - name: MCP jobs tools
+        run: node --test app/mcp-jobs-tools.test.js
+      - name: MCP Meta intent tools
+        run: node --test app/mcp-meta-intent.test.js
+      # Rate-limit stress — the "never get a client banned" canary. If
+      # any assertion flips, a real brand is about to hit a platform's
+      # rate-limit review queue.
+      - name: MCP rate-limit stress
+        run: node --test app/mcp-ratelimit-stress.test.js
+      # Annotation validator — every defineTool() call must declare
+      # destructive/idempotent/costImpact/brandRequired, and destructive
+      # tools must declare preview: true|false. Missing any = blast-radius
+      # bypass shipped silently.
+      - name: MCP annotation validator
+        run: node test/validate-mcp-annotations.js

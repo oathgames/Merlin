@@ -1338,10 +1338,12 @@ async function createWindow() {
   wsServer.setRelayForward(relayClient.forward);
 
   // Reconnect to the relay if we have stored creds from a prior session.
-  // First-time setup (minting a fresh session + QR) happens lazily via the
-  // get-mobile-qr IPC — no need to initiate pairing just because the app
-  // started.
   relayClient.start().catch(() => { /* offline boot — PWA-over-internet stays dormant */ });
+
+  // Pre-warm the mobile QR so the first ✦ Mobile click renders instantly
+  // instead of flashing a broken-image placeholder while we round-trip the
+  // relay. Failure is non-fatal — get-mobile-qr falls back to LAN on click.
+  warmMobileQrCache().catch(() => {});
 }
 
 // Store a pending approval with auto-expiry timeout
@@ -6289,11 +6291,18 @@ ipcMain.handle('win-minimize', () => { if (win) win.minimize(); });
 ipcMain.handle('win-maximize', () => { if (win) { win.isMaximized() ? win.unmaximize() : win.maximize(); } });
 ipcMain.handle('win-close', () => { if (win) win.close(); });
 
-ipcMain.handle('get-mobile-qr', async () => {
-  // Preferred: relay pairing URL — works over cellular, survives NAT, and
-  // is the only mode where approvals + push notifications reach a phone
-  // that's away from home WiFi. Fall back to the LAN QR only if the relay
-  // is unreachable (offline, pinned DNS, cert error).
+// Mobile-QR cache. Pair codes expire in ~5min on the relay; we treat the
+// cache as fresh for 4min (60s safety margin) and refresh on demand if
+// the user opens the modal after that. mintPairCode() is cheap (no new
+// session, just a fresh code) so on-demand refresh is fine — no timer.
+const MOBILE_QR_FRESH_MS = 4 * 60 * 1000;
+let _mobileQrCache = null;          // { entry, expiresAt }
+let _mobileQrInflight = null;       // dedupe concurrent refreshes
+
+async function buildMobileQrEntry() {
+  // Mirrors the get-mobile-qr IPC handler's two-mode contract: prefer the
+  // relay pair URL (roams over cellular), fall back to LAN with a surfaced
+  // error string so the renderer can show "same-WiFi only".
   try {
     const pair = await relayClient.initPairing();
     const qrDataUri = await generateQRDataUri(pair.pairUrl);
@@ -6317,6 +6326,26 @@ ipcMain.handle('get-mobile-qr', async () => {
       ...info,
     };
   }
+}
+
+async function warmMobileQrCache() {
+  if (_mobileQrInflight) return _mobileQrInflight;
+  _mobileQrInflight = (async () => {
+    const entry = await buildMobileQrEntry();
+    _mobileQrCache = { entry, expiresAt: Date.now() + MOBILE_QR_FRESH_MS };
+    return entry;
+  })().finally(() => { _mobileQrInflight = null; });
+  return _mobileQrInflight;
+}
+
+ipcMain.handle('get-mobile-qr', async () => {
+  // Pre-warmed at app start so the modal opens with a real QR instead of
+  // flashing a broken-image placeholder. Refresh on demand if the cached
+  // pair code is past the freshness window.
+  if (_mobileQrCache && _mobileQrCache.expiresAt > Date.now()) {
+    return _mobileQrCache.entry;
+  }
+  return warmMobileQrCache();
 });
 
 ipcMain.handle('get-relay-state', () => relayClient.getState());

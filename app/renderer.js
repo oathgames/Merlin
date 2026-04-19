@@ -2081,20 +2081,54 @@ merlin.onRemoteUserMessage((text) => {
 });
 
 // ── Mobile QR ───────────────────────────────────────────────
+function paintQrPayload(img, url, note, payload) {
+  img.src = payload.qrDataUri;
+  url.textContent = payload.pwaUrl;
+  // Surface the fallback so a phone on cellular doesn't silently get a LAN
+  // URL that only works on the same WiFi.
+  if (payload.mode === 'lan') {
+    note.textContent = payload.relayError
+      ? `Roaming unavailable (${payload.relayError}) — same-WiFi fallback only.`
+      : 'Roaming unavailable — same-WiFi fallback only.';
+    note.classList.remove('hidden');
+  } else {
+    note.textContent = '';
+    note.classList.add('hidden');
+  }
+}
+
 document.getElementById('mobile-btn').addEventListener('click', async () => {
   const modal = document.getElementById('qr-modal');
   const img = document.getElementById('qr-image');
   const url = document.getElementById('qr-url');
-  // Open the modal first in a neutral state so a slow relay handshake doesn't
-  // make the button feel dead on click — silent no-op was the original
-  // complaint when the button existed but the handler was missing.
+  const note = document.getElementById('qr-mode-note');
+  // Main pre-warms the QR at app start, so the IPC almost always returns a
+  // cached payload in <5ms. Race that against a 60ms timer: if the cache is
+  // warm we paint *before* showing the modal (no broken-image flash); if
+  // it's cold we open the modal with a placeholder so the button still
+  // feels responsive while the relay handshake completes.
+  const ipc = merlin.getMobileQR();
+  const fast = await Promise.race([
+    ipc.then(p => ({ ok: true, payload: p }), e => ({ ok: false, err: e })),
+    new Promise(resolve => setTimeout(() => resolve(null), 60)),
+  ]);
+  if (fast && fast.ok) {
+    paintQrPayload(img, url, note, fast.payload);
+    modal.classList.remove('hidden');
+    return;
+  }
+  // Cold path — show neutral placeholder, then paint when IPC settles.
+  // Either the 60ms timer beat the IPC (fast === null) or the IPC settled
+  // with an error (fast.ok === false) and we surface it via catch.
   img.removeAttribute('src');
   url.textContent = 'Generating pairing QR…';
+  note.textContent = '';
+  note.classList.add('hidden');
   modal.classList.remove('hidden');
   try {
-    const { qrDataUri, pwaUrl } = await merlin.getMobileQR();
-    img.src = qrDataUri;
-    url.textContent = pwaUrl;
+    if (fast && !fast.ok) throw fast.err;
+    const payload = await ipc;
+    paintQrPayload(img, url, note, payload);
   } catch (err) {
     // Rule 6: raw IPC errors must pass through friendlyError before surfacing
     // to the user — `err.message` can carry Go stack traces or relay details
@@ -7202,6 +7236,30 @@ function formatArchiveDate(d) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Human-readable model label for the Archive card subtitle.
+// Examples: "fal/banana-pro-edit" → "Banana Pro Edit",
+// "fal/seedance-2 (image-to-video)" → "Seedance 2",
+// "heygen/video-agent" → "Video Agent", "arcads" → "Arcads".
+// Takes the segment after the last '/' (model name, vendor-implicit), strips
+// the trailing `(qualifier)` that the Go binary appends, humanizes hyphens,
+// and preserves version tokens (v2, v4.5) + pure-digit tokens as-is.
+function prettyModelName(model) {
+  if (!model || typeof model !== 'string') return '';
+  let s = model.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  if (!s) return '';
+  const slash = s.lastIndexOf('/');
+  if (slash >= 0) s = s.slice(slash + 1);
+  s = s.replace(/[-_]+/g, ' ').trim();
+  if (!s) return '';
+  return s.split(/\s+/).map(w => {
+    if (/^v\d+(\.\d+)*$/i.test(w)) return w.toLowerCase();
+    if (/^\d+$/.test(w)) return w;
+    if (/^(ii|iii|iv|vi|vii|viii|ix|xi|xii)$/i.test(w)) return w.toUpperCase();
+    if (/^(hd|4k|8k|uhd|ai|hq|api|sdk|xl)$/i.test(w)) return w.toUpperCase();
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }).join(' ');
+}
+
 function createArchiveCard(item) {
   const card = document.createElement('div');
   card.className = 'archive-card';
@@ -7218,10 +7276,12 @@ function createArchiveCard(item) {
   const badgeText = isVideo ? 'Video' : 'Image';
   // Human-readable title: prefer product > brand > model > friendly type
   let title = '';
+  let titleFromModel = false;
   if (item.product) title = item.product.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   else if (item.brand) title = item.brand.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  else if (item.model) title = item.model.split('/').pop().split('(')[0].trim();
+  else if (item.model) { title = item.model.split('/').pop().split('(')[0].trim(); titleFromModel = true; }
   else title = isVideo ? 'Video Ad' : 'Ad Image';
+  const modelLabel = (!titleFromModel && item.model) ? prettyModelName(item.model) : '';
   const time = new Date(item.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
   card.setAttribute('tabindex', '0');
@@ -7262,12 +7322,34 @@ function createArchiveCard(item) {
   card.innerHTML += `
     <div class="archive-card-info">
       <div class="archive-card-title">${escapeHtml(title)}</div>
+      ${modelLabel ? `<div class="archive-card-model" title="${escapeHtml(item.model)}">${escapeHtml(modelLabel)}</div>` : ''}
       <div class="archive-card-meta">
         <span class="archive-card-badge ${badgeClass}">${badgeText}</span>
         <span>${time}</span>
       </div>
       ${extraBadges ? `<div class="archive-card-meta" style="margin-top:2px;gap:4px">${extraBadges}</div>` : ''}
-    </div>`;
+    </div>
+    <button class="archive-card-delete" type="button" aria-label="Delete ${escapeHtml(title)}" data-tip="Delete" data-tip-pos="bottom">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="3 6 5 6 21 6"/>
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        <path d="M10 11v6"/>
+        <path d="M14 11v6"/>
+        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+      </svg>
+    </button>`;
+
+  const deleteBtn = card.querySelector('.archive-card-delete');
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      requestArchiveCardDelete(card, item, title);
+    });
+    deleteBtn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); }
+    });
+  }
 
   const activate = (e) => {
     // Pairing mode: if at least one swipe-card (competitor) is already selected,
@@ -7288,6 +7370,51 @@ function createArchiveCard(item) {
     }
   });
   return card;
+}
+
+// Resolve delete targets for an archive card using the same source-aware logic
+// as the right-click context menu (see REGRESSION GUARD in the contextmenu
+// handler): loose items delete their own file list, run items delete the run
+// folder. Never widens to the brand folder.
+function resolveArchiveDeleteTargets(card) {
+  const source = card?.dataset?.source || '';
+  if (source === 'loose' && card?.dataset?.files) {
+    try {
+      const parsed = JSON.parse(card.dataset.files);
+      if (Array.isArray(parsed)) {
+        const files = parsed.filter(p => typeof p === 'string' && p);
+        if (files.length) return files;
+      }
+    } catch {}
+  }
+  if (source === 'run' && card?.dataset?.folder) return [card.dataset.folder];
+  if (card?.dataset?.folder) return [card.dataset.folder];
+  return [];
+}
+
+async function requestArchiveCardDelete(card, item, title) {
+  const targets = resolveArchiveDeleteTargets(card);
+  if (targets.length === 0) { showCopyToast('Nothing to delete'); return; }
+  const isVideo = item?.type === 'video';
+  const label = isVideo ? 'video' : 'image';
+  const safeTitle = title || (isVideo ? 'Video Ad' : 'Ad Image');
+  showModal({
+    title: 'Delete this ' + label + '?',
+    body: '"' + safeTitle + '" will be permanently removed from disk. This cannot be undone.',
+    confirmLabel: 'Delete',
+    cancelLabel: 'Cancel',
+    onConfirm: async () => {
+      const target = targets.length > 1 ? targets : targets[0];
+      const result = await merlin.deleteFile(target);
+      if (result?.success) {
+        showCopyToast('Deleted');
+        card.style.opacity = '0';
+        setTimeout(() => card.remove(), 300);
+      } else {
+        showCopyToast('Delete failed');
+      }
+    }
+  });
 }
 
 // Lazy-load video <source>s inside an archive grid. Hydrates `data-lazy-src`

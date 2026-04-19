@@ -53,6 +53,9 @@ dist/
 .merlin-key
 .env
 
+# Wrangler local deploy cache (build artefacts, never source)
+.wrangler/
+
 # Certificates & signing keys (NEVER commit)
 *.cer
 *.p12

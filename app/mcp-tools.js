@@ -1,11 +1,17 @@
 // Merlin MCP — Tool Definitions
 //
-// Each tool maps to a category of binary actions. The handler reads the
-// vault, builds a temp config, spawns the binary, redacts the output,
-// and returns sanitized results. Claude NEVER sees credentials.
+// Every tool is registered via `defineTool({...})` from mcp-define-tool.js.
+// That wrapper enforces annotations (destructive / idempotent / costImpact /
+// brandRequired) at construction time and routes every call through the
+// reliability pipeline:
 //
-// All tools receive a `context` object with shared helpers from main.js.
-// No circular requires — context is injected at creation time.
+//   brand-check → idempotency-lookup → preview-gate → concurrency-slot
+//   → handler → envelope → idempotency-store
+//
+// Claude NEVER sees credentials. The handler spawns the Go binary with a
+// temp config in the OS temp dir (so the workspace hook guard doesn't block
+// it), redacts the output, and returns a structured envelope that the agent
+// can branch on without regex-parsing English.
 
 'use strict';
 
@@ -16,6 +22,11 @@ const os = require('os');
 const path = require('path');
 const { redactOutput } = require('./mcp-redact');
 const { extractArtifacts } = require('./artifact-parser');
+const envelope = require('./mcp-envelope');
+const errors = require('./mcp-errors');
+const { defineTool } = require('./mcp-define-tool');
+const { DEFAULT_POLICIES } = require('./mcp-preview');
+const { buildMetaIntentTools } = require('./mcp-meta-intent');
 
 // ── Budget validation ────────────────────────────────────────
 //
@@ -225,6 +236,8 @@ async function runBinary(ctx, action, args, opts = {}) {
     // Map MCP field names to binary Command struct fields
     for (const [k, v] of Object.entries(args)) {
       if (k === 'action') continue; // already set
+      // Strip pipeline fields that are MCP-only — the binary doesn't know about them.
+      if (k === 'idempotencyKey' || k === 'preview' || k === 'confirm_token') continue;
       if (v !== undefined && v !== null && v !== '') {
         cmdObj[k] = v;
       }
@@ -272,7 +285,48 @@ async function runBinary(ctx, action, args, opts = {}) {
   });
 }
 
-// ── Tool builder helper ──────────────────────────────────────
+// ── Binary-result → envelope adapter ─────────────────────────
+//
+// Every tool handler in this file ends with `return toEnvelope(result)`. The
+// adapter classifies errors with mcp-errors and wraps successes into the
+// universal envelope shape. The defineTool wrapper adds meta/cost/rendering.
+
+function firstLine(text) {
+  if (!text || typeof text !== 'string') return 'Done.';
+  const idx = text.indexOf('\n');
+  const line = (idx >= 0 ? text.slice(0, idx) : text).trim();
+  return line || 'Done.';
+}
+
+/**
+ * Convert a runBinary result into an envelope.
+ *
+ * @param {{text: string, error?: boolean}} result
+ * @param {object} [opts] - { data: extra data to attach on success }
+ */
+function toEnvelope(result, opts = {}) {
+  if (result && result.error) {
+    const classified = errors.classifyOrFallback(result.text, result.text || 'Action failed');
+    return envelope.fail(classified, opts.meta ? { meta: opts.meta } : undefined);
+  }
+  const text = (result && result.text) || '';
+  return envelope.ok({
+    data: Object.assign(
+      { summary: firstLine(text), text },
+      opts.data || {},
+    ),
+    meta: opts.meta,
+  });
+}
+
+/**
+ * Short-circuit helper for input-validation errors before we touch the binary.
+ */
+function validationEnvelope(message, data) {
+  return envelope.fail(errors.makeError('INVALID_INPUT', { message }), data ? { data } : undefined);
+}
+
+// ── Tool builder ─────────────────────────────────────────────
 
 /**
  * Build all tool definitions. Called from mcp-server.js with the SDK's
@@ -282,28 +336,38 @@ async function runBinary(ctx, action, args, opts = {}) {
 function buildTools(tool, z, ctx) {
   const tools = [];
 
-  // ── connection_status ────────────────────────────────────
-  tools.push(tool(
-    'connection_status',
-    'Check which platforms are connected for a brand. Returns true/false per platform — never exposes tokens.',
-    { brand: z.string().optional().describe('Brand name (uses active brand if omitted)') },
-    async ({ brand }) => {
+  // ── connection_status ─────────────────────────────────────
+  tools.push(defineTool({
+    name: 'connection_status',
+    description: 'Check which platforms are connected for a brand. Returns true/false per platform — never exposes tokens.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    input: { brand: z.string().optional().describe('Brand name (uses active brand if omitted)') },
+    handler: async ({ brand }) => {
       try {
         const connections = ctx.getConnections(brand || '');
         const status = {};
         for (const c of connections) status[c.platform] = c.status;
-        return { content: [{ type: 'text', text: JSON.stringify(status, null, 2) }] };
+        return { summary: `Checked ${Object.keys(status).length} platforms`, connections: status };
       } catch (e) {
-        return { content: [{ type: 'text', text: `Error: ${e.message}` }], isError: true };
+        return envelope.fail(errors.makeError('INTERNAL_ERROR', { message: e.message }));
       }
-    }
-  ));
+    },
+  }, tool, z, ctx));
 
-  // ── meta_ads ─────────────────────────────────────────────
-  tools.push(tool(
-    'meta_ads',
-    'Manage Meta/Facebook ad campaigns — create ads, check performance, pause/scale ads, discover accounts.',
-    {
+  // ── meta_ads (legacy multiplexer — see mcp-meta-intent.js for the 13-tool split) ─
+  tools.push(defineTool({
+    name: 'meta_ads',
+    description: 'Manage Meta/Facebook ad campaigns — create ads, check performance, pause/scale ads, discover accounts. For new code, prefer the intent-specific tools (meta_launch_test_ad, meta_review_performance, meta_scale_winner, etc.) — they validate inputs more tightly and surface clearer errors.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: false,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
       action: z.enum(['push', 'insights', 'kill', 'activate', 'duplicate', 'setup', 'discover', 'warmup', 'retarget', 'lookalike', 'setup-retargeting', 'adlib', 'catalog', 'budget', 'bulk-push', 'lockdown', 'import']).describe('The operation to perform'),
       brand: z.string().optional().describe('Brand name'),
       adId: z.string().optional().describe('Ad ID (for kill/duplicate/lockdown)'),
@@ -327,12 +391,11 @@ function buildTools(tool, z, ctx) {
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
       status: z.string().optional().describe('Filter by status: active, paused, all (for import)'),
     },
-    async (args) => {
+    handler: async (args) => {
       // Cents-detection guard (defense-in-depth; binary has its own cap).
       const budgetError = validateBudget(ctx, args, 'Meta');
-      if (budgetError) {
-        return { content: [{ type: 'text', text: budgetError }], isError: true };
-      }
+      if (budgetError) return validationEnvelope(budgetError);
+
       const action = 'meta-' + (args.action === 'setup-retargeting' ? 'setup-retargeting' : args.action);
       const result = await runBinary(ctx, action, args);
 
@@ -342,7 +405,6 @@ function buildTools(tool, z, ctx) {
       // can't write config files (hooks block it). So we do it here.
       if (args.action === 'discover' && !result.error && result.text) {
         try {
-          // Extract JSON from the output (binary prints status lines then JSON)
           const jsonMatch = result.text.match(/\{[\s\S]*"adAccountId"[\s\S]*\}/);
           if (jsonMatch) {
             const discovered = JSON.parse(jsonMatch[0]);
@@ -366,16 +428,35 @@ function buildTools(tool, z, ctx) {
         }
       }
 
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
+      return toEnvelope(result);
     },
-    { annotations: { destructive: true } }
-  ));
+  }, tool, z, ctx));
+
+  // ── Meta intent tools (new surface — see mcp-meta-intent.js) ─
+  //
+  // Every operation the legacy meta_ads multiplexer does is also exposed as
+  // a narrow intent tool with tight schemas and per-action preview gating.
+  // meta_ads stays for backwards compatibility; new agent code should prefer
+  // the intent tools because they fail fast on bad inputs and surface clear
+  // blast-radius confirmations.
+  for (const t of buildMetaIntentTools({
+    tool, z, ctx, defineTool, runBinary,
+    validateBudget: (ctx, args, platformLabel) => validateBudget(ctx, args, platformLabel),
+  })) {
+    tools.push(t);
+  }
 
   // ── tiktok_ads ───────────────────────────────────────────
-  tools.push(tool(
-    'tiktok_ads',
-    'Manage TikTok ad campaigns — create ads, check performance, pause/scale ads.',
-    {
+  tools.push(defineTool({
+    name: 'tiktok_ads',
+    description: 'Manage TikTok ad campaigns — create ads, check performance, pause/scale ads.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: false,
+    concurrency: { platform: 'tiktok' },
+    preview: false,
+    input: {
       action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'lookalike']).describe('The operation to perform'),
       brand: z.string().optional(),
       adId: z.string().optional(),
@@ -390,19 +471,24 @@ function buildTools(tool, z, ctx) {
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks'),
       limit: z.number().optional().describe('Max results to return'),
     },
-    async (args) => {
+    handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'TikTok');
-      if (budgetError) return { content: [{ type: 'text', text: budgetError }], isError: true };
-      const result = await runBinary(ctx, 'tiktok-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      if (budgetError) return validationEnvelope(budgetError);
+      return toEnvelope(await runBinary(ctx, 'tiktok-' + args.action, args));
+    },
+  }, tool, z, ctx));
 
   // ── google_ads ───────────────────────────────────────────
-  tools.push(tool(
-    'google_ads',
-    'Manage Google Ads campaigns — create, check performance, pause/scale.',
-    {
+  tools.push(defineTool({
+    name: 'google_ads',
+    description: 'Manage Google Ads campaigns — create, check performance, pause/scale.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: false,
+    concurrency: { platform: 'google' },
+    preview: false,
+    input: {
       action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status']).describe('Operation'),
       brand: z.string().optional(),
       adId: z.string().optional(),
@@ -416,19 +502,24 @@ function buildTools(tool, z, ctx) {
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks, conversions'),
       limit: z.number().optional().describe('Max results to return'),
     },
-    async (args) => {
+    handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Google Ads');
-      if (budgetError) return { content: [{ type: 'text', text: budgetError }], isError: true };
-      const result = await runBinary(ctx, 'google-ads-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      if (budgetError) return validationEnvelope(budgetError);
+      return toEnvelope(await runBinary(ctx, 'google-ads-' + args.action, args));
+    },
+  }, tool, z, ctx));
 
   // ── amazon_ads ───────────────────────────────────────────
-  tools.push(tool(
-    'amazon_ads',
-    'Manage Amazon Advertising — Sponsored Products, orders, product status.',
-    {
+  tools.push(defineTool({
+    name: 'amazon_ads',
+    description: 'Manage Amazon Advertising — Sponsored Products, orders, product status.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: false,
+    concurrency: { platform: 'amazon' },
+    preview: false,
+    input: {
       action: z.enum(['push', 'insights', 'kill', 'setup', 'status', 'products', 'orders']).describe('Operation'),
       brand: z.string().optional(),
       adId: z.string().optional(),
@@ -436,82 +527,95 @@ function buildTools(tool, z, ctx) {
       dailyBudget: z.number().optional(),
       batchCount: z.number().optional().describe('Days of data'),
     },
-    async (args) => {
+    handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Amazon');
-      if (budgetError) return { content: [{ type: 'text', text: budgetError }], isError: true };
+      if (budgetError) return validationEnvelope(budgetError);
       const prefix = ['products', 'orders'].includes(args.action) ? 'amazon-' : 'amazon-ads-';
-      const result = await runBinary(ctx, prefix + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      return toEnvelope(await runBinary(ctx, prefix + args.action, args));
+    },
+  }, tool, z, ctx));
 
   // ── shopify ──────────────────────────────────────────────
-  tools.push(tool(
-    'shopify',
-    'Shopify store data — products, orders, analytics, customer cohorts, import.',
-    {
+  tools.push(defineTool({
+    name: 'shopify',
+    description: 'Shopify store data — products, orders, analytics, customer cohorts, import.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'shopify' },
+    input: {
       action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts']).describe('Operation'),
       brand: z.string().optional(),
       batchCount: z.number().optional().describe('Days of data (for analytics/orders)'),
     },
-    async (args) => {
-      const result = await runBinary(ctx, 'shopify-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'shopify-' + args.action, args)),
+  }, tool, z, ctx));
 
   // ── klaviyo ──────────────────────────────────────────────
-  tools.push(tool(
-    'klaviyo',
-    'Klaviyo email marketing — performance, lists, campaigns.',
-    {
+  tools.push(defineTool({
+    name: 'klaviyo',
+    description: 'Klaviyo email marketing — performance, lists, campaigns.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'klaviyo' },
+    input: {
       action: z.enum(['performance', 'lists', 'campaigns']).describe('Operation'),
       brand: z.string().optional(),
       batchCount: z.number().optional().describe('Days of data'),
     },
-    async (args) => {
-      const result = await runBinary(ctx, 'klaviyo-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'klaviyo-' + args.action, args)),
+  }, tool, z, ctx));
 
   // ── email ────────────────────────────────────────────────
-  tools.push(tool(
-    'email',
-    'Email marketing — audit email program, check revenue attribution.',
-    {
+  tools.push(defineTool({
+    name: 'email',
+    description: 'Email marketing — audit email program, check revenue attribution.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    input: {
       action: z.enum(['audit', 'revenue']).describe('Operation'),
       brand: z.string().optional(),
       batchCount: z.number().optional().describe('Days of data'),
     },
-    async (args) => {
-      const result = await runBinary(ctx, 'email-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'email-' + args.action, args)),
+  }, tool, z, ctx));
 
   // ── seo ──────────────────────────────────────────────────
-  tools.push(tool(
-    'seo',
-    'SEO tools — audit, keyword research, rankings, fix alt text, track rankings, find gaps.',
-    {
+  tools.push(defineTool({
+    name: 'seo',
+    description: 'SEO tools — audit, keyword research, rankings, fix alt text, track rankings, find gaps.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    input: {
       action: z.enum(['audit', 'keywords', 'rankings', 'fix-alt', 'track', 'gaps', 'update-rank']).describe('Operation'),
       brand: z.string().optional(),
       url: z.string().optional().describe('Target URL (for audit)'),
     },
-    async (args) => {
+    handler: async (args) => {
       const actionMap = { 'fix-alt': 'seo-fix-alt', 'update-rank': 'seo-update-rank' };
       const action = actionMap[args.action] || 'seo-' + args.action;
-      const result = await runBinary(ctx, action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      return toEnvelope(await runBinary(ctx, action, args));
+    },
+  }, tool, z, ctx));
 
   // ── content ──────────────────────────────────────────────
-  tools.push(tool(
-    'content',
-    'Create ad images, blog posts, social posts, and batch variations.',
-    {
+  tools.push(defineTool({
+    name: 'content',
+    description: 'Create ad images, blog posts, social posts, and batch variations.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'generation',
+    brandRequired: false,
+    concurrency: { platform: 'fal' },
+    preview: false,
+    input: {
       action: z.enum(['image', 'batch', 'blog-post', 'blog-list', 'social-post']).describe('Operation'),
       brand: z.string().optional(),
       product: z.string().optional(),
@@ -537,19 +641,27 @@ function buildTools(tool, z, ctx) {
       socialImageUrl: z.string().optional(),
       socialImagePath: z.string().optional(),
     },
-    async (args) => {
+    handler: async (args) => {
       const actionMap = { 'blog-post': 'blog-post', 'blog-list': 'blog-list', 'social-post': 'social-post' };
       const action = actionMap[args.action] || args.action;
-      const result = await runBinary(ctx, action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      return toEnvelope(await runBinary(ctx, action, args));
+    },
+  }, tool, z, ctx));
 
   // ── video ────────────────────────────────────────────────
-  tools.push(tool(
-    'video',
-    'Generate video ads — talking head, product showcase, etc.',
-    {
+  // Longer runs — mark longRunning so a future caller layer can choose to
+  // route this through mcp-jobs for async status polling.
+  tools.push(defineTool({
+    name: 'video',
+    description: 'Generate video ads — talking head, product showcase, etc.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'generation',
+    brandRequired: false,
+    longRunning: true,
+    concurrency: { platform: 'fal' },
+    preview: false,
+    input: {
       brand: z.string().optional(),
       product: z.string().optional(),
       script: z.string().optional().describe('Custom script text'),
@@ -562,17 +674,20 @@ function buildTools(tool, z, ctx) {
       voiceId: z.string().optional(),
       productHook: z.string().optional(),
     },
-    async (args) => {
-      const result = await runBinary(ctx, 'generate', args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'generate', args)),
+  }, tool, z, ctx));
 
   // ── voice ────────────────────────────────────────────────
-  tools.push(tool(
-    'voice',
-    'Voice management — clone voices, list available voices/avatars, delete voices.',
-    {
+  tools.push(defineTool({
+    name: 'voice',
+    description: 'Voice management — clone voices, list available voices/avatars, delete voices.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'generation',
+    brandRequired: false,
+    concurrency: { platform: 'elevenlabs' },
+    preview: false,
+    input: {
       action: z.enum(['clone', 'list', 'delete', 'list-avatars']).describe('Operation'),
       brand: z.string().optional(),
       voiceName: z.string().optional(),
@@ -580,64 +695,75 @@ function buildTools(tool, z, ctx) {
       voiceSampleDir: z.string().optional(),
       deleteVoice: z.string().optional().describe('Voice ID to delete'),
     },
-    async (args) => {
+    handler: async (args) => {
       const actionMap = { clone: 'clone-voice', list: 'list-voices', delete: 'delete-voice', 'list-avatars': 'list-avatars' };
-      const result = await runBinary(ctx, actionMap[args.action], args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
 
   // ── dashboard ────────────────────────────────────────────
-  tools.push(tool(
-    'dashboard',
-    'Analytics and intelligence — cross-platform dashboard, calendar analysis, collective wisdom, landing page audit, competitor scan.',
-    {
+  tools.push(defineTool({
+    name: 'dashboard',
+    description: 'Analytics and intelligence — cross-platform dashboard, calendar analysis, collective wisdom, landing page audit, competitor scan.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    input: {
       action: z.enum(['dashboard', 'calendar', 'wisdom', 'report', 'competitor-scan', 'landing-audit']).describe('Operation'),
       brand: z.string().optional(),
       batchCount: z.number().optional().describe('Days of data'),
       url: z.string().optional().describe('URL (for landing-audit)'),
     },
-    async (args) => {
+    handler: async (args) => {
       const actionMap = { 'competitor-scan': 'competitor-scan', 'landing-audit': 'landing-audit' };
       const action = actionMap[args.action] || args.action;
-      const result = await runBinary(ctx, action, args, { timeout: 60000 });
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      return toEnvelope(await runBinary(ctx, action, args, { timeout: 60000 }));
+    },
+  }, tool, z, ctx));
 
   // ── discord ──────────────────────────────────────────────
-  tools.push(tool(
-    'discord',
-    'Discord notifications — set up channel, send messages.',
-    {
+  tools.push(defineTool({
+    name: 'discord',
+    description: 'Discord notifications — set up channel, send messages.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    preview: false,
+    input: {
       action: z.enum(['setup', 'post']).describe('Operation'),
       slackMessage: z.string().optional().describe('Message text (for post)'),
     },
-    async (args) => {
-      const result = await runBinary(ctx, 'discord-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'discord-' + args.action, args)),
+  }, tool, z, ctx));
 
   // ── threads ─────────────────────────────────────────────
-  tools.push(tool(
-    'threads',
-    'Threads (Meta) — view profile, read posts, check engagement insights.',
-    {
+  tools.push(defineTool({
+    name: 'threads',
+    description: 'Threads (Meta) — view profile, read posts, check engagement insights.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    input: {
       action: z.enum(['profile', 'posts', 'insights']).describe('Operation'),
       brand: z.string().optional(),
     },
-    async (args) => {
-      const result = await runBinary(ctx, 'threads-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'threads-' + args.action, args)),
+  }, tool, z, ctx));
 
   // ── reddit_ads ───────────────────────────────────────────
-  tools.push(tool(
-    'reddit_ads',
-    'Reddit Ads — manage campaigns, ad groups, ads, and check performance.',
-    {
+  tools.push(defineTool({
+    name: 'reddit_ads',
+    description: 'Reddit Ads — manage campaigns, ad groups, ads, and check performance.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: false,
+    concurrency: { platform: 'reddit_ads' },
+    preview: false,
+    input: {
       action: z.enum(['accounts', 'campaigns', 'adgroups', 'ads', 'insights', 'create-campaign', 'create-ad', 'kill']).describe('Operation'),
       brand: z.string().optional(),
       campaignId: z.string().optional().describe('Campaign ID'),
@@ -648,20 +774,24 @@ function buildTools(tool, z, ctx) {
       adLink: z.string().optional().describe('Destination URL'),
       batchCount: z.number().optional().describe('Days of data (for insights)'),
     },
-    async (args) => {
+    handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Reddit');
-      if (budgetError) return { content: [{ type: 'text', text: budgetError }], isError: true };
-      const result = await runBinary(ctx, 'reddit-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
+      if (budgetError) return validationEnvelope(budgetError);
+      return toEnvelope(await runBinary(ctx, 'reddit-' + args.action, args));
     },
-    { annotations: { destructive: true } }
-  ));
+  }, tool, z, ctx));
 
   // ── linkedin_ads ─────────────────────────────────────────
-  tools.push(tool(
-    'linkedin_ads',
-    'LinkedIn Ads — manage campaigns, creatives, budgets, and check performance.',
-    {
+  tools.push(defineTool({
+    name: 'linkedin_ads',
+    description: 'LinkedIn Ads — manage campaigns, creatives, budgets, and check performance.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: false,
+    concurrency: { platform: 'linkedin' },
+    preview: false,
+    input: {
       action: z.enum(['accounts', 'campaigns', 'setup', 'push', 'insights', 'kill', 'duplicate', 'budget']).describe('Operation'),
       brand: z.string().optional(),
       campaignId: z.string().optional().describe('Campaign ID or URN'),
@@ -673,45 +803,45 @@ function buildTools(tool, z, ctx) {
       adLink: z.string().optional().describe('Destination URL'),
       batchCount: z.number().optional().describe('Days of data (for insights)'),
     },
-    async (args) => {
+    handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'LinkedIn');
-      if (budgetError) return { content: [{ type: 'text', text: budgetError }], isError: true };
-      const result = await runBinary(ctx, 'linkedin-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
+      if (budgetError) return validationEnvelope(budgetError);
+      return toEnvelope(await runBinary(ctx, 'linkedin-' + args.action, args));
     },
-    { annotations: { destructive: true } }
-  ));
+  }, tool, z, ctx));
 
   // ── etsy ─────────────────────────────────────────────────
-  tools.push(tool(
-    'etsy',
-    'Etsy shop management — view shop details, browse listings, check orders.',
-    {
+  tools.push(defineTool({
+    name: 'etsy',
+    description: 'Etsy shop management — view shop details, browse listings, check orders.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'etsy' },
+    input: {
       action: z.enum(['shop', 'products', 'orders']).describe('Operation'),
       brand: z.string().optional(),
       batchCount: z.number().optional().describe('Number of results to return (max 100)'),
     },
-    async (args) => {
-      const result = await runBinary(ctx, 'etsy-' + args.action, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'etsy-' + args.action, args)),
+  }, tool, z, ctx));
 
   // ── config ───────────────────────────────────────────────
-  tools.push(tool(
-    'config',
-    'Configuration — set up API keys, verify connections, check version.',
-    {
+  tools.push(defineTool({
+    name: 'config',
+    description: 'Configuration — set up API keys, verify connections, check version.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
       action: z.enum(['api-key-setup', 'verify-key', 'dry-run', 'version']).describe('Operation'),
       provider: z.string().optional().describe('API provider name (for api-key-setup)'),
       apiKey: z.string().optional().describe('API key to verify'),
     },
-    async (args) => {
-      const action = args.action;
-      const result = await runBinary(ctx, action, args, { timeout: 30000 });
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+    handler: async (args) => toEnvelope(await runBinary(ctx, args.action, args, { timeout: 30000 })),
+  }, tool, z, ctx));
 
   // ── competitor_spy ───────────────────────────────────────
   // Foreplay competitor ad intelligence. Routes EXCLUSIVELY through global
@@ -721,10 +851,15 @@ function buildTools(tool, z, ctx) {
   // the Foreplay UI, which defeats the whole "agentic ad research" promise.
   // See foreplay.go header for the rationale + foreplay_test.go for the
   // static-source guard locking in this contract.
-  tools.push(tool(
-    'competitor_spy',
-    'Research competitor ads via Foreplay global discovery — NEVER requires pre-subscribing to a brand. Flow: brands-by-domain (competitor.com → brand IDs) → ads-by-brand (all their ads) → download-ad (save media). ads-by-page works on raw Facebook page IDs. ad-duplicates reverse-looks up every brand reusing one creative. usage shows remaining API credits. Does NOT use Foreplay Spyder endpoints — those require manual brand subscription and are intentionally unsupported.',
-    {
+  tools.push(defineTool({
+    name: 'competitor_spy',
+    description: 'Research competitor ads via Foreplay global discovery — NEVER requires pre-subscribing to a brand. Flow: brands-by-domain (competitor.com → brand IDs) → ads-by-brand (all their ads) → download-ad (save media). ads-by-page works on raw Facebook page IDs. ad-duplicates reverse-looks up every brand reusing one creative. usage shows remaining API credits. Does NOT use Foreplay Spyder endpoints — those require manual brand subscription and are intentionally unsupported.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'foreplay' },
+    input: {
       action: z.enum([
         'brands-by-domain',
         'ads-by-brand',
@@ -733,24 +868,18 @@ function buildTools(tool, z, ctx) {
         'download-ad',
         'usage',
       ]).describe('brands-by-domain → resolve competitor domain to brand IDs. ads-by-brand → pull ads for one or more brand IDs. ads-by-page → pull ads for a raw Facebook page ID. ad-duplicates → find every brand reusing this creative. download-ad → save the ad\'s video/image to results/competitor-ads/. usage → check remaining API credits.'),
-      // brands-by-domain
       url: z.string().optional().describe('Competitor root domain for brands-by-domain (e.g. "acme.com", not "www.acme.com/products"). Alternatively pass foreplayDomain.'),
       foreplayDomain: z.string().optional().describe('Same as url — alternative field name for brands-by-domain.'),
-      // ads-by-brand
       foreplayBrandIds: z.string().optional().describe('CSV of Foreplay brand IDs for ads-by-brand (e.g. "brand_abc,brand_def"). Get IDs from brands-by-domain first.'),
-      // ads-by-page
       foreplayPageId: z.string().optional().describe('Numeric Facebook page ID for ads-by-page (e.g. "123456789"). Use when you already know the page ID — skips the domain lookup.'),
-      // ad-duplicates / download-ad
       adId: z.string().optional().describe('Foreplay ad_id for ad-duplicates or download-ad. Get it from ads-by-brand or ads-by-page output.'),
-      // Shared filters
       foreplayFormat: z.enum(['video', 'image', 'carousel', 'dco', 'dpa', 'multi_images', 'multi_videos']).optional().describe('Filter ads by creative format.'),
       foreplayOrder: z.enum(['newest', 'oldest', 'longest_running', 'most_relevant']).optional().describe('Sort order for ad results (default: newest).'),
       foreplayLive: z.enum(['true', 'false']).optional().describe('Filter by live status: "true" = only running ads, "false" = only retired. Omit for both.'),
       foreplayCursor: z.string().optional().describe('Opaque pagination cursor from the previous response\'s metadata.cursor. Omit for page 1.'),
       limit: z.number().optional().describe('Max results per page (1-250 for ads, 1-10 for brands). Default: 25 ads, 5 brands.'),
     },
-    async (args) => {
-      // Map short action to binary action name.
+    handler: async (args) => {
       const actionMap = {
         'brands-by-domain': 'foreplay-brands-by-domain',
         'ads-by-brand':     'foreplay-ads-by-brand',
@@ -760,47 +889,57 @@ function buildTools(tool, z, ctx) {
         'usage':            'foreplay-usage',
       };
       const binaryAction = actionMap[args.action];
-      if (!binaryAction) {
-        return { content: [{ type: 'text', text: `Unknown competitor_spy action: ${args.action}` }], isError: true };
-      }
-      const result = await runBinary(ctx, binaryAction, args);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      if (!binaryAction) return validationEnvelope(`Unknown competitor_spy action: ${args.action}`);
+      return toEnvelope(await runBinary(ctx, binaryAction, args));
+    },
+  }, tool, z, ctx));
 
   // ── platform_login ───────────────────────────────────────
-  tools.push(tool(
-    'platform_login',
-    'Connect a platform via OAuth — opens browser for authorization. Returns success/failure only, never tokens.',
-    {
+  tools.push(defineTool({
+    name: 'platform_login',
+    description: 'Connect a platform via OAuth — opens browser for authorization. Returns success/failure only, never tokens.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
       platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit']).describe('Platform to connect'),
       brand: z.string().optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
-    async (args) => {
+    handler: async (args) => {
       // Meta: App Review pending — OAuth not available. User connects via
       // manual token entry in the UI (Meta tile in Connections panel).
       if (args.platform === 'meta') {
-        return { content: [{ type: 'text', text: 'Meta is currently connected via manual token entry (App Review pending). Ask the user to click the Meta tile in the Connections panel and paste their token from developers.facebook.com/tools/explorer. Then use connection_status to verify.' }] };
+        return {
+          summary: 'Meta is connected via manual token entry (App Review pending)',
+          instructions: 'Ask the user to click the Meta tile in the Connections panel and paste their token from developers.facebook.com/tools/explorer. Then use connection_status to verify.',
+        };
       }
-      // Guard platforms that don't have OAuth credentials yet
       const comingSoon = ['klaviyo'];
       if (comingSoon.includes(args.platform)) {
-        return { content: [{ type: 'text', text: `${args.platform} integration is coming soon — not yet available.` }] };
+        return {
+          summary: `${args.platform} integration is coming soon`,
+          instructions: `${args.platform} is not yet available.`,
+        };
       }
       try {
         const extra = args.store ? { store: args.store } : undefined;
         const result = await ctx.runOAuthFlow(args.platform, args.brand || '', extra);
         if (result.error) {
-          return { content: [{ type: 'text', text: `Connection failed: ${redactOutput(result.error, '')}` }], isError: true };
+          return envelope.fail(errors.makeError('INTERNAL_ERROR', {
+            message: `Connection failed: ${redactOutput(result.error, '')}`,
+          }));
         }
         // NEVER return tokens. Only success status.
-        return { content: [{ type: 'text', text: JSON.stringify({ success: true, platform: args.platform }) }] };
+        return { summary: `Connected ${args.platform}`, success: true, platform: args.platform };
       } catch (e) {
-        return { content: [{ type: 'text', text: `Connection error: ${redactOutput(e.message, '')}` }], isError: true };
+        return envelope.fail(errors.makeError('INTERNAL_ERROR', {
+          message: `Connection error: ${redactOutput(e.message, '')}`,
+        }));
       }
-    }
-  ));
+    },
+  }, tool, z, ctx));
 
   // ── brand_scrape ─────────────────────────────────────────
   //
@@ -812,23 +951,29 @@ function buildTools(tool, z, ctx) {
   // Default output OMITS screenshots (1-3MB base64 each) and raw HTML to keep
   // Claude's context budget intact. Callers that need screenshots (e.g. for
   // vision-based disambiguation) must pass includeScreenshots: true.
-  tools.push(tool(
-    'brand_scrape',
-    'Scrape a brand website to capture palette, typography, logo candidates, and copy samples. Used once during onboarding; the output feeds brand-guide synthesis. Screenshots are stripped by default.',
-    {
+  tools.push(defineTool({
+    name: 'brand_scrape',
+    description: 'Scrape a brand website to capture palette, typography, logo candidates, and copy samples. Used once during onboarding; the output feeds brand-guide synthesis. Screenshots are stripped by default.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
       url: z.string().describe('Brand homepage URL (e.g. https://madchill.com)'),
       includeScreenshots: z.boolean().optional().describe('Include base64 desktop+mobile PNGs (large — only set true when vision analysis is needed)'),
       includeHtml: z.boolean().optional().describe('Include raw HTML of homepage + about page (very large — usually unnecessary)'),
     },
-    async ({ url, includeScreenshots, includeHtml }) => {
+    handler: async ({ url, includeScreenshots, includeHtml }) => {
       if (!url || typeof url !== 'string' || !/^https?:\/\//i.test(url)) {
-        return { content: [{ type: 'text', text: 'url must be an http(s) URL' }], isError: true };
+        return validationEnvelope('url must be an http(s) URL');
       }
       let scrapeBrand;
       try {
         ({ scrapeBrand } = require('./brand-scraper'));
       } catch (e) {
-        return { content: [{ type: 'text', text: `brand-scraper module failed to load: ${e.message}` }], isError: true };
+        return envelope.fail(errors.makeError('INTERNAL_ERROR', {
+          message: `brand-scraper module failed to load: ${e.message}`,
+        }));
       }
       try {
         const signal = await scrapeBrand(url);
@@ -842,91 +987,224 @@ function buildTools(tool, z, ctx) {
           if (signal.homepage_html) signal.homepage_html = '[elided — pass includeHtml:true]';
           if (signal.about_html) signal.about_html = '[elided — pass includeHtml:true]';
         }
-        const text = JSON.stringify(signal, null, 2);
-        return { content: [{ type: 'text', text }] };
+        return { summary: `Scraped ${url}`, signal };
       } catch (e) {
-        return { content: [{ type: 'text', text: `Scrape failed: ${redactOutput(e && e.message || String(e), '')}` }], isError: true };
+        return envelope.fail(errors.makeError('INTERNAL_ERROR', {
+          message: `Scrape failed: ${redactOutput(e && e.message || String(e), '')}`,
+        }));
       }
-    }
-  ));
+    },
+  }, tool, z, ctx));
 
   // ── brand_guide ──────────────────────────────────────────
   //
-  // Validate, write, or read the brand-guide.json for a brand. The synthesis
-  // prompt (merlin-brand-guide skill) produces the JSON; this tool hardens it
-  // through the Go validator (WCAG math, forbidden-word scan, schema checks)
-  // and persists it atomically into assets/brands/<brand>/brand-guide.json.
-  //
-  // Claude flow:
-  //   1. scrape site via brand_scrape
-  //   2. synthesize guide per merlin-brand-guide skill
-  //   3. brand_guide({ action:"validate", brandGuide: <json> }) — catches slop
-  //   4. fix any violations, re-validate
-  //   5. brand_guide({ action:"write", brand, brandGuide: <json> }) — persists
-  tools.push(tool(
-    'brand_guide',
-    'Validate, write, or read a brand-guide.json. Validate runs WCAG contrast math + forbidden-word scan + schema checks without persisting. Write atomically persists a pre-validated guide. Read returns the persisted guide for review / downstream creative generation.',
-    {
+  // Validate, write, or read the brand-guide.json for a brand.
+  tools.push(defineTool({
+    name: 'brand_guide',
+    description: 'Validate, write, or read a brand-guide.json. Validate runs WCAG contrast math + forbidden-word scan + schema checks without persisting. Write atomically persists a pre-validated guide. Read returns the persisted guide for review / downstream creative generation.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    preview: false,
+    input: {
       action: z.enum(['validate', 'write', 'read']).describe('validate=dry-run checks only; write=persist to brand folder; read=return persisted guide'),
       brand: z.string().optional().describe('Brand name — required for write and read'),
       brandGuide: z.any().optional().describe('The brand guide JSON object (required for validate and write)'),
     },
-    async (args) => {
+    handler: async (args) => {
       const action = `${args.action}-brand-guide`;
       if (action === 'validate-brand-guide' && !args.brandGuide) {
-        return { content: [{ type: 'text', text: 'brandGuide (the JSON object) is required for validate' }], isError: true };
+        return validationEnvelope('brandGuide (the JSON object) is required for validate');
       }
       if (action === 'write-brand-guide' && (!args.brand || !args.brandGuide)) {
-        return { content: [{ type: 'text', text: 'brand and brandGuide are both required for write' }], isError: true };
+        return validationEnvelope('brand and brandGuide are both required for write');
       }
       if (action === 'read-brand-guide' && !args.brand) {
-        return { content: [{ type: 'text', text: 'brand is required for read' }], isError: true };
+        return validationEnvelope('brand is required for read');
       }
-      // Binary Command struct takes brandGuide as json.RawMessage. The runBinary
-      // helper JSON.stringify's the whole Command, so we pass an object here —
-      // NOT a pre-stringified JSON blob (that would double-encode as a string).
-      // If the caller handed us a string, parse it first so we normalize shape.
       const payload = { action, brand: args.brand };
       if (args.brandGuide !== undefined) {
         if (typeof args.brandGuide === 'string') {
           try {
             payload.brandGuide = JSON.parse(args.brandGuide);
           } catch (e) {
-            return { content: [{ type: 'text', text: `brandGuide is not valid JSON: ${e.message}` }], isError: true };
+            return validationEnvelope(`brandGuide is not valid JSON: ${e.message}`);
           }
         } else {
           payload.brandGuide = args.brandGuide;
         }
       }
-      const result = await runBinary(ctx, action, payload, { timeout: 30000 });
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      return toEnvelope(await runBinary(ctx, action, payload, { timeout: 30000 }));
+    },
+  }, tool, z, ctx));
 
   // ── decisions ────────────────────────────────────────────
-  // Surfaces the DecisionFact chain (signed kill/scale events in
-  // activity.jsonl) to the optimizer + daily spells. Only action today is
-  // "queue" — returns every unconsumed DecisionFact whose NextAction hasn't
-  // been satisfied by a later generate-fact. merlin-daily reads this at dawn
-  // and generates replacement ads for each kill, citing the kill's ID in
-  // factRefs so the binary can mark the queue entry consumed.
-  tools.push(tool(
-    'decisions',
-    'Read the brand\'s DecisionFact chain (signed kill/scale events). action=queue returns unconsumed decisions that still need a follow-up (e.g. kills awaiting a replacement ad).',
-    {
+  tools.push(defineTool({
+    name: 'decisions',
+    description: 'Read the brand\'s DecisionFact chain (signed kill/scale events). action=queue returns unconsumed decisions that still need a follow-up (e.g. kills awaiting a replacement ad).',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
       action: z.enum(['queue']).describe('queue=list unconsumed DecisionFacts (kills needing replacements)'),
       brand: z.string().optional().describe('Brand name'),
       sinceUnix: z.number().optional().describe('Only return decisions with Timestamp >= this Unix seconds value (default: all)'),
     },
-    async (args) => {
+    handler: async (args) => {
       const payload = { action: 'decision-queue', brand: args.brand };
       if (args.sinceUnix !== undefined) payload.sinceUnix = args.sinceUnix;
-      const result = await runBinary(ctx, 'decision-queue', payload);
-      return { content: [{ type: 'text', text: result.text }], isError: result.error };
-    }
-  ));
+      return toEnvelope(await runBinary(ctx, 'decision-queue', payload));
+    },
+  }, tool, z, ctx));
+
+  // ── jobs_poll / jobs_list / jobs_cancel ─────────────────────
+  //
+  // Long-running tools (bulk-push to 500 ads, 30k-product catalog sync,
+  // full-site SEO audit) return { jobId } immediately and run the work in
+  // the background. The agent polls jobs_poll until state is terminal
+  // (done / failed / cancelled), then reads the final envelope from
+  // `progress.result`. This is the piece that unlocks Forever-21-scale
+  // work inside the 5-minute MCP timeout.
+  //
+  // ctx.jobStore is the shared JobStore instance wired in mcp-server.js.
+  // If missing (e.g., stripped-down test harnesses), the three tools
+  // return a clean BRAND_MISSING-style envelope instead of crashing.
+  const jobsMissingEnvelope = () =>
+    envelope.fail(errors.makeError('INTERNAL_ERROR', {
+      message: 'Job store is not initialized on this MCP server.',
+      next_action: 'Check that createMerlinMcpServer() wired ctx.jobStore.',
+    }));
+
+  tools.push(defineTool({
+    name: 'jobs_poll',
+    description: 'Poll a background job by jobId. Returns the job state (queued|running|done|failed|cancelled), progress, and the final envelope once terminal. Call this repeatedly for long-running tools until state is terminal.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
+      jobId: z.string().describe('The jobId returned by a long-running tool'),
+    },
+    handler: async ({ jobId }) => {
+      if (!ctx.jobStore) return jobsMissingEnvelope();
+      const job = ctx.jobStore.get(jobId);
+      if (!job) {
+        return envelope.fail(errors.makeError('JOB_NOT_FOUND', {
+          message: `Job ${jobId} not found or already pruned.`,
+          next_action: 'Verify the jobId, or re-run the originating tool if the job was pruned after 7-day retention.',
+        }));
+      }
+      return envelope.ok({
+        data: {
+          summary: `Job ${job.jobId} ${job.state}${typeof job.pct === 'number' ? ` (${Math.round(job.pct * 100)}%)` : ''}`,
+          jobId: job.jobId,
+          tool: job.tool,
+          brand: job.brand,
+          state: job.state,
+          stage: job.stage,
+          pct: job.pct,
+          etaSec: job.etaSec,
+          createdAt: job.createdAt,
+          updatedAt: job.updatedAt,
+          result: job.result,
+          error: job.error,
+          terminal: ['done', 'failed', 'cancelled'].includes(job.state),
+        },
+        progress: {
+          jobId: job.jobId,
+          stage: job.stage,
+          pct: job.pct,
+          eta_sec: job.etaSec,
+        },
+      });
+    },
+  }, tool, z, ctx));
+
+  tools.push(defineTool({
+    name: 'jobs_list',
+    description: 'List background jobs, newest first. Filter by brand, tool, or state. Terminal jobs are retained for 7 days.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
+      brand: z.string().optional().describe('Filter by brand'),
+      tool: z.string().optional().describe('Filter by tool name (e.g. "meta_bulk_push")'),
+      state: z.enum(['queued', 'running', 'done', 'failed', 'cancelled']).optional().describe('Filter by state'),
+      limit: z.number().optional().describe('Max results (default: 50)'),
+    },
+    handler: async (args) => {
+      if (!ctx.jobStore) return jobsMissingEnvelope();
+      const filters = { limit: typeof args.limit === 'number' ? args.limit : 50 };
+      if (args.brand) filters.brand = args.brand;
+      if (args.tool) filters.tool = args.tool;
+      if (args.state) filters.state = args.state;
+      const jobs = ctx.jobStore.list(filters).map((j) => ({
+        jobId: j.jobId,
+        tool: j.tool,
+        brand: j.brand,
+        state: j.state,
+        stage: j.stage,
+        pct: j.pct,
+        createdAt: j.createdAt,
+        updatedAt: j.updatedAt,
+      }));
+      return envelope.ok({
+        data: {
+          summary: `${jobs.length} job(s)`,
+          jobs,
+          filters,
+        },
+      });
+    },
+  }, tool, z, ctx));
+
+  tools.push(defineTool({
+    name: 'jobs_cancel',
+    description: 'Request cancellation of a running background job. The job will transition to "cancelled" state on the next checkpoint. Already-terminal jobs return unchanged.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: false,
+    preview: false,
+    input: {
+      jobId: z.string().describe('The jobId to cancel'),
+    },
+    handler: async ({ jobId }) => {
+      if (!ctx.jobStore) return jobsMissingEnvelope();
+      const result = ctx.jobStore.cancel(jobId);
+      if (!result.cancelled && result.reason === 'not_found') {
+        return envelope.fail(errors.makeError('JOB_NOT_FOUND', {
+          message: `Job ${jobId} not found.`,
+          next_action: 'Use jobs_list to find the active jobId.',
+        }));
+      }
+      return envelope.ok({
+        data: {
+          summary: result.cancelled
+            ? `Cancellation requested for ${jobId}`
+            : `Job ${jobId} already ${result.state || 'terminal'}; no cancellation needed`,
+          jobId,
+          cancelled: result.cancelled,
+          reason: result.reason,
+          state: result.state || null,
+        },
+      });
+    },
+  }, tool, z, ctx));
 
   return tools;
 }
 
-module.exports = { buildTools, runBinary };
+module.exports = {
+  buildTools,
+  runBinary,
+  toEnvelope,
+  validationEnvelope,
+  validateBudget,
+  isBrandMissing,
+  BRAND_OPTIONAL_ACTIONS,
+  BUDGET_HARD_CEILING,
+};

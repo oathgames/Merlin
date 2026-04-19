@@ -10,6 +10,10 @@ globs = ["**/*.html", "**/*.js", "**/*.css", "**/*.json"]
 # Route: pwa.merlingotme.com — the roaming PWA origin. The Worker pins CSP
 # connect-src to relay.merlingotme.com so we can't accidentally exfiltrate
 # user data to a third party.
-# routes = [
-#   { pattern = "pwa.merlingotme.com/*", zone_name = "merlingotme.com" }
-# ]
+#
+# `custom_domain = true` lets Cloudflare manage the DNS record + edge cert
+# automatically. Matches relay/wrangler.toml so both subdomains follow the
+# same deploy pattern — no hand-maintained DNS rows.
+[[routes]]
+pattern = "pwa.merlingotme.com"
+custom_domain = true

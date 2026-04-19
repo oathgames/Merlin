@@ -62,6 +62,7 @@ Every user message includes an `[ACTIVE_BRAND: <name>]` tag injected by the app.
 ## Universal rules (session-wide, not domain-specific)
 
 - **Never substitute a model the user didn't ask for.** Seedance ≠ Kling, Veo ≠ anything else, image-to-video ≠ text-to-video, edit ≠ base. If the requested model fails/rate-limits/isn't mapped — STOP, surface the error, ask.
+- **Report the real default, don't invent one.** Image runs default to `banana-pro-edit` (nano banana pro edit). Video runs default to `seedance-2`. When the user asks "what model did you use" and they didn't explicitly pass `imageModel`/`falModel`, answer with those exact names. Never fabricate marketing names like "FLUX Pro v1.1 Ultra" or "Imagen 4 Ultra" — that's the model you want to have used, not the one the binary ran.
 - **Add-only.** Create new content only. Pause underperformers = OK. Edit existing ads/products/pages/flows = never.
 - **Budget caps.** Check `maxDailyAdBudget` and `maxMonthlyAdSpend` before ad spend. Stop if exceeded.
 - **Data integrity.** Every number comes from an app action. Never estimate, calculate, or fabricate metrics. Quote exact values from action output — no rounding, no paraphrasing.

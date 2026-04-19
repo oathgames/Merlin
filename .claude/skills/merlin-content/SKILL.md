@@ -18,6 +18,8 @@ Before writing ANY image prompt:
 
 Pass the raw product description to the image action; the app's prompt pipeline layers camera settings, scene anchoring, and negative constraints automatically. Available models: `banana-pro-edit` (default), `banana-pro`, `banana-edit`, `imagen-ultra`, `ideogram`, `flux`. Omit `imageModel` unless the user explicitly requests one.
 
+**Current defaults (hard-coded — report exactly these names when asked):** image = `banana-pro-edit` (aka "nano banana pro edit"), video = `seedance-2`. The Wisdom-driven per-user model picker is not live yet, so every run uses the config default unless the user explicitly passes `imageModel`/`falModel`. If the user asks what model generated an asset, say `banana-pro-edit` or `seedance-2` — do NOT invent names like "FLUX Pro v1.1 Ultra", "Imagen 4 Ultra", "Veo 3", or any other model the run didn't actually use.
+
 **Model substitution is a hard failure.** Seedance ≠ Kling, Veo ≠ anything else, image-to-video ≠ text-to-video, edit ≠ base. If the requested model fails/rate-limits/isn't mapped — STOP, surface the binary error, ask. Silent retries on a different model is a bug.
 
 **Fal known aliases (pass as-is, NEVER WebFetch to verify):** `banana`, `banana-edit`, `banana-pro`, `banana-pro-edit`, `flux`, `ideogram`, `recraft`, `seedream`, `imagen`, `imagen-ultra`, `seedance-2`, `veo-3`, `kling`. Full `fal-ai/vendor/model` slugs also accepted. Only WebFetch if a name is neither an alias nor a full slug.

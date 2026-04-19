@@ -11,7 +11,9 @@
 
 'use strict';
 
+const path = require('path');
 const { buildTools } = require('./mcp-tools');
+const { JobStore } = require('./mcp-jobs');
 
 // Resolve the SDK module. Prefers the already-imported module passed in via
 // ctx.sdkModule (from main.js's importClaudeAgentSdk(), which correctly
@@ -78,6 +80,21 @@ async function createMerlinMcpServer(ctx) {
   // to the same copy in node_modules/zod. The tool() function accepts
   // ZodRawShape objects for input schema validation.
   const z = require('zod');
+
+  // Shared JobStore for long-running tools (bulk push, catalog sync,
+  // full-site SEO audits). Lives under the Electron userData dir via
+  // ctx.getJobsDir(), falling back to ctx.appRoot/.merlin-jobs.
+  // Callers may override by pre-populating ctx.jobStore.
+  if (!ctx.jobStore) {
+    const jobsDir = typeof ctx.getJobsDir === 'function'
+      ? ctx.getJobsDir()
+      : path.join(ctx.appRoot || process.cwd(), '.merlin-jobs');
+    try {
+      ctx.jobStore = new JobStore({ dir: jobsDir });
+    } catch (e) {
+      console.warn('[mcp] JobStore init failed — long-running tools will report INTERNAL_ERROR:', e.message);
+    }
+  }
 
   const allTools = buildTools(tool, z, ctx);
 

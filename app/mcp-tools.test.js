@@ -17,6 +17,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { buildTools, runBinary } = require('./mcp-tools');
+const envelope = require('./mcp-envelope');
 
 // ─────────────────────────────────────────────────────────────────────
 // Test doubles for the SDK's tool() factory and Zod.
@@ -91,6 +92,7 @@ test('buildTools registers every advertised tool', () => {
     'video', 'voice', 'dashboard', 'discord', 'threads', 'reddit_ads',
     'linkedin_ads', 'etsy', 'config', 'competitor_spy', 'platform_login',
     'brand_scrape', 'brand_guide', 'decisions',
+    'jobs_poll', 'jobs_list', 'jobs_cancel',
   ];
   for (const name of expected) {
     assert.ok(names.includes(name), `missing tool: ${name}`);
@@ -190,9 +192,11 @@ test('connection_status handler returns JSON of platform statuses', async () => 
   const entry = registry.find(t => t.name === 'connection_status');
   const out = await entry.handler({ brand: 'madchill' });
   assert.ok(Array.isArray(out.content));
-  const parsed = JSON.parse(out.content[0].text);
-  assert.equal(parsed.meta,   'connected');
-  assert.equal(parsed.tiktok, 'missing');
+  const env = envelope.parse(out);
+  assert.ok(env, 'response must carry an envelope');
+  assert.equal(env.ok, true);
+  assert.equal(env.data.connections.meta,   'connected');
+  assert.equal(env.data.connections.tiktok, 'missing');
 });
 
 test('connection_status surfaces ctx errors as isError result', async () => {
@@ -279,7 +283,9 @@ test('platform_login returns success without leaking tokens', async () => {
   const entry = registry.find(t => t.name === 'platform_login');
   const out = await entry.handler({ platform: 'shopify', brand: 'madchill' });
   assert.ok(!out.content[0].text.includes('EAABshouldneverleakthis1234567890'));
-  const parsed = JSON.parse(out.content[0].text);
-  assert.equal(parsed.success, true);
-  assert.equal(parsed.platform, 'shopify');
+  const env = envelope.parse(out);
+  assert.ok(env, 'response must carry an envelope');
+  assert.equal(env.ok, true);
+  assert.equal(env.data.success, true);
+  assert.equal(env.data.platform, 'shopify');
 });
