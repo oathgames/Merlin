@@ -16,7 +16,7 @@ DO NOT narrate each setup step. The app has a native progress bar — do the wor
 
 ### A) Brand + Product setup
 
-1. Ask: **"What's your brand's website?"** — the ONLY question. Everything else is automatic.
+1. Ask: **"What's your brand's website?"** — the opening question. The brand/product scrape, colors, logos, and memory scaffolding all run automatically from there. Two lightweight questions come later in the flow (a revenue goal, and autopilot consent); everything else is silent.
 
 **VERTICAL AWARENESS** (after detecting vertical):
 - **Ecommerce/DTC**: suggest Shopify connection, product import, ad creation.
@@ -77,11 +77,33 @@ DO NOT narrate each setup step. The app has a native progress bar — do the wor
    - If the user says skip / "no idea" / "later": move on silently. `goal.md` stays absent, dashboard skips the pacing section. The user can set it later with the same action.
    - The goal file is user-editable markdown — they can open it in any editor and add priorities / constraints / context prose. Reading is via `{"action": "goal-get", "brand": "<brand>"}`.
 
-   **Automation (automatic — don't ask):** create all four scheduled tasks automatically (daily, optimize, digest, memory).
+   **Automation (CONSENT REQUIRED — ask the user before creating scheduled tasks):**
+
+   Scheduled tasks will generate creatives, kill/scale ads, and adjust budgets without per-action confirmation — so they require explicit opt-in. Do NOT call `mcp__scheduled-tasks__create_scheduled_task` before the user answers the question below. Use `AskUserQuestion` with ONE question first:
+
+   **Question:** *"Turn on autopilot for [Brand]? Merlin can generate daily creatives, optimize your ads, send weekly digests, and keep your memory tidy. You can toggle any of these off later in the Spellbook (the ✦ tab in the sidebar)."*
+
+   **Options (exactly these three, in this order):**
+   - `Yes — turn on all 4 (recommended)` · description: `Daily creatives 9 AM · Ad optimization 10 AM · Weekly digest Monday · Memory compaction Sunday`
+   - `Let me pick` · description: `Ask me about each one`
+   - `Not now` · description: `I'll enable them later in the Spellbook`
+
+   **Branch on the answer:**
+   - `Yes — turn on all 4 (recommended)` → create all four tasks from section B without further questions.
+   - `Let me pick` → ask follow-up `AskUserQuestion` questions, each with `Yes` / `No` options. Create only the tasks the user said `Yes` to. Ask in this order:
+     1. *"Daily creatives — generate fresh ad concepts every weekday at 9 AM?"*
+     2. *"Ad optimization — kill losers and scale winners every weekday at 10 AM?"* (skip this one entirely if neither Meta nor TikTok is configured)
+     3. *"Weekly digest — post a performance summary every Monday at 9 AM?"*
+     4. *"Memory compaction — tidy up memory.md every Sunday at 11 PM?"*
+   - `Not now` → create nothing in section B. Use the `autopilot-off` final-summary variant below.
+
+   Regardless of answer, the final summary must tell the user that every spell lives in the ✦ Spellbook and can be toggled on/off there.
 
    **Final summary (the ONLY setup message after products):**
+
+   If the user enabled at least one spell:
    ```
-   [Brand] is loaded — [X] products, [Y] reference photos. Autopilot is on.
+   [Brand] is loaded — [X] products, [Y] reference photos. Autopilot is on: [names of enabled spells]. Toggle any of them in the ✦ Spellbook.
 
    Want to supercharge your results? Drop any of these into your brand folder:
 
@@ -92,11 +114,26 @@ DO NOT narrate each setup step. The app has a native progress bar — do the wor
    What would you like to create first?
    ```
 
-   **Rules for the summary:** show ONCE per brand, first setup only · use the actual brand name + folder path · skip lines for folders already populated · always end with "What would you like to create first?"
+   If the user chose `Not now`:
+   ```
+   [Brand] is loaded — [X] products, [Y] reference photos.
 
-### B) Schedule daily generation (created automatically)
+   Autopilot is off. Open the ✦ tab in the sidebar when you're ready — every spell is one toggle away.
 
-Create all four scheduled tasks without asking. Use `mcp__scheduled-tasks__create_scheduled_task`. All `taskId`s must use the `merlin-` prefix.
+   Want to supercharge your results? Drop any of these into your brand folder:
+
+   Your best-performing ads -> assets/brands/[brand]/quality-benchmark/
+   A voice sample (.mp3/.wav) -> assets/brands/[brand]/voices/
+   Creator photos/videos -> assets/brands/[brand]/avatars/
+
+   What would you like to create first?
+   ```
+
+   **Rules for the summary:** show ONCE per brand, first setup only · use the actual brand name + folder path · skip lines for folders already populated · always end with "What would you like to create first?" · the autopilot line reflects the user's actual consent answer — never fabricate "autopilot is on" when nothing was created.
+
+### B) Schedule daily generation (consent-gated — see section A)
+
+Create ONLY the tasks the user approved via the consent question in section A. If the user chose `Not now`, skip this entire section — do not call `mcp__scheduled-tasks__create_scheduled_task` at all. For each task the user approved, use `mcp__scheduled-tasks__create_scheduled_task`; all `taskId`s must use the `merlin-` prefix.
 
 #### Task 1 — `merlin-daily` (daily content)
 
