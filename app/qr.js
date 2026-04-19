@@ -14,23 +14,29 @@
 // It's worth the tradeoff vs implementing QR encoding from scratch.
 const QRCode = require('qrcode');
 
+// Brand-purple modules on a transparent background — the QR then inherits
+// whatever background the modal card provides, so it reads correctly on both
+// dark (#0e0e10) and light (#fafaff) themes without the hard-coded black
+// square that previously shipped.
+const QR_BRAND_DARK = '#a78bfa';
+const QR_BRAND_LIGHT = '#00000000';
+
 async function generateQRSvg(url) {
   const svg = await QRCode.toString(url, {
     type: 'svg',
-    color: { dark: '#a78bfa', light: '#00000000' },
+    color: { dark: QR_BRAND_DARK, light: QR_BRAND_LIGHT },
     margin: 2,
     width: 200,
   });
   return svg;
 }
 
+// Returns an SVG data URI (not a PNG) so the transparent background is
+// preserved and the QR scales crisply. The modal's .qr-image CSS constrains
+// the display size, so the 200px intrinsic width is irrelevant.
 async function generateQRDataUri(url) {
-  const dataUrl = await QRCode.toDataURL(url, {
-    color: { dark: '#a78bfa', light: '#08080a' },
-    margin: 2,
-    width: 200,
-  });
-  return dataUrl;
+  const svg = await generateQRSvg(url);
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
 }
 
 module.exports = { generateQRSvg, generateQRDataUri };

@@ -41,10 +41,11 @@
     checkSetup: async () => ({ needsSetup: false, completed: true }),
     startSession: noop,
 
-    // Mobile QR pairing — returns a placeholder QR-shape so the modal has
-    // something to render without round-tripping through the real relay.
+    // Mobile QR pairing — brand-purple modules on a transparent bg so the
+    // preview matches the real app's output (see app/qr.js generateQRDataUri).
+    // Hand-built QR-shaped SVG; only the visual style needs to match reality.
     getMobileQR: async () => ({
-      qrDataUri: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 20 20"><rect width="20" height="20" fill="#fff"/><g fill="#000"><rect x="1" y="1" width="6" height="6"/><rect x="13" y="1" width="6" height="6"/><rect x="1" y="13" width="6" height="6"/><rect x="9" y="9" width="2" height="2"/><rect x="11" y="11" width="2" height="2"/><rect x="15" y="11" width="2" height="2"/></g></svg>'),
+      qrDataUri: 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="220" height="220" viewBox="0 0 25 25"><g fill="#a78bfa"><path d="M1 1h7v7h-7zM3 3h3v3h-3z" fill-rule="evenodd"/><path d="M17 1h7v7h-7zM19 3h3v3h-3z" fill-rule="evenodd"/><path d="M1 17h7v7h-7zM3 19h3v3h-3z" fill-rule="evenodd"/><rect x="10" y="1" width="1" height="1"/><rect x="12" y="1" width="1" height="1"/><rect x="14" y="2" width="1" height="1"/><rect x="10" y="3" width="1" height="1"/><rect x="13" y="4" width="1" height="1"/><rect x="11" y="5" width="1" height="1"/><rect x="14" y="5" width="1" height="1"/><rect x="1" y="10" width="1" height="1"/><rect x="3" y="11" width="1" height="1"/><rect x="5" y="10" width="1" height="1"/><rect x="7" y="11" width="1" height="1"/><rect x="10" y="10" width="2" height="2"/><rect x="13" y="11" width="1" height="1"/><rect x="15" y="10" width="1" height="1"/><rect x="17" y="11" width="1" height="1"/><rect x="19" y="10" width="1" height="1"/><rect x="21" y="11" width="1" height="1"/><rect x="23" y="10" width="1" height="1"/><rect x="10" y="14" width="1" height="1"/><rect x="12" y="13" width="2" height="2"/><rect x="15" y="14" width="1" height="1"/><rect x="17" y="13" width="2" height="2"/><rect x="20" y="14" width="1" height="1"/><rect x="22" y="13" width="2" height="2"/><rect x="10" y="17" width="1" height="1"/><rect x="12" y="17" width="1" height="1"/><rect x="14" y="18" width="1" height="1"/><rect x="16" y="17" width="1" height="1"/><rect x="19" y="17" width="1" height="1"/><rect x="21" y="18" width="1" height="1"/><rect x="23" y="17" width="1" height="1"/><rect x="11" y="20" width="1" height="1"/><rect x="13" y="21" width="1" height="1"/><rect x="15" y="20" width="1" height="1"/><rect x="17" y="21" width="2" height="2"/><rect x="20" y="20" width="1" height="1"/><rect x="22" y="21" width="1" height="1"/></g></svg>'),
       pwaUrl: 'https://relay.merlingotme.com/p/preview-abc123',
     }),
 
