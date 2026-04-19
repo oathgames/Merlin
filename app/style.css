@@ -2351,6 +2351,14 @@ body.platform-mac .titlebar-drag{
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.archive-card-model {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .archive-card-meta {
   font-size: 10px;
   color: var(--text-dim);

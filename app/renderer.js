@@ -7236,6 +7236,30 @@ function formatArchiveDate(d) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+// Human-readable model label for the Archive card subtitle.
+// Examples: "fal/banana-pro-edit" → "Banana Pro Edit",
+// "fal/seedance-2 (image-to-video)" → "Seedance 2",
+// "heygen/video-agent" → "Video Agent", "arcads" → "Arcads".
+// Takes the segment after the last '/' (model name, vendor-implicit), strips
+// the trailing `(qualifier)` that the Go binary appends, humanizes hyphens,
+// and preserves version tokens (v2, v4.5) + pure-digit tokens as-is.
+function prettyModelName(model) {
+  if (!model || typeof model !== 'string') return '';
+  let s = model.replace(/\s*\([^)]*\)\s*$/, '').trim();
+  if (!s) return '';
+  const slash = s.lastIndexOf('/');
+  if (slash >= 0) s = s.slice(slash + 1);
+  s = s.replace(/[-_]+/g, ' ').trim();
+  if (!s) return '';
+  return s.split(/\s+/).map(w => {
+    if (/^v\d+(\.\d+)*$/i.test(w)) return w.toLowerCase();
+    if (/^\d+$/.test(w)) return w;
+    if (/^(ii|iii|iv|vi|vii|viii|ix|xi|xii)$/i.test(w)) return w.toUpperCase();
+    if (/^(hd|4k|8k|uhd|ai|hq|api|sdk|xl)$/i.test(w)) return w.toUpperCase();
+    return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+  }).join(' ');
+}
+
 function createArchiveCard(item) {
   const card = document.createElement('div');
   card.className = 'archive-card';
@@ -7252,10 +7276,12 @@ function createArchiveCard(item) {
   const badgeText = isVideo ? 'Video' : 'Image';
   // Human-readable title: prefer product > brand > model > friendly type
   let title = '';
+  let titleFromModel = false;
   if (item.product) title = item.product.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
   else if (item.brand) title = item.brand.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-  else if (item.model) title = item.model.split('/').pop().split('(')[0].trim();
+  else if (item.model) { title = item.model.split('/').pop().split('(')[0].trim(); titleFromModel = true; }
   else title = isVideo ? 'Video Ad' : 'Ad Image';
+  const modelLabel = (!titleFromModel && item.model) ? prettyModelName(item.model) : '';
   const time = new Date(item.timestamp).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
 
   card.setAttribute('tabindex', '0');
@@ -7296,6 +7322,7 @@ function createArchiveCard(item) {
   card.innerHTML += `
     <div class="archive-card-info">
       <div class="archive-card-title">${escapeHtml(title)}</div>
+      ${modelLabel ? `<div class="archive-card-model" title="${escapeHtml(item.model)}">${escapeHtml(modelLabel)}</div>` : ''}
       <div class="archive-card-meta">
         <span class="archive-card-badge ${badgeClass}">${badgeText}</span>
         <span>${time}</span>
