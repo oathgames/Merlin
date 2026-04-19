@@ -4121,6 +4121,25 @@ function buildSpellRow(spell, isActive) {
   info.appendChild(nameRow);
   info.appendChild(meta);
 
+  // Outcome summary from activity.jsonl — populated server-side in
+  // list-spells by readSpellOutcomes(). Prefers DecisionFact counts
+  // (kills/scales/generated) over free-form prose so the row reflects
+  // what the binary actually *did*, not what the spell prompt said.
+  // Empty (all zeros) → skip the second line; no signal is its own signal.
+  const o = spell.outcomes;
+  if (o && (o.kills || o.scales || o.generated || o.errors)) {
+    const summary = document.createElement('div');
+    summary.className = 'spell-meta spell-outcome';
+    const bits = [];
+    if (o.kills) bits.push(`${o.kills} killed`);
+    if (o.scales) bits.push(`${o.scales} scaled`);
+    if (o.generated) bits.push(`${o.generated} generated`);
+    if (o.errors) bits.push(`${o.errors} error${o.errors === 1 ? '' : 's'}`);
+    summary.textContent = bits.join(' · ');
+    if (o.errors) summary.style.color = 'var(--danger, #c44)';
+    info.appendChild(summary);
+  }
+
   const toggle = document.createElement('button');
   toggle.className = `spell-toggle ${spell.enabled ? 'spell-on' : ''}`;
   toggle.textContent = spell.enabled ? 'On' : 'Off';

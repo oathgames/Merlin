@@ -5742,6 +5742,9 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
 });
 
 // ── Spellbook (Scheduled Tasks) ────────────────────────────
+
+const { readSpellOutcomes } = require('./spell-outcomes');
+
 ipcMain.handle('list-spells', (_, brandName) => {
   const tasksDir = path.join(os.homedir(), '.claude', 'scheduled-tasks');
   if (!fs.existsSync(tasksDir)) return [];
@@ -5789,6 +5792,11 @@ ipcMain.handle('list-spells', (_, brandName) => {
         configDirty = true;
       }
 
+      const spellBrand = extractBrandFromSpellId(d.name);
+      const outcomes = spellBrand && meta.lastRun
+        ? readSpellOutcomes(appRoot, spellBrand, meta.lastRun)
+        : null;
+
       return {
         id: d.name,
         name,
@@ -5799,6 +5807,7 @@ ipcMain.handle('list-spells', (_, brandName) => {
         lastStatus: meta.lastStatus || null,
         lastSummary: meta.lastSummary || '',
         consecutiveFailures: meta.consecutiveFailures || 0,
+        outcomes,
         isMerlin: d.name.startsWith('merlin-'),
       };
     }).filter(t => {
