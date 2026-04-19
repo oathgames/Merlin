@@ -466,7 +466,8 @@ const sendBtn = document.getElementById('send-btn');
 const sendIcon = document.getElementById('send-icon');
 const micIcon = document.getElementById('mic-icon');
 const voicePill = document.getElementById('voice-pill');
-const voicePillText = document.getElementById('voice-pill-text');
+const voicePillTitle = document.getElementById('voice-pill-title');
+const voicePillSub = document.getElementById('voice-pill-sub');
 
 const HOLD_MS = 300;
 const MAX_RECORD_MS = 15_000;
@@ -486,7 +487,9 @@ function setRecordingUI(on) {
     sendIcon.classList.add('hidden');
     micIcon.classList.remove('hidden');
     voicePill.classList.remove('hidden', 'transcribing');
-    voicePillText.innerHTML = 'Listening<br>release to send';
+    voicePillTitle.textContent = 'Listening…';
+    voicePillSub.textContent = 'release to send';
+    voicePillSub.classList.remove('hidden');
   } else {
     sendBtn.classList.remove('recording');
     sendIcon.classList.remove('hidden');
@@ -499,7 +502,8 @@ function setTranscribingUI(on) {
   if (on) {
     voicePill.classList.remove('hidden');
     voicePill.classList.add('transcribing');
-    voicePillText.textContent = 'Transcribing';
+    voicePillTitle.textContent = 'Transcribing…';
+    voicePillSub.classList.add('hidden');
     sendBtn.disabled = true;
   } else {
     voicePill.classList.add('hidden');
