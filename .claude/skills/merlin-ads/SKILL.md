@@ -236,3 +236,101 @@ Foreplay indexes 100M+ Meta/TikTok/LinkedIn ads worldwide. **Covers the US and a
 - **Cross-platform aggregate performance** → `merlin-analytics`
 - **Organic Reddit** / email / Discord → `merlin-social`
 - **Shopify / Stripe revenue** → `merlin-ecom`
+
+<!-- VENDOR-CARDS:BEGIN -->
+<!-- Generated from tools/vendor-cards/vendor-capabilities.json — do not edit by hand. Run `node tools/vendor-cards/gen-vendor-cards.js` to regenerate. -->
+
+## Vendor Capability Cards
+
+| Vendor | Primary pick-when | Entry action |
+|---|---|---|
+| **Google Ads + Merchant Center** | brand-search defense — bid your own brand terms before a competitor does; cheapest non-zero ROAS channel in the stack | `google-login` |
+| **Meta (Facebook + Instagram Ads)** | broad-reach DTC acquisition — Advantage+ Shopping (ASC) is the default for brands <$1M/mo | `meta-login` |
+| **TikTok Ads** | UGC-style video ad targeting 18–34 demo — TikTok outperforms Meta on creator-authentic creative | `tiktok-login` |
+
+### Google Ads + Merchant Center — Search, Shopping, PMax, Demand Gen — and the Merchant feed that blocks Shopping from serving
+
+**Actions:** `google-login`
+
+**Pick when:**
+- brand-search defense — bid your own brand terms before a competitor does; cheapest non-zero ROAS channel in the stack
+- non-brand Search + PMax split — run as separate campaigns, NOT one PMax with brand included (Google over-credits brand to PMax)
+- Shopping ads — always verify Merchant Center status first (merchant-status action); disapproved products silently stop serving
+- Demand Gen (YouTube + Discover + Gmail) — the correct 2024 replacement for discontinued Universal App Campaigns and Display
+- Performance Max for Shopping — pair with Shopify feed + merchant-sync-shopify for full SKU coverage
+
+**Skip when:**
+- one-PMax-for-everything — Google's algorithm starves Search for PMax; always split brand Search + non-brand Search + PMax
+- Merchant Center unconfigured — Shopping returns zero impressions silently; run merchant-setup first
+- small-budget accounts (<$30/day) — PMax needs ~$50/day to exit learning; use standard Search on low spend
+
+**Killer features:**
+- **Performance Max** — multi-surface (Search + Shopping + YouTube + Discover + Gmail + Display) auto-optimized campaign — the correct ceiling-breaker for DTC once brand Search is saturated
+- **Merchant Center integration** — one google-login now grants Ads + Search Console + Merchant scope in a single consent; merchant-status surfaces disapproval reasons that the Ads UI hides
+- **merchant-sync-shopify** — maps active Shopify products → Merchant inputs via unified productInputs:insert; skips drafts; idempotent on re-run
+- **Demand Gen** — replaced Discovery Ads in 2024; the right surface for mid-funnel video + carousel creatives on YouTube Shorts / Discover
+- **Search Console scope** — bundled into the same google-login — powers the SEO skill without a second consent flow
+
+**Constraints:** googleAccessToken + googleAdsCustomerId required; googleMerchantId auto-discovered on login; google_merchant has its own rate-limit bucket (60/min, 1.5K/hr, 20K/day); 401 auto-refresh shared across Ads/SC/Merchant
+**Cost:** platform spend only; Search CPCs highly vertical-dependent ($0.30–$50+); Shopping cheaper at ~$0.20–$2 blended
+**Output:** results/google-ads_YYYYMMDD.json + merchant-status JSON
+**Docs:** <https://developers.google.com/google-ads/api/docs/start>
+**Last verified:** 2026-04-19
+### Meta (Facebook + Instagram Ads) — paid social on Facebook and Instagram (ASC, CBO, retargeting, catalog, lookalikes)
+
+**Actions:** `meta-login`, `meta-push`, `meta-bulk-push`, `meta-insights`, `meta-kill`, `meta-activate`, `meta-budget`, `meta-duplicate`, `meta-setup`, `meta-warmup`, `meta-discover`, `meta-catalog`, `meta-retarget`, `meta-lookalike`, `meta-lockdown`, `meta-import`, `meta-setup-retargeting`
+
+**Pick when:**
+- broad-reach DTC acquisition — Advantage+ Shopping (ASC) is the default for brands <$1M/mo
+- warm-audience retargeting — meta-setup-retargeting wires pixel events + creates the retarget ad set
+- catalog / DPA (Dynamic Product Ads) — meta-catalog verifies the Shopify feed; DPA always beats static creative on retargeting
+- lookalike expansion off a high-LTV seed — meta-lookalike builds 1/3/5% audiences from purchaser lists
+- bulk push of a winning creative across N ad sets — meta-bulk-push with ExecuteBatch avoids rate-limit fan-out
+
+**Skip when:**
+- A/B testing creative inside ASC — ASC optimizes delivery, not creative comparison; always test in standard campaigns, move winners to ASC
+- learning-phase ineligible setups (daily_budget × 7 / target_CPA < 50) — surface the gate error instead of launching
+- app must be in Development mode — creative creation returns subcode 1885183; only campaign/ad-set/image-upload work in dev
+
+**Killer features:**
+- **Advantage+ Shopping (ASC)** — Meta's AI-driven shopping campaign — the 70% default slot for DTC; don't A/B inside it, feed it winners
+- **CBO (Campaign Budget Optimization)** — scale 20–50% daily on proven winners (not the old ≤20% rule); Meta re-enters learning on budget jumps >50%
+- **Dynamic Product Ads** — product catalog + pixel events → personalized retargeting at the SKU level; +30–60% ROAS over static retargeting
+- **Lookalike audiences** — 1% lookalike off 1K+ purchasers is the single highest-LTV cold audience most DTC brands have
+- **Advantage+ Audience** — Meta's 2024 auto-targeting — outperforms manual interest targeting in 7/10 tests; default ON for new setups
+- **Spark-compatible organic posts** — any organic IG/FB post can be promoted as an ad via post_id — UGC pulled from creator whitelists this way
+
+**Constraints:** metaAccessToken + metaAdAccountId + metaPageId + metaPixelId required; app must be Live for creative creation; every push runs validateDailyBudget + enforceMonthlyCap + enforceLandingGrade; rate-limited (preflight mandatory)
+**Cost:** platform spend only; no per-call fee; budget gates block pushes exceeding maxDailyAdBudget / maxMonthlyAdSpend unless force=true
+**Output:** results/meta-push_YYYYMMDD.json with campaign/adset/ad IDs and the attribution window used
+**Docs:** <https://developers.facebook.com/docs/marketing-apis/>
+**Last verified:** 2026-04-19
+### TikTok Ads — paid TikTok + TikTok Shop (Spark Ads, Smart+, VSA, lookalikes)
+
+**Actions:** `tiktok-login`, `tiktok-push`, `tiktok-insights`, `tiktok-setup`, `tiktok-kill`, `tiktok-duplicate`, `tiktok-lookalike`
+
+**Pick when:**
+- UGC-style video ad targeting 18–34 demo — TikTok outperforms Meta on creator-authentic creative
+- TikTok Shop product push — Video Shopping Ads attach SKUs directly to organic-feeling creator posts
+- Spark Ads — promote a real creator's organic post as an ad (keeps creator comments + handle, 2–3× engagement vs branded post)
+- Smart+ Campaigns — TikTok's equivalent of Meta ASC; the 2024-default for DTC without a creative testing process
+
+**Skip when:**
+- static image ads — TikTok allows them but performance lags video by 5–10× on CTR; regenerate as video first
+- >45s creative — TikTok algorithm favors 9–21s; longer assets get throttled after the hook
+- B2B / enterprise audience — LinkedIn is the correct surface for software sold above $500 ACV
+
+**Killer features:**
+- **Spark Ads** — turn an organic creator post into an ad with the creator's consent — preserves comments, handle, and organic aesthetic; the single highest-performing TikTok ad type
+- **Smart+ Campaigns** — auto-targeting + auto-bidding + creative rotation; use for cold acquisition, don't over-segment manually
+- **Video Shopping Ads (TikTok Shop)** — SKU attach with in-app checkout — the only way to get TikTok-native conversion attribution
+- **Interactive Add-Ons** — stickers, voting, super-like — +20–40% engagement on UGC hooks at zero extra CPM
+- **Creative Challenge** — TikTok-run creator brief pool; pay per approved asset (~$50–300/creative) vs sourcing UGC yourself
+
+**Constraints:** tiktokAccessToken + tiktokAdvertiserId + tiktokPixelId required; pixel events must fire 7 days before Smart+ launch (learning period); rate-limited via preflight
+**Cost:** platform spend only; Creative Challenge assets ~$50–300/approved creative
+**Output:** results/tiktok-push_YYYYMMDD.json
+**Docs:** <https://business-api.tiktok.com/portal/docs>
+**Last verified:** 2026-04-19
+
+<!-- VENDOR-CARDS:END -->

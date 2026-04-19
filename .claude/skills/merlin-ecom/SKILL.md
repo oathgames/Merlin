@@ -129,3 +129,67 @@ First `stripe-setup` after connecting BOTH Shopify + Stripe prints a disambiguat
 - **Email revenue attribution** → `merlin-social` (Klaviyo first-touch / linear / time-decay models).
 - **Blog / SEO revenue** → `merlin-seo` (organic sessions, rankings).
 - **Revenue charts in the dashboard** → `merlin-analytics` reads `RevenueSource` outputs; this skill produces them.
+
+<!-- VENDOR-CARDS:BEGIN -->
+<!-- Generated from tools/vendor-cards/vendor-capabilities.json — do not edit by hand. Run `node tools/vendor-cards/gen-vendor-cards.js` to regenerate. -->
+
+## Vendor Capability Cards
+
+| Vendor | Primary pick-when | Entry action |
+|---|---|---|
+| **Klaviyo** | post-purchase flow, abandoned-cart flow, browse-abandon — flows beat campaigns on revenue-per-recipient by 3–5× (set-and-forget vs blast) | `klaviyo-login` |
+| **Shopify** | revenue topline — shopify-analytics is the canonical source when Shopify is connected (preferred over Stripe for DTC with orders) | `shopify-login` |
+
+### Klaviyo — email + SMS (flows, campaigns, segments, predictive analytics)
+
+**Actions:** `klaviyo-login`, `klaviyo-performance`, `klaviyo-lists`, `klaviyo-campaigns`, `email-audit`
+
+**Pick when:**
+- post-purchase flow, abandoned-cart flow, browse-abandon — flows beat campaigns on revenue-per-recipient by 3–5× (set-and-forget vs blast)
+- campaign performance audit — klaviyo-performance surfaces top-revenue campaigns + unsubscribe-rate outliers
+- list hygiene / segment health — klaviyo-lists shows active vs suppressed counts; suppressed >20% triggers deliverability review
+- email audit — email-audit grades a template against mobile-fit, image-weight, CTA prominence, dark-mode rendering
+
+**Skip when:**
+- transactional email (order confirmations, shipping) — route through Shopify's native notifications, not Klaviyo campaigns
+- cold outbound to purchased lists — Klaviyo bans this and will deplatform; use Instantly/Apollo on a separate domain if cold outbound is required
+
+**Killer features:**
+- **Flows > Campaigns** — automated flows (welcome / abandoned cart / post-purchase / win-back) produce 60–80% of Klaviyo revenue at <5% of the send volume — always audit flow coverage before writing new campaigns
+- **Predictive analytics** — Klaviyo models predicted CLV and churn risk per profile — segment on 'high predicted CLV + low recent engagement' to recover at-risk VIPs
+- **SMS channel** — same Klaviyo account, 2× the revenue-per-message of email on abandoned cart (TCPA consent required)
+- **Shopify product block** — native Shopify integration auto-hydrates product images + compare-at prices in email — never AI-generate product shots, always use the block
+
+**Constraints:** klaviyoApiKey required; 600px email width standard; inline styles only (Gmail strips <style>); test in dark mode before send
+**Cost:** Klaviyo platform pricing (profile-count tier); API itself is free within rate limits (~700/min steady-state)
+**Output:** results/klaviyo-performance_YYYYMMDD.json + results/email-audit_YYYYMMDD.html
+**Docs:** <https://developers.klaviyo.com/en/reference/api_overview>
+**Last verified:** 2026-04-19
+### Shopify — catalog, orders, revenue, cohorts (the canonical ecom data source)
+
+**Actions:** `shopify-login`, `shopify-products`, `shopify-orders`, `shopify-import`, `shopify-analytics`, `shopify-cohorts`
+
+**Pick when:**
+- revenue topline — shopify-analytics is the canonical source when Shopify is connected (preferred over Stripe for DTC with orders)
+- inventory / SKU enrichment — shopify-products pulls the full catalog with images, variants, compare-at prices; feeds both Meta catalog and Google Merchant
+- cohort analysis — shopify-cohorts splits first-purchase cohorts by month for LTV and repeat-rate math
+- order-level attribution — shopify-orders includes UTM + referrer for cross-platform MER reconciliation
+- one-time catalog import into Meta/Google Merchant — shopify-import drives both meta-catalog and merchant-sync-shopify
+
+**Skip when:**
+- subscription-only MRR/ARR business with no one-time orders — Stripe is the authoritative source; set revenueSourcePreference='stripe'
+- bulk write operations at >1K products — use Shopify's native GraphQL bulkOperationRunMutation, don't fan out per-product (we already batch via ExecuteBatch)
+
+**Killer features:**
+- **GraphQL Admin API** — bulk queries + mutations are 10–100× cheaper than REST on large catalogs; the generator uses bulkOperationRunQuery for any fetch >250 items
+- **shopify-cohorts** — native cohort retention math — first-order month × repeat-purchase rate, zero-dep; most brands pay $200+/mo for this in a separate tool
+- **Unified catalog export** — one shopify-products call feeds Meta catalog, Google Merchant, Klaviyo product blocks — no duplicate scraping
+- **Scope-aware reconnect** — if Shopify scope upgrades (e.g., write_content for blog-post) are required, the UI surfaces a reconnect prompt instead of raw 403
+
+**Constraints:** shopifyStore + shopifyAccessToken required; scope additions trigger a ~6-week re-review — audit shopify.app.toml before requesting new scopes; admin API is read-only unless app manifest grants write_*
+**Cost:** Shopify API is free up to reasonable thresholds; rate-limited per-shop (40 request bucket, leaky)
+**Output:** results/shopify-analytics_YYYYMMDD.json / shopify-cohorts_YYYYMMDD.json
+**Docs:** <https://shopify.dev/docs/api/admin-graphql>
+**Last verified:** 2026-04-19
+
+<!-- VENDOR-CARDS:END -->

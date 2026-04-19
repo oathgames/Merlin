@@ -1,0 +1,239 @@
+{
+  "$schema_note": "Source of truth for vendor capability cards. Edit this file, then run `node tools/vendor-cards/gen-vendor-cards.js` to regenerate SKILL.md fenced regions. Validated by test/validate-vendor-cards.js. Shipped to users via SKILL.md updates — this JSON file itself is dev-only and does NOT ship in the installer (not under .claude/ or assets/).",
+  "schema_version": 1,
+  "vendors": {
+    "heygen": {
+      "name": "HeyGen",
+      "skill": "merlin-content",
+      "headline": "talking-head avatar video with native lip-sync",
+      "actions": ["heygen-agent", "list-avatars"],
+      "pick_when": [
+        "spoken founder / testimonial / UGC-presenter video where a face must lip-sync a script",
+        "SaaS product explainer cutting between talking-head and screen-record — route to Hyperframes, not single-shot Avatar IV",
+        "multi-language localization of one script across 175+ languages with native lip-sync (fal/veo cannot do this)",
+        "any video where the viewer needs to trust a human on camera (founder intro, expert testimonial, educator)"
+      ],
+      "skip_when": [
+        "product-only, silent b-roll, or kinetic-type → use fal seedance-2 or veo-3",
+        ">60s single-shot monologue (avatars drift after ~45s) → split into a Hyperframes multi-beat sequence",
+        "stylized / animated / non-photoreal aesthetic → fal kling or recraft",
+        "source photo is profile, 3/4 angle, or occluded — HeyGen rejects, use Avatar IV-trained custom avatar instead"
+      ],
+      "killer_features": [
+        {"name": "Avatar IV", "desc": "photo + script → talking avatar; fastest path from text brief to finished talking-head"},
+        {"name": "Hyperframes", "desc": "multi-shot sequence with consistent avatar across scene cuts — the correct pick for SaaS demos that weave talking-head with screen-record, and for any 30–90s narrative with >1 beat"},
+        {"name": "Instant Avatar (custom)", "desc": "3min of training footage → personal avatar the user owns; reuse across every future video, no re-render of likeness"},
+        {"name": "Voice clone + 175 languages", "desc": "one script auto-localizes with native lip-sync per language — the cheapest way to launch international ad variants"},
+        {"name": "Incognito Mode", "desc": "watermark removed on paid tier — required for any ad shipped to paid media"}
+      ],
+      "constraints": "heygenApiKey required; prompt ≤10k chars; source photo must be front-facing; render 2–4 min; callbackUrl optional for async",
+      "cost": "~$0.30/min rendered; 2–4 min real-time per 60s clip",
+      "output": "results/video/YYYY-MM/<brand>/ad_<runID>/video.mp4",
+      "docs_url": "https://docs.heygen.com/reference/overview",
+      "last_verified": "2026-04-19"
+    },
+    "fal": {
+      "name": "fal.ai",
+      "skill": "merlin-content",
+      "headline": "image + non-avatar video generation (multi-model gateway)",
+      "actions": ["image"],
+      "pick_when": [
+        "hero / lifestyle / editorial product imagery — use banana-pro-edit (default) with reference photos for SKU-accurate output",
+        "product-showcase or kinetic video without a talking human — seedance-2 (image-to-video, fast, consistent) is the default",
+        "cinematic long-form ad (8–15s) with camera motion and physics realism — veo-3 with locked reference frame",
+        "stylized / anime / motion-graphic aesthetic — kling (motion) or ideogram (typography-heavy)",
+        "brand-graphic or infographic with precise text — recraft or ideogram (banana/flux/seedance cannot render clean text)"
+      ],
+      "skip_when": [
+        "spoken talking-head with lip-sync — route to HeyGen, never try Veo/Seedance on faces that speak",
+        "pixel-perfect logo or legible ≥8-word copy — no fal model does this reliably; composite real assets instead",
+        "user explicitly requests a model not in the alias list — do NOT silently substitute; surface the error and ask"
+      ],
+      "killer_features": [
+        {"name": "banana-pro-edit", "desc": "reference-image-conditioned edits — the default because it locks SKU, color, packaging from the brand's reference photos"},
+        {"name": "seedance-2 (I2V)", "desc": "image-to-video that preserves the reference frame — use this when the first frame must match an existing hero shot exactly"},
+        {"name": "veo-3", "desc": "Google's cinematic model; best for physically-grounded camera motion, hair/fabric dynamics, 8s+ continuity"},
+        {"name": "kling", "desc": "stylized motion + expressive character animation; good for meme-format and anime-adjacent UGC pastiche"},
+        {"name": "ideogram / recraft", "desc": "the only reliable path to readable long-form text and vector-style brand graphics"},
+        {"name": "Model aliases", "desc": "pass short names (banana-pro-edit, seedance-2, veo-3) — NEVER WebFetch to verify; the router resolves them server-side"}
+      ],
+      "constraints": "falApiKey required; image default = banana-pro-edit; video default = seedance-2; full fal-ai/vendor/model slugs accepted; model substitution is a hard failure (surface error, don't silently retry on another model)",
+      "cost": "image: ~$0.02–0.08/render; video: ~$0.10–0.40/sec depending on model; banana-pro-edit cheapest, veo-3 most expensive",
+      "output": "results/img_YYYYMMDD_HHMMSS/ or results/ad_YYYYMMDD_HHMMSS/",
+      "docs_url": "https://fal.ai/models",
+      "last_verified": "2026-04-19"
+    },
+    "elevenlabs": {
+      "name": "ElevenLabs",
+      "skill": "merlin-content",
+      "headline": "voiceover, voice cloning, streaming TTS",
+      "actions": ["clone-voice", "list-voices", "delete-voice"],
+      "pick_when": [
+        "voiceover track for a non-HeyGen video (Seedance/Veo product ad with narration)",
+        "brand voice cloning — 3 min of clean audio → reusable voice across every future ad",
+        "streaming TTS for in-app narration (first-word latency ~400–700ms vs 2–3s for batch)",
+        "multilingual voice — one cloned voice speaks 32+ languages with preserved timbre"
+      ],
+      "skip_when": [
+        "talking-head video — HeyGen bundles voice + lip-sync in one render; don't stitch ElevenLabs onto a separate HeyGen avatar render",
+        "user wants platform default TTS (system voice) — don't over-engineer for a 5-word sting"
+      ],
+      "killer_features": [
+        {"name": "Instant Voice Clone (IVC)", "desc": "60s sample → usable clone; acceptable for drafts, not production ads"},
+        {"name": "Professional Voice Clone (PVC)", "desc": "3+ min clean sample → production-grade clone; the only tier to use for paid-media voiceovers"},
+        {"name": "Multilingual v2", "desc": "same cloned voice → 32 languages with native accent and prosody; pairs with HeyGen Hyperframes localization"},
+        {"name": "Stream TTS API", "desc": "websocket-delivered audio; powers Merlin's in-app narration — critical for first-word latency UX"}
+      ],
+      "constraints": "elevenLabsApiKey required; PVC needs ~3min clean source (no background noise, no music); clones stored server-side — use voice.delete to remove",
+      "cost": "~$0.30/1K chars on Creator tier; streaming priced the same as batch",
+      "output": "voiceover.mp3 inside the ad result folder",
+      "docs_url": "https://elevenlabs.io/docs/api-reference/introduction",
+      "last_verified": "2026-04-19"
+    },
+    "meta": {
+      "name": "Meta (Facebook + Instagram Ads)",
+      "skill": "merlin-ads",
+      "headline": "paid social on Facebook and Instagram (ASC, CBO, retargeting, catalog, lookalikes)",
+      "actions": ["meta-login", "meta-push", "meta-bulk-push", "meta-insights", "meta-kill", "meta-activate", "meta-budget", "meta-duplicate", "meta-setup", "meta-warmup", "meta-discover", "meta-catalog", "meta-retarget", "meta-lookalike", "meta-lockdown", "meta-import", "meta-setup-retargeting"],
+      "pick_when": [
+        "broad-reach DTC acquisition — Advantage+ Shopping (ASC) is the default for brands <$1M/mo",
+        "warm-audience retargeting — meta-setup-retargeting wires pixel events + creates the retarget ad set",
+        "catalog / DPA (Dynamic Product Ads) — meta-catalog verifies the Shopify feed; DPA always beats static creative on retargeting",
+        "lookalike expansion off a high-LTV seed — meta-lookalike builds 1/3/5% audiences from purchaser lists",
+        "bulk push of a winning creative across N ad sets — meta-bulk-push with ExecuteBatch avoids rate-limit fan-out"
+      ],
+      "skip_when": [
+        "A/B testing creative inside ASC — ASC optimizes delivery, not creative comparison; always test in standard campaigns, move winners to ASC",
+        "learning-phase ineligible setups (daily_budget × 7 / target_CPA < 50) — surface the gate error instead of launching",
+        "app must be in Development mode — creative creation returns subcode 1885183; only campaign/ad-set/image-upload work in dev"
+      ],
+      "killer_features": [
+        {"name": "Advantage+ Shopping (ASC)", "desc": "Meta's AI-driven shopping campaign — the 70% default slot for DTC; don't A/B inside it, feed it winners"},
+        {"name": "CBO (Campaign Budget Optimization)", "desc": "scale 20–50% daily on proven winners (not the old ≤20% rule); Meta re-enters learning on budget jumps >50%"},
+        {"name": "Dynamic Product Ads", "desc": "product catalog + pixel events → personalized retargeting at the SKU level; +30–60% ROAS over static retargeting"},
+        {"name": "Lookalike audiences", "desc": "1% lookalike off 1K+ purchasers is the single highest-LTV cold audience most DTC brands have"},
+        {"name": "Advantage+ Audience", "desc": "Meta's 2024 auto-targeting — outperforms manual interest targeting in 7/10 tests; default ON for new setups"},
+        {"name": "Spark-compatible organic posts", "desc": "any organic IG/FB post can be promoted as an ad via post_id — UGC pulled from creator whitelists this way"}
+      ],
+      "constraints": "metaAccessToken + metaAdAccountId + metaPageId + metaPixelId required; app must be Live for creative creation; every push runs validateDailyBudget + enforceMonthlyCap + enforceLandingGrade; rate-limited (preflight mandatory)",
+      "cost": "platform spend only; no per-call fee; budget gates block pushes exceeding maxDailyAdBudget / maxMonthlyAdSpend unless force=true",
+      "output": "results/meta-push_YYYYMMDD.json with campaign/adset/ad IDs and the attribution window used",
+      "docs_url": "https://developers.facebook.com/docs/marketing-apis/",
+      "last_verified": "2026-04-19"
+    },
+    "tiktok": {
+      "name": "TikTok Ads",
+      "skill": "merlin-ads",
+      "headline": "paid TikTok + TikTok Shop (Spark Ads, Smart+, VSA, lookalikes)",
+      "actions": ["tiktok-login", "tiktok-push", "tiktok-insights", "tiktok-setup", "tiktok-kill", "tiktok-duplicate", "tiktok-lookalike"],
+      "pick_when": [
+        "UGC-style video ad targeting 18–34 demo — TikTok outperforms Meta on creator-authentic creative",
+        "TikTok Shop product push — Video Shopping Ads attach SKUs directly to organic-feeling creator posts",
+        "Spark Ads — promote a real creator's organic post as an ad (keeps creator comments + handle, 2–3× engagement vs branded post)",
+        "Smart+ Campaigns — TikTok's equivalent of Meta ASC; the 2024-default for DTC without a creative testing process"
+      ],
+      "skip_when": [
+        "static image ads — TikTok allows them but performance lags video by 5–10× on CTR; regenerate as video first",
+        ">45s creative — TikTok algorithm favors 9–21s; longer assets get throttled after the hook",
+        "B2B / enterprise audience — LinkedIn is the correct surface for software sold above $500 ACV"
+      ],
+      "killer_features": [
+        {"name": "Spark Ads", "desc": "turn an organic creator post into an ad with the creator's consent — preserves comments, handle, and organic aesthetic; the single highest-performing TikTok ad type"},
+        {"name": "Smart+ Campaigns", "desc": "auto-targeting + auto-bidding + creative rotation; use for cold acquisition, don't over-segment manually"},
+        {"name": "Video Shopping Ads (TikTok Shop)", "desc": "SKU attach with in-app checkout — the only way to get TikTok-native conversion attribution"},
+        {"name": "Interactive Add-Ons", "desc": "stickers, voting, super-like — +20–40% engagement on UGC hooks at zero extra CPM"},
+        {"name": "Creative Challenge", "desc": "TikTok-run creator brief pool; pay per approved asset (~$50–300/creative) vs sourcing UGC yourself"}
+      ],
+      "constraints": "tiktokAccessToken + tiktokAdvertiserId + tiktokPixelId required; pixel events must fire 7 days before Smart+ launch (learning period); rate-limited via preflight",
+      "cost": "platform spend only; Creative Challenge assets ~$50–300/approved creative",
+      "output": "results/tiktok-push_YYYYMMDD.json",
+      "docs_url": "https://business-api.tiktok.com/portal/docs",
+      "last_verified": "2026-04-19"
+    },
+    "google_ads": {
+      "name": "Google Ads + Merchant Center",
+      "skill": "merlin-ads",
+      "headline": "Search, Shopping, PMax, Demand Gen — and the Merchant feed that blocks Shopping from serving",
+      "actions": ["google-login"],
+      "pick_when": [
+        "brand-search defense — bid your own brand terms before a competitor does; cheapest non-zero ROAS channel in the stack",
+        "non-brand Search + PMax split — run as separate campaigns, NOT one PMax with brand included (Google over-credits brand to PMax)",
+        "Shopping ads — always verify Merchant Center status first (merchant-status action); disapproved products silently stop serving",
+        "Demand Gen (YouTube + Discover + Gmail) — the correct 2024 replacement for discontinued Universal App Campaigns and Display",
+        "Performance Max for Shopping — pair with Shopify feed + merchant-sync-shopify for full SKU coverage"
+      ],
+      "skip_when": [
+        "one-PMax-for-everything — Google's algorithm starves Search for PMax; always split brand Search + non-brand Search + PMax",
+        "Merchant Center unconfigured — Shopping returns zero impressions silently; run merchant-setup first",
+        "small-budget accounts (<$30/day) — PMax needs ~$50/day to exit learning; use standard Search on low spend"
+      ],
+      "killer_features": [
+        {"name": "Performance Max", "desc": "multi-surface (Search + Shopping + YouTube + Discover + Gmail + Display) auto-optimized campaign — the correct ceiling-breaker for DTC once brand Search is saturated"},
+        {"name": "Merchant Center integration", "desc": "one google-login now grants Ads + Search Console + Merchant scope in a single consent; merchant-status surfaces disapproval reasons that the Ads UI hides"},
+        {"name": "merchant-sync-shopify", "desc": "maps active Shopify products → Merchant inputs via unified productInputs:insert; skips drafts; idempotent on re-run"},
+        {"name": "Demand Gen", "desc": "replaced Discovery Ads in 2024; the right surface for mid-funnel video + carousel creatives on YouTube Shorts / Discover"},
+        {"name": "Search Console scope", "desc": "bundled into the same google-login — powers the SEO skill without a second consent flow"}
+      ],
+      "constraints": "googleAccessToken + googleAdsCustomerId required; googleMerchantId auto-discovered on login; google_merchant has its own rate-limit bucket (60/min, 1.5K/hr, 20K/day); 401 auto-refresh shared across Ads/SC/Merchant",
+      "cost": "platform spend only; Search CPCs highly vertical-dependent ($0.30–$50+); Shopping cheaper at ~$0.20–$2 blended",
+      "output": "results/google-ads_YYYYMMDD.json + merchant-status JSON",
+      "docs_url": "https://developers.google.com/google-ads/api/docs/start",
+      "last_verified": "2026-04-19"
+    },
+    "shopify": {
+      "name": "Shopify",
+      "skill": "merlin-ecom",
+      "headline": "catalog, orders, revenue, cohorts (the canonical ecom data source)",
+      "actions": ["shopify-login", "shopify-products", "shopify-orders", "shopify-import", "shopify-analytics", "shopify-cohorts"],
+      "pick_when": [
+        "revenue topline — shopify-analytics is the canonical source when Shopify is connected (preferred over Stripe for DTC with orders)",
+        "inventory / SKU enrichment — shopify-products pulls the full catalog with images, variants, compare-at prices; feeds both Meta catalog and Google Merchant",
+        "cohort analysis — shopify-cohorts splits first-purchase cohorts by month for LTV and repeat-rate math",
+        "order-level attribution — shopify-orders includes UTM + referrer for cross-platform MER reconciliation",
+        "one-time catalog import into Meta/Google Merchant — shopify-import drives both meta-catalog and merchant-sync-shopify"
+      ],
+      "skip_when": [
+        "subscription-only MRR/ARR business with no one-time orders — Stripe is the authoritative source; set revenueSourcePreference='stripe'",
+        "bulk write operations at >1K products — use Shopify's native GraphQL bulkOperationRunMutation, don't fan out per-product (we already batch via ExecuteBatch)"
+      ],
+      "killer_features": [
+        {"name": "GraphQL Admin API", "desc": "bulk queries + mutations are 10–100× cheaper than REST on large catalogs; the generator uses bulkOperationRunQuery for any fetch >250 items"},
+        {"name": "shopify-cohorts", "desc": "native cohort retention math — first-order month × repeat-purchase rate, zero-dep; most brands pay $200+/mo for this in a separate tool"},
+        {"name": "Unified catalog export", "desc": "one shopify-products call feeds Meta catalog, Google Merchant, Klaviyo product blocks — no duplicate scraping"},
+        {"name": "Scope-aware reconnect", "desc": "if Shopify scope upgrades (e.g., write_content for blog-post) are required, the UI surfaces a reconnect prompt instead of raw 403"}
+      ],
+      "constraints": "shopifyStore + shopifyAccessToken required; scope additions trigger a ~6-week re-review — audit shopify.app.toml before requesting new scopes; admin API is read-only unless app manifest grants write_*",
+      "cost": "Shopify API is free up to reasonable thresholds; rate-limited per-shop (40 request bucket, leaky)",
+      "output": "results/shopify-analytics_YYYYMMDD.json / shopify-cohorts_YYYYMMDD.json",
+      "docs_url": "https://shopify.dev/docs/api/admin-graphql",
+      "last_verified": "2026-04-19"
+    },
+    "klaviyo": {
+      "name": "Klaviyo",
+      "skill": "merlin-ecom",
+      "headline": "email + SMS (flows, campaigns, segments, predictive analytics)",
+      "actions": ["klaviyo-login", "klaviyo-performance", "klaviyo-lists", "klaviyo-campaigns", "email-audit"],
+      "pick_when": [
+        "post-purchase flow, abandoned-cart flow, browse-abandon — flows beat campaigns on revenue-per-recipient by 3–5× (set-and-forget vs blast)",
+        "campaign performance audit — klaviyo-performance surfaces top-revenue campaigns + unsubscribe-rate outliers",
+        "list hygiene / segment health — klaviyo-lists shows active vs suppressed counts; suppressed >20% triggers deliverability review",
+        "email audit — email-audit grades a template against mobile-fit, image-weight, CTA prominence, dark-mode rendering"
+      ],
+      "skip_when": [
+        "transactional email (order confirmations, shipping) — route through Shopify's native notifications, not Klaviyo campaigns",
+        "cold outbound to purchased lists — Klaviyo bans this and will deplatform; use Instantly/Apollo on a separate domain if cold outbound is required"
+      ],
+      "killer_features": [
+        {"name": "Flows > Campaigns", "desc": "automated flows (welcome / abandoned cart / post-purchase / win-back) produce 60–80% of Klaviyo revenue at <5% of the send volume — always audit flow coverage before writing new campaigns"},
+        {"name": "Predictive analytics", "desc": "Klaviyo models predicted CLV and churn risk per profile — segment on 'high predicted CLV + low recent engagement' to recover at-risk VIPs"},
+        {"name": "SMS channel", "desc": "same Klaviyo account, 2× the revenue-per-message of email on abandoned cart (TCPA consent required)"},
+        {"name": "Shopify product block", "desc": "native Shopify integration auto-hydrates product images + compare-at prices in email — never AI-generate product shots, always use the block"}
+      ],
+      "constraints": "klaviyoApiKey required; 600px email width standard; inline styles only (Gmail strips <style>); test in dark mode before send",
+      "cost": "Klaviyo platform pricing (profile-count tier); API itself is free within rate limits (~700/min steady-state)",
+      "output": "results/klaviyo-performance_YYYYMMDD.json + results/email-audit_YYYYMMDD.html",
+      "docs_url": "https://developers.klaviyo.com/en/reference/api_overview",
+      "last_verified": "2026-04-19"
+    }
+  }
+}

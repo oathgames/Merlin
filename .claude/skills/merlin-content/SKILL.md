@@ -375,3 +375,99 @@ Include full file path on its own line (e.g. `results/img_20260403/image_1.jpg`)
 - Blog publishing pipeline → `merlin-seo`
 - Competitor ad scan (Meta Ad Library hook extraction) → `merlin-social`
 - Dashboard / wisdom citations → `merlin-analytics`
+
+<!-- VENDOR-CARDS:BEGIN -->
+<!-- Generated from tools/vendor-cards/vendor-capabilities.json — do not edit by hand. Run `node tools/vendor-cards/gen-vendor-cards.js` to regenerate. -->
+
+## Vendor Capability Cards
+
+| Vendor | Primary pick-when | Entry action |
+|---|---|---|
+| **ElevenLabs** | voiceover track for a non-HeyGen video (Seedance/Veo product ad with narration) | `clone-voice` |
+| **fal.ai** | hero / lifestyle / editorial product imagery — use banana-pro-edit (default) with reference photos for SKU-accurate output | `image` |
+| **HeyGen** | spoken founder / testimonial / UGC-presenter video where a face must lip-sync a script | `heygen-agent` |
+
+### ElevenLabs — voiceover, voice cloning, streaming TTS
+
+**Actions:** `clone-voice`, `list-voices`, `delete-voice`
+
+**Pick when:**
+- voiceover track for a non-HeyGen video (Seedance/Veo product ad with narration)
+- brand voice cloning — 3 min of clean audio → reusable voice across every future ad
+- streaming TTS for in-app narration (first-word latency ~400–700ms vs 2–3s for batch)
+- multilingual voice — one cloned voice speaks 32+ languages with preserved timbre
+
+**Skip when:**
+- talking-head video — HeyGen bundles voice + lip-sync in one render; don't stitch ElevenLabs onto a separate HeyGen avatar render
+- user wants platform default TTS (system voice) — don't over-engineer for a 5-word sting
+
+**Killer features:**
+- **Instant Voice Clone (IVC)** — 60s sample → usable clone; acceptable for drafts, not production ads
+- **Professional Voice Clone (PVC)** — 3+ min clean sample → production-grade clone; the only tier to use for paid-media voiceovers
+- **Multilingual v2** — same cloned voice → 32 languages with native accent and prosody; pairs with HeyGen Hyperframes localization
+- **Stream TTS API** — websocket-delivered audio; powers Merlin's in-app narration — critical for first-word latency UX
+
+**Constraints:** elevenLabsApiKey required; PVC needs ~3min clean source (no background noise, no music); clones stored server-side — use voice.delete to remove
+**Cost:** ~$0.30/1K chars on Creator tier; streaming priced the same as batch
+**Output:** voiceover.mp3 inside the ad result folder
+**Docs:** <https://elevenlabs.io/docs/api-reference/introduction>
+**Last verified:** 2026-04-19
+### fal.ai — image + non-avatar video generation (multi-model gateway)
+
+**Actions:** `image`
+
+**Pick when:**
+- hero / lifestyle / editorial product imagery — use banana-pro-edit (default) with reference photos for SKU-accurate output
+- product-showcase or kinetic video without a talking human — seedance-2 (image-to-video, fast, consistent) is the default
+- cinematic long-form ad (8–15s) with camera motion and physics realism — veo-3 with locked reference frame
+- stylized / anime / motion-graphic aesthetic — kling (motion) or ideogram (typography-heavy)
+- brand-graphic or infographic with precise text — recraft or ideogram (banana/flux/seedance cannot render clean text)
+
+**Skip when:**
+- spoken talking-head with lip-sync — route to HeyGen, never try Veo/Seedance on faces that speak
+- pixel-perfect logo or legible ≥8-word copy — no fal model does this reliably; composite real assets instead
+- user explicitly requests a model not in the alias list — do NOT silently substitute; surface the error and ask
+
+**Killer features:**
+- **banana-pro-edit** — reference-image-conditioned edits — the default because it locks SKU, color, packaging from the brand's reference photos
+- **seedance-2 (I2V)** — image-to-video that preserves the reference frame — use this when the first frame must match an existing hero shot exactly
+- **veo-3** — Google's cinematic model; best for physically-grounded camera motion, hair/fabric dynamics, 8s+ continuity
+- **kling** — stylized motion + expressive character animation; good for meme-format and anime-adjacent UGC pastiche
+- **ideogram / recraft** — the only reliable path to readable long-form text and vector-style brand graphics
+- **Model aliases** — pass short names (banana-pro-edit, seedance-2, veo-3) — NEVER WebFetch to verify; the router resolves them server-side
+
+**Constraints:** falApiKey required; image default = banana-pro-edit; video default = seedance-2; full fal-ai/vendor/model slugs accepted; model substitution is a hard failure (surface error, don't silently retry on another model)
+**Cost:** image: ~$0.02–0.08/render; video: ~$0.10–0.40/sec depending on model; banana-pro-edit cheapest, veo-3 most expensive
+**Output:** results/img_YYYYMMDD_HHMMSS/ or results/ad_YYYYMMDD_HHMMSS/
+**Docs:** <https://fal.ai/models>
+**Last verified:** 2026-04-19
+### HeyGen — talking-head avatar video with native lip-sync
+
+**Actions:** `heygen-agent`, `list-avatars`
+
+**Pick when:**
+- spoken founder / testimonial / UGC-presenter video where a face must lip-sync a script
+- SaaS product explainer cutting between talking-head and screen-record — route to Hyperframes, not single-shot Avatar IV
+- multi-language localization of one script across 175+ languages with native lip-sync (fal/veo cannot do this)
+- any video where the viewer needs to trust a human on camera (founder intro, expert testimonial, educator)
+
+**Skip when:**
+- product-only, silent b-roll, or kinetic-type → use fal seedance-2 or veo-3
+- >60s single-shot monologue (avatars drift after ~45s) → split into a Hyperframes multi-beat sequence
+- stylized / animated / non-photoreal aesthetic → fal kling or recraft
+- source photo is profile, 3/4 angle, or occluded — HeyGen rejects, use Avatar IV-trained custom avatar instead
+
+**Killer features:**
+- **Avatar IV** — photo + script → talking avatar; fastest path from text brief to finished talking-head
+- **Hyperframes** — multi-shot sequence with consistent avatar across scene cuts — the correct pick for SaaS demos that weave talking-head with screen-record, and for any 30–90s narrative with >1 beat
+- **Instant Avatar (custom)** — 3min of training footage → personal avatar the user owns; reuse across every future video, no re-render of likeness
+- **Voice clone + 175 languages** — one script auto-localizes with native lip-sync per language — the cheapest way to launch international ad variants
+- **Incognito Mode** — watermark removed on paid tier — required for any ad shipped to paid media
+
+**Constraints:** heygenApiKey required; prompt ≤10k chars; source photo must be front-facing; render 2–4 min; callbackUrl optional for async
+**Cost:** ~$0.30/min rendered; 2–4 min real-time per 60s clip
+**Output:** results/video/YYYY-MM/<brand>/ad_<runID>/video.mp4
+**Docs:** <https://docs.heygen.com/reference/overview>
+**Last verified:** 2026-04-19
+
+<!-- VENDOR-CARDS:END -->

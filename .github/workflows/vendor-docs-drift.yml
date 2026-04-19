@@ -1,0 +1,64 @@
+name: Vendor Docs Drift
+
+# Monthly passive drift detection for vendor capability cards.
+#
+# For each vendor in tools/vendor-cards/vendor-capabilities.json, fetches the
+# docs_url, hashes a normalized excerpt, and compares to the hash stored last
+# run. Drift → opens a DRAFT PR so Ryan can review the vendor docs and update
+# the card (pick_when / skip_when / killer_features / last_verified).
+#
+# Runs on GitHub infrastructure — NEVER on user machines. Users receive card
+# updates through the normal /update path alongside every other SKILL change.
+
+on:
+  schedule:
+    # First of every month at 10:00 UTC.
+    - cron: '0 10 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  drift:
+    name: Detect vendor docs drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch + hash every vendor docs page
+        id: drift
+        run: |
+          node test/vendor-docs-drift.js > test/.drift-report.md
+          if grep -q "^NO-DRIFT" test/.drift-report.md; then
+            echo "drift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "drift=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open draft PR if drift detected
+        if: steps.drift.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          BRANCH="audit/vendor-docs-$(date +%Y%m)"
+          git config user.name "merlin-audit-bot"
+          git config user.email "audit@merlingotme.com"
+          git checkout -b "$BRANCH"
+          git add test/.vendor-docs-hashes.json
+          # Commit the updated hash store so the NEXT run compares against
+          # today, not against stale hashes. The draft PR itself is the
+          # signal to the human reviewer.
+          git commit -m "Vendor docs drift — $(date +%Y-%m) (manual review required)" || echo "no hash changes to commit"
+          git push origin "$BRANCH"
+          gh pr create \
+            --draft \
+            --title "Vendor docs drift — $(date +%Y-%m)" \
+            --body-file test/.drift-report.md \
+            --label "audit,vendor-cards,manual-review"

@@ -6,8 +6,10 @@ on:
       - '.claude/skills/**'
       - '.claude/commands/merlin.md'
       - 'test/validate-skills.js'
+      - 'test/validate-vendor-cards.js'
       - 'test/routing-corpus.json'
       - 'test/run-routing-corpus.js'
+      - 'tools/vendor-cards/**'
       - 'version.json'
       - '.github/workflows/skills-lint.yml'
   pull_request:
@@ -15,8 +17,10 @@ on:
       - '.claude/skills/**'
       - '.claude/commands/merlin.md'
       - 'test/validate-skills.js'
+      - 'test/validate-vendor-cards.js'
       - 'test/routing-corpus.json'
       - 'test/run-routing-corpus.js'
+      - 'tools/vendor-cards/**'
       - 'version.json'
       - '.github/workflows/skills-lint.yml'
   # Monthly audit — scheduled, produces a draft PR with telemetry summary
@@ -44,6 +48,11 @@ jobs:
         run: node test/run-routing-corpus.js
       - name: Confirm version.json ships every SKILL in `updatable`
         run: node test/validate-skills.js --check-updatable
+      # Vendor cards are derived from tools/vendor-cards/vendor-capabilities.json
+      # by gen-vendor-cards.js. The validator re-runs the generator in --check
+      # mode so any edit to the JSON without regenerating fails CI here.
+      - name: Validate vendor capability cards (schema + action coverage + generator-sync)
+        run: node test/validate-vendor-cards.js
 
   audit:
     name: Monthly audit (scheduled only)
