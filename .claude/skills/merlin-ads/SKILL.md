@@ -2,7 +2,7 @@
 name: merlin-ads
 description: Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).
 owner: ryan
-bytes_justification: 16KB — this skill is the strategic core of Merlin's paid media brain. It covers five ad platforms (Meta/TikTok/Google/Amazon/Reddit) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Hard-capped at 20KB.
+bytes_justification: ~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.
 ---
 
 # Paid Advertising — All Platforms
@@ -122,6 +122,25 @@ Apply in order per ad. Budgets derive from `cfg.dailyAdBudget` (default $20); RO
 - **Duplicate prevention:** before creating test ad, check `ads-live.json` — skip if same product + same hook already running.
 - **Write-back:** update `ads-live.json` after every kill/scale/publish. Authoritative source of truth.
 
+## Decision Facts (every kill/scale/pause MUST emit one)
+
+Every kill, scale, or pause flowing through the binary passes a `trigger` so the Go side emits a signed `DecisionFact` into `assets/brands/<brand>/activity.jsonl`. **Do NOT write per-event prose (numbers, kill reasons, scaling multipliers) to `memory.md`** — the weekly `merlin-memory` spell distills patterns from the DecisionFact stream and cites IDs. Memory.md is the distillation layer, not the substrate.
+
+Pass the full decision context on every `*-kill` and `*-duplicate` call:
+
+| Param | Required | Values |
+|---|---|---|
+| `trigger` | yes for chained decisions | `fatigue` · `dead_on_arrival` · `roas_below_target` · `freq_exceeded` · `manual` |
+| `factRefs` | recommended | dashboard fact IDs (from the current session's fact envelopes) that justified the decision — **pointers, not copies of metric values** |
+| `hookToAvoid` | yes on kills with `NextAction` | the killed ad's hook archetype — merlin-daily's replacement generator uses this to pick a different hook |
+| `product` | yes when known | product slug — lets the replacement generator target the same catalog item |
+
+The binary auto-chains: a kill with `trigger=fatigue` or `trigger=dead_on_arrival` emits a DecisionFact with `NextAction.type=generate_replacement`. merlin-daily consumes the queue at dawn (see merlin-daily task prompt in merlin-setup) — no manual bookkeeping here.
+
+Leave `trigger` blank only for user-initiated pauses from the UI. A blank trigger means "terminal decision, do not chain." Scale decisions (duplicate with positive `dailyBudget`) emit a DecisionFact with `Action=scale` and no `NextAction`.
+
+**Never write raw metrics to memory.md.** If a line needs a number, that number lives in a DecisionFact or a dashboard fact envelope — memory cites the ID instead. Two citation formats: `[dec-<8hex>]` for DecisionFact IDs (kill/scale/pause events), `[facts: <id>, <id>]` for dashboard fact envelope IDs (metric-level receipts). See the Memory Harmony Rule in merlin-setup's merlin-memory task prompt for the full policy.
+
 ## Action Reference
 
 ### Meta Ads (`mcp__merlin__meta_ads`)
@@ -130,9 +149,9 @@ Apply in order per ad. Budgets derive from `cfg.dailyAdBudget` (default $20); RO
 |---|---|
 | `push` | `adImagePath`, `adHeadline`, `adBody`, `dailyBudget` |
 | `insights` | (none — pulls all active) |
-| `kill` | `adId` |
+| `kill` | `adId`; on chained optimize runs also `trigger`, `hookToAvoid`, `factRefs`, `product` (Decision Facts §) |
 | `activate` | `adId` or `campaignId` (status flip, NOT content creation) |
-| `duplicate` | `adId`, `campaignId` (target campaign for scaling) |
+| `duplicate` | `adId`, `campaignId` (target campaign for scaling); on chained optimize runs also `trigger`, `factRefs` |
 | `setup` | (creates Testing + Scaling campaigns) |
 | `lookalike` | `adId` (winner) |
 | `retarget` | `adId` (winner) |

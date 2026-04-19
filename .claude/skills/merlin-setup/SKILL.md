@@ -164,6 +164,17 @@ Create ONLY the tasks the user approved via the consent question in section A. I
   Scan assets/brands/ for all brand folders (skip "example").
   For EACH brand that has products:
 
+  0. CONSUME DECISION QUEUE (replace killed ads before rotation).
+     Call mcp__merlin__decision_queue({brand:"<brand>"}) — returns unconsumed DecisionFacts
+     where NextAction.Type == "generate" (i.e. kills that haven't been replaced yet).
+     For each queued entry:
+       → Generate a replacement ad for NextAction.Product using a hook OTHER than
+         NextAction.HookToAvoid (read memory.md "## What Works" to pick the next best hook).
+       → Pass factRefs:[<queue entry ID>] on the generation call so the binary emits a
+         consume DecisionFact linking the replacement back to the kill.
+     If the queue is empty, proceed to step 1 (normal rotation).
+     Cap: at most 3 replacements per brand per daily run to stay inside budget.
+
   1. Read brand.md + assets/brands/<brand>/memory.md. Pick a product not used in the last 7 days (check Run Log).
      If all products were used recently, pick the one with the longest gap.
 
@@ -274,19 +285,34 @@ Create ONLY the tasks the user approved via the consent question in section A. I
     Update ads-live.json immediately. Set status to "paused" for kills, "live" for scales/publishes.
     Update ROAS and budget fields from the latest insights data.
 
+  DECISION FACT EMISSION — every kill/scale MUST pass trigger + product (+ hookToAvoid on kills):
+    Kill calls: mcp__merlin__meta_ads({action:"kill", adId, trigger:"<reason>",
+      hookToAvoid:"<hook style>", product:"<product>", factRefs:["<insight-fact-id>"]}).
+      Same shape for tiktok_ads. trigger values: "dead_on_arrival" | "low_performer" | "fatigue".
+    Scale calls: mcp__merlin__meta_ads({action:"duplicate", adId, trigger:"<reason>",
+      product:"<product>", factRefs:["<insight-fact-id>"]}). trigger: "winner" | "massive_winner".
+    The binary signs a DecisionFact and appends it to activity.jsonl with type="decision".
+    The merlin-daily task reads the unconsumed kill queue and generates replacements that cite
+    the kill's DecisionFact ID in FactRefs. DO NOT write kill reasons, fatigue notes, or
+    hook-to-avoid prose into memory.md — the signed DecisionFact is the authoritative record.
+
   RULE 1 — DEAD ON ARRIVAL (kill fast, save money):
     If spent >= 2× PER_AD_TEST_BUDGET AND purchases == 0 AND CTR < 1.0%:
     → KILL immediately. Don't waste another dollar.
-    → Reason: "Dead on arrival: ${spent} spent, 0 purchases, {CTR}% CTR after {days} days"
+    → Emit DecisionFact (see DECISION FACT EMISSION below) with trigger="dead_on_arrival",
+      product=<ad product>, hookToAvoid=<hook style>. Do NOT write the reason as prose to memory.md.
 
   RULE 2 — LOW PERFORMER:
     If spent >= PER_AD_TEST_BUDGET AND ROAS < 0.5 AND days_running >= 2:
     → KILL. Fair shot, underperformed.
+    → Emit DecisionFact with trigger="low_performer", product=<ad product>, hookToAvoid=<hook>.
 
   RULE 3 — CREATIVE FATIGUE:
     If days_running >= 5 AND ctr_trend declining 30%+ from peak:
-    → KILL. Add to memory: "Hook style '{hook}' fatigued after {days} days for {product}."
-    → Queue a replacement with DIFFERENT hook.
+    → KILL. Emit DecisionFact with trigger="fatigue", product=<ad product>, hookToAvoid=<hook>.
+    → The binary persists the signed fact; merlin-daily's decision-queue step reads it and
+      generates a replacement with a DIFFERENT hook. Do NOT hand-queue or write fatigue prose
+      to memory.md — the DecisionFact IS the queue entry.
 
   RULE 4 — PROMISING:
     If days_running < 3 AND CTR >= 1.0%: HOLD.
@@ -294,11 +320,14 @@ Create ONLY the tasks the user approved via the consent question in section A. I
   RULE 5 — WINNER:
     If ROAS >= 1.5 AND days_running >= 2 AND spend >= PER_AD_TEST_BUDGET:
     → SCALE. Duplicate to Scaling campaign with budget = SCALING_BUDGET ÷ active_winners.
-    → Add to memory "## What Works".
+    → Emit DecisionFact with trigger="winner", product=<ad product> on the duplicate call.
+    → Distilled pattern to memory "## What Works" MAY cite the DecisionFact ID in square brackets
+      (e.g. "UGC unboxing wins for calm-gummies [dec-a1b2c3d4]"). Never paste raw metrics.
 
   RULE 6 — MASSIVE WINNER:
     If ROAS >= 3.0 AND spend >= DAILY_BUDGET AND purchases >= 5:
     → SCALE + create LOOKALIKE from purchasers. ONCE per ad (check memory.md for "lookalike:{ad_id}").
+    → Emit DecisionFact with trigger="massive_winner", product=<ad product> on the duplicate call.
 
   RULE 7 — RETARGET:
     If any WINNER exists AND retargeting has no active ads:
@@ -349,11 +378,17 @@ Create ONLY the tasks the user approved via the consent question in section A. I
     → email-audit: does win-back flow exist? If no → flag. If yes but churn rising → recommend refresh.
 
   == STEP 7: SAVE MEMORY (do this FIRST before posting) ==
+  MEMORY HARMONY — memory.md holds DISTILLED patterns only, never raw metrics
+  or per-ad receipts (those live in activity.jsonl + briefing.json). Every
+  new "## What Works" / "## What Fails" entry MUST cite the DecisionFact ID(s)
+  that support it in square brackets, e.g.
+  "UGC unboxing wins for calm-gummies [dec-a1b2c3d4]".
+
   Update assets/brands/<brand>/memory.md:
-    - "## Monthly Spend": today's spend by platform
-    - "## Run Log": date, ads killed/scaled/created, budget pacing
-    - "## What Works" / "## What Fails": new patterns
-    - "## MER Trend": today's MER from dashboard
+    - "## Monthly Spend": today's spend by platform (rollup total only — not per-ad)
+    - "## Run Log": one line — date, kill count, scale count, pacing status
+    - "## What Works" / "## What Fails": new DISTILLED patterns with [dec-…] citations
+    - "## MER Trend": today's MER from dashboard (trend line, not raw numbers)
 
   Write per-brand briefing.json AND root .merlin-briefing.json:
     {"date":"YYYY-MM-DD","ads":{"killed":N,"scaled":N,"created":N,"active":N},"content":{"blogs":N,"images":N},"revenue":{"total":"$X","trend":"+Y%"},"bestHookStyle":"ugc","bestFormat":"9:16","avgROAS":X.X,"recommendation":"..."}
@@ -456,6 +491,36 @@ Create ONLY the tasks the user approved via the consent question in section A. I
 
   Do NOT summarize old entries — delete them. Recent data has signal.
   Log: "Memory cleanup: {brand} — {before} lines → {after} lines"
+
+  ## Memory Harmony Rule
+
+  memory.md holds PATTERNS, PREFERENCES, BRAND VOICE, and NARRATIVE — never
+  raw metrics or per-ad receipts. Raw metrics live in activity.jsonl (as
+  signed facts) and briefing.json (as daily snapshots); memory.md is where
+  the DISTILLED lesson lives.
+
+  Allowed in memory.md:
+    - "UGC unboxing outperforms studio shots for calm-gummies [dec-a1b2c3d4]"
+    - "Customers respond to 'science-backed' language; avoid 'miracle'"
+    - "Monday launches underperform — ship Tuesday–Thursday"
+    - "Lookalike seeds from purchasers outperform interest targeting 2×"
+
+  NOT allowed in memory.md (these belong in activity.jsonl / briefing.json):
+    - "Ad abc123 spent $47, 0 purchases, 0.3% CTR — killed on 2026-04-17"
+    - "Hook 'Tired of X?' killed after 2 days for dead_on_arrival"
+    - "ROAS yesterday: 2.3x, today: 1.8x, trending -22%"
+    - Per-run dashboard snapshots (dashboard_YYYY-MM-DD.json owns these)
+
+  CITATION RULE: every distilled pattern MUST cite the DecisionFact ID(s)
+  that support it, in square brackets. One pattern, one-or-more IDs. The
+  citation makes the pattern auditable — a future run can verify the
+  signed fact still exists before trusting the pattern. Patterns without
+  citations are treated as stale and eligible for cleanup.
+
+  During weekly compaction, if a pattern cites a DecisionFact ID that no
+  longer exists in activity.jsonl (e.g. the file rolled over), retain the
+  pattern but strip the broken citation — the lesson survives even when
+  the receipt ages out.
   ```
 
 ### C) Platform connections (don't ask during setup — connect on demand)
