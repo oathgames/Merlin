@@ -2429,7 +2429,13 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
 
   const newBrand = e.target.value;
   const prevBrand = e.target.dataset.lastValue || '';
-  e.target.dataset.lastValue = newBrand || '';
+  // Do NOT update lastValue until we know the swap succeeded. Previously we
+  // wrote newBrand here eagerly — on IPC rejection or a `success: false`
+  // response, the dropdown was reverted to prevBrand but lastValue had
+  // already advanced, so the NEXT change event computed the wrong prevBrand
+  // and the rollback-on-failure logic revert-to-prevBrand reverted to a
+  // brand the user was never actually working in. Symptom: "— now working
+  // in MadChill —" divider sticks around after a failed switch to IvoryElla.
 
   // Brand context swap — the main process aborts the current SDK turn,
   // resumes the target brand's SDK session by ID, and returns that brand's
@@ -2446,6 +2452,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   }
 
   if (swapResult && swapResult.success) {
+    e.target.dataset.lastValue = newBrand || '';
     paintBrandThread(swapResult.bubbles);
     // Only show the divider if we actually switched between distinct
     // brands — selecting the same brand again shouldn't pollute the chat.
@@ -2458,11 +2465,19 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
       })();
       renderBrandDivider(label);
     }
-  } else if (swapResult && !swapResult.success) {
-    // Surface the failure but don't leave the UI in a stale state — revert
-    // the dropdown so it matches the brand we're actually working in.
-    console.warn('[switch-brand] failed:', swapResult.error);
+  } else {
+    // Swap either rejected (IPC threw) or returned { success: false }.
+    // In both cases the UI must revert to prevBrand so the dropdown matches
+    // the brand whose SDK session is still live. Without the revert on a
+    // thrown swap, the dropdown would advertise the new brand while the
+    // session kept running as the old one.
+    if (swapResult && !swapResult.success) {
+      console.warn('[switch-brand] failed:', swapResult.error);
+    }
     if (prevBrand) e.target.value = prevBrand;
+    // lastValue already matches prevBrand (we didn't advance it above), so
+    // no rollback needed here.
+    return;
   }
 
   // Update peripheral UI (vertical, connections, spells, perf) for the new brand.

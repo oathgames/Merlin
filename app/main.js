@@ -6,6 +6,7 @@ const wsServer = require('./ws-server');
 const relayClient = require('./relay-client');
 const { generateQRDataUri } = require('./qr');
 const threads = require('./threads');
+const { createInitBarrier } = require('./async-barrier');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -893,6 +894,20 @@ let _queueFrozenForAuth = false;
 // activeQuery singleton). Serializes switches without blocking message
 // sends from the renderer.
 let _switchInProgress = false;
+
+// Serializes startSession() init against rapid switch-brand toggles.
+// startSession's pre-query awaits (subscription check + SDK import + MCP
+// boot) create a window where activeQuery is still null but a session is
+// about to be created. Without this barrier, a second rapid switch lands
+// in that window, its abort sequence no-ops (nothing to abort), it fires
+// its own startSession, and the two init chains race on the activeQuery
+// singleton — leaving the UI pointing at one brand while the live SDK
+// session runs as another. See app/async-barrier.js for the tested
+// implementation + race-serialization test. The barrier is armed at the
+// top of startSession and released in a finally block wrapping the init
+// phase, so every exit path — early return, successful query assignment,
+// thrown error — unblocks the waiters.
+const _sessionInitBarrier = createInitBarrier();
 
 
 // Auto-expire pending approvals after 15 minutes
@@ -1890,12 +1905,30 @@ function inferBrandDomain() {
 }
 
 async function startSession(brandOverride) {
+  // Arm the init barrier. Release is called in the finally block wrapping
+  // the init phase below — every early-return AND the successful query
+  // assignment AND any thrown error must release, otherwise switch-brand
+  // waiters would hang. The barrier chains internally so a second
+  // startSession called while this one's still initializing will wait
+  // behind us. See app/async-barrier.js.
+  const initGate = _sessionInitBarrier.arm();
+
   // Clear the auth-recovery flag at the top of every startSession. If we
   // were frozen for auth and we're now starting a new session, either the
   // user just completed login (in which case the queue should drain) or the
   // user abandoned (in which case the queue should still drain on their next
   // message). Either way, the freeze is over.
   _queueFrozenForAuth = false;
+
+  // Hoisted so the post-init blocks (accountInfo, for-await) can see them —
+  // they're assigned inside the init try/finally below. Declared up here so
+  // the try-scope doesn't orphan them when execution falls through to the
+  // accountInfo + for-await loop.
+  let sessionEnv = null;
+  let activeBrand = '';
+  let resumeSessionId = null;
+
+  try {
 
   const access = await ensureSubscriptionAccess({ via: 'start-session' });
   if (!access.allowed) {
@@ -1917,7 +1950,7 @@ async function startSession(brandOverride) {
   // Determine the active brand — must match what the welcome message shows.
   // brandOverride wins over persisted state so switch-brand IPC can atomically
   // restart the session on the target brand without racing a state write.
-  let activeBrand = '';
+  activeBrand = '';
   if (typeof brandOverride === 'string' && brandOverride) {
     activeBrand = brandOverride;
   } else {
@@ -1945,7 +1978,7 @@ async function startSession(brandOverride) {
 
   // If this brand has a prior SDK session, resume it — Claude picks up with
   // full conversation memory of the prior turn. No preamble, no re-greet.
-  const resumeSessionId = activeBrand ? threads.getSessionId(appRoot, activeBrand) : null;
+  resumeSessionId = activeBrand ? threads.getSessionId(appRoot, activeBrand) : null;
 
   async function* messageGenerator() {
     // Only run the /merlin welcome preamble on a fresh session. On resume,
@@ -1978,7 +2011,7 @@ async function startSession(brandOverride) {
   // If user has an API key, pass it via env so Claude Code uses it instead of subscription
   // ELECTRON_RUN_AS_NODE prevents the SDK subprocess from launching as a macOS GUI app
   // (dock bouncing + hang). The login flow at trigger-claude-login already sets this.
-  const sessionEnv = { ...process.env, BROWSER: 'none' };
+  sessionEnv = { ...process.env, BROWSER: 'none' };
   if (!getBundledNodePath()) sessionEnv.ELECTRON_RUN_AS_NODE = '1'; // Only needed for wrapper fallback
   try {
     const storedKey = readSecureFile(path.join(appRoot, '.merlin-api-key'));
@@ -2094,6 +2127,19 @@ async function startSession(brandOverride) {
     prompt: messageGenerator(),
     options: queryOptions,
   });
+
+  } finally {
+    // Init phase is over — activeQuery is either set (success path) or
+    // unset (early-return paths above). Release any pending switch-brand
+    // that's waiting on our barrier. The outer try/finally must bracket
+    // every await in the init phase; without this, an exception anywhere
+    // between the subscription check and the query() call would leave the
+    // barrier armed and every future switch would stall.
+    initGate.release();
+  }
+
+  // Early-return paths bailed before creating a query — nothing to run.
+  if (!activeQuery) return;
 
   // Capture user email from Claude account (for telemetry + Stripe pre-fill + domain inference)
   try {
@@ -2774,6 +2820,16 @@ ipcMain.handle('switch-brand', async (_, targetBrand) => {
       return { success: false, error: 'brand not found' };
     }
 
+    // 0) Wait for any in-flight startSession() init to finish first. Without
+    //    this, a second rapid switch lands while the prior startSession is
+    //    still in its subscription/SDK-import await chain — activeQuery is
+    //    still null, the abort below no-ops, we fire our own startSession,
+    //    and both init chains race on the activeQuery singleton. That race
+    //    is exactly the "chat switch breaks after one switch" symptom: the
+    //    UI dropdown shows brand B but the live SDK session is running as A
+    //    (or vice versa), and user messages land in the wrong conversation.
+    await _sessionInitBarrier.whenReady();
+
     const prevState = readState();
     const prevBrand = prevState.activeBrand || '';
     if (prevBrand === targetBrand && activeQuery) {
@@ -2786,7 +2842,12 @@ ipcMain.handle('switch-brand', async (_, targetBrand) => {
     // 1) Abort any in-flight SDK turn. The for-await loop unwinds and the
     //    finally block resets activeQuery = null. We also clear the pending
     //    queue so messages destined for the old brand don't bleed into the
-    //    new session.
+    //    new session. interrupt() is a belt-and-suspenders — resolveNextMessage
+    //    only stops the generator AFTER it reaches its await, so a turn stuck
+    //    in tool-use would otherwise keep running until it completed naturally.
+    if (activeQuery && typeof activeQuery.interrupt === 'function') {
+      try { await activeQuery.interrupt(); } catch {}
+    }
     if (resolveNextMessage) {
       try { resolveNextMessage(null); } catch {}
     }
