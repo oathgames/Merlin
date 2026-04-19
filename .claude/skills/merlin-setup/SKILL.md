@@ -165,8 +165,8 @@ Create ONLY the tasks the user approved via the consent question in section A. I
   For EACH brand that has products:
 
   0. CONSUME DECISION QUEUE (replace killed ads before rotation).
-     Call mcp__merlin__decision_queue({brand:"<brand>"}) — returns unconsumed DecisionFacts
-     where NextAction.Type == "generate" (i.e. kills that haven't been replaced yet).
+     Call mcp__merlin__decisions({action:"queue", brand:"<brand>"}) — returns unconsumed
+     DecisionFacts where NextAction.Type == "generate" (i.e. kills that haven't been replaced yet).
      For each queued entry:
        → Generate a replacement ad for NextAction.Product using a hook OTHER than
          NextAction.HookToAvoid (read memory.md "## What Works" to pick the next best hook).

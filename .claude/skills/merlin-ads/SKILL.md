@@ -130,7 +130,7 @@ Pass the full decision context on every `*-kill` and `*-duplicate` call:
 
 | Param | Required | Values |
 |---|---|---|
-| `trigger` | yes for chained decisions | `fatigue` · `dead_on_arrival` · `roas_below_target` · `freq_exceeded` · `manual` |
+| `trigger` | yes for chained decisions | **kills:** `fatigue` · `dead_on_arrival` · `low_performer` · `roas_below_target` · `freq_exceeded` · **scales:** `winner` · `massive_winner` · **terminal:** `manual` |
 | `factRefs` | recommended | dashboard fact IDs (from the current session's fact envelopes) that justified the decision — **pointers, not copies of metric values** |
 | `hookToAvoid` | yes on kills with `NextAction` | the killed ad's hook archetype — merlin-daily's replacement generator uses this to pick a different hook |
 | `product` | yes when known | product slug — lets the replacement generator target the same catalog item |

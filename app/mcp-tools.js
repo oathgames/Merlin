@@ -892,6 +892,29 @@ function buildTools(tool, z, ctx) {
     }
   ));
 
+  // ── decisions ────────────────────────────────────────────
+  // Surfaces the DecisionFact chain (signed kill/scale events in
+  // activity.jsonl) to the optimizer + daily spells. Only action today is
+  // "queue" — returns every unconsumed DecisionFact whose NextAction hasn't
+  // been satisfied by a later generate-fact. merlin-daily reads this at dawn
+  // and generates replacement ads for each kill, citing the kill's ID in
+  // factRefs so the binary can mark the queue entry consumed.
+  tools.push(tool(
+    'decisions',
+    'Read the brand\'s DecisionFact chain (signed kill/scale events). action=queue returns unconsumed decisions that still need a follow-up (e.g. kills awaiting a replacement ad).',
+    {
+      action: z.enum(['queue']).describe('queue=list unconsumed DecisionFacts (kills needing replacements)'),
+      brand: z.string().optional().describe('Brand name'),
+      sinceUnix: z.number().optional().describe('Only return decisions with Timestamp >= this Unix seconds value (default: all)'),
+    },
+    async (args) => {
+      const payload = { action: 'decision-queue', brand: args.brand };
+      if (args.sinceUnix !== undefined) payload.sinceUnix = args.sinceUnix;
+      const result = await runBinary(ctx, 'decision-queue', payload);
+      return { content: [{ type: 'text', text: result.text }], isError: result.error };
+    }
+  ));
+
   return tools;
 }
 
