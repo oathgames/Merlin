@@ -46,7 +46,7 @@ const statusText = document.getElementById('status-text');
 
 function setStatus(connected, text) {
   statusDot.className = connected ? 'dot-ok' : 'dot-err';
-  statusText.textContent = text || (connected ? 'Connected' : 'Reconnecting...');
+  statusText.textContent = text || (connected ? 'Connected' : 'Not paired');
 }
 
 // ── Credential storage ──────────────────────────────────────
@@ -220,7 +220,7 @@ function openSocket(url, onOpen) {
         if (mode === 'relay') subscribePush();
         break;
       case 'auth-fail':
-        setStatus(false, 'Auth failed — scan QR again');
+        setStatus(false);
         if (mode === 'relay') clearCreds();
         try { ws.close(); } catch {}
         break;
@@ -238,7 +238,7 @@ function openSocket(url, onOpen) {
     // 1008/4401 = permanent auth failure; clear creds and stop.
     if (ev && (ev.code === 1008 || ev.code === 4401)) {
       if (mode === 'relay') clearCreds();
-      setStatus(false, 'Session ended — scan QR again');
+      setStatus(false);
       return;
     }
     scheduleReconnect();
@@ -713,7 +713,7 @@ async function init() {
     // Legacy LAN path — served by the Electron app directly.
     mode = 'lan';
     lanToken = parsed.token;
-    setStatus(false, 'Connecting to desktop...');
+    setStatus(false, 'Connecting');
     connectLan(lanToken);
     return;
   }
@@ -722,14 +722,14 @@ async function init() {
   await registerServiceWorker();
 
   if (parsed.kind === 'pair') {
-    setStatus(false, 'Pairing...');
+    setStatus(false, 'Connecting');
     try {
       relayCreds = await claimPairCode(parsed.sessionId, parsed.pairCode);
       saveCreds(relayCreds);
       // Strip the fragment so the one-shot pair code isn't kept in history.
       history.replaceState(null, '', window.location.pathname + window.location.search);
     } catch (e) {
-      setStatus(false, 'Pair failed — scan a fresh QR');
+      setStatus(false);
       return;
     }
   } else {
@@ -737,11 +737,11 @@ async function init() {
   }
 
   if (!relayCreds) {
-    setStatus(false, 'Not paired — scan the QR code on your desktop');
+    setStatus(false);
     return;
   }
 
-  setStatus(false, 'Connecting...');
+  setStatus(false, 'Connecting');
   connectRelay();
 }
 
