@@ -139,7 +139,7 @@ The binary auto-chains: a kill with `trigger=fatigue` or `trigger=dead_on_arriva
 
 Leave `trigger` blank only for user-initiated pauses from the UI. A blank trigger means "terminal decision, do not chain." Scale decisions (duplicate with positive `dailyBudget`) emit a DecisionFact with `Action=scale` and no `NextAction`.
 
-**Never write raw metrics to memory.md.** If a line needs a number, that number lives in a DecisionFact or a dashboard fact envelope — memory cites the ID (`[facts: a7f2, b91c]`) instead.
+**Never write raw metrics to memory.md.** If a line needs a number, that number lives in a DecisionFact or a dashboard fact envelope — memory cites the ID instead. Two citation formats: `[dec-<8hex>]` for DecisionFact IDs (kill/scale/pause events), `[facts: <id>, <id>]` for dashboard fact envelope IDs (metric-level receipts). See the Memory Harmony Rule in merlin-setup's merlin-memory task prompt for the full policy.
 
 ## Action Reference
 

@@ -378,11 +378,17 @@ Create ONLY the tasks the user approved via the consent question in section A. I
     → email-audit: does win-back flow exist? If no → flag. If yes but churn rising → recommend refresh.
 
   == STEP 7: SAVE MEMORY (do this FIRST before posting) ==
+  MEMORY HARMONY — memory.md holds DISTILLED patterns only, never raw metrics
+  or per-ad receipts (those live in activity.jsonl + briefing.json). Every
+  new "## What Works" / "## What Fails" entry MUST cite the DecisionFact ID(s)
+  that support it in square brackets, e.g.
+  "UGC unboxing wins for calm-gummies [dec-a1b2c3d4]".
+
   Update assets/brands/<brand>/memory.md:
-    - "## Monthly Spend": today's spend by platform
-    - "## Run Log": date, ads killed/scaled/created, budget pacing
-    - "## What Works" / "## What Fails": new patterns
-    - "## MER Trend": today's MER from dashboard
+    - "## Monthly Spend": today's spend by platform (rollup total only — not per-ad)
+    - "## Run Log": one line — date, kill count, scale count, pacing status
+    - "## What Works" / "## What Fails": new DISTILLED patterns with [dec-…] citations
+    - "## MER Trend": today's MER from dashboard (trend line, not raw numbers)
 
   Write per-brand briefing.json AND root .merlin-briefing.json:
     {"date":"YYYY-MM-DD","ads":{"killed":N,"scaled":N,"created":N,"active":N},"content":{"blogs":N,"images":N},"revenue":{"total":"$X","trend":"+Y%"},"bestHookStyle":"ugc","bestFormat":"9:16","avgROAS":X.X,"recommendation":"..."}
@@ -485,6 +491,36 @@ Create ONLY the tasks the user approved via the consent question in section A. I
 
   Do NOT summarize old entries — delete them. Recent data has signal.
   Log: "Memory cleanup: {brand} — {before} lines → {after} lines"
+
+  ## Memory Harmony Rule
+
+  memory.md holds PATTERNS, PREFERENCES, BRAND VOICE, and NARRATIVE — never
+  raw metrics or per-ad receipts. Raw metrics live in activity.jsonl (as
+  signed facts) and briefing.json (as daily snapshots); memory.md is where
+  the DISTILLED lesson lives.
+
+  Allowed in memory.md:
+    - "UGC unboxing outperforms studio shots for calm-gummies [dec-a1b2c3d4]"
+    - "Customers respond to 'science-backed' language; avoid 'miracle'"
+    - "Monday launches underperform — ship Tuesday–Thursday"
+    - "Lookalike seeds from purchasers outperform interest targeting 2×"
+
+  NOT allowed in memory.md (these belong in activity.jsonl / briefing.json):
+    - "Ad abc123 spent $47, 0 purchases, 0.3% CTR — killed on 2026-04-17"
+    - "Hook 'Tired of X?' killed after 2 days for dead_on_arrival"
+    - "ROAS yesterday: 2.3x, today: 1.8x, trending -22%"
+    - Per-run dashboard snapshots (dashboard_YYYY-MM-DD.json owns these)
+
+  CITATION RULE: every distilled pattern MUST cite the DecisionFact ID(s)
+  that support it, in square brackets. One pattern, one-or-more IDs. The
+  citation makes the pattern auditable — a future run can verify the
+  signed fact still exists before trusting the pattern. Patterns without
+  citations are treated as stale and eligible for cleanup.
+
+  During weekly compaction, if a pattern cites a DecisionFact ID that no
+  longer exists in activity.jsonl (e.g. the file rolled over), retain the
+  pattern but strip the broken citation — the lesson survives even when
+  the receipt ages out.
   ```
 
 ### C) Platform connections (don't ask during setup — connect on demand)
