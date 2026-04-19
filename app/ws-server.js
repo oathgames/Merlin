@@ -36,6 +36,12 @@ let onSendMessage = null;
 let onApproveTool = null;
 let onDenyTool = null;
 let onAnswerQuestion = null;
+let onTranscribeAudio = null;
+
+// Per-frame ceiling for base64-encoded voice audio coming from the PWA. A
+// 15s opus recording base64s to ~60-90 KB; 192 KB gives headroom for iOS's
+// heavier mp4 fallback without opening the door to arbitrary uploads.
+const MAX_TRANSCRIBE_BYTES = 192 * 1024;
 
 // Optional outbound mirror — set by relay-client.js to fan every LAN
 // broadcast out to the merlin-relay Worker so roaming PWAs see the same
@@ -192,6 +198,29 @@ function setupConnectionHandler() {
           if (typeof msg.answers !== 'object' || msg.answers === null) break;
           if (onAnswerQuestion) onAnswerQuestion(msg.toolUseID, msg.answers);
           break;
+        case 'transcribe-audio': {
+          // PWA mic hand-off: phone captures audio, desktop runs whisper.
+          // We reply only to the requesting client, not broadcast, so the
+          // transcript never leaks to other paired phones.
+          if (typeof msg.requestId !== 'string' || msg.requestId.length > 64) break;
+          if (typeof msg.mime !== 'string' || msg.mime.length > 64) break;
+          if (typeof msg.data !== 'string' || msg.data.length > MAX_TRANSCRIBE_BYTES) {
+            try { ws.send(JSON.stringify({ type: 'transcription', payload: { requestId: msg.requestId, error: 'too-large' } })); } catch {}
+            break;
+          }
+          if (!onTranscribeAudio) break;
+          Promise.resolve(onTranscribeAudio(msg.data, msg.mime))
+            .then((result) => {
+              const payload = { requestId: msg.requestId };
+              if (result && typeof result.text === 'string') payload.text = result.text;
+              if (result && typeof result.error === 'string') payload.error = result.error;
+              try { ws.send(JSON.stringify({ type: 'transcription', payload })); } catch {}
+            })
+            .catch(() => {
+              try { ws.send(JSON.stringify({ type: 'transcription', payload: { requestId: msg.requestId, error: 'internal' } })); } catch {}
+            });
+          break;
+        }
       }
     });
 
@@ -264,6 +293,7 @@ module.exports = {
     onApproveTool = handlers.onApproveTool;
     onDenyTool = handlers.onDenyTool;
     onAnswerQuestion = handlers.onAnswerQuestion;
+    onTranscribeAudio = handlers.onTranscribeAudio;
   },
   setRelayForward,
 };

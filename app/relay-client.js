@@ -37,6 +37,11 @@ let onSendMessage = null;
 let onApproveTool = null;
 let onDenyTool = null;
 let onAnswerQuestion = null;
+let onTranscribeAudio = null;
+
+// PWA-originated audio frames. Matches ws-server's limit so the LAN and
+// relay paths enforce the same ceiling.
+const MAX_TRANSCRIBE_BYTES = 192 * 1024;
 
 // ── Credential persistence ──────────────────────────────────────────
 function getCredsPath() {
@@ -171,6 +176,24 @@ function connect() {
         if (!msg.answers || typeof msg.answers !== 'object') return;
         if (onAnswerQuestion) onAnswerQuestion(msg.toolUseID, msg.answers);
         return;
+      case 'transcribe-audio': {
+        if (typeof msg.requestId !== 'string' || msg.requestId.length > 64) return;
+        if (typeof msg.mime !== 'string' || msg.mime.length > 64) return;
+        if (typeof msg.data !== 'string' || msg.data.length > MAX_TRANSCRIBE_BYTES) {
+          forward('transcription', { requestId: msg.requestId, error: 'too-large' });
+          return;
+        }
+        if (!onTranscribeAudio) return;
+        Promise.resolve(onTranscribeAudio(msg.data, msg.mime))
+          .then((result) => {
+            const payload = { requestId: msg.requestId };
+            if (result && typeof result.text === 'string') payload.text = result.text;
+            if (result && typeof result.error === 'string') payload.error = result.error;
+            forward('transcription', payload);
+          })
+          .catch(() => forward('transcription', { requestId: msg.requestId, error: 'internal' }));
+        return;
+      }
       default:
         return; // drop unknown types
     }
@@ -200,7 +223,7 @@ function forward(type, payload) {
   if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return false;
   // Only forward types the DO accepts from desktop. Prevents a renderer bug
   // from emitting PWA-origin envelopes into the relay.
-  const DESKTOP_TYPES = new Set(['sdk-message', 'approval-request', 'ask-user-question', 'sdk-error', 'user-message']);
+  const DESKTOP_TYPES = new Set(['sdk-message', 'approval-request', 'ask-user-question', 'sdk-error', 'user-message', 'transcription']);
   if (!DESKTOP_TYPES.has(type)) return false;
   try {
     const frame = JSON.stringify({ type, payload });
@@ -312,10 +335,11 @@ function stop() {
 }
 
 function setHandlers(h) {
-  onSendMessage    = h.onSendMessage || null;
-  onApproveTool    = h.onApproveTool || null;
-  onDenyTool       = h.onDenyTool    || null;
-  onAnswerQuestion = h.onAnswerQuestion || null;
+  onSendMessage      = h.onSendMessage      || null;
+  onApproveTool      = h.onApproveTool      || null;
+  onDenyTool         = h.onDenyTool         || null;
+  onAnswerQuestion   = h.onAnswerQuestion   || null;
+  onTranscribeAudio  = h.onTranscribeAudio  || null;
 }
 
 // Revoke a specific paired device.

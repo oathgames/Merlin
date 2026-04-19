@@ -1330,6 +1330,25 @@ async function createWindow() {
       const resolve = pendingApprovals.get(toolUseID);
       if (resolve) { resolve.fn(answers); pendingApprovals.delete(toolUseID); }
     },
+    // PWA hold-to-record: phone sends base64 audio, we transcode + whisper,
+    // hand back { text } or { error }. Shares the same pipeline as the
+    // desktop mic button (transcribeAudioImpl) so there's one place to fix
+    // bugs / upgrade the model.
+    onTranscribeAudio: async (dataB64, mime) => {
+      if (typeof dataB64 !== 'string' || !dataB64) {
+        return { error: 'transcribe:empty' };
+      }
+      let bytes;
+      try {
+        bytes = Array.from(Buffer.from(dataB64, 'base64'));
+      } catch {
+        return { error: 'transcribe:corrupt' };
+      }
+      const result = await transcribeAudioImpl(bytes);
+      if (result && result.transcript) return { text: result.transcript };
+      if (result && result.error) return { error: result.error };
+      return { error: 'transcribe:whisper' };
+    },
   };
   wsServer.setHandlers(mobileHandlers);
   relayClient.setHandlers(mobileHandlers);
@@ -3261,7 +3280,7 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
 // empty and whisper would just return [BLANK_AUDIO] after a ~1 s spin-up.
 const MIN_WEBM_BYTES = 2048;
 
-ipcMain.handle('transcribe-audio', async (_, audioBytes) => {
+async function transcribeAudioImpl(audioBytes) {
   if (!Array.isArray(audioBytes) || audioBytes.length === 0) {
     return { error: 'transcribe:empty', errorDetail: 'No audio data received' };
   }
@@ -3400,7 +3419,9 @@ ipcMain.handle('transcribe-audio', async (_, audioBytes) => {
     try { fs.unlinkSync(webmPath); } catch {}
     try { fs.unlinkSync(wavPath); } catch {}
   }
-});
+}
+
+ipcMain.handle('transcribe-audio', async (_, audioBytes) => transcribeAudioImpl(audioBytes));
 
 // Voice tools (ffmpeg, whisper-cli, ggml-tiny.en.bin) are bundled into the
 // Electron installer at build time — see "Bundle voice tools" in
