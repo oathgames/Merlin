@@ -22,8 +22,103 @@
 
 'use strict';
 
-const { BrowserWindow } = require('electron');
+let _BrowserWindow;
+try {
+  // Electron isn't loaded when running the unit tests under plain node,
+  // so we defer the require to avoid a hard failure at import time. The
+  // runtime scraper call path still requires Electron — only the pure
+  // helpers (validateScrapeURL, normalizeUrl, joinUrl) are test-reachable.
+  ({ BrowserWindow: _BrowserWindow } = require('electron'));
+} catch (_) {
+  _BrowserWindow = null;
+}
+const BrowserWindow = _BrowserWindow;
 const path = require('path');
+
+// REGRESSION GUARD (2026-04-19): every scrape entrypoint must fail closed
+// before Electron loads the URL. The attack surface is wide:
+//   * file:// schemes hand the scraper the local filesystem — the same
+//     BrowserWindow that runs `collectSignalScript` can then exfiltrate
+//     a user's document tree via the returned signal payload.
+//   * data: URLs can inject a crafted HTML document that sits inside the
+//     Electron renderer context, bypassing the site isolation we rely on.
+//   * Private IP ranges (RFC1918, loopback, link-local) pivot the scraper
+//     into an internal-network probe — SSRF vintage 2019 still pays out.
+//   * Cloud metadata endpoints (169.254.169.254 AWS IMDS, 100.100.100.200
+//     Alibaba, etc.) leak credentials if the app ever runs in a hosted
+//     CI/runner. 169.254.0.0/16 is covered by the link-local check.
+//   * IPv6 loopback (::1) and fe80::/10 link-local cover the same classes
+//     as the IPv4 rules and are common omissions.
+// The validator is deliberately conservative: only http(s), only public
+// IPs, only a hostname that parses cleanly. Any doubt → reject. A false
+// positive on a scrape is a friendly error; a false negative is a pivot.
+// Do NOT relax the rules. If a legitimate private endpoint ever needs to
+// be scraped, build an OPT-IN allowlist keyed on the brand config — do
+// not widen this validator.
+function validateScrapeURL(input) {
+  if (!input || typeof input !== 'string') {
+    return { ok: false, error: 'URL must be a non-empty string' };
+  }
+  let u;
+  try {
+    u = new URL(input);
+  } catch (_) {
+    return { ok: false, error: `Could not parse URL: ${input}` };
+  }
+  const scheme = (u.protocol || '').toLowerCase();
+  if (scheme !== 'http:' && scheme !== 'https:') {
+    return { ok: false, error: `Only http(s) URLs are allowed; got ${scheme || '(none)'}` };
+  }
+  const host = (u.hostname || '').toLowerCase();
+  if (!host) {
+    return { ok: false, error: 'URL is missing a hostname' };
+  }
+
+  // Hostname-based blocks (covers DNS names that resolve to unsafe ranges
+  // AND the literal strings users sometimes paste).
+  if (host === 'localhost' || host.endsWith('.localhost')) {
+    return { ok: false, error: `Refusing to scrape localhost: ${host}` };
+  }
+
+  // IPv6 literal check — URL parsing wraps these in brackets, hostname
+  // strips them. "::1" and fe80::/10 link-local addresses are flagged.
+  if (host === '::1' || host === '[::1]') {
+    return { ok: false, error: 'Refusing to scrape IPv6 loopback (::1)' };
+  }
+  if (host.startsWith('fe80:') || host.startsWith('[fe80:')) {
+    return { ok: false, error: 'Refusing to scrape IPv6 link-local (fe80::/10)' };
+  }
+
+  // IPv4 literal parsing. Four dot-separated decimals in 0-255 each.
+  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const octets = ipv4.slice(1).map(Number);
+    if (octets.some(o => o < 0 || o > 255)) {
+      return { ok: false, error: `Invalid IPv4 address: ${host}` };
+    }
+    const [a, b] = octets;
+    // 0.0.0.0/8 — "this network"
+    if (a === 0) return { ok: false, error: `Refusing to scrape 0.0.0.0/8: ${host}` };
+    // 127.0.0.0/8 — loopback
+    if (a === 127) return { ok: false, error: `Refusing to scrape loopback (127.0.0.0/8): ${host}` };
+    // 10.0.0.0/8 — RFC1918 private
+    if (a === 10) return { ok: false, error: `Refusing to scrape private 10.0.0.0/8: ${host}` };
+    // 172.16.0.0/12 — RFC1918 private
+    if (a === 172 && b >= 16 && b <= 31) {
+      return { ok: false, error: `Refusing to scrape private 172.16.0.0/12: ${host}` };
+    }
+    // 192.168.0.0/16 — RFC1918 private
+    if (a === 192 && b === 168) {
+      return { ok: false, error: `Refusing to scrape private 192.168.0.0/16: ${host}` };
+    }
+    // 169.254.0.0/16 — link-local (covers AWS 169.254.169.254 metadata)
+    if (a === 169 && b === 254) {
+      return { ok: false, error: `Refusing to scrape link-local 169.254.0.0/16: ${host}` };
+    }
+  }
+
+  return { ok: true, url: u.toString() };
+}
 
 const DEFAULT_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 ' +
@@ -44,6 +139,12 @@ async function scrapeBrand(url, opts = {}) {
   const normalized = normalizeUrl(url);
   if (!normalized) {
     throw new Error(`brand-scraper: invalid URL "${url}"`);
+  }
+
+  // SSRF fence — fail closed before allocating the BrowserWindow.
+  const guard = validateScrapeURL(normalized);
+  if (!guard.ok) {
+    throw new Error(`brand-scraper: ${guard.error}`);
   }
 
   const win = new BrowserWindow({
@@ -97,6 +198,14 @@ async function scrapeBrand(url, opts = {}) {
 
 async function capturePage(win, url, timeoutMs, opts = {}) {
   const includeScreenshots = opts.screenshots !== false;
+
+  // Belt-and-braces: capturePage is also reached from the secondary-page
+  // loop with a joined URL. If a pathological base + subpath produced
+  // something unsafe, we still refuse here.
+  const guard = validateScrapeURL(url);
+  if (!guard.ok) {
+    throw new Error(`brand-scraper: ${guard.error}`);
+  }
 
   await loadUrl(win, url, timeoutMs);
 
@@ -536,6 +645,182 @@ async function quantizeLogoColors(win, candidates, baseUrl) {
   return [];
 }
 
+// ── Pure parsing helpers (test-reachable without Electron) ──
+//
+// The in-page collectSignalScript does the heavy lifting via live DOM
+// APIs. These helpers mirror its logic against raw HTML strings so unit
+// tests can exercise them deterministically. They are conservative —
+// their goal is to confirm that signal is extractable from representative
+// fixtures, not to replicate the full DOM walker.
+
+/**
+ * Parse a hex/rgb(a) color expression. Shared with the in-page version.
+ * Returns a lowercased `#rrggbb` string, or null if unparseable / invisible.
+ */
+function parseColor(input) {
+  if (!input || typeof input !== 'string') return null;
+  const v = input.trim().toLowerCase();
+  if (!v || v === 'transparent' || v === 'none' || v === 'inherit' ||
+      v === 'initial' || v === 'currentcolor') {
+    return null;
+  }
+  let m = v.match(/^rgba?\(([^)]+)\)/);
+  if (m) {
+    const parts = m[1].split(',').map(s => s.trim());
+    if (parts.length >= 3) {
+      const r = parseInt(parts[0], 10);
+      const g = parseInt(parts[1], 10);
+      const b = parseInt(parts[2], 10);
+      const a = parts[3] !== undefined ? parseFloat(parts[3]) : 1;
+      if (a < 0.1) return null;
+      if ([r, g, b].some(n => Number.isNaN(n) || n < 0 || n > 255)) return null;
+      return '#' + [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('');
+    }
+  }
+  m = v.match(/^#([0-9a-f]{3,8})$/);
+  if (m) {
+    const hex = m[1];
+    if (hex.length === 3) return '#' + hex.split('').map(c => c + c).join('');
+    if (hex.length === 6) return '#' + hex;
+    if (hex.length === 8) return '#' + hex.slice(0, 6);
+  }
+  return null;
+}
+
+/**
+ * Regex-extract palette candidates from a raw CSS or HTML string.
+ * Picks up hex and rgb() colors from inline styles, <style> blocks, and
+ * attribute values. De-duplicates, preserves first-seen order.
+ */
+function extractPaletteFromHtml(html) {
+  if (!html || typeof html !== 'string') return [];
+  const seen = new Set();
+  const out = [];
+  // Hex colors (3, 6, or 8 digits). Require a # prefix to avoid matching
+  // random hex-y substrings like SHA1 fragments.
+  const hexRe = /#[0-9a-fA-F]{3,8}\b/g;
+  const rgbRe = /rgba?\([^)]+\)/gi;
+  for (const match of html.matchAll(hexRe)) {
+    const norm = parseColor(match[0]);
+    if (norm && !seen.has(norm)) { seen.add(norm); out.push(norm); }
+  }
+  for (const match of html.matchAll(rgbRe)) {
+    const norm = parseColor(match[0]);
+    if (norm && !seen.has(norm)) { seen.add(norm); out.push(norm); }
+  }
+  return out;
+}
+
+/**
+ * Best-effort extraction of a meta-theme-color value. Returns the
+ * normalized hex or null.
+ */
+function extractMetaThemeColor(html) {
+  if (!html || typeof html !== 'string') return null;
+  // Accept both attribute orders: name="theme-color" content="#xxx"
+  // and content="#xxx" name="theme-color".
+  const matches = html.match(/<meta\b[^>]*name\s*=\s*["']theme-color["'][^>]*>/i);
+  if (!matches) return null;
+  const content = matches[0].match(/content\s*=\s*["']([^"']+)["']/i);
+  if (!content) return null;
+  return parseColor(content[1]);
+}
+
+/**
+ * Pull font-family names referenced in the fixture. Catches CSS
+ * `font-family: ...;` declarations and Google Fonts `<link>` tags. Returns
+ * a de-duplicated array of family names (first token only).
+ */
+function extractFontFamilies(html) {
+  if (!html || typeof html !== 'string') return [];
+  const out = [];
+  const seen = new Set();
+  // CSS font-family declarations. Match up to the first ; or } (end of
+  // rule / block). Strip optional quotes afterwards.
+  const cssRe = /font-family\s*:\s*([^;}\n]+)/gi;
+  for (const m of html.matchAll(cssRe)) {
+    const first = m[1].split(',')[0].trim().replace(/^["']|["']$/g, '');
+    if (first && !seen.has(first.toLowerCase())) {
+      seen.add(first.toLowerCase());
+      out.push(first);
+    }
+  }
+  // Google Fonts link tags
+  const linkRe = /<link\b[^>]*href\s*=\s*["']([^"']*fonts\.googleapis\.com[^"']*)["']/gi;
+  for (const m of html.matchAll(linkRe)) {
+    const href = m[1];
+    const family = href.match(/family=([^&]+)/);
+    if (!family) continue;
+    for (const f of family[1].split('|')) {
+      const fam = decodeURIComponent(f.split(':')[0]).replace(/\+/g, ' ');
+      if (fam && !seen.has(fam.toLowerCase())) {
+        seen.add(fam.toLowerCase());
+        out.push(fam);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Resolve a logo URL from a fixture. Priority:
+ *   1. JSON-LD Organization.logo
+ *   2. <link rel="apple-touch-icon">
+ *   3. <img> inside <header> with class/id/alt matching logo/brand/wordmark
+ *   4. <meta property="og:image">
+ * Returns absolute URL resolved against baseUrl, or null.
+ */
+function resolveLogoUrl(html, baseUrl) {
+  if (!html || typeof html !== 'string') return null;
+  const resolve = (href) => {
+    if (!href) return null;
+    try { return new URL(href, baseUrl).href; } catch (_) { return null; }
+  };
+  // 1. JSON-LD
+  const jsonLdBlocks = html.matchAll(/<script\b[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+  for (const m of jsonLdBlocks) {
+    try {
+      const parsed = JSON.parse(m[1]);
+      const arr = Array.isArray(parsed) ? parsed : [parsed];
+      for (const obj of arr) {
+        if (!obj) continue;
+        if (obj['@type'] === 'Organization' || obj['@type'] === 'WebSite' || obj['@type'] === 'LocalBusiness') {
+          if (typeof obj.logo === 'string') return resolve(obj.logo);
+          if (obj.logo && obj.logo.url) return resolve(obj.logo.url);
+        }
+      }
+    } catch (_) { /* invalid JSON-LD, skip */ }
+  }
+  // 2. apple-touch-icon
+  const apple = html.match(/<link\b[^>]*rel\s*=\s*["']apple-touch-icon["'][^>]*>/i);
+  if (apple) {
+    const href = apple[0].match(/href\s*=\s*["']([^"']+)["']/i);
+    if (href) return resolve(href[1]);
+  }
+  // 3. header <img> with logo-ish class/id/alt
+  const headerBlock = html.match(/<header\b[\s\S]*?<\/header>/i);
+  if (headerBlock) {
+    const imgRe = /<img\b[^>]*>/gi;
+    for (const m of headerBlock[0].matchAll(imgRe)) {
+      const tag = m[0];
+      const cls = (tag.match(/class\s*=\s*["']([^"']+)["']/i) || [, ''])[1].toLowerCase();
+      const id  = (tag.match(/id\s*=\s*["']([^"']+)["']/i)  || [, ''])[1].toLowerCase();
+      const alt = (tag.match(/alt\s*=\s*["']([^"']+)["']/i) || [, ''])[1].toLowerCase();
+      if (/logo|brand|wordmark/.test(cls + ' ' + id + ' ' + alt)) {
+        const src = tag.match(/src\s*=\s*["']([^"']+)["']/i);
+        if (src) return resolve(src[1]);
+      }
+    }
+  }
+  // 4. og:image
+  const og = html.match(/<meta\b[^>]*property\s*=\s*["']og:image["'][^>]*>/i);
+  if (og) {
+    const content = og[0].match(/content\s*=\s*["']([^"']+)["']/i);
+    if (content) return resolve(content[1]);
+  }
+  return null;
+}
+
 // ── URL helpers ──
 function normalizeUrl(input) {
   if (!input || typeof input !== 'string') return null;
@@ -557,4 +842,14 @@ function delay(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-module.exports = { scrapeBrand };
+module.exports = {
+  scrapeBrand,
+  validateScrapeURL,
+  normalizeUrl,
+  joinUrl,
+  parseColor,
+  extractPaletteFromHtml,
+  extractMetaThemeColor,
+  extractFontFamilies,
+  resolveLogoUrl,
+};

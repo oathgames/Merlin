@@ -45,6 +45,57 @@ function post(payload) {
   try { process.parentPort.postMessage(payload); } catch {}
 }
 
+// REGRESSION GUARD (2026-04-19): Kokoro-js phonemizes and runs ONNX
+// inference over whatever text we hand it. The attack surface:
+//   * A crafted pathological string (all one "word" of 50k chars) can
+//     push the phonemizer into a multi-second stall and hold the utility
+//     process hostage.
+//   * A sufficiently large input can OOM the utility process — the WAV
+//     buffer scales with text length, and Electron's utilityProcess
+//     shares the main app's system memory budget.
+//   * Non-string payloads (null, number, object) crash the phonemizer
+//     with an opaque "toLowerCase" TypeError that fires AFTER model load
+//     — wasting 2-4 seconds of user-visible time before erroring.
+// Every public entrypoint therefore runs through validateSpeechText so
+// the caller sees a plain-English rejection immediately. The 10,000-char
+// ceiling is generous for any Merlin reply; typical sentences are 20-200
+// chars. NFC normalization closes off homoglyph / combining-mark tricks
+// that produce different phoneme streams for visually identical inputs.
+// Do NOT remove the validation without re-auditing every caller — there
+// are at least three (synth, stream-start seed, stream-append) and one
+// bypass reopens the OOM/DoS path.
+const MAX_SPEECH_TEXT_CHARS = 10000;
+
+function validateSpeechText(raw) {
+  if (raw === null || raw === undefined) {
+    return { ok: false, error: 'No speech text provided.' };
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false, error: 'Speech text must be a string.' };
+  }
+  // Trim controls the empty-string case without rejecting text that has
+  // leading/trailing whitespace after sentence splitting.
+  if (raw.trim().length === 0) {
+    return { ok: false, error: 'Speech text is empty.' };
+  }
+  if (raw.length > MAX_SPEECH_TEXT_CHARS) {
+    return {
+      ok: false,
+      error: `Speech text is too long (${raw.length} chars; limit ${MAX_SPEECH_TEXT_CHARS}).`,
+    };
+  }
+  // Unicode NFC — composed form is what phonemizers expect. Decomposed
+  // sequences can produce silent per-character drift that changes
+  // phoneme output from run to run.
+  let normalized;
+  try {
+    normalized = raw.normalize('NFC');
+  } catch (_) {
+    return { ok: false, error: 'Speech text contains invalid Unicode.' };
+  }
+  return { ok: true, text: normalized };
+}
+
 async function loadModel(device) {
   if (_tts) return _tts;
   if (_loading) return _loading;
@@ -104,11 +155,21 @@ async function handleSynth(msg) {
   const token = {};
   _currentToken = token;
   const { reqId, text, voice } = msg;
+  // REGRESSION GUARD (2026-04-19): validate BEFORE model load so a bad
+  // input never burns the ~2s Kokoro startup cost. Emits a matching final
+  // so the renderer listener doesn't leak waiting on a reply.
+  const v = validateSpeechText(text);
+  if (!v.ok) {
+    post({ type: 'error', reqId, message: v.error });
+    post({ type: 'final', reqId, aborted: true });
+    if (_currentToken === token) _currentToken = null;
+    return;
+  }
   try {
     const tts = await loadModel(_device);
     if (_currentToken !== token) { post({ type: 'final', reqId, aborted: true }); return; }
     let seq = 0;
-    for await (const chunk of tts.stream(text, { voice })) {
+    for await (const chunk of tts.stream(v.text, { voice })) {
       if (_currentToken !== token) { post({ type: 'final', reqId, seq, aborted: true }); return; }
       const wav = new Uint8Array(chunk.audio.toWav());
       post({ type: 'chunk', reqId, seq, audio: wav });
@@ -167,7 +228,16 @@ async function handleStreamStart(msg) {
 function handleStreamAppend(msg) {
   const s = _stream;
   if (!s || s.reqId !== msg.reqId || s.token !== _currentToken) return;
-  const text = typeof msg.text === 'string' ? msg.text.trim() : '';
+  // REGRESSION GUARD (2026-04-19): same input validation as handleSynth —
+  // a crafted append can OOM the process just as readily as a one-shot.
+  const v = validateSpeechText(msg.text);
+  if (!v.ok) {
+    // Streaming appends are fire-and-forget; we surface a non-fatal error
+    // but keep the session alive so subsequent good appends still play.
+    post({ type: 'error', reqId: s.reqId, message: v.error });
+    return;
+  }
+  const text = v.text.trim();
   if (!text) return;
   s.pending.push(text);
   if (s.ready) streamDrain();
@@ -225,36 +295,49 @@ async function streamDrain() {
   }
 }
 
-process.parentPort.on('message', async (event) => {
-  const msg = event && event.data;
-  if (!msg || typeof msg.type !== 'string') return;
-  try {
-    if (msg.type === 'init') {
-      _cacheDir = msg.cacheDir || null;
-      _device = msg.device || 'cpu';
-      await loadModel(_device);
-      post({ type: 'ready' });
-    } else if (msg.type === 'synth') {
-      // Fire-and-forget — handleSynth streams its own chunks + final message.
-      handleSynth(msg);
-    } else if (msg.type === 'stream-start') {
-      handleStreamStart(msg);
-    } else if (msg.type === 'stream-append') {
-      handleStreamAppend(msg);
-    } else if (msg.type === 'stream-end') {
-      handleStreamEnd(msg);
-    } else if (msg.type === 'abort') {
-      // Flip the token first so any running for-await sees the mismatch on
-      // its next iteration and exits. Then retire the stream session so its
-      // reqId gets a final+aborted (renderer listener cleanup).
-      _currentToken = null;
-      retirePriorStream();
+// Only register Electron utility-process message handlers when we're
+// actually running as one. The tts-worker.test.js suite loads this file
+// in plain node to exercise validateSpeechText — parentPort is undefined
+// there, so accessing .on() would throw at module load. The guard keeps
+// tests fast (no model load) and the production path identical.
+if (process.parentPort && typeof process.parentPort.on === 'function') {
+  process.parentPort.on('message', async (event) => {
+    const msg = event && event.data;
+    if (!msg || typeof msg.type !== 'string') return;
+    try {
+      if (msg.type === 'init') {
+        _cacheDir = msg.cacheDir || null;
+        _device = msg.device || 'cpu';
+        await loadModel(_device);
+        post({ type: 'ready' });
+      } else if (msg.type === 'synth') {
+        // Fire-and-forget — handleSynth streams its own chunks + final message.
+        handleSynth(msg);
+      } else if (msg.type === 'stream-start') {
+        handleStreamStart(msg);
+      } else if (msg.type === 'stream-append') {
+        handleStreamAppend(msg);
+      } else if (msg.type === 'stream-end') {
+        handleStreamEnd(msg);
+      } else if (msg.type === 'abort') {
+        // Flip the token first so any running for-await sees the mismatch on
+        // its next iteration and exits. Then retire the stream session so its
+        // reqId gets a final+aborted (renderer listener cleanup).
+        _currentToken = null;
+        retirePriorStream();
+      }
+    } catch (err) {
+      post({ type: 'error', message: String(err && err.message ? err.message : err) });
     }
-  } catch (err) {
-    post({ type: 'error', message: String(err && err.message ? err.message : err) });
-  }
-});
+  });
 
-process.on('uncaughtException', (err) => {
-  try { post({ type: 'error', message: 'uncaught: ' + String(err && err.message ? err.message : err) }); } catch {}
-});
+  process.on('uncaughtException', (err) => {
+    try { post({ type: 'error', message: 'uncaught: ' + String(err && err.message ? err.message : err) }); } catch {}
+  });
+}
+
+// Export the pure helpers for unit tests. This file runs as an Electron
+// utility-process entrypoint in production; under `require()` the guard
+// above skips the message handler registration, so importing these does
+// not attach any production listeners.
+module.exports = { validateSpeechText, MAX_SPEECH_TEXT_CHARS };
