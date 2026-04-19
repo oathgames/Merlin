@@ -234,15 +234,30 @@ async function initPairing() {
 }
 
 // Mint an additional pair code for an already-known session so the user
-// can pair a second device without rotating the desktop token.
+// can pair a second device (or re-display the QR after dismissing it)
+// without rotating the desktop token and without kicking paired phones.
+//
+// REGRESSION GUARD (2026-04-19, pwa-roaming-relay): this path is the common
+// case — every QR modal re-open after the first pair lands here. Before the
+// relay-deploy session shipped /pair/mint, this function threw and forced
+// the UI into the LAN fallback on every subsequent open. Do not revert to
+// the old "throw multi_device_pairing_pending" — users stop getting relay
+// QR codes entirely and think remote access is broken.
 async function mintPairCode() {
   if (!creds) throw new Error('no_session');
-  // The relay doesn't (yet) expose a "mint additional pair code" endpoint —
-  // /pair/init is "create new session." For v1, pairing N>1 devices requires
-  // the user to request an init-level new session (which invalidates prior
-  // phones). Flagging this as a follow-up; the primary roaming use case is
-  // a single phone per install.
-  throw new Error('multi_device_pairing_pending');
+  const resp = await httpPostJson('/pair/mint', {
+    sessionId: creds.sessionId,
+    desktopToken: creds.desktopToken,
+  });
+  if (!resp || !resp.pairUrl || !resp.pairCode) {
+    throw new Error('pair_mint_failed');
+  }
+  return {
+    sessionId: resp.sessionId || creds.sessionId,
+    pairCode: resp.pairCode,
+    pairUrl: resp.pairUrl,
+    expiresInSec: resp.expiresInSec,
+  };
 }
 
 async function rotatePairing() {

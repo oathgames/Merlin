@@ -134,6 +134,30 @@ test('setHandlers accepts partial handler object without crashing', () => {
   assert.doesNotThrow(() => rc.setHandlers({}));
 });
 
+test('initPairing with existing creds routes to /pair/mint, does NOT throw multi_device_pairing_pending', async () => {
+  // REGRESSION GUARD (2026-04-19, pwa-roaming-relay):
+  // Before the relay-deploy session added a /pair/mint endpoint, the
+  // `if (creds) return mintPairCode()` branch inside initPairing threw
+  // 'multi_device_pairing_pending'. That turned every QR-modal re-open
+  // after the first pair into a LAN-only fallback. This test locks in
+  // that with creds present, we attempt a real network call to /pair/mint
+  // (which fails in offline CI — that's fine) instead of bailing to the
+  // stub error. If someone reverts to the old behavior, this test flips
+  // from "network error / pair_mint_failed" to "multi_device_pairing_pending"
+  // and the assertion catches it.
+  const rc = freshRelayClient();
+  rc._setCredsForTest({
+    sessionId: '550e8400-e29b-41d4-a716-446655440000',
+    desktopToken: 'x'.repeat(43),
+  });
+  let err;
+  try { await rc.initPairing(); }
+  catch (e) { err = e; }
+  assert.ok(err, 'initPairing must surface an error when the relay is unreachable');
+  assert.notEqual(err.message, 'multi_device_pairing_pending',
+    'initPairing must NOT fall through to the old stub error (see CLAUDE.md regression guard)');
+});
+
 test('rotatePairing clears creds before re-init (would throw on real network)', async () => {
   const rc = freshRelayClient();
   rc._setCredsForTest({ sessionId: 'pre', desktopToken: 'pre-tok' });
