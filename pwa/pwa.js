@@ -229,6 +229,7 @@ function openSocket(url, onOpen) {
       case 'ask-user-question': showQuestion(msg.payload);     break;
       case 'sdk-error':         showError(msg.payload);        break;
       case 'user-message':      addUserBubble('\u{1F5A5}\u{FE0F} ' + msg.payload.text); break;
+      case 'transcription':     handleTranscription(msg.payload); break;
     }
   };
 
@@ -452,11 +453,251 @@ function sendMessage() {
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
-document.getElementById('send-btn').addEventListener('click', sendMessage);
 input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
 });
+
+// ── Send button: tap = send, hold = record voice ────────────
+// Hold threshold keeps short taps feeling like a normal send. Swipe off the
+// button mid-hold cancels (iMessage pattern). Recording caps at 15s so the
+// base64 payload fits under the relay's 128 KB per-frame cap.
+const sendBtn = document.getElementById('send-btn');
+const sendIcon = document.getElementById('send-icon');
+const micIcon = document.getElementById('mic-icon');
+const voicePill = document.getElementById('voice-pill');
+const voicePillText = document.getElementById('voice-pill-text');
+
+const HOLD_MS = 300;
+const MAX_RECORD_MS = 15_000;
+const PENDING_TRANSCRIBE = new Map(); // requestId → { resolve, reject, timer }
+
+let holdTimer = null;
+let recordingMediaRecorder = null;
+let recordingStream = null;
+let recordingChunks = [];
+let recordingCapTimer = null;
+let isRecording = false;
+let isRecordingCanceled = false;
+
+function setRecordingUI(on) {
+  if (on) {
+    sendBtn.classList.add('recording');
+    sendIcon.classList.add('hidden');
+    micIcon.classList.remove('hidden');
+    voicePill.classList.remove('hidden', 'transcribing');
+    voicePillText.innerHTML = 'Listening<br>release to send';
+  } else {
+    sendBtn.classList.remove('recording');
+    sendIcon.classList.remove('hidden');
+    micIcon.classList.add('hidden');
+    voicePill.classList.add('hidden');
+  }
+}
+
+function setTranscribingUI(on) {
+  if (on) {
+    voicePill.classList.remove('hidden');
+    voicePill.classList.add('transcribing');
+    voicePillText.textContent = 'Transcribing';
+    sendBtn.disabled = true;
+  } else {
+    voicePill.classList.add('hidden');
+    voicePill.classList.remove('transcribing');
+    sendBtn.disabled = false;
+  }
+}
+
+async function startRecording() {
+  if (isRecording) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+  } catch (err) {
+    // User denied or no mic — silently abort the hold. No modal: the user
+    // intended to send, recording is a progressive enhancement.
+    return;
+  }
+  // Double-check the hold wasn't released while the permission prompt was up.
+  if (!holdTimer && !isRecording) {
+    try { stream.getTracks().forEach(t => t.stop()); } catch {}
+    return;
+  }
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+    ? 'audio/webm;codecs=opus'
+    : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : 'audio/webm');
+  recordingStream = stream;
+  recordingChunks = [];
+  isRecordingCanceled = false;
+  recordingMediaRecorder = new MediaRecorder(stream, { mimeType: mime });
+  recordingMediaRecorder.ondataavailable = (e) => {
+    if (e.data && e.data.size > 0) recordingChunks.push(e.data);
+  };
+  recordingMediaRecorder.onstop = onRecordingStop;
+  recordingMediaRecorder.start();
+  isRecording = true;
+  setRecordingUI(true);
+  // Hard cap so we never exceed the relay frame size.
+  recordingCapTimer = setTimeout(() => stopRecording(false), MAX_RECORD_MS);
+}
+
+function stopRecording(cancel) {
+  if (!isRecording) return;
+  isRecordingCanceled = !!cancel;
+  clearTimeout(recordingCapTimer);
+  recordingCapTimer = null;
+  try { recordingMediaRecorder && recordingMediaRecorder.stop(); } catch {}
+  try { recordingStream && recordingStream.getTracks().forEach(t => t.stop()); } catch {}
+  recordingStream = null;
+  isRecording = false;
+}
+
+async function onRecordingStop() {
+  setRecordingUI(false);
+  if (isRecordingCanceled || recordingChunks.length === 0) return;
+  const mime = recordingMediaRecorder && recordingMediaRecorder.mimeType
+    ? recordingMediaRecorder.mimeType
+    : 'audio/webm';
+  const blob = new Blob(recordingChunks, { type: mime });
+  if (blob.size < 2048) return; // too short — silent drop, same as desktop
+
+  setTranscribingUI(true);
+  try {
+    const text = await transcribeBlob(blob, mime);
+    if (text && text.trim()) {
+      const prefix = input.value ? input.value.trimEnd() + ' ' : '';
+      input.value = (prefix + text.trim()).replace(/^\s+/, '');
+      input.style.height = 'auto';
+      input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+      input.focus();
+    }
+  } catch (_e) {
+    // Surface nothing on failure — user can re-hold or type.
+  } finally {
+    setTranscribingUI(false);
+  }
+}
+
+function transcribeBlob(blob, mime) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read-failed'));
+    reader.onload = () => {
+      const result = reader.result;
+      // result is a data URL — strip the "data:*;base64," prefix.
+      const comma = String(result).indexOf(',');
+      const data = comma >= 0 ? String(result).slice(comma + 1) : '';
+      if (!data) return reject(new Error('empty'));
+      const requestId = 'tx-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+      const timer = setTimeout(() => {
+        if (PENDING_TRANSCRIBE.has(requestId)) {
+          PENDING_TRANSCRIBE.delete(requestId);
+          reject(new Error('timeout'));
+        }
+      }, 20_000);
+      PENDING_TRANSCRIBE.set(requestId, { resolve, reject, timer });
+      send({ type: 'transcribe-audio', requestId, mime, data });
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+function handleTranscription(payload) {
+  if (!payload || typeof payload.requestId !== 'string') return;
+  const pending = PENDING_TRANSCRIBE.get(payload.requestId);
+  if (!pending) return;
+  PENDING_TRANSCRIBE.delete(payload.requestId);
+  clearTimeout(pending.timer);
+  if (payload.error) pending.reject(new Error(payload.error));
+  else pending.resolve(typeof payload.text === 'string' ? payload.text : '');
+}
+
+sendBtn.addEventListener('pointerdown', (e) => {
+  if (isStreaming) return;
+  e.preventDefault();
+  clearTimeout(holdTimer);
+  holdTimer = setTimeout(() => {
+    holdTimer = null;
+    startRecording();
+  }, HOLD_MS);
+});
+sendBtn.addEventListener('pointerup', () => {
+  if (holdTimer) {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+    sendMessage();
+    return;
+  }
+  if (isRecording) stopRecording(false);
+});
+sendBtn.addEventListener('pointerleave', () => {
+  if (holdTimer) {
+    clearTimeout(holdTimer);
+    holdTimer = null;
+    return;
+  }
+  if (isRecording) stopRecording(true);
+});
+sendBtn.addEventListener('pointercancel', () => {
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  if (isRecording) stopRecording(true);
+});
+
+// ── Install banner (Android/Chrome beforeinstallprompt + iOS hint) ─
+// Shown once per device (dismiss persists in localStorage). Never nagged
+// on users already running in standalone mode.
+const INSTALL_DISMISS_KEY = 'merlin.install.dismissed.v1';
+const installBanner = document.getElementById('install-banner');
+const installYes = document.getElementById('install-yes');
+const installNo = document.getElementById('install-no');
+let deferredInstallPrompt = null;
+
+function isStandalone() {
+  return window.matchMedia && window.matchMedia('(display-mode: standalone)').matches
+    || window.navigator.standalone === true;
+}
+function isIOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+}
+function installDismissed() {
+  try { return localStorage.getItem(INSTALL_DISMISS_KEY) === '1'; } catch { return false; }
+}
+function dismissInstall() {
+  try { localStorage.setItem(INSTALL_DISMISS_KEY, '1'); } catch {}
+  installBanner.classList.add('hidden');
+}
+function showInstallBanner(iosHint) {
+  if (installDismissed() || isStandalone()) return;
+  if (iosHint) {
+    document.getElementById('install-desc').textContent = 'Tap Share → Add to Home Screen.';
+    installYes.classList.add('hidden');
+  }
+  installBanner.classList.remove('hidden');
+}
+
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  deferredInstallPrompt = e;
+  showInstallBanner(false);
+});
+installYes && installYes.addEventListener('click', async () => {
+  if (!deferredInstallPrompt) return;
+  try {
+    deferredInstallPrompt.prompt();
+    await deferredInstallPrompt.userChoice;
+  } catch {}
+  deferredInstallPrompt = null;
+  dismissInstall();
+});
+installNo && installNo.addEventListener('click', dismissInstall);
+// iOS path: beforeinstallprompt never fires. Wait a bit so we don't flash
+// the banner during a rapid reconnect, then show the Share-sheet hint.
+if (isIOS() && !isStandalone() && !installDismissed()) {
+  setTimeout(() => showInstallBanner(true), 2500);
+}
 
 // ── Init ────────────────────────────────────────────────────
 let lanToken = null;

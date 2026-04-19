@@ -77,6 +77,7 @@ const PRECACHE_URLS = [
   '/pwa.js',
   '/style.css',
   '/manifest.json',
+  '/icon.svg',
   '/icon-192.png',
   '/icon-512.png',
   '/badge-72.png',
