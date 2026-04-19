@@ -2285,6 +2285,7 @@ body.platform-mac .titlebar-drag{
 }
 
 .archive-card {
+  position: relative;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -2296,6 +2297,35 @@ body.platform-mac .titlebar-drag{
   border-color: var(--accent-border);
   transform: translateY(-1px);
 }
+.archive-card-delete {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .55);
+  color: rgba(255, 255, 255, .9);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s ease, background .15s ease, color .15s ease;
+  z-index: 2;
+}
+.archive-card:hover .archive-card-delete,
+.archive-card:focus-within .archive-card-delete,
+.archive-card-delete:focus-visible {
+  opacity: 1;
+}
+.archive-card-delete:hover {
+  background: rgba(239, 68, 68, .92);
+  color: #fff;
+}
+.archive-card-delete svg { display: block; }
 /* Static cards (placeholder-only, no clickable preview). Removes the pointer
    cursor + hover lift so the card reads as information-only. */
 .archive-card-static {

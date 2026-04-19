@@ -7281,7 +7281,28 @@ function createArchiveCard(item) {
         <span>${time}</span>
       </div>
       ${extraBadges ? `<div class="archive-card-meta" style="margin-top:2px;gap:4px">${extraBadges}</div>` : ''}
-    </div>`;
+    </div>
+    <button class="archive-card-delete" type="button" aria-label="Delete ${escapeHtml(title)}" data-tip="Delete" data-tip-pos="bottom">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <polyline points="3 6 5 6 21 6"/>
+        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+        <path d="M10 11v6"/>
+        <path d="M14 11v6"/>
+        <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+      </svg>
+    </button>`;
+
+  const deleteBtn = card.querySelector('.archive-card-delete');
+  if (deleteBtn) {
+    deleteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      requestArchiveCardDelete(card, item, title);
+    });
+    deleteBtn.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.stopPropagation(); }
+    });
+  }
 
   const activate = (e) => {
     // Pairing mode: if at least one swipe-card (competitor) is already selected,
@@ -7302,6 +7323,51 @@ function createArchiveCard(item) {
     }
   });
   return card;
+}
+
+// Resolve delete targets for an archive card using the same source-aware logic
+// as the right-click context menu (see REGRESSION GUARD in the contextmenu
+// handler): loose items delete their own file list, run items delete the run
+// folder. Never widens to the brand folder.
+function resolveArchiveDeleteTargets(card) {
+  const source = card?.dataset?.source || '';
+  if (source === 'loose' && card?.dataset?.files) {
+    try {
+      const parsed = JSON.parse(card.dataset.files);
+      if (Array.isArray(parsed)) {
+        const files = parsed.filter(p => typeof p === 'string' && p);
+        if (files.length) return files;
+      }
+    } catch {}
+  }
+  if (source === 'run' && card?.dataset?.folder) return [card.dataset.folder];
+  if (card?.dataset?.folder) return [card.dataset.folder];
+  return [];
+}
+
+async function requestArchiveCardDelete(card, item, title) {
+  const targets = resolveArchiveDeleteTargets(card);
+  if (targets.length === 0) { showCopyToast('Nothing to delete'); return; }
+  const isVideo = item?.type === 'video';
+  const label = isVideo ? 'video' : 'image';
+  const safeTitle = title || (isVideo ? 'Video Ad' : 'Ad Image');
+  showModal({
+    title: 'Delete this ' + label + '?',
+    body: '"' + safeTitle + '" will be permanently removed from disk. This cannot be undone.',
+    confirmLabel: 'Delete',
+    cancelLabel: 'Cancel',
+    onConfirm: async () => {
+      const target = targets.length > 1 ? targets : targets[0];
+      const result = await merlin.deleteFile(target);
+      if (result?.success) {
+        showCopyToast('Deleted');
+        card.style.opacity = '0';
+        setTimeout(() => card.remove(), 300);
+      } else {
+        showCopyToast('Delete failed');
+      }
+    }
+  });
 }
 
 // Lazy-load video <source>s inside an archive grid. Hydrates `data-lazy-src`
