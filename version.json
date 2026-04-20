@@ -35,7 +35,8 @@
   ],
   "removed": [
     ".claude/commands/merlin-platforms.md",
-    ".claude/commands/merlin-setup.md"
+    ".claude/commands/merlin-setup.md",
+    ".claude/tools/ggml-tiny.en.bin"
   ],
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",
