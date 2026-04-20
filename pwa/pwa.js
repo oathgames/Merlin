@@ -3,9 +3,10 @@
 // Two connection modes, decided at page load:
 //
 //   1. RELAY (roaming)  Primary path. Credentials come from a pair URL
-//      (#pair=<sessionId>.<pairCode>) on first load, then live in
-//      localStorage for subsequent launches. Connects to
-//      wss://relay.merlingotme.com/ws/pwa with the PWA token.
+//      (#pair=<sessionId>.<pairCode>) on first load. The relay sets
+//      httpOnly access+refresh COOKIES on claim; JS never sees the
+//      tokens. localStorage only holds the non-secret { sessionId,
+//      deviceId } pair so the UI can render "this device" etc.
 //
 //   2. LAN (same WiFi)  Legacy path. URL hash is a raw session token and
 //      the page was served by the Electron app's local WS server. This is
@@ -15,15 +16,24 @@
 //   - The pair code is ONE-SHOT: /pair/claim deletes the server-side row.
 //     We strip the fragment immediately after a successful claim so the
 //     code doesn't linger in browser history / share sheets.
-//   - pwaToken is stored in localStorage scoped to pwa.merlingotme.com.
-//     It's the only credential on the device; losing it = re-pair.
+//   - pwa-session-hardening (2026-04-20): access + refresh tokens live in
+//     httpOnly SameSite=Strict cookies scoped to relay.merlingotme.com.
+//     JS CANNOT read them — XSS in this page can't exfiltrate the token.
+//     The only credential JS holds is the non-secret sessionId/deviceId
+//     pair (used for the device-list UI; not authentication).
+//   - 24h access token → auto-refresh via POST /session/refresh. 30d
+//     refresh token → re-pair (QR) required on expiry.
 //   - Push subscribe happens AFTER WS auth succeeds so we never store a
 //     push sub for a session that can't actually route. One less
 //     zombie endpoint to clean up.
 
 const RELAY_BASE = 'https://relay.merlingotme.com';
 const RELAY_WS_BASE = 'wss://relay.merlingotme.com';
-const CREDS_KEY = 'merlin.relay.creds.v1';
+// CREDS_KEY v1 used to store the plaintext pwaToken. v2 stores ONLY
+// sessionId + deviceId (non-secrets). On load we migrate v1 → v2 and drop
+// the token field; the cookie from the most recent fetch keeps auth live.
+const CREDS_KEY       = 'merlin.relay.creds.v2';
+const LEGACY_CREDS_KEY = 'merlin.relay.creds.v1';
 const MAX_RECONNECT_MS = 60_000;
 const MIN_RECONNECT_MS = 1_500;
 
@@ -35,7 +45,8 @@ let isStreaming = false;
 let reconnectAttempts = 0;
 let reconnectTimer = null;
 let mode = null; // 'relay' | 'lan'
-let relayCreds = null; // { sessionId, pwaToken, deviceId } — token never logged
+let relayCreds = null; // { sessionId, deviceId } — NO tokens; auth is via httpOnly cookie
+let refreshInFlight = null; // Promise: de-dupe concurrent refresh attempts
 
 const messages = document.getElementById('messages');
 const chat = document.getElementById('chat');
@@ -50,24 +61,42 @@ function setStatus(connected, text) {
 }
 
 // ── Credential storage ──────────────────────────────────────
+// v2 shape: { sessionId, deviceId }. NO secrets — auth is httpOnly cookie.
+// v1 shape: { sessionId, deviceId, pwaToken }. On read, we strip pwaToken
+// and re-save as v2 so the plaintext doesn't persist in localStorage one
+// moment longer than necessary.
 function loadCreds() {
   try {
-    const raw = localStorage.getItem(CREDS_KEY);
-    if (!raw) return null;
-    const c = JSON.parse(raw);
-    if (typeof c?.sessionId === 'string' && typeof c?.pwaToken === 'string' && typeof c?.deviceId === 'string') {
-      return c;
+    const rawV2 = localStorage.getItem(CREDS_KEY);
+    if (rawV2) {
+      const c = JSON.parse(rawV2);
+      if (typeof c?.sessionId === 'string' && typeof c?.deviceId === 'string') {
+        return { sessionId: c.sessionId, deviceId: c.deviceId };
+      }
+    }
+    const rawV1 = localStorage.getItem(LEGACY_CREDS_KEY);
+    if (rawV1) {
+      const c = JSON.parse(rawV1);
+      if (typeof c?.sessionId === 'string' && typeof c?.deviceId === 'string') {
+        const migrated = { sessionId: c.sessionId, deviceId: c.deviceId };
+        saveCreds(migrated);
+        try { localStorage.removeItem(LEGACY_CREDS_KEY); } catch {}
+        return migrated;
+      }
     }
   } catch {}
   return null;
 }
 
 function saveCreds(c) {
-  try { localStorage.setItem(CREDS_KEY, JSON.stringify(c)); } catch {}
+  // Defensive: strip any token field callers may still pass in.
+  const clean = { sessionId: String(c?.sessionId || ''), deviceId: String(c?.deviceId || '') };
+  try { localStorage.setItem(CREDS_KEY, JSON.stringify(clean)); } catch {}
 }
 
 function clearCreds() {
   try { localStorage.removeItem(CREDS_KEY); } catch {}
+  try { localStorage.removeItem(LEGACY_CREDS_KEY); } catch {}
   relayCreds = null;
 }
 
@@ -90,10 +119,15 @@ function parseHash() {
 }
 
 // ── Pair-code claim ─────────────────────────────────────────
+// credentials:'include' is required so the Set-Cookie response actually
+// lands on this origin. The relay's CORS setup echoes our origin (not '*')
+// precisely because the browser refuses to accept credentialed responses
+// with wildcard Access-Control-Allow-Origin.
 async function claimPairCode(sessionId, pairCode) {
   const label = guessDeviceLabel();
   const resp = await fetch(`${RELAY_BASE}/pair/claim`, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionId, pairCode, label }),
   });
@@ -103,8 +137,44 @@ async function claimPairCode(sessionId, pairCode) {
     throw new Error(err.error || `http_${resp.status}`);
   }
   const data = await resp.json();
-  if (!data.sessionId || !data.pwaToken || !data.deviceId) throw new Error('bad_response');
-  return { sessionId: data.sessionId, pwaToken: data.pwaToken, deviceId: data.deviceId };
+  if (!data.sessionId || !data.deviceId) throw new Error('bad_response');
+  // Deliberately IGNORE data.pwaToken (legacy back-compat field). Auth now
+  // flows through the httpOnly cookie that was just set by this response.
+  return { sessionId: data.sessionId, deviceId: data.deviceId };
+}
+
+// ── Refresh + auto-retry wrapper ────────────────────────────
+// Call the refresh endpoint at most once per 401 wave. Concurrent callers
+// share a single in-flight promise so N parallel 401s = 1 refresh call.
+async function refreshTokens() {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    try {
+      const resp = await fetch(`${RELAY_BASE}/session/refresh`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      return resp.ok;
+    } catch {
+      return false;
+    } finally {
+      // Clear AFTER the microtask so pending awaiters resolve against this
+      // same promise; the next wave gets a fresh call.
+      queueMicrotask(() => { refreshInFlight = null; });
+    }
+  })();
+  return refreshInFlight;
+}
+
+async function relayFetch(path, opts = {}) {
+  const init = { credentials: 'include', ...opts };
+  let resp = await fetch(`${RELAY_BASE}${path}`, init);
+  if (resp.status !== 401) return resp;
+  // One refresh attempt, then retry once. Never loop — if refresh fails
+  // the caller sees the second 401 and can route to the "re-pair" UX.
+  const refreshed = await refreshTokens();
+  if (!refreshed) return resp;
+  return fetch(`${RELAY_BASE}${path}`, init);
 }
 
 function guessDeviceLabel() {
@@ -136,7 +206,7 @@ async function subscribePush() {
       const permission = await Notification.requestPermission();
       if (permission !== 'granted') return;
 
-      const keyResp = await fetch(`${RELAY_BASE}/vapid-public`);
+      const keyResp = await fetch(`${RELAY_BASE}/vapid-public`, { credentials: 'include' });
       if (!keyResp.ok) return;
       const { key } = await keyResp.json();
       if (!key) return;
@@ -148,12 +218,16 @@ async function subscribePush() {
     }
 
     const json = sub.toJSON();
-    await fetch(`${RELAY_BASE}/push/subscribe`, {
+    // /push/subscribe still takes the legacy { pwaToken } shape today for
+    // the query-string-auth path. Sending the body fields preserves that
+    // compatibility; the NEW (cookie-aware) /push/subscribe handler ignores
+    // body tokens in favor of the access cookie. See pair/claim legacy
+    // REGRESSION GUARD for the deprecation plan.
+    await relayFetch('/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         sessionId: relayCreds.sessionId,
-        pwaToken: relayCreds.pwaToken,
         deviceId: relayCreds.deviceId,
         subscription: {
           endpoint: json.endpoint,
@@ -181,11 +255,13 @@ async function registerServiceWorker() {
 }
 
 // ── WS connection ───────────────────────────────────────────
+// Auth is the httpOnly access cookie — sent automatically by the browser
+// on same-origin WSS handshakes (pwa.→relay. is same-site under
+// SameSite=Strict). NO token in the query string: a URL in a server log
+// or referer header never carries a secret anymore.
 function connectRelay() {
   if (!relayCreds) return;
-  const url = `${RELAY_WS_BASE}/ws/pwa`
-    + `?session=${encodeURIComponent(relayCreds.sessionId)}`
-    + `&t=${encodeURIComponent(relayCreds.pwaToken)}`;
+  const url = `${RELAY_WS_BASE}/ws/pwa?session=${encodeURIComponent(relayCreds.sessionId)}`;
   openSocket(url);
 }
 
@@ -235,10 +311,19 @@ function openSocket(url, onOpen) {
 
   ws.onclose = (ev) => {
     setStatus(false);
-    // 1008/4401 = permanent auth failure; clear creds and stop.
-    if (ev && (ev.code === 1008 || ev.code === 4401)) {
+    // 1008 = relay enforced policy (rate limit, revoked). Treat as
+    // permanent — clearing creds forces a re-pair on next visit.
+    if (ev && ev.code === 1008) {
       if (mode === 'relay') clearCreds();
-      setStatus(false);
+      return;
+    }
+    // 4401 = unauthorized. In the cookie-auth era this is almost always
+    // an expired access token. Try to refresh once before reconnecting;
+    // if refresh fails, the reconnect will 4401 again and we fall
+    // through to scheduleReconnect's backoff (caller will eventually
+    // see "Not paired" and QR-pair again).
+    if (ev && ev.code === 4401 && mode === 'relay') {
+      refreshTokens().then(() => scheduleReconnect());
       return;
     }
     scheduleReconnect();
@@ -702,6 +787,173 @@ installNo && installNo.addEventListener('click', dismissInstall);
 if (isIOS() && !isStandalone() && !installDismissed()) {
   setTimeout(() => showInstallBanner(true), 2500);
 }
+
+// ── Settings drawer: device list + revoke + sign-out ────────
+// Only meaningful in RELAY mode (LAN has no paired-device concept). The
+// button is still visible in LAN mode but the drawer shows a zero-state
+// message. All network calls go through relayFetch so a stale cookie
+// triggers one refresh attempt before the UI blames the user.
+const settingsBtn     = document.getElementById('settings-btn');
+const settingsDrawer  = document.getElementById('settings-drawer');
+const settingsClose   = document.getElementById('settings-close');
+const devicesList     = document.getElementById('devices-list');
+const btnSignout      = document.getElementById('btn-signout');
+const settingsError   = document.getElementById('settings-error');
+
+function showSettingsError(msg) {
+  if (!settingsError) return;
+  settingsError.textContent = msg;
+  settingsError.classList.remove('hidden');
+}
+function clearSettingsError() {
+  if (!settingsError) return;
+  settingsError.textContent = '';
+  settingsError.classList.add('hidden');
+}
+
+function formatWhen(iso) {
+  // Server returns 'YYYY-MM-DD HH:MM:SS' UTC. Pretty-print relative.
+  if (!iso) return '';
+  const t = Date.parse(iso.replace(' ', 'T') + 'Z');
+  if (Number.isNaN(t)) return '';
+  const diffSec = Math.round((Date.now() - t) / 1000);
+  if (diffSec < 60)      return 'just now';
+  if (diffSec < 3600)    return `${Math.round(diffSec / 60)}m ago`;
+  if (diffSec < 86_400)  return `${Math.round(diffSec / 3600)}h ago`;
+  return `${Math.round(diffSec / 86_400)}d ago`;
+}
+
+function renderDevicesList(devices) {
+  if (!devicesList) return;
+  devicesList.innerHTML = '';
+  if (!devices || devices.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'device-sub';
+    empty.textContent = 'No devices paired.';
+    devicesList.appendChild(empty);
+    return;
+  }
+  // Self first, then the rest by creation order.
+  const ordered = [...devices].sort((a, b) => {
+    if (a.isThisDevice && !b.isThisDevice) return -1;
+    if (!a.isThisDevice && b.isThisDevice) return 1;
+    return (a.createdAt || '').localeCompare(b.createdAt || '');
+  });
+  for (const d of ordered) {
+    const row = document.createElement('div');
+    row.className = 'device-row' + (d.isThisDevice ? ' device-self' : '');
+
+    const meta = document.createElement('div');
+    meta.className = 'device-meta';
+
+    const label = document.createElement('div');
+    label.className = 'device-label';
+    label.textContent = d.label || 'device';
+    if (d.isThisDevice) {
+      const tag = document.createElement('span');
+      tag.className = 'device-tag';
+      tag.textContent = 'this device';
+      label.appendChild(tag);
+    }
+
+    const sub = document.createElement('div');
+    sub.className = 'device-sub';
+    const seen = formatWhen(d.lastSeenAt);
+    sub.textContent = seen ? `last seen ${seen}` : 'never seen';
+
+    meta.appendChild(label);
+    meta.appendChild(sub);
+    row.appendChild(meta);
+
+    // No revoke button for "this device" — user uses Sign out below for
+    // the self-revoke path so the UI isn't ambiguous about the cookie
+    // clearing side-effect.
+    if (!d.isThisDevice) {
+      const btn = document.createElement('button');
+      btn.className = 'device-revoke';
+      btn.textContent = 'Sign out';
+      btn.addEventListener('click', async () => {
+        if (btn.disabled) return;
+        btn.disabled = true;
+        btn.textContent = 'Signing out…';
+        clearSettingsError();
+        try {
+          const resp = await relayFetch(`/session/devices/${encodeURIComponent(d.deviceId)}/revoke`, {
+            method: 'POST',
+          });
+          if (!resp.ok) throw new Error(`http_${resp.status}`);
+          await loadAndRenderDevices();
+        } catch {
+          btn.disabled = false;
+          btn.textContent = 'Sign out';
+          showSettingsError('Could not sign out that device. Try again.');
+        }
+      });
+      row.appendChild(btn);
+    }
+    devicesList.appendChild(row);
+  }
+}
+
+async function loadAndRenderDevices() {
+  if (!devicesList) return;
+  clearSettingsError();
+  devicesList.innerHTML = '<div class="device-sub">Loading…</div>';
+  if (mode !== 'relay') {
+    devicesList.innerHTML = '';
+    const note = document.createElement('div');
+    note.className = 'device-sub';
+    note.textContent = 'Connected over LAN. Device management is only available over relay.';
+    devicesList.appendChild(note);
+    return;
+  }
+  try {
+    const resp = await relayFetch('/session/devices');
+    if (resp.status === 401) {
+      devicesList.innerHTML = '';
+      showSettingsError('Session expired. Re-pair to manage devices.');
+      return;
+    }
+    if (!resp.ok) throw new Error(`http_${resp.status}`);
+    const data = await resp.json();
+    renderDevicesList(Array.isArray(data?.devices) ? data.devices : []);
+  } catch {
+    devicesList.innerHTML = '';
+    showSettingsError('Could not load devices. Check your connection.');
+  }
+}
+
+function openSettings() {
+  settingsDrawer && settingsDrawer.classList.remove('hidden');
+  loadAndRenderDevices();
+}
+function closeSettings() {
+  settingsDrawer && settingsDrawer.classList.add('hidden');
+}
+
+settingsBtn && settingsBtn.addEventListener('click', openSettings);
+settingsClose && settingsClose.addEventListener('click', closeSettings);
+// Tap outside the panel closes the drawer.
+settingsDrawer && settingsDrawer.addEventListener('click', (e) => {
+  if (e.target === settingsDrawer) closeSettings();
+});
+btnSignout && btnSignout.addEventListener('click', async () => {
+  if (btnSignout.disabled) return;
+  btnSignout.disabled = true;
+  btnSignout.textContent = 'Signing out…';
+  clearSettingsError();
+  try {
+    // /session/logout is the convenience endpoint — clears cookies even if
+    // the access token was already expired (common after 24h+ idle).
+    await relayFetch('/session/logout', { method: 'POST' });
+  } catch { /* logout is idempotent; proceed */ }
+  clearCreds();
+  try { if (ws) ws.close(); } catch {}
+  closeSettings();
+  setStatus(false, 'Signed out');
+  btnSignout.disabled = false;
+  btnSignout.textContent = 'Sign out this device';
+});
 
 // ── Init ────────────────────────────────────────────────────
 let lanToken = null;
