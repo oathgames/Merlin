@@ -4673,6 +4673,12 @@ function sendMessage() {
   try { dismissStarterChips(); } catch {}
   // New turn cancels any in-flight TTS so the wizard never talks over itself.
   stopSpeaking();
+  // Voice-output mode: play a short "thinking" filler to mask the gap between
+  // send and the first streamed voice chunk (~500-2000 ms in practice). Fire-
+  // and-forget; the first real speak chunk stops it via stopFiller() inside
+  // _createSpeakPlayback.playNext. If the cache isn't ready yet, the helper
+  // no-ops silently — no modal, no error.
+  if (voiceEnabled) playFiller();
   _userMessageCount = (_userMessageCount || 0) + 1;
   _lastUserMessage = text;
   addUserBubble(text);
@@ -4726,6 +4732,17 @@ sendBtn.addEventListener('click', sendMessage);
 // (.voice-interim). On stop, the final transcription flips the color
 // back to normal. Escape cancels and restores whatever was in the
 // input before recording.
+//
+// S-tier PTT flow (v1.16 upgrade):
+//   * One tap to start (unchanged), auto-stop on 700 ms of silence after
+//     the user has spoken. No second tap required.
+//   * A VAD (voice-activity-detector.js) polls the mic energy at 50 Hz,
+//     calibrates the room baseline for ~300 ms, then fires
+//     onSilenceDetected → stopRecording. If Web Audio isn't available,
+//     recording falls back to fully manual (tap-again-to-stop).
+//   * Final transcript flashes in the input for ~400 ms (.voice-preview)
+//     before auto-send, giving the user a chance to Escape if Whisper
+//     misheard something critical.
 const micBtn = document.getElementById('mic-btn');
 let mediaRecorder = null;
 let audioStream = null;
@@ -4734,6 +4751,13 @@ let isRecording = false;
 let isCanceled = false;
 let streamBusy = false;     // prevents overlapping whisper-cli calls
 let voiceBaseText = '';     // text that was in input before recording started
+let vadHandle = null;       // active voice-activity-detector handle (null when idle)
+let previewTimer = null;    // pending transcription preview auto-send timer
+// VOICE_PREVIEW_MS — how long the final transcript sits in the input before
+// auto-send. 400 ms is long enough for a user to read a short sentence
+// (~7 words) and hit Escape to cancel, short enough that it doesn't feel
+// like the app stalled. Reduce if user feedback shows it's sluggish.
+const VOICE_PREVIEW_MS = 400;
 
 async function transcribeCurrent(isInterim) {
   if (recordingChunks.length === 0) return;
@@ -4778,8 +4802,15 @@ async function startRecording() {
     audioStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
+        // All three browser processors ON. echoCancellation is critical for
+        // barge-in — without it, Kokoro's own audio bleeds back into the mic
+        // during a user interrupt and Whisper transcribes Merlin's voice as
+        // user input. noiseSuppression keeps baseline RMS low for the VAD's
+        // adaptive threshold. autoGainControl levels quiet speakers so the
+        // VAD doesn't need to chase a moving target.
         echoCancellation: true,
         noiseSuppression: true,
+        autoGainControl: true,
       },
     });
   } catch (err) {
@@ -4814,6 +4845,7 @@ async function startRecording() {
   mediaRecorder.onstop = async () => {
     try { audioStream.getTracks().forEach(t => t.stop()); } catch {}
     audioStream = null;
+    stopVAD();
     micBtn.classList.remove('recording');
     // Wait for any in-flight interim transcription to settle before final
     while (streamBusy) await new Promise(r => setTimeout(r, 50));
@@ -4833,6 +4865,14 @@ async function startRecording() {
     try {
       await transcribeCurrent(false);  // final → strips gray class
       input.focus();
+      // S-tier flow: if the final transcript has content, flash it for a
+      // short preview window then auto-send. Escape or any user keystroke
+      // during the window cancels the send and leaves the text editable.
+      // Skip preview if the input is empty (nothing to send — Whisper
+      // likely returned [BLANK_AUDIO]).
+      if (input.value && input.value.trim()) {
+        schedulePreviewAutoSend();
+      }
     } finally {
       micBtn.classList.remove('transcribing');
       micBtn.disabled = false;
@@ -4843,10 +4883,43 @@ async function startRecording() {
   mediaRecorder.start(2500);
   isRecording = true;
   micBtn.classList.add('recording');
+
+  // Attach the VAD last, after the MediaRecorder is running and bound to
+  // the stream. A speech-start event is informational (no UI change beyond
+  // the existing `.recording` class), but silence-end triggers the auto-
+  // stop that closes the PTT turn. If Web Audio isn't available the
+  // attachVAD stub no-ops and the user falls back to tap-again-to-stop.
+  if (window.MerlinVAD && window.MerlinVAD.attachVAD) {
+    try {
+      vadHandle = window.MerlinVAD.attachVAD(audioStream, {
+        onSilenceDetected: () => {
+          if (isRecording && !isCanceled) stopRecording();
+        },
+        onMaxDuration: () => {
+          if (isRecording && !isCanceled) stopRecording();
+        },
+      });
+    } catch (err) {
+      console.warn('[vad] attach failed, falling back to manual stop:', err);
+      vadHandle = null;
+    }
+  }
+}
+
+// Tear down the VAD before MediaRecorder.stop fires the final
+// `ondataavailable` — otherwise a stray tick between stop() and the
+// handle.stop() call could kick off another transcribeCurrent pass after
+// the user's turn is already over.
+function stopVAD() {
+  if (vadHandle) {
+    try { vadHandle.stop(); } catch (_) {}
+    vadHandle = null;
+  }
 }
 
 function stopRecording() {
   if (mediaRecorder && isRecording) {
+    stopVAD();
     try { mediaRecorder.stop(); } catch (e) { console.warn('stop error', e); }
     isRecording = false;
   }
@@ -4854,6 +4927,7 @@ function stopRecording() {
 
 function cancelRecording() {
   if (mediaRecorder && isRecording) {
+    stopVAD();
     isCanceled = true;
     try { mediaRecorder.stop(); } catch (e) { console.warn('cancel error', e); }
     isRecording = false;
@@ -4861,14 +4935,54 @@ function cancelRecording() {
 }
 
 micBtn.addEventListener('click', () => {
+  cancelPreviewAutoSend();
+  // Barge-in: if Merlin is currently speaking, ramp Kokoro's volume to
+  // zero over 150 ms before tearing down the playback session. Abrupt
+  // stops click audibly; the ramp produces a clean "Merlin stops mid-
+  // sentence because the user started talking" handoff. Runs in parallel
+  // with startRecording so the mic is already open by the time the ramp
+  // completes.
+  if (currentAudio) rampDownAndStopSpeaking();
   if (isRecording) stopRecording();
   else startRecording();
 });
 
-// Escape cancels recording entirely (restores pre-recording text)
+// Escape cancels recording entirely (restores pre-recording text).
+// Escape during the preview window cancels auto-send (keeps text editable).
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isRecording) cancelRecording();
+  if (e.key === 'Escape' && previewTimer != null) cancelPreviewAutoSend();
 });
+
+// Any non-Escape keystroke during the preview window also cancels auto-send
+// — the user is starting to edit, so we should not yank the text out from
+// under them. Modifiers (Ctrl/Cmd/Alt/Shift) alone don't count since the
+// user might be about to press Ctrl+Enter to send.
+input.addEventListener('keydown', (e) => {
+  if (previewTimer == null) return;
+  if (e.key === 'Escape') return;       // handled above
+  if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+  cancelPreviewAutoSend();
+});
+
+function schedulePreviewAutoSend() {
+  cancelPreviewAutoSend();
+  input.classList.add('voice-preview');
+  previewTimer = setTimeout(() => {
+    previewTimer = null;
+    input.classList.remove('voice-preview');
+    // Send only if there's still text (user may have edited before timer).
+    if (input.value && input.value.trim()) sendMessage();
+  }, VOICE_PREVIEW_MS);
+}
+
+function cancelPreviewAutoSend() {
+  if (previewTimer != null) {
+    clearTimeout(previewTimer);
+    previewTimer = null;
+  }
+  input.classList.remove('voice-preview');
+}
 
 // Ctrl/Cmd+D toggles the microphone (mirrors mic-btn click).
 // Ctrl/Cmd+S narrates the most recent assistant bubble (mirrors replay-btn click).
@@ -4953,7 +5067,109 @@ function clearSpeakingIndicator(bubbleEl) {
   if (btn) btn.classList.remove('speaking');
 }
 
+// Ramp-and-stop for barge-in. Fades the currently-playing chunk from its
+// present volume to 0 over BARGE_RAMP_MS, then calls stopSpeaking() to
+// tear down the queue. Uses requestAnimationFrame so the ramp tracks the
+// compositor rather than a fixed setInterval — feels smoother on
+// high-refresh displays. If the audio element vanishes mid-ramp (e.g. a
+// later stopSpeaking beats us to it), we exit quietly.
+//
+// Why not Web Audio GainNode: HTMLAudioElement.volume is a direct
+// multiplier that takes effect on the next buffer pull, which is
+// indistinguishable from a GainNode at this short a ramp. Avoiding the
+// extra node keeps barge-in purely additive to the existing playback
+// path — no risk of regressing normal playback.
+const BARGE_RAMP_MS = 150;
+
+// ── Filler phrase playback ────────────────────────────────────
+// Masks the Claude-response TTFB. On every voice-enabled send we play a
+// short pre-synthesized "thinking" phrase (Got it, one sec. / Okay, let me
+// take a look. / ...). The first real streaming-speak chunk killfades it
+// immediately via stopFiller() so the user never hears an overlap.
+//
+// State:
+//   _fillerPlayback — { els: Array<{url, audio}>, idx, alive: bool } | null
+//                     `alive` is the single flag every async callback
+//                     checks before advancing/ending — that way stopFiller
+//                     can interrupt in the middle of playNext without
+//                     races.
+let _fillerPlayback = null;
+
+async function playFiller() {
+  if (!voiceEnabled) return;
+  if (!merlin.getFillerAudio) return;
+  // Don't layer fillers — if one's already playing from a rapid double-send,
+  // drop it and start fresh.
+  stopFiller();
+  let res;
+  try { res = await merlin.getFillerAudio(); }
+  catch { return; }
+  // After await the user may have already cancelled voice, or real speech
+  // may have started. Bail if so.
+  if (!voiceEnabled) return;
+  if (!res || !res.audio || !res.audio.length) return;
+  const els = res.audio.map((bytes) => {
+    const u8 = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+    const blob = new Blob([u8], { type: 'audio/wav' });
+    const url = URL.createObjectURL(blob);
+    return { url, audio: new Audio(url) };
+  });
+  const play = { els, idx: 0, alive: true };
+  _fillerPlayback = play;
+  const playNext = () => {
+    if (!play.alive) return;
+    if (play.idx >= play.els.length) { _fillerPlayback = null; return; }
+    const { url, audio } = play.els[play.idx++];
+    const afterChunk = () => {
+      try { URL.revokeObjectURL(url); } catch {}
+      if (play.alive) playNext();
+    };
+    audio.onended = afterChunk;
+    audio.onerror = afterChunk;
+    audio.play().catch(afterChunk);
+  };
+  playNext();
+}
+
+function stopFiller() {
+  if (!_fillerPlayback) return;
+  const play = _fillerPlayback;
+  _fillerPlayback = null;
+  play.alive = false;
+  for (const { url, audio } of play.els) {
+    try { audio.pause(); } catch {}
+    try { audio.src = ''; } catch {}
+    try { URL.revokeObjectURL(url); } catch {}
+  }
+}
+
+function rampDownAndStopSpeaking() {
+  if (!currentAudio) { stopSpeaking(); return; }
+  const target = currentAudio;
+  const startVol = typeof target.volume === 'number' ? target.volume : 1;
+  const t0 = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const now = () => (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+  const step = () => {
+    if (currentAudio !== target) return;   // superseded — another caller already stopped
+    const dt = now() - t0;
+    if (dt >= BARGE_RAMP_MS) {
+      try { target.volume = 0; } catch (_) {}
+      stopSpeaking();
+      return;
+    }
+    const k = 1 - (dt / BARGE_RAMP_MS);
+    try { target.volume = Math.max(0, startVol * k); } catch (_) {}
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(step);
+    else setTimeout(step, 16);
+  };
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(step);
+  else setTimeout(step, 16);
+}
+
 function stopSpeaking() {
+  // Kill any filler first — a lingering "thinking" clip after stop would be
+  // bizarre. Cheap and idempotent.
+  stopFiller();
   // Tear down any live streaming-speak session first. It owns a playback
   // session whose listener must unsubscribe synchronously — otherwise stray
   // chunks arriving after the abort leak blob URLs for the window's life.
@@ -5062,6 +5278,9 @@ function _createSpeakPlayback(bubbleEl) {
     if (playing) return;
     if (_activeSpeakReqId !== reqId) return;   // superseded
     if (queue.length === 0) { finishIfDrained(); return; }
+    // Real speech is starting — kill any TTFB-masking filler so the user
+    // doesn't hear the tail of "one sec." overlapping the actual reply.
+    stopFiller();
     playing = true;
     const { url, audio } = queue.shift();
     currentAudio = audio;
@@ -5280,9 +5499,11 @@ if (merlin.onVoiceOutputProgress) {
 // Escape stops speaking when nothing more urgent is in flight.
 // Recording Escape and stream-stop Escape handlers run first and match
 // their own conditions, so this only fires during standalone playback.
+// Uses the same gain ramp as barge-in so Escape-to-silence feels smooth
+// instead of clicking off mid-word.
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && currentAudio && !isRecording && !isStreaming && !sessionActive) {
-    stopSpeaking();
+    rampDownAndStopSpeaking();
   }
 });
 

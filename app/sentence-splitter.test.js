@@ -7,7 +7,7 @@
 // tail at end-of-stream — is covered here. Keep this file green.
 
 const assert = require('assert');
-const { extractCompleteSentences, drainRemaining, MIN_SENTENCE_CHARS } = require('./sentence-splitter');
+const { extractCompleteSentences, drainRemaining, MIN_SENTENCE_CHARS, MIN_CLAUSE_CHARS } = require('./sentence-splitter');
 
 let passed = 0;
 let failed = 0;
@@ -192,6 +192,86 @@ test('drainRemaining trims whitespace', () => {
 test('drainRemaining tolerates out-of-range idx', () => {
   assert.strictEqual(drainRemaining('Hi.', 999), '');
   assert.strictEqual(drainRemaining('Hi.', -5), 'Hi.');
+});
+
+// ── Clause-boundary flushing (S-tier TTS TTFB) ─────────────────
+// The clause boundary is what closes the "Claude just said a sentence, now
+// wait for the period" gap. Flushing on commas / em-dashes / semicolons
+// once we've accumulated ≥40 chars lets Kokoro start speaking the first
+// long clause of a reply 300-800 ms sooner. These tests pin the behaviour
+// so a future simplifier doesn't revert the regex.
+
+test('long clause flushes on comma when >= MIN_CLAUSE_CHARS', () => {
+  // 55 chars before the comma — well above MIN_CLAUSE_CHARS.
+  const input = 'For the first part of our long opening clause here, we continue on. ';
+  const { sentences, nextIdx } = extractCompleteSentences(input, 0);
+  assert.strictEqual(sentences.length, 2, `expected 2 flushes, got ${JSON.stringify(sentences)}`);
+  assert.ok(sentences[0].endsWith(','));
+  assert.ok(sentences[0].length >= MIN_CLAUSE_CHARS);
+  assert.strictEqual(nextIdx, input.length);
+});
+
+test('short clause does NOT flush on comma (below MIN_CLAUSE_CHARS)', () => {
+  // "Quick note," is 11 chars — well below clause threshold. Must wait for
+  // a strong boundary.
+  const input = 'Quick note, more text here. ';
+  const { sentences, nextIdx } = extractCompleteSentences(input, 0);
+  assert.strictEqual(sentences.length, 1, `expected 1 flush, got ${JSON.stringify(sentences)}`);
+  assert.strictEqual(sentences[0], 'Quick note, more text here.');
+  assert.strictEqual(nextIdx, input.length);
+});
+
+test('em-dash flushes when clause is long enough', () => {
+  // 44 chars before the em-dash, so it clears MIN_CLAUSE_CHARS.
+  const input = 'A long enough opening thought here as shown\u2014then the rest of the long sentence. ';
+  const { sentences } = extractCompleteSentences(input, 0);
+  assert.strictEqual(sentences.length, 2, `expected 2 flushes, got ${JSON.stringify(sentences)}`);
+  assert.ok(sentences[0].endsWith('\u2014'));
+});
+
+test('semicolon flushes when clause is long enough', () => {
+  // Clause >=40 chars flushes on `;`. Tail must also clear MIN_SENTENCE_CHARS
+  // to emit on its own — otherwise it's held for the next delta.
+  const input = 'Here is the first part that clearly exceeds forty characters; and here follows a proper second sentence. ';
+  const { sentences } = extractCompleteSentences(input, 0);
+  assert.strictEqual(sentences.length, 2, `expected 2 flushes, got ${JSON.stringify(sentences)}`);
+  assert.ok(sentences[0].endsWith(';'));
+  assert.ok(sentences[1].endsWith('.'));
+});
+
+test('clause flush then sentence continues: no duplication', () => {
+  // Simulates streaming: the caller feeds cumulative text and advances idx.
+  // Must not re-emit the clause on the next call.
+  let buffer = '';
+  let idx = 0;
+  const all = [];
+  const feed = (chunk) => {
+    buffer += chunk;
+    const r = extractCompleteSentences(buffer, idx);
+    all.push(...r.sentences);
+    idx = r.nextIdx;
+  };
+  feed('This is the first long opening clause that exceeds forty characters, ');
+  feed('and this is the rest of the sentence. ');
+  assert.strictEqual(all.length, 2);
+  assert.ok(all[0].endsWith(','));
+  assert.ok(all[1].endsWith('.'));
+  assert.strictEqual(buffer.slice(idx), '');
+});
+
+test('mixed strong + soft boundaries: strong takes precedence for short buf', () => {
+  // "Hi." (3 chars) — held. Comma then arrives at 11 total — still below 40.
+  // Period at end (cumulative >=12 chars) flushes.
+  const input = 'Hi. Wait, done here. ';
+  const { sentences } = extractCompleteSentences(input, 0);
+  assert.strictEqual(sentences.length, 1);
+  assert.strictEqual(sentences[0], 'Hi. Wait, done here.');
+});
+
+test('MIN_CLAUSE_CHARS constant is exported and sensible', () => {
+  assert.ok(typeof MIN_CLAUSE_CHARS === 'number');
+  assert.ok(MIN_CLAUSE_CHARS > MIN_SENTENCE_CHARS);
+  assert.ok(MIN_CLAUSE_CHARS <= 60);
 });
 
 // ── Run ────────────────────────────────────────────────────────

@@ -1,19 +1,31 @@
 // Streaming sentence extractor for the live-TTS pipeline.
 //
 // Called on every Claude text delta with the accumulated `cleaned` text and
-// the index already consumed. Returns any newly-complete sentences plus the
-// updated consumed index. Incomplete tails are preserved — the caller passes
-// the same `cleaned` text on the next call, and we resume from `nextIdx`.
+// the index already consumed. Returns any newly-complete sentences (or
+// sufficiently long clauses) plus the updated consumed index. Incomplete
+// tails are preserved — the caller passes the same `cleaned` text on the
+// next call, and we resume from `nextIdx`.
 //
 // Design notes:
-//   * Sentence boundary = terminal punctuation ([.!?]) followed by whitespace,
-//     or a blank-line paragraph break (\n\n+). We don't use end-of-string as
-//     a boundary because Claude's next token may extend the current sentence.
-//   * A "sentence" shorter than MIN_SENTENCE_CHARS is coalesced with the next
-//     one. Short fragments ("Hi.", "1.", "Go!") produce ~200 ms of Kokoro
-//     overhead per fragment for ~300 ms of audio, which is wasted work and
-//     sounds choppy. Pairing them halves the overhead without hurting latency
-//     on normal prose (first substantial sentence is always ≥ 12 chars).
+//   * STRONG boundary = terminal punctuation ([.!?]) followed by whitespace,
+//     or a blank-line paragraph break (\n\n+). A buffered fragment >= 12
+//     chars flushes at a strong boundary.
+//   * SOFT / CLAUSE boundary = comma/semicolon/colon followed by whitespace,
+//     or an em-dash (optionally followed by whitespace). A buffered fragment
+//     >= 40 chars flushes at a soft boundary. This shaves first-audio TTFB
+//     from "wait for the first period" (~100 char prose sentence) to "wait
+//     for the first clause" (~40 chars) without over-fragmenting Kokoro
+//     into sub-second clips. Kokoro's prosody handles clause-terminal
+//     punctuation naturally — a comma produces a continuation cadence,
+//     not a falling-stop cadence, so the resulting audio still sounds like
+//     one sentence even though it's synthesised as two chunks.
+//   * We don't use end-of-string as a boundary because Claude's next token
+//     may extend the current clause.
+//   * A fragment shorter than the relevant threshold is coalesced with the
+//     next one. Short fragments ("Hi.", "1.", "Go!") produce ~200 ms of
+//     Kokoro overhead per fragment for ~300 ms of audio, which is wasted
+//     work and sounds choppy. Pairing them halves the overhead without
+//     hurting latency on normal prose.
 //   * No lookbehind — keeps this runnable in every browser Electron ships
 //     with, and simpler regex is easier to reason about.
 //
@@ -28,14 +40,20 @@
     root.MerlinSentenceSplitter = factory();
   }
 }(typeof self !== 'undefined' ? self : this, function () {
-  // Consume the trailing whitespace as part of the match so the next scan
-  // resumes cleanly at the start of the next sentence instead of having to
-  // re-swallow a stray leading space every call.
-  const SENTENCE_END_RE = /[.!?]\s+|\n\n+/g;
+  // Unified boundary regex. Each alternation uses a distinct capture group
+  // so we can tell strong vs soft after the match without re-scanning.
+  //   group 1: [.!?]           — strong terminal punctuation
+  //   group 2: \n\n+           — strong paragraph break
+  //   group 3: [,;:]           — soft clause punctuation
+  //   group 4: [—–]            — em/en dash (soft)
+  // The trailing \s+ / \s* is part of the match so the next scan resumes at
+  // the start of the next fragment rather than re-swallowing leading space.
+  const BOUNDARY_RE = /([.!?])\s+|(\n\n+)|([,;:])\s+|([\u2014\u2013])\s*/g;
   const MIN_SENTENCE_CHARS = 12;
+  const MIN_CLAUSE_CHARS = 40;
 
-  // Extract every complete sentence that has appeared in `cleaned` since
-  // `fromIdx`. Returns:
+  // Extract every complete sentence (or long-enough clause) that has appeared
+  // in `cleaned` since `fromIdx`. Returns:
   //   sentences: string[]   — ready to hand to Kokoro, in order
   //   nextIdx:   number     — updated consumed index for the next call
   //
@@ -50,14 +68,16 @@
     let buf = '';
     let lastFlushEnd = 0;
     let cursor = 0;
-    SENTENCE_END_RE.lastIndex = 0;
+    BOUNDARY_RE.lastIndex = 0;
     let m;
-    while ((m = SENTENCE_END_RE.exec(tail)) !== null) {
+    while ((m = BOUNDARY_RE.exec(tail)) !== null) {
       const endAt = m.index + m[0].length;
       buf += tail.slice(cursor, endAt);
       cursor = endAt;
       const trimmed = buf.trim();
-      if (trimmed.length >= MIN_SENTENCE_CHARS) {
+      const isStrong = Boolean(m[1] || m[2]);
+      const threshold = isStrong ? MIN_SENTENCE_CHARS : MIN_CLAUSE_CHARS;
+      if (trimmed.length >= threshold) {
         out.push(trimmed);
         buf = '';
         lastFlushEnd = cursor;
@@ -77,5 +97,5 @@
     return rest || '';
   }
 
-  return { extractCompleteSentences, drainRemaining, MIN_SENTENCE_CHARS };
+  return { extractCompleteSentences, drainRemaining, MIN_SENTENCE_CHARS, MIN_CLAUSE_CHARS };
 }));

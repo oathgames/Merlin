@@ -388,6 +388,11 @@ contextBridge.exposeInMainWorld('merlin', {
     return ipcRenderer.invoke('speak-text', { text, voice, requestId });
   },
   stopSpeaking: () => ipcRenderer.invoke('stop-speaking'),
+  // Filler bank — short pre-synthesized phrases played on send while Claude
+  // is still generating. Returns { audio: Array<Uint8Array> | null }. Null
+  // means the main-process cache isn't ready yet (first ~5 s after boot);
+  // renderer treats that as "silently skip filler for this send".
+  getFillerAudio: () => ipcRenderer.invoke('get-filler-audio'),
   // Streaming TTS: open a session at the start of a Claude response, push
   // complete sentences as they arrive, close on finalize. Chunks come back
   // on the same `onVoiceOutputChunk` channel tagged with requestId.

@@ -3318,8 +3318,10 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
 // ── Voice Input: Audio Transcription ─────────────────────────
 // Renderer captures mic audio via MediaRecorder (webm/opus), ships the
 // bytes here, we convert → 16kHz mono WAV via bundled ffmpeg and run
-// whisper-cli against ggml-tiny.en.bin. Binaries live alongside ffmpeg
-// at .claude/tools/. Auto-download is phase 2 — for now, a missing
+// whisper-cli against ggml-small.en-q5_1.bin (quantized, ~181 MB). Seeded
+// with a brand/product prompt via --prompt so names like Klaviyo / Shopify /
+// the active brand don't land as phonetic garbage. Binaries live alongside
+// ffmpeg at .claude/tools/. Auto-download is phase 2 — for now, a missing
 // binary returns a clear error with a download link.
 // REGRESSION GUARD (2026-04-19, EBML-header incident): MediaRecorder with a
 // 2.5 s timeslice can emit a final chunk that concatenates into a truncated
@@ -3340,6 +3342,50 @@ ipcMain.handle('answer-question', (_, toolUseID, answers) => {
 // is ~1-2 KB of header + cluster metadata. Anything smaller is genuinely
 // empty and whisper would just return [BLANK_AUDIO] after a ~1 s spin-up.
 const MIN_WEBM_BYTES = 2048;
+
+// Build a short whisper --prompt seed from the active brand's config. This
+// biases the decoder toward brand/product names + ad-platform jargon so
+// "Klaviyo" stops coming back as "clavio" and "Merlin" doesn't turn into
+// "Marlin". Whisper's prompt context window caps at ~224 tokens; we stay
+// well under that with a single English sentence, so there's no token-budget
+// pressure. Runs synchronously on the main-process side and is cheap (reads
+// two small JSON files), so the extra latency is <1 ms vs. the whisper-cli
+// spawn time of ~150 ms. Returns '' if no usable context — in that case the
+// --prompt flag is omitted entirely rather than sending an empty string,
+// which whisper-cli treats as "no seed" but logs a warning on some builds.
+function buildWhisperSeed() {
+  try {
+    let activeBrand = '';
+    try { activeBrand = readState().activeBrand || ''; } catch {}
+    const cfg = activeBrand ? readBrandConfig(activeBrand) : readConfig();
+    const bits = [];
+    // Brand name: dashes/underscores → spaces, Title Case. Whisper already
+    // handles common brand terms well; this just locks the user's chosen
+    // spelling against phonetic near-misses.
+    if (activeBrand) {
+      const pretty = activeBrand.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+      bits.push(pretty);
+    }
+    if (cfg && typeof cfg.productName === 'string' && cfg.productName.trim()) {
+      bits.push(cfg.productName.trim());
+    }
+    if (cfg && typeof cfg.vertical === 'string' && cfg.vertical.trim()) {
+      bits.push(cfg.vertical.trim());
+    }
+    if (bits.length === 0) return '';
+    // Ad-platform jargon we know whisper mangles on tiny.en; small.en-q5_1
+    // still benefits from the seed for the less-common ones (Klaviyo, Etsy).
+    // Keep the list short — bloating the prompt hurts more than it helps.
+    const platforms = 'Merlin, Meta, TikTok, Shopify, Klaviyo, Etsy, Reddit, ROAS, CTR, CPC.';
+    const seed = `The user is discussing their brand ${bits.join(', ')}. Platforms: ${platforms}`;
+    // Safety cap: trim to 400 chars (~100 tokens) to stay well under whisper's
+    // context budget. Brand configs shouldn't produce anything this long, but
+    // a misconfigured productName could.
+    return seed.length > 400 ? seed.slice(0, 400) : seed;
+  } catch {
+    return '';
+  }
+}
 
 async function transcribeAudioImpl(audioBytes) {
   if (!Array.isArray(audioBytes) || audioBytes.length === 0) {
@@ -3366,7 +3412,13 @@ async function transcribeAudioImpl(audioBytes) {
 
   const ffmpegPath = findTool(isWin ? 'ffmpeg.exe' : 'ffmpeg');
   const whisperBin = findTool(isWin ? 'whisper-cli.exe' : 'whisper-cli');
-  const modelPath = findTool('ggml-tiny.en.bin');
+  // ggml-small.en-q5_1 (~181 MB quantized) replaces tiny.en (~78 MB) as of
+  // v1.12.1. Word-error-rate drops ~40% on conversational speech in exchange
+  // for ~140 MB extra install size — critical for Merlin because brand names,
+  // product names, and ad-platform jargon get mangled at tiny.en's recall.
+  // Paired with --initial-prompt below (brand/product seeding), the combined
+  // accuracy bump is larger than the model swap alone would buy.
+  const modelPath = findTool('ggml-small.en-q5_1.bin');
 
   // Voice binaries are bundled with the installer under
   // <appInstall>/.claude/tools/ (see release.yml's "Bundle voice tools" step
@@ -3445,8 +3497,16 @@ async function transcribeAudioImpl(audioBytes) {
 
     // 2. whisper-cli: wav → transcript on stdout
     // Flags: -nt (no timestamps), -np (no progress), -l en (English)
+    //        --prompt <text> (brand/product seed — biases the decoder toward
+    //        names whisper would otherwise mis-hear: "Klaviyo" → "clavio",
+    //        brand names → phonetic garbage, product SKUs → word salad).
+    //        The seed is built from whatever brand context we can resolve
+    //        without blocking on a binary call — live platform inventory is
+    //        too slow to fetch here. Malformed/empty seed → flag is skipped.
+    const promptSeed = buildWhisperSeed();
     const transcript = await new Promise((resolve, reject) => {
       const args = ['-m', modelPath, '-f', wavPath, '-nt', '-np', '-l', 'en'];
+      if (promptSeed) { args.push('--prompt', promptSeed); }
       const w = spawn(whisperBin, args, { windowsHide: true });
       let stdout = '';
       let stderr = '';
@@ -3484,7 +3544,7 @@ async function transcribeAudioImpl(audioBytes) {
 
 ipcMain.handle('transcribe-audio', async (_, audioBytes) => transcribeAudioImpl(audioBytes));
 
-// Voice tools (ffmpeg, whisper-cli, ggml-tiny.en.bin) are bundled into the
+// Voice tools (ffmpeg, whisper-cli, ggml-small.en-q5_1.bin) are bundled into the
 // Electron installer at build time — see "Bundle voice tools" in
 // autocmo-core/.github/workflows/release.yml and package.json extraResources.
 // The runtime no longer fetches anything; transcribe-audio just uses the
@@ -3534,6 +3594,25 @@ let _currentSynthReqId = 0;        // tracks the reqId of the in-flight synth so
                                    // carry the ID — without it the renderer's per-request guard drops
                                    // the final packet on the floor, leaking the listener + blob URLs.
 
+// ── Filler phrase pre-synthesis ──────────────────────────────────
+// Short "thinking" phrases pre-rendered at boot and played on send while
+// Claude's response is still generating. Masks the ~500-2000 ms TTFB gap
+// between user sending and the first real voice chunk, keeping the flow
+// conversational instead of eerily silent.
+//
+// Collectors intercept chunks/final for filler reqIds BEFORE the
+// renderer-forward path so nothing leaks to window listeners. Filler
+// reqIds are negative — speak-text uses positive monotonic IDs, so there
+// is no collision risk.
+const _fillerCollectors = new Map();  // reqId → { chunks, resolve, reject }
+let _fillerReqSeq = 0;                // decremented (-1, -2, ...) per filler synth
+const _fillerCache = [];              // Array<Array<Buffer>> — one entry per prewarmed phrase
+const FILLER_PHRASES = [
+  'Got it, one sec.',
+  'Okay, let me take a look.',
+  'Mm, checking now.',
+];
+
 function spawnTtsWorker() {
   if (_ttsWorker) return _ttsWorker;
   const { utilityProcess } = require('electron');
@@ -3569,6 +3648,16 @@ function spawnTtsWorker() {
         status: msg.status,
       });
     } else if (msg.type === 'chunk') {
+      // Filler pre-synth intercept: collect chunks in-process instead of
+      // forwarding to a renderer. Negative reqIds are filler-only.
+      const fc = _fillerCollectors.get(msg.reqId);
+      if (fc) {
+        if (msg.audio) {
+          const buf = Buffer.isBuffer(msg.audio) ? msg.audio : Buffer.from(msg.audio);
+          fc.chunks.push(buf);
+        }
+        return;
+      }
       sendToRenderer('voice-output-chunk', {
         requestId: msg.reqId,
         seq: msg.seq,
@@ -3576,6 +3665,14 @@ function spawnTtsWorker() {
         final: false,
       });
     } else if (msg.type === 'final') {
+      const fc = _fillerCollectors.get(msg.reqId);
+      if (fc) {
+        _fillerCollectors.delete(msg.reqId);
+        if (msg.aborted) fc.reject(new Error('filler synth aborted'));
+        else if (msg.error) fc.reject(new Error(msg.error));
+        else fc.resolve(fc.chunks);
+        return;
+      }
       sendToRenderer('voice-output-chunk', {
         requestId: msg.reqId,
         seq: msg.seq || 0,
@@ -3599,6 +3696,13 @@ function spawnTtsWorker() {
       // (e.g. init-time error before the first synth). Without a requestId
       // the renderer ignores the message and leaks its listener.
       const errReqId = typeof msg.reqId === 'number' ? msg.reqId : _currentSynthReqId;
+      const fc = _fillerCollectors.get(errReqId);
+      if (fc) {
+        _fillerCollectors.delete(errReqId);
+        fc.reject(new Error(msg.message || 'filler synth failed'));
+        console.error('[tts] filler synth error:', msg.message);
+        return;
+      }
       sendToRenderer('voice-output-chunk', {
         requestId: errReqId,
         final: true,
@@ -3744,6 +3848,43 @@ ipcMain.handle('speak-text-stream-end', (_event, args) => {
   if (!_ttsWorker || _currentSynthReqId !== requestId) return { error: 'no active stream' };
   _ttsWorker.postMessage({ type: 'stream-end', reqId: requestId });
   return { success: true };
+});
+
+// Pre-synthesize a single phrase in-process. Uses a negative reqId so chunks
+// are caught by _fillerCollectors instead of forwarded to a renderer.
+function synthFillerChunks(text) {
+  return new Promise((resolve, reject) => {
+    if (!_ttsWorker) { reject(new Error('tts worker not ready')); return; }
+    const reqId = --_fillerReqSeq;  // -1, -2, -3...
+    _fillerCollectors.set(reqId, { chunks: [], resolve, reject });
+    _ttsWorker.postMessage({ type: 'synth', reqId, text, voice: KOKORO_DEFAULT_VOICE });
+  });
+}
+
+// Run once the TTS worker is warm. Synthesizes the filler bank serially so
+// we don't step on any user-initiated synth (the worker's abort semantics
+// would kill our own earlier phrase if we parallelized).
+async function prewarmFillers() {
+  if (_fillerCache.length) return;  // idempotent
+  for (const phrase of FILLER_PHRASES) {
+    try {
+      const chunks = await synthFillerChunks(phrase);
+      if (chunks && chunks.length) _fillerCache.push(chunks);
+    } catch (err) {
+      // One phrase failing isn't fatal — just means the cache is smaller.
+      // The renderer's filler-is-optional gate tolerates an empty cache.
+      console.warn('[tts] filler prewarm failed:', phrase, err && err.message ? err.message : err);
+    }
+  }
+  console.log(`[tts] filler cache ready: ${_fillerCache.length}/${FILLER_PHRASES.length}`);
+}
+
+// Renderer asks for a random filler on each send. Returns an array of WAV
+// chunk buffers (usually 1 for these short phrases) or null if no cache.
+ipcMain.handle('get-filler-audio', () => {
+  if (_fillerCache.length === 0) return { audio: null };
+  const pick = _fillerCache[Math.floor(Math.random() * _fillerCache.length)];
+  return { audio: pick };
 });
 
 ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
@@ -8451,6 +8592,25 @@ app.whenReady().then(async () => {
   try { startBriefingNotifier(); } catch (err) {
     appendErrorLog(`${new Date().toISOString()} [briefing-notifier] startup failed: ${err.message}\n`);
   }
+
+  // Warm the Kokoro TTS worker so the first speak-text doesn't eat a
+  // ~700 ms-to-2 s model-load penalty on top of first-sentence synthesis.
+  // Fire-and-forget: the utility process forks, loads the ONNX model on its
+  // own thread, and emits `ready`. If the user talks to Merlin in the first
+  // second it still works (speak-text awaits the same promise), but for
+  // any realistic conversation start the model is already hot when the
+  // first sentence is flushed. Keep this AFTER the 600 ms migration tick
+  // so we don't compete with user-visible first-paint work.
+  setTimeout(() => {
+    ensureTtsReady()
+      .then(() => prewarmFillers())
+      .catch((err) => {
+        // First-launch network failure is expected and non-fatal — the next
+        // actual speak-text call will retry with the full error surface.
+        // Fillers are optional; a missing cache degrades gracefully to silence.
+        console.warn('[tts] prewarm failed (will retry on first speak):', err && err.message ? err.message : err);
+      });
+  }, 1500);
 
   // macOS: Cmd+Q should actually quit (set forceQuit so close handler allows it)
   app.on('before-quit', () => {

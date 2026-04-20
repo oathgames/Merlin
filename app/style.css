@@ -712,6 +712,14 @@ a:hover{text-decoration:underline}
 #input::placeholder{color:var(--text-dim)}
 /* Desaturated gray while voice is transcribing — flips back on stop or typing */
 #input.voice-interim{color:var(--text-dim)}
+/* Preview flash: accent-outlined input during the 400 ms window between
+   final transcription and auto-send. Gives the user a beat to read what
+   Whisper heard and press Escape if it's wrong. */
+#input.voice-preview{
+  border-color:var(--accent-border);
+  box-shadow:0 0 0 2px rgba(139,92,246,.18);
+  transition:border-color .12s, box-shadow .12s;
+}
 .mic-btn{
   flex-shrink:0;
   box-sizing:border-box;
