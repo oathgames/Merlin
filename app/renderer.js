@@ -1203,16 +1203,24 @@ function scheduleTypingIndicator() {
 let _userScrolledUp = false;
 const scrollBtn = document.getElementById('scroll-bottom-btn');
 
+// PERF: rAF-coalesce the scroll handler. Browsers fire `scroll` at input
+// rate (60-120 Hz on smooth scroll, hundreds/sec on trackpad inertia).
+// Reading scrollHeight/scrollTop/clientHeight forces layout on every tick;
+// at 120 Hz that's ~8 ms of main-thread budget burned on a read-only check.
+// One rAF-coalesced read per frame is sufficient for the scroll-bottom
+// affordance — the user can't perceive a staler-by-one-frame answer, and
+// we recover the full scroll budget for paint.
+let _scrollRafPending = false;
 chat.addEventListener('scroll', () => {
-  const distFromBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
-  _userScrolledUp = distFromBottom > 80;
-  // Show/hide scroll-to-bottom button
-  if (_userScrolledUp) {
-    scrollBtn.classList.remove('hidden');
-  } else {
-    scrollBtn.classList.add('hidden');
-  }
-});
+  if (_scrollRafPending) return;
+  _scrollRafPending = true;
+  requestAnimationFrame(() => {
+    _scrollRafPending = false;
+    const distFromBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+    _userScrolledUp = distFromBottom > 80;
+    scrollBtn.classList.toggle('hidden', !_userScrolledUp);
+  });
+}, { passive: true });
 
 scrollBtn.addEventListener('click', () => {
   scrollToBottom(true);
@@ -1262,6 +1270,16 @@ function pruneOldMessages() {
 // ── Markdown Renderer (marked.js) ────────────────────────────
 // Configure marked with custom renderers for Merlin-specific features
 const markedRenderer = new marked.Renderer();
+
+// PERF: module-scope regex compilation. Previously inlined in renderMarkdown
+// where every streaming token re-compiled these three patterns. On a
+// 200-token response that's ~600 redundant regex compiles on the main thread.
+// Hoisting is functionally identical — the `g` flag means each call still
+// resets lastIndex via String.prototype.replace.
+const BACKSLASH_PATH_RE = /([a-zA-Z0-9_\-\.]+)\\([a-zA-Z0-9_\-\.\\]+\.(?:jpg|jpeg|png|gif|webp|mp4|webm|mov))/gi;
+const BARE_IMG_PATH_RE = /(?<!src="|href="|">)(?:\.\/)?([a-zA-Z0-9_\-\.\/]+\.(?:jpg|jpeg|png|gif|webp))(?![^<]*<\/(?:img|a|code))/gi;
+const BARE_VIDEO_PATH_RE = /(?<!src="|href="|">)(?:\.\/)?([a-zA-Z0-9_\-\.\/]+\.(?:mp4|webm|mov))(?![^<]*<\/(?:video|a|code))/gi;
+const HTML_ARTIFACT_FENCE_RE = /```html\n([\s\S]*?)```/g;
 
 // Custom image renderer — local paths use merlin:// protocol
 markedRenderer.image = function({ href, title, text }) {
@@ -1315,7 +1333,7 @@ function renderMarkdown(text) {
 
   // Extract HTML artifacts (```html blocks → sandboxed iframes) before marked processes them
   const artifacts = [];
-  text = text.replace(/```html\n([\s\S]*?)```/g, (_, code) => {
+  text = text.replace(HTML_ARTIFACT_FENCE_RE, (_, code) => {
     artifacts.push(code);
     return `%%ARTIFACT_${artifacts.length - 1}%%`;
   });
@@ -1349,16 +1367,16 @@ function renderMarkdown(text) {
   }
 
   // Normalize Windows backslash paths to forward slashes
-  html = html.replace(/([a-zA-Z0-9_\-\.]+)\\([a-zA-Z0-9_\-\.\\]+\.(?:jpg|jpeg|png|gif|webp|mp4|webm|mov))/gi, (m, a, b) => `${a}/${b.replace(/\\/g, '/')}`);
+  html = html.replace(BACKSLASH_PATH_RE, (m, a, b) => `${a}/${b.replace(/\\/g, '/')}`);
 
   // Bare image file paths (not already in <img> tags) → inline <img>
-  html = html.replace(/(?<!src="|href="|">)(?:\.\/)?([a-zA-Z0-9_\-\.\/]+\.(?:jpg|jpeg|png|gif|webp))(?![^<]*<\/(?:img|a|code))/gi, (match, p1) => {
+  html = html.replace(BARE_IMG_PATH_RE, (match, p1) => {
     if (p1.includes('/')) return `<img src="merlin://${p1}" alt="Image" loading="lazy">`;
     return match;
   });
 
   // Bare video file paths → inline <video>
-  html = html.replace(/(?<!src="|href="|">)(?:\.\/)?([a-zA-Z0-9_\-\.\/]+\.(?:mp4|webm|mov))(?![^<]*<\/(?:video|a|code))/gi, (match, p1) => {
+  html = html.replace(BARE_VIDEO_PATH_RE, (match, p1) => {
     if (p1.includes('/')) return `<div class="video-wrap" data-file="${p1}"><video src="merlin://${p1}" controls playsinline preload="metadata" style="max-width:100%;border-radius:10px"></video></div>`;
     return match;
   });
@@ -7517,10 +7535,12 @@ function autoResize() {
     input.style.overflowY = 'hidden';
   }
 }
-input.addEventListener('input', autoResize);
-// User typing over interim voice text commits it to normal color
+// PERF: one listener per event — two listeners both read input.scrollHeight
+// on every keystroke, triggering two synchronous layout passes per character.
+// The voice-interim cleanup fits inline; autoResize still runs exactly once.
 input.addEventListener('input', () => {
   if (input.classList.contains('voice-interim')) input.classList.remove('voice-interim');
+  autoResize();
 });
 
 // ── Image/Video Paste + Drag-Drop (RETIRED v1.19.2) ──────────

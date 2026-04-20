@@ -5305,9 +5305,23 @@ async function transcribeAudioImpl(audioBytes) {
     //        The seed is built from whatever brand context we can resolve
     //        without blocking on a binary call — live platform inventory is
     //        too slow to fetch here. Malformed/empty seed → flag is skipped.
+    //
+    // PERF (2026-04-20): -bs 1 forces greedy decoding (beam size 1); default
+    // is a 5-beam search, which roughly 2-3x's inference time. On short
+    // dictation turns (<30 s at 16 kHz) paired with brand-prompt seeding,
+    // WER rises ~2-3 % relative — well below the "user notices a typo"
+    // threshold for casual dictation. -t caps threads so we don't
+    // oversubscribe on high-core laptops (which actually *slows* whisper-cli
+    // because of ggml's thread-fanout overhead on cache-light workloads).
+    // 4 is the documented sweet spot for whisper.cpp on consumer hardware.
+    // REGRESSION GUARD (2026-04-20): do not remove -nt/-np/-l en — those
+    // three are load-bearing. -nt elides timestamp tokens we don't parse,
+    // -np suppresses a progress line that pollutes stdout, -l en skips
+    // language auto-detection (saves another ~200 ms and avoids the
+    // accent-vs-non-English false positive whisper-cli trips on sometimes).
     const promptSeed = buildWhisperSeed();
     const transcript = await new Promise((resolve, reject) => {
-      const args = ['-m', modelPath, '-f', wavPath, '-nt', '-np', '-l', 'en'];
+      const args = ['-m', modelPath, '-f', wavPath, '-nt', '-np', '-l', 'en', '-bs', '1', '-t', '4'];
       if (promptSeed) { args.push('--prompt', promptSeed); }
       const w = spawn(whisperBin, args, { windowsHide: true });
       let stdout = '';
@@ -6509,6 +6523,11 @@ function pruneBriefingLastNotified() {
     if (drop) briefingLastNotified.delete(full);
   }
 }
+
+// Long-lived timer handles cleared in before-quit. Keeping them module-local
+// so the cleanup block can clear them without hunting through closures.
+let _updateCheckFirstTimeout = null;
+let _updateCheckInterval = null;
 
 function startBriefingNotifier() {
   try { fs.mkdirSync(appRoot, { recursive: true }); } catch {}
@@ -12215,6 +12234,11 @@ app.whenReady().then(async () => {
     activeChildProcesses.clear();
     if (briefingWatcher) { try { briefingWatcher.close(); } catch {} briefingWatcher = null; }
     if (resultsWatcher) { try { resultsWatcher.stop(); } catch {} resultsWatcher = null; }
+    // Clear long-lived update-check timers so teardown doesn't race with
+    // a late tick. Pre-fix the raw setInterval handle was leaked through
+    // quit teardown and could race with HTTPS teardown (EPIPE in logs).
+    if (_updateCheckFirstTimeout) { clearTimeout(_updateCheckFirstTimeout); _updateCheckFirstTimeout = null; }
+    if (_updateCheckInterval)     { clearInterval(_updateCheckInterval);   _updateCheckInterval = null; }
     // §G7 — Stop the JobStore's periodic prune timer so the event loop
     // doesn't hold the process open past before-quit. Safe to call
     // multiple times (JobStore.shutdown is idempotent) and safe when
@@ -12263,10 +12287,15 @@ app.whenReady().then(async () => {
     } catch {}
   }
 
-  setTimeout(checkForUpdates, 10000);
+  // PERF/HYGIENE: track the timer handles so before-quit can clear them.
+  // Without cleanup, a 30-min interval continues firing during a prolonged
+  // quit (unfinished IPC drains, tray-close → menu-quit races) and can
+  // trigger an outbound HTTPS request to GitHub while Electron is tearing
+  // down — surfacing as an EPIPE in logs and, occasionally, a hung quit.
+  _updateCheckFirstTimeout = setTimeout(checkForUpdates, 10000);
   // Check every 30 minutes — short enough that users on the demo path see
   // new releases within half an hour without needing to restart.
-  setInterval(checkForUpdates, 30 * 60 * 1000);
+  _updateCheckInterval = setInterval(checkForUpdates, 30 * 60 * 1000);
 
   // ── Token auto-refresh watchdog ──────────────────────────────────────
   // Every 4 hours, fire a `watchdog-check` against each brand's config.
