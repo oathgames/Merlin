@@ -42,9 +42,12 @@
     minAbsoluteThreshold: 0.01,
     // A single sub-threshold frame doesn't end the turn — we require N ms
     // of continuous silence AFTER the user has spoken at least once.
-    // 700 ms matches ChatGPT voice + Siri; quick enough to feel snappy,
-    // long enough to tolerate mid-sentence breath pauses.
-    silenceMs: 700,
+    // 550 ms: tuned for Jarvis-tier conversational latency. Tighter than
+    // ChatGPT voice (~700) while still tolerating mid-sentence breath
+    // pauses — the 2.5x adaptive RMS threshold keeps fan hum / keyboard
+    // clicks from prematurely ending the turn, so we can afford to cut
+    // the hang-over window.
+    silenceMs: 550,
     // How often to poll the analyser. 50 Hz = 20 ms → silence detection
     // granularity is ±20 ms, which is well below perceptible.
     pollIntervalMs: 20,

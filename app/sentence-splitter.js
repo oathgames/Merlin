@@ -29,6 +29,16 @@
 //   * No lookbehind — keeps this runnable in every browser Electron ships
 //     with, and simpler regex is easier to reason about.
 //
+// Jarvis-tier first-flush mode:
+//   The caller can pass `{ minClauseChars: N }` in opts to override the
+//   default 80-char soft threshold. The renderer uses 30 for the FIRST
+//   flush of every response (audio starts on the first comma of "Okay,
+//   looking at your dashboard,…" instead of waiting ~60 more chars for
+//   the period) and switches back to 80 for subsequent flushes so the
+//   body of the response stays prosodically smooth. Per-flush override
+//   keeps the splitter stateless — the caller tracks "have I flushed
+//   anything yet" and chooses the threshold.
+//
 // Dual-module shim: loaded as a global (window.MerlinSentenceSplitter) in the
 // renderer, and as a CommonJS module in the node-based test harness. Keep
 // both export paths intact when editing.
@@ -59,9 +69,16 @@
   //
   // Invariant: on every call, the caller passes the same consumed prefix of
   // `cleaned` that it passed last time plus any new content. The function is
-  // stateless across calls — all state lives in `fromIdx`.
-  function extractCompleteSentences(cleaned, fromIdx) {
+  // stateless across calls — all state lives in `fromIdx` (plus whatever
+  // the caller tracks to vary `opts.minClauseChars` on a first-flush call).
+  //
+  // opts.minClauseChars (optional): override the default 80-char soft
+  //   threshold. Used by the Jarvis-tier first-flush path to trim TTFB.
+  function extractCompleteSentences(cleaned, fromIdx, opts) {
     if (typeof cleaned !== 'string') return { sentences: [], nextIdx: fromIdx | 0 };
+    const clauseMin = (opts && typeof opts.minClauseChars === 'number' && opts.minClauseChars > 0)
+      ? opts.minClauseChars
+      : MIN_CLAUSE_CHARS;
     const start = Math.max(0, Math.min(fromIdx | 0, cleaned.length));
     const tail = cleaned.slice(start);
     const out = [];
@@ -76,7 +93,7 @@
       cursor = endAt;
       const trimmed = buf.trim();
       const isStrong = Boolean(m[1] || m[2]);
-      const threshold = isStrong ? MIN_SENTENCE_CHARS : MIN_CLAUSE_CHARS;
+      const threshold = isStrong ? MIN_SENTENCE_CHARS : clauseMin;
       if (trimmed.length >= threshold) {
         out.push(trimmed);
         buf = '';
@@ -88,6 +105,11 @@
     return { sentences: out, nextIdx: start + lastFlushEnd };
   }
 
+  // First-flush threshold used to trim TTFB on the opening of every
+  // response. Callers pass this via opts.minClauseChars until they've
+  // flushed at least one sentence, then revert to the default 80.
+  const FIRST_FLUSH_CLAUSE_CHARS = 30;
+
   // Flush whatever is left — called at end-of-stream. Ignores the length
   // minimum because no more text will ever arrive to pair with it.
   function drainRemaining(cleaned, fromIdx) {
@@ -97,5 +119,11 @@
     return rest || '';
   }
 
-  return { extractCompleteSentences, drainRemaining, MIN_SENTENCE_CHARS, MIN_CLAUSE_CHARS };
+  return {
+    extractCompleteSentences,
+    drainRemaining,
+    MIN_SENTENCE_CHARS,
+    MIN_CLAUSE_CHARS,
+    FIRST_FLUSH_CLAUSE_CHARS,
+  };
 }));

@@ -2124,6 +2124,20 @@ async function startSession(brandOverride) {
     'on the next line.',
   ].join('\n');
 
+  // systemPrompt uses the object form with `excludeDynamicSections: true`
+  // to unlock cross-user prompt caching. The Claude Agent SDK normally
+  // bakes per-user dynamic bits (working directory, auto-memory path, git
+  // status) into the system prompt — these vary per install, which
+  // fragments the prompt-cache prefix so every new user / new brand
+  // re-pays the full system-prompt tokenization cost on every query.
+  // Setting this flag strips those sections from the cached prefix and
+  // re-injects them as the first user message. The static preset prefix
+  // then caches across our entire user base and across every brand on a
+  // single machine — first-token latency on cache hits drops materially
+  // (hundreds of ms on large system prompts) without changing the
+  // information the model sees. Our brand/product context flows through
+  // SKILL.md + the resumeSessionId conversation state below, not the
+  // SDK's dynamic sections, so nothing brand-specific is affected.
   const queryOptions = {
     cwd: appRoot,
     permissionMode: 'acceptEdits',
@@ -2132,7 +2146,12 @@ async function startSession(brandOverride) {
     canUseTool: handleToolApproval,
     env: { ...sessionEnv, CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '360000' },
     mcpServers: mcpConfig,
-    appendSystemPrompt: VOICE_TAG_INSTRUCTION,
+    systemPrompt: {
+      type: 'preset',
+      preset: 'claude_code',
+      append: VOICE_TAG_INSTRUCTION,
+      excludeDynamicSections: true,
+    },
   };
   // Per-brand SDK session resume. When a brand has a prior sessionId, Claude
   // picks up the prior conversation state (system prompt, memory, tool
@@ -8489,12 +8508,18 @@ app.on('second-instance', () => {
 
 app.whenReady().then(async () => {
   installApplicationMenu();
-  // Prewarm Kokoro TTS in the background — spawns the utility process and
-  // loads the model + weights so the first user-triggered speak skips the
-  // ~700 ms init cost and goes straight to synthesis. Errors are swallowed;
-  // if prewarm fails the on-demand speak-text handler surfaces the real
-  // error when the user actually invokes voice.
-  setTimeout(() => { ensureTtsReady().catch(() => {}); }, 1500);
+  // Prewarm Kokoro TTS immediately — spawns the utility process and loads
+  // the model + weights so the first user-triggered speak skips the
+  // ~700 ms-to-2 s init cost and goes straight to synthesis. Fires NOW
+  // (no setTimeout) because the utility process runs on its own thread and
+  // does not contend with first-paint work on the main thread; the old
+  // 1.5 s delay was just unused warmup runway. The filler-cache prewarm
+  // still runs below in the main lifecycle block — that one chains
+  // onto ensureTtsReady(), which is idempotent, so the second call
+  // converges on this same worker without double-spawning.
+  // Errors are swallowed; if prewarm fails the on-demand speak-text handler
+  // surfaces the real error when the user actually invokes voice.
+  ensureTtsReady().catch(() => {});
   // First-launch auto-claim of a pending referral (stashed under the
   // user's download-click IP by the landing page). One-shot + gated by
   // a sentinel file — see tryAutoClaimPendingReferral for gating logic.
@@ -8634,24 +8659,22 @@ app.whenReady().then(async () => {
     appendErrorLog(`${new Date().toISOString()} [briefing-notifier] startup failed: ${err.message}\n`);
   }
 
-  // Warm the Kokoro TTS worker so the first speak-text doesn't eat a
-  // ~700 ms-to-2 s model-load penalty on top of first-sentence synthesis.
-  // Fire-and-forget: the utility process forks, loads the ONNX model on its
-  // own thread, and emits `ready`. If the user talks to Merlin in the first
-  // second it still works (speak-text awaits the same promise), but for
-  // any realistic conversation start the model is already hot when the
-  // first sentence is flushed. Keep this AFTER the 600 ms migration tick
-  // so we don't compete with user-visible first-paint work.
-  setTimeout(() => {
-    ensureTtsReady()
-      .then(() => prewarmFillers())
-      .catch((err) => {
-        // First-launch network failure is expected and non-fatal — the next
-        // actual speak-text call will retry with the full error surface.
-        // Fillers are optional; a missing cache degrades gracefully to silence.
-        console.warn('[tts] prewarm failed (will retry on first speak):', err && err.message ? err.message : err);
-      });
-  }, 1500);
+  // Chain filler-cache prewarm onto the TTS-ready promise kicked off at the
+  // top of app.whenReady(). ensureTtsReady() is idempotent — this call
+  // converges on the same worker without double-spawning the utility
+  // process. Fires immediately (no setTimeout): the TTS worker is already
+  // loading on its own thread by now, and prewarmFillers just awaits that
+  // promise before synthing a handful of ≤200-byte fillers whose output
+  // lives in the same on-disk kokoro-cache that real speech will hit —
+  // there is no main-thread first-paint contention to protect against.
+  ensureTtsReady()
+    .then(() => prewarmFillers())
+    .catch((err) => {
+      // First-launch network failure is expected and non-fatal — the next
+      // actual speak-text call will retry with the full error surface.
+      // Fillers are optional; a missing cache degrades gracefully to silence.
+      console.warn('[tts] prewarm failed (will retry on first speak):', err && err.message ? err.message : err);
+    });
 
   // macOS: Cmd+Q should actually quit (set forceQuit so close handler allows it)
   app.on('before-quit', () => {

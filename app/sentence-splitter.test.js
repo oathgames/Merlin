@@ -7,7 +7,13 @@
 // tail at end-of-stream — is covered here. Keep this file green.
 
 const assert = require('assert');
-const { extractCompleteSentences, drainRemaining, MIN_SENTENCE_CHARS, MIN_CLAUSE_CHARS } = require('./sentence-splitter');
+const {
+  extractCompleteSentences,
+  drainRemaining,
+  MIN_SENTENCE_CHARS,
+  MIN_CLAUSE_CHARS,
+  FIRST_FLUSH_CLAUSE_CHARS,
+} = require('./sentence-splitter');
 
 let passed = 0;
 let failed = 0;
@@ -284,6 +290,49 @@ test('MIN_CLAUSE_CHARS constant is exported and sensible', () => {
   assert.ok(typeof MIN_CLAUSE_CHARS === 'number');
   assert.ok(MIN_CLAUSE_CHARS > MIN_SENTENCE_CHARS);
   assert.ok(MIN_CLAUSE_CHARS <= 120);
+});
+
+// ── First-flush TTFB path (opts.minClauseChars) ────────────────
+
+test('FIRST_FLUSH_CLAUSE_CHARS is exported and below default', () => {
+  assert.ok(typeof FIRST_FLUSH_CLAUSE_CHARS === 'number');
+  assert.ok(FIRST_FLUSH_CLAUSE_CHARS > 0);
+  assert.ok(FIRST_FLUSH_CLAUSE_CHARS < MIN_CLAUSE_CHARS,
+    'first-flush threshold must be lower than the default so it actually shaves TTFB');
+});
+
+test('opts.minClauseChars lets a mid-length clause flush early', () => {
+  // 42-char opener with a comma — normally held (< 80), but flushes when the
+  // caller supplies FIRST_FLUSH_CLAUSE_CHARS (30) for the opening clause.
+  const input = 'Okay, pulling your dashboard numbers now, one moment.';
+  const { sentences, nextIdx } = extractCompleteSentences(
+    input, 0, { minClauseChars: FIRST_FLUSH_CLAUSE_CHARS },
+  );
+  assert.ok(sentences.length >= 1, 'expected at least one early flush');
+  assert.ok(sentences[0].length < MIN_CLAUSE_CHARS,
+    'early flush should include the pre-comma clause, below the default threshold');
+  assert.ok(nextIdx > 0);
+});
+
+test('default threshold holds the same clause (no early flush)', () => {
+  // Same input — with the default 80-char threshold, the comma alone should
+  // not trigger a flush. Only the terminal period flushes the whole thing.
+  const input = 'Okay, pulling your dashboard numbers now, one moment.';
+  // Terminal period + trailing space needed for strong-boundary match.
+  const { sentences } = extractCompleteSentences(input + ' ', 0);
+  assert.deepStrictEqual(sentences, [input]);
+});
+
+test('opts.minClauseChars below zero falls back to default', () => {
+  // Defensive: a bad override shouldn\'t break the splitter. 0 / negative /
+  // non-number opts silently fall back to MIN_CLAUSE_CHARS.
+  const input = 'Okay, pulling your dashboard numbers now, one moment.';
+  const { sentences } = extractCompleteSentences(input + ' ', 0, { minClauseChars: 0 });
+  assert.deepStrictEqual(sentences, [input]);
+  const { sentences: s2 } = extractCompleteSentences(input + ' ', 0, { minClauseChars: -5 });
+  assert.deepStrictEqual(s2, [input]);
+  const { sentences: s3 } = extractCompleteSentences(input + ' ', 0, { minClauseChars: 'wide' });
+  assert.deepStrictEqual(s3, [input]);
 });
 
 // ── Run ────────────────────────────────────────────────────────

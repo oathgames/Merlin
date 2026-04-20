@@ -4725,13 +4725,25 @@ input.addEventListener('keydown', (e) => {
 sendBtn.addEventListener('click', sendMessage);
 
 // ── Voice Input (streaming MediaRecorder → whisper.cpp) ──────
-// Records mic audio in the renderer (webm/opus) with a 2.5s timeslice,
-// so `ondataavailable` fires every ~2.5s with more audio. Each firing
+// Records mic audio in the renderer (webm/opus) with a 1s timeslice,
+// so `ondataavailable` fires every ~1s with more audio. Each firing
 // re-transcribes the cumulative blob via main.js (ffmpeg → whisper-cli)
 // and updates the input with the latest text in desaturated gray
 // (.voice-interim). On stop, the final transcription flips the color
 // back to normal. Escape cancels and restores whatever was in the
 // input before recording.
+//
+// Why 1 s (tightened from 2.5 s in v1.16): a typical PTT utterance is
+// 1.5–3 s. With a 2.5 s timeslice, MOST sessions end before any
+// interim fires — the user sees nothing until whisper finishes the
+// final transcription. Dropping to 1 s guarantees at least one interim
+// during any meaningful utterance so the user sees their words appear
+// as they speak (Jarvis-tier feedback loop), AND trims the FINAL
+// chunk's size at stop() — after a 1.2 s utterance, the final chunk
+// is ~200 ms of encoded audio instead of 1.2 s, measurably tightening
+// the speech-end → input.value latency. The `streamBusy` guard below
+// prevents overlapping whisper calls when interims take longer than
+// one timeslice window on slow machines.
 //
 // S-tier PTT flow (v1.16 upgrade):
 //   * One tap to start (unchanged), auto-stop on 700 ms of silence after
@@ -4870,8 +4882,10 @@ async function startRecording() {
     }
   };
 
-  // 2500ms timeslice = ondataavailable fires every ~2.5s for streaming
-  mediaRecorder.start(2500);
+  // 1000ms timeslice — see the voice-input section header comment for
+  // why this is 1 s instead of the old 2.5 s (interim coverage + smaller
+  // tail chunk at stop()).
+  mediaRecorder.start(1000);
   isRecording = true;
   micBtn.classList.add('recording');
 
@@ -5037,7 +5051,14 @@ function clearSpeakingIndicator(bubbleEl) {
 // indistinguishable from a GainNode at this short a ramp. Avoiding the
 // extra node keeps barge-in purely additive to the existing playback
 // path — no risk of regressing normal playback.
-const BARGE_RAMP_MS = 150;
+//
+// Why 80 ms (tightened from 150 ms): Jarvis-tier barge-in should feel
+// instant. 80 ms is still long enough to dodge the perceptible "click"
+// of a hard audio stop at non-zero volume (anything under ~40 ms
+// sounds abrupt on the majority of voices/content), but short enough
+// that the user's "stop talking to me" signal is honored in well under
+// one speech frame — indistinguishable from instant to the ear.
+const BARGE_RAMP_MS = 80;
 
 // ── Filler phrase playback ────────────────────────────────────
 // Masks the Claude-response TTFB. On every voice-enabled send we play a
@@ -5362,7 +5383,13 @@ function _ensureStreamingSpeak(bubbleEl) {
   // Different bubble (or stale state) — tear down and start fresh.
   stopSpeaking();
   const session = _createSpeakPlayback(bubbleEl);
-  _streamSpeakState = { session, consumed: 0, started: false, finalized: false };
+  // `hasFlushedOnce` arms the first-flush TTFB path below: until we've
+  // shipped our first sentence to Kokoro we use a 30-char soft-boundary
+  // threshold so the opening clause ("Okay, pulling your dashboard,…")
+  // starts audio ~half a sentence sooner. After the first flush we revert
+  // to the 80-char default so the rest of the response doesn't fragment
+  // into choppy per-clause synth calls.
+  _streamSpeakState = { session, consumed: 0, started: false, finalized: false, hasFlushedOnce: false };
   return _streamSpeakState;
 }
 
@@ -5391,9 +5418,21 @@ function _flushStreamingSpeakSentences(bubbleEl, cleaned) {
   if (!splitter) return;
   const state = _ensureStreamingSpeak(bubbleEl);
   if (!state || state.finalized) return;
-  const { sentences, nextIdx } = splitter.extractCompleteSentences(cleaned, state.consumed);
+  // Jarvis-tier first-flush: the opening clause ships at a 30-char
+  // soft boundary for minimum TTFB, then we revert to the default
+  // 80-char threshold for the rest of the response so the body
+  // doesn't fragment into choppy per-clause synth calls.
+  const minClauseChars = state.hasFlushedOnce
+    ? splitter.MIN_CLAUSE_CHARS
+    : splitter.FIRST_FLUSH_CLAUSE_CHARS;
+  const { sentences, nextIdx } = splitter.extractCompleteSentences(
+    cleaned,
+    state.consumed,
+    { minClauseChars },
+  );
   if (sentences.length === 0) return;
   state.consumed = nextIdx;
+  state.hasFlushedOnce = true;
   // Lazily open the worker session on the first complete sentence. Avoids
   // reserving Kokoro for a speak=true response that turns out to be empty
   // or shorter than MIN_SENTENCE_CHARS.

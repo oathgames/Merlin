@@ -112,13 +112,22 @@ test('absolute floor prevents false-trigger in perfectly silent room', () => {
 
 // ── Silence detection ────────────────────────────────────────
 
+// Frame counts are derived from DEFAULTS so these tests stay valid across
+// silenceMs tuning. Each ticks the clock by pollIntervalMs (20ms by default).
+const framesToJustExceedSilence = Math.ceil(
+  (DEFAULTS.silenceMs + DEFAULTS.pollIntervalMs) / DEFAULTS.pollIntervalMs,
+);
+const framesClearlyBelowSilence = Math.floor(
+  (DEFAULTS.silenceMs * 0.6) / DEFAULTS.pollIntervalMs,
+);
+
 test('silence-end fires after silenceMs of continuous quiet after speech', () => {
-  // Warmup quiet, one speech frame, then 700ms+ of silence.
+  // Warmup quiet, one speech frame, then just enough silence to cross the
+  // threshold on exactly one frame (avoids multi-fire assertion noise).
   const frames = [
     ...Array(DEFAULTS.calibrationFrames).fill([0.005, 20]),
     [0.3, 20],
-    // 36 silent frames at 20ms = 720 ms — just above the 700 ms threshold.
-    ...Array(36).fill([0.005, 20]),
+    ...Array(framesToJustExceedSilence).fill([0.005, 20]),
   ];
   const { events } = run(frames);
   assert.deepStrictEqual(events, ['speech-start', 'silence-end']);
@@ -128,8 +137,7 @@ test('silence-end does NOT fire before silenceMs has elapsed', () => {
   const frames = [
     ...Array(DEFAULTS.calibrationFrames).fill([0.005, 20]),
     [0.3, 20],
-    // 20 silent frames at 20ms = 400ms — below the 700ms threshold.
-    ...Array(20).fill([0.005, 20]),
+    ...Array(framesClearlyBelowSilence).fill([0.005, 20]),
   ];
   const { events } = run(frames);
   assert.deepStrictEqual(events, ['speech-start']);
@@ -146,13 +154,14 @@ test('silence-end does NOT fire if user never spoke', () => {
 });
 
 test('silence timer resets when speech resumes mid-pause', () => {
-  // Speech → 400ms silence (no fire) → speech → 720ms silence (fires once).
+  // Speech → short pause (no fire) → speech resumes → pause past threshold
+  // (fires once). Frame counts track DEFAULTS so the test follows tuning.
   const frames = [
     ...Array(DEFAULTS.calibrationFrames).fill([0.005, 20]),
     [0.3, 20],
-    ...Array(20).fill([0.005, 20]),  // 400ms pause — no fire
-    [0.3, 20],                        // speech resumes (no new speech-start — already spoken)
-    ...Array(36).fill([0.005, 20]),  // 720ms pause — fires once
+    ...Array(framesClearlyBelowSilence).fill([0.005, 20]),
+    [0.3, 20],
+    ...Array(framesToJustExceedSilence).fill([0.005, 20]),
   ];
   const { events } = run(frames);
   assert.deepStrictEqual(events, ['speech-start', 'silence-end']);
