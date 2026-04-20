@@ -7,6 +7,7 @@ const relayClient = require('./relay-client');
 const { generateQRDataUri } = require('./qr');
 const threads = require('./threads');
 const { createInitBarrier } = require('./async-barrier');
+const { verifyChecksumsSignature } = require('./update-verifier');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -7448,6 +7449,59 @@ ipcMain.handle('restart-app', () => {
   app.exit(0);
 });
 
+// REGRESSION GUARD (2026-04-20): fetchAndVerifyChecksums is the single
+// trust gate for every auto-update and in-app installer flow. It fetches
+// checksums.txt AND its detached Ed25519 signature asset
+// (`checksums.txt.sig`), verifies the signature against the pinned
+// pubkey in update-verifier.js, and only THEN returns the parsed map.
+//
+// A caller that builds its own checksum map without going through this
+// helper bypasses signature enforcement. If you're tempted to inline a
+// `httpsGet('checksums.txt')` somewhere else in the update flow, stop
+// and use this helper instead — otherwise a GitHub release compromise
+// silently ships malware to every paying user.
+async function fetchAndVerifyChecksums(assets) {
+  const checksumAsset = (assets || []).find(a => a && a.name === 'checksums.txt');
+  if (!checksumAsset) {
+    throw new Error('checksums.txt missing from release — update aborted for security.');
+  }
+  const sigAsset = (assets || []).find(a => a && a.name === 'checksums.txt.sig');
+
+  const checksumsText = (await httpsGet(checksumAsset.browser_download_url)).toString();
+
+  let sigText = '';
+  if (sigAsset) {
+    sigText = (await httpsGet(sigAsset.browser_download_url)).toString();
+  }
+
+  const result = verifyChecksumsSignature(checksumsText, sigText);
+  if (!result.ok) {
+    // Any failure with enforcement ON is a hard-fail. An attacker who
+    // swapped checksums.txt cannot produce a valid signature for it
+    // without the offline private key; a missing signature when the
+    // pubkey is pinned means the release is incomplete or tampered.
+    throw new Error(`Update integrity check failed: ${result.reason}. Update aborted for security.`);
+  }
+  if (!result.enforced) {
+    // Bootstrap state — pubkey not yet configured in source. Still
+    // better than today (SHA256 continues to enforce), so we log but
+    // don't block. Once the production key is baked in, this branch
+    // becomes unreachable.
+    console.warn('[update-verifier] Signature enforcement not yet active:', result.reason);
+  } else {
+    console.log('[update-verifier] checksums.txt signature verified against pinned pubkey.');
+  }
+
+  const checksumMap = new Map();
+  for (const line of checksumsText.split(/\r?\n/)) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length >= 2 && /^[0-9a-f]{64}$/i.test(parts[0])) {
+      checksumMap.set(parts.slice(1).join(' ').replace(/^\*/, ''), parts[0].toLowerCase());
+    }
+  }
+  return { checksumsText, checksumMap };
+}
+
 // Full auto-install: download the new installer from GitHub releases, spawn
 // it detached, then quit. The installer's customInit kills any leftover
 // Merlin processes, installs over the old build, and customInstall launches
@@ -7552,13 +7606,9 @@ async function installUpdateFromLatestRelease() {
     }
 
     const asset = data.assets.find(x => x.name === assetName);
-    const checksumAsset = data.assets.find(x => x.name === 'checksums.txt');
-    if (!checksumAsset) throw new Error('checksums.txt missing from release');
-
-    const checksumFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
-    const expectedInstallerHash = checksumFile.split(/\r?\n/)
-      .map(line => line.trim().split(/\s+/))
-      .find(parts => parts.length >= 2 && parts.slice(1).join(' ').replace(/^\*/, '') === assetName)?.[0]?.toLowerCase();
+    // Signature-verified checksums. Throws on any integrity failure.
+    const { checksumMap } = await fetchAndVerifyChecksums(data.assets);
+    const expectedInstallerHash = checksumMap.get(assetName);
     if (!expectedInstallerHash) {
       throw new Error(`Installer ${assetName} is not listed in checksums.txt`);
     }
@@ -8099,21 +8149,12 @@ async function downloadAndApplyUpdate() {
     // DO NOT reintroduce an unverified httpsGet+writeFileSync pair
     // inside the updatable loop. DO NOT relax the checksum lookup to
     // a "trust if missing" default.
-    const checksumAsset = (data.assets || []).find(a => a.name === 'checksums.txt');
-    const checksumMap = new Map();
-    if (checksumAsset) {
-      try {
-        const checksumFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
-        for (const line of checksumFile.split(/\r?\n/)) {
-          const parts = line.trim().split(/\s+/);
-          if (parts.length >= 2 && /^[0-9a-f]{64}$/i.test(parts[0])) {
-            checksumMap.set(parts.slice(1).join(' ').replace(/^\*/, ''), parts[0].toLowerCase());
-          }
-        }
-      } catch (e) {
-        throw new Error(`Cannot fetch checksums.txt: ${e.message}. Update aborted for security.`);
-      }
-    }
+    // Signature-verified checksums. Throws on any integrity failure,
+    // including a missing checksums.txt (which was previously tolerated
+    // as an empty map — a GitHub release without a checksums file is
+    // either malformed or tampered with, and either way we should not
+    // touch disk on the user's machine).
+    const { checksumMap } = await fetchAndVerifyChecksums(data.assets);
     const sha256 = (buf) => require('crypto').createHash('sha256').update(buf).digest('hex');
 
     // Phase 1 (download-only): fetch every updatable file into memory,
