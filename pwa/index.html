@@ -33,6 +33,22 @@
   <div id="status-right">
     <span id="status-dot"></span>
     <span id="status-text">Connecting</span>
+    <button id="settings-btn" aria-label="Settings" title="Devices &amp; sign-out">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3h0a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9v0a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+    </button>
+  </div>
+</div>
+
+<div id="settings-drawer" class="hidden" role="dialog" aria-labelledby="settings-title" aria-modal="true">
+  <div id="settings-panel">
+    <div id="settings-head">
+      <div id="settings-title">Devices</div>
+      <button id="settings-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="settings-sub">Sign out any phone that connected with Merlin. This device is listed first.</div>
+    <div id="devices-list" aria-live="polite"></div>
+    <button id="btn-signout" class="btn-action btn-deny-style">Sign out this device</button>
+    <div id="settings-error" class="hidden"></div>
   </div>
 </div>
 
