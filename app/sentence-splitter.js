@@ -12,13 +12,13 @@
 //     chars flushes at a strong boundary.
 //   * SOFT / CLAUSE boundary = comma/semicolon/colon followed by whitespace,
 //     or an em-dash (optionally followed by whitespace). A buffered fragment
-//     >= 40 chars flushes at a soft boundary. This shaves first-audio TTFB
-//     from "wait for the first period" (~100 char prose sentence) to "wait
-//     for the first clause" (~40 chars) without over-fragmenting Kokoro
-//     into sub-second clips. Kokoro's prosody handles clause-terminal
-//     punctuation naturally — a comma produces a continuation cadence,
-//     not a falling-stop cadence, so the resulting audio still sounds like
-//     one sentence even though it's synthesised as two chunks.
+//     >= 80 chars flushes at a soft boundary. The threshold is a deliberate
+//     trade-off: a lower value (was 40) shaves TTFB by another ~200 ms but
+//     fragments every mid-length sentence into 2-3 Kokoro calls, and each
+//     call introduces an audible gap in the handoff. 80 chars keeps most
+//     normal prose sentences whole (one Kokoro call → smooth prosody)
+//     while still early-flushing any genuinely long multi-clause opener
+//     so audio starts before Claude's period arrives.
 //   * We don't use end-of-string as a boundary because Claude's next token
 //     may extend the current clause.
 //   * A fragment shorter than the relevant threshold is coalesced with the
@@ -50,7 +50,7 @@
   // the start of the next fragment rather than re-swallowing leading space.
   const BOUNDARY_RE = /([.!?])\s+|(\n\n+)|([,;:])\s+|([\u2014\u2013])\s*/g;
   const MIN_SENTENCE_CHARS = 12;
-  const MIN_CLAUSE_CHARS = 40;
+  const MIN_CLAUSE_CHARS = 80;
 
   // Extract every complete sentence (or long-enough clause) that has appeared
   // in `cleaned` since `fromIdx`. Returns:

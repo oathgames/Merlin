@@ -4740,9 +4740,10 @@ sendBtn.addEventListener('click', sendMessage);
 //     calibrates the room baseline for ~300 ms, then fires
 //     onSilenceDetected → stopRecording. If Web Audio isn't available,
 //     recording falls back to fully manual (tap-again-to-stop).
-//   * Final transcript flashes in the input for ~400 ms (.voice-preview)
-//     before auto-send, giving the user a chance to Escape if Whisper
-//     misheard something critical.
+//   * Final transcript lands in the input box and stays there. The user
+//     reviews it and presses Enter / the send button when ready. No
+//     auto-send — a misheard word shouldn't ship a message before the
+//     user has a chance to fix it.
 const micBtn = document.getElementById('mic-btn');
 let mediaRecorder = null;
 let audioStream = null;
@@ -4752,12 +4753,6 @@ let isCanceled = false;
 let streamBusy = false;     // prevents overlapping whisper-cli calls
 let voiceBaseText = '';     // text that was in input before recording started
 let vadHandle = null;       // active voice-activity-detector handle (null when idle)
-let previewTimer = null;    // pending transcription preview auto-send timer
-// VOICE_PREVIEW_MS — how long the final transcript sits in the input before
-// auto-send. 400 ms is long enough for a user to read a short sentence
-// (~7 words) and hit Escape to cancel, short enough that it doesn't feel
-// like the app stalled. Reduce if user feedback shows it's sluggish.
-const VOICE_PREVIEW_MS = 400;
 
 async function transcribeCurrent(isInterim) {
   if (recordingChunks.length === 0) return;
@@ -4865,14 +4860,10 @@ async function startRecording() {
     try {
       await transcribeCurrent(false);  // final → strips gray class
       input.focus();
-      // S-tier flow: if the final transcript has content, flash it for a
-      // short preview window then auto-send. Escape or any user keystroke
-      // during the window cancels the send and leaves the text editable.
-      // Skip preview if the input is empty (nothing to send — Whisper
-      // likely returned [BLANK_AUDIO]).
-      if (input.value && input.value.trim()) {
-        schedulePreviewAutoSend();
-      }
+      // Transcript now sits in the input box. User reviews it and hits
+      // Enter (or the send button) to send. Whisper mis-hears often
+      // enough — "push my Meta ads" / "crush my Meta ads" — that a
+      // review beat is worth more than a one-tap send.
     } finally {
       micBtn.classList.remove('transcribing');
       micBtn.disabled = false;
@@ -4935,7 +4926,6 @@ function cancelRecording() {
 }
 
 micBtn.addEventListener('click', () => {
-  cancelPreviewAutoSend();
   // Barge-in: if Merlin is currently speaking, ramp Kokoro's volume to
   // zero over 150 ms before tearing down the playback session. Abrupt
   // stops click audibly; the ramp produces a clean "Merlin stops mid-
@@ -4948,41 +4938,9 @@ micBtn.addEventListener('click', () => {
 });
 
 // Escape cancels recording entirely (restores pre-recording text).
-// Escape during the preview window cancels auto-send (keeps text editable).
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && isRecording) cancelRecording();
-  if (e.key === 'Escape' && previewTimer != null) cancelPreviewAutoSend();
 });
-
-// Any non-Escape keystroke during the preview window also cancels auto-send
-// — the user is starting to edit, so we should not yank the text out from
-// under them. Modifiers (Ctrl/Cmd/Alt/Shift) alone don't count since the
-// user might be about to press Ctrl+Enter to send.
-input.addEventListener('keydown', (e) => {
-  if (previewTimer == null) return;
-  if (e.key === 'Escape') return;       // handled above
-  if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
-  cancelPreviewAutoSend();
-});
-
-function schedulePreviewAutoSend() {
-  cancelPreviewAutoSend();
-  input.classList.add('voice-preview');
-  previewTimer = setTimeout(() => {
-    previewTimer = null;
-    input.classList.remove('voice-preview');
-    // Send only if there's still text (user may have edited before timer).
-    if (input.value && input.value.trim()) sendMessage();
-  }, VOICE_PREVIEW_MS);
-}
-
-function cancelPreviewAutoSend() {
-  if (previewTimer != null) {
-    clearTimeout(previewTimer);
-    previewTimer = null;
-  }
-  input.classList.remove('voice-preview');
-}
 
 // Ctrl/Cmd+D toggles the microphone (mirrors mic-btn click).
 // Ctrl/Cmd+S narrates the most recent assistant bubble (mirrors replay-btn click).
@@ -5356,12 +5314,18 @@ function _createSpeakPlayback(bubbleEl) {
 async function speakMessage(text, bubbleEl) {
   if (!text || !text.trim()) return;
   if (!merlin.speakText) return;
+  // Strip markdown/emoji/URLs so Kokoro speaks the words, not the syntax.
+  // `cleaned` stays the visible text; `spoken` is what goes to the model.
+  const spoken = window.MerlinSpeechCleanup
+    ? window.MerlinSpeechCleanup.cleanTextForSpeech(text)
+    : text;
+  if (!spoken || !spoken.trim()) return;
   stopSpeaking();  // last-writer-wins
   const session = _createSpeakPlayback(bubbleEl);
 
   let result;
   try {
-    result = await merlin.speakText(text, undefined, session.reqId);
+    result = await merlin.speakText(spoken, undefined, session.reqId);
   } catch (err) {
     session.abort(err && err.message ? err.message : err);
     return;
@@ -5434,10 +5398,16 @@ function _flushStreamingSpeakSentences(bubbleEl, cleaned) {
   // reserving Kokoro for a speak=true response that turns out to be empty
   // or shorter than MIN_SENTENCE_CHARS.
   if (!state.started) _startStreamingSpeakWorker(state);
+  const cleaner = window.MerlinSpeechCleanup && window.MerlinSpeechCleanup.cleanTextForSpeech;
   for (const sentence of sentences) {
+    // Strip markdown/emoji/URLs per-sentence before handing to Kokoro.
+    // An all-markdown sentence (`---`, a code-fence line) cleans to empty
+    // — skip it rather than send a blank append.
+    const spoken = cleaner ? cleaner(sentence) : sentence;
+    if (!spoken || !spoken.trim()) continue;
     // Fire-and-forget. A failed append just drops that sentence — earlier
     // sentences still play, and the worker's final will clean up regardless.
-    try { merlin.speakTextStreamAppend(state.session.reqId, sentence).catch(() => {}); } catch {}
+    try { merlin.speakTextStreamAppend(state.session.reqId, spoken).catch(() => {}); } catch {}
   }
 }
 
@@ -5460,7 +5430,11 @@ function _finishStreamingSpeak(bubbleEl, cleaned) {
   const splitter = window.MerlinSentenceSplitter;
   const tail = splitter ? splitter.drainRemaining(cleaned, state.consumed) : '';
   if (tail) {
-    try { merlin.speakTextStreamAppend(state.session.reqId, tail).catch(() => {}); } catch {}
+    const cleaner = window.MerlinSpeechCleanup && window.MerlinSpeechCleanup.cleanTextForSpeech;
+    const spokenTail = cleaner ? cleaner(tail) : tail;
+    if (spokenTail && spokenTail.trim()) {
+      try { merlin.speakTextStreamAppend(state.session.reqId, spokenTail).catch(() => {}); } catch {}
+    }
   }
   try { merlin.speakTextStreamEnd(state.session.reqId).catch(() => {}); } catch {}
   return true;

@@ -47,6 +47,7 @@
     "app/qr.js",
     "app/relay-client.js",
     "app/sentence-splitter.js",
+    "app/speech-cleanup.js",
     "app/spell-outcomes.js",
     "app/spellbook.js",
     "app/threads.js",
