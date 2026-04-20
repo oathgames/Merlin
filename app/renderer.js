@@ -157,14 +157,68 @@ let sessionTotalTokens = 0;
 // Pass `body` for plain text (escaped) or `bodyHTML` for trusted HTML.
 // Never pass user input through bodyHTML — it bypasses escaping.
 // Modal queue prevents stacking — nested calls are deferred until the current modal closes.
+//
+// REGRESSION GUARD (2026-04-20, Transcription-failed-modal endless-loop
+// incident): if any caller triggers the SAME modal repeatedly in rapid
+// succession (e.g. a hardware/driver issue where every voice recording comes
+// back transcribe:corrupt, or a streaming SDK error that re-fires on every
+// retry), the queue used to fill with N identical entries and dismissing the
+// active modal just pulled the next duplicate from the queue 100 ms later —
+// to the user it felt like the modal was haunted and OK/Cancel did nothing.
+// Two defenses below:
+//   1. Duplicate-suppression at enqueue time: if a modal with the same
+//      (title, body/bodyHTML) signature is already active OR sitting on the
+//      queue, skip adding another copy. Prompt-style modals (inputPlaceholder
+//      set) are exempt — those are interactive forms, not error alerts, and
+//      should never be coalesced.
+//   2. Cooldown window: if the same signature was shown + dismissed within
+//      the last 2 s, skip re-showing. This catches the "dismiss → immediate
+//      new identical failure → another modal" racing against the user's
+//      click. Two seconds is slow enough that a genuine second user action
+//      (dismiss, wait, retry, fail again) still surfaces; fast enough that
+//      a tight failure loop only lands one modal.
+// If you add a new always-informational modal (no onConfirm validation, no
+// input), the dedupe will just work. If you're building a retry loop where
+// each failure is genuinely new information, vary the body text so the
+// signature differs.
 let _modalQueue = [];
 let _modalActive = false;
+let _modalActiveSig = null;         // signature of currently-visible modal (null when no modal)
+let _modalLastDismissedSig = null;  // signature of the modal last closed via cleanup
+let _modalLastDismissedAt = 0;      // timestamp (ms) of that dismissal
+const _MODAL_DEDUPE_COOLDOWN_MS = 2000;
+
+// Build a dedupe key from the same fields the user sees. bodyNode isn't
+// cheaply hashable, so fall back to the raw object identity — which means
+// two bodyNode calls coalesce only if the caller happens to reuse the node
+// (safe behavior). Prompt modals include inputPlaceholder so two OTP prompts
+// with different placeholders stay distinct even if title/body collide.
+function _modalSignature({ title, body, bodyHTML, bodyNode, inputPlaceholder }) {
+  if (inputPlaceholder !== undefined) return null; // input modals are always distinct
+  return JSON.stringify([
+    title || '',
+    body || '',
+    bodyHTML || '',
+    bodyNode ? '__node__' : '',
+  ]);
+}
+
 function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel }) {
+  const sig = _modalSignature({ title, body, bodyHTML, bodyNode, inputPlaceholder });
+  if (sig !== null) {
+    if (_modalActive && _modalActiveSig === sig) return;
+    if (_modalQueue.some((entry) => entry._sig === sig)) return;
+    if (
+      _modalLastDismissedSig === sig
+      && (Date.now() - _modalLastDismissedAt) < _MODAL_DEDUPE_COOLDOWN_MS
+    ) return;
+  }
   if (_modalActive) {
-    _modalQueue.push({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel });
+    _modalQueue.push({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel, _sig: sig });
     return;
   }
   _modalActive = true;
+  _modalActiveSig = sig;
   const modal = document.getElementById('merlin-modal');
   const titleEl = document.getElementById('merlin-modal-title');
   const bodyEl = document.getElementById('merlin-modal-body');
@@ -206,7 +260,14 @@ function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmL
     closeBtn.onclick = null;
     inputEl.onkeydown = null;
     document.removeEventListener('keydown', escHandler);
+    // Record what we just dismissed so the dedupe cooldown (see REGRESSION
+    // GUARD above) can suppress an identical modal that fires right after.
+    if (_modalActiveSig !== null) {
+      _modalLastDismissedSig = _modalActiveSig;
+      _modalLastDismissedAt = Date.now();
+    }
     _modalActive = false;
+    _modalActiveSig = null;
     if (_modalQueue.length > 0) setTimeout(() => showModal(_modalQueue.shift()), 100);
   }
 
@@ -1115,15 +1176,20 @@ function humanizeUpdateError(raw) {
 // in a modal right after the user tried to speak.
 function humanizeTranscriptionError(code, detail) {
   const c = typeof code === 'string' ? code : '';
-  if (c === 'transcribe:empty') return 'I didn\'t catch any audio — hold the mic button a little longer and try again.';
-  if (c === 'transcribe:corrupt') return 'The recording got cut short. Try again — hold the mic until you\'re done speaking before releasing.';
+  // Copy matches Merlin's actual UX: tap the mic once to start, VAD auto-stops
+  // on silence (or user taps again). There is NO hold-to-talk mode, so the
+  // previous "hold the mic" language was actively misleading — users who
+  // followed the instruction by holding the button had no effect. Keep the
+  // guidance focused on "try speaking again" + the auto-stop behavior.
+  if (c === 'transcribe:empty') return 'I didn\'t catch any audio. Tap the mic and try again — speak a full sentence, Merlin auto-stops when you pause.';
+  if (c === 'transcribe:corrupt') return 'That recording didn\'t process cleanly. Tap the mic and try again — Merlin auto-stops when you pause.';
   if (c === 'transcribe:too-large') return 'That recording is too long. Try a shorter clip.';
   if (c === 'transcribe:missing-tools') return detail || 'Voice input isn\'t installed. Reinstall Merlin to restore it.';
   if (c === 'transcribe:ffmpeg' || c === 'transcribe:whisper') return 'Something went wrong transcribing that. Try again — if it keeps failing, restart Merlin.';
   // Legacy / unclassified — strings from older main.js builds still land here.
   const s = String(detail || code || '').trim();
   if (!s) return 'Transcription failed. Try again.';
-  if (/ebml|invalid data|header parsing/i.test(s)) return 'The recording got cut short. Try again — hold the mic until you\'re done speaking before releasing.';
+  if (/ebml|invalid data|header parsing/i.test(s)) return 'That recording didn\'t process cleanly. Tap the mic and try again — Merlin auto-stops when you pause.';
   if (/ffmpeg exit|whisper exit/i.test(s)) return 'Something went wrong transcribing that. Try again — if it keeps failing, restart Merlin.';
   return 'Transcription failed. Try again.';
 }

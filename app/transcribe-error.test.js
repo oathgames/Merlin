@@ -28,14 +28,19 @@ const humanize = ctx.humanizeTranscriptionError;
 
 test('empty code → coachable, no jargon', () => {
   const out = humanize('transcribe:empty', 'Recording too short (418 bytes)');
-  assert.match(out, /hold the mic/i);
+  assert.match(out, /tap the mic|try again/i);
   assert.doesNotMatch(out, /ffmpeg|ebml|whisper|exit \d/i);
+  // Regression: the old copy said "hold the mic" — which doesn't match
+  // Merlin's tap-to-record UX and left users holding a dead button.
+  assert.doesNotMatch(out, /hold the mic/i);
 });
 
-test('corrupt code → explains the cutoff', () => {
+test('corrupt code → coaches the retry without push-to-talk language', () => {
   const out = humanize('transcribe:corrupt', 'ffmpeg exit 3199971767: [in#0 @ ...] EBML header parsing failed');
-  assert.match(out, /cut short|hold the mic/i);
+  assert.match(out, /tap the mic|try again/i);
   assert.doesNotMatch(out, /ffmpeg|ebml|exit 3199971767/i);
+  // Regression: same "hold the mic" mismatch — Merlin auto-stops on silence.
+  assert.doesNotMatch(out, /hold the mic/i);
 });
 
 test('too-large code → suggests shorter clip', () => {
@@ -64,7 +69,8 @@ test('legacy ffmpeg exit string (no code) still gets humanized', () => {
 
 test('legacy EBML-only string humanizes to corrupt copy', () => {
   const out = humanize('', 'EBML header parsing failed');
-  assert.match(out, /cut short|hold the mic/i);
+  assert.match(out, /tap the mic|try again|didn't process/i);
+  assert.doesNotMatch(out, /hold the mic/i);
 });
 
 test('empty input → safe generic fallback', () => {
