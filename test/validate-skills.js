@@ -236,11 +236,30 @@ function validateByteBudget(skill, body, fm, errors, warnings) {
 function validateActionCoverage(skill, body, mainGoActions, warnings) {
   if (!mainGoActions) return; // source not present
   const refs = collectActionReferences(body);
+  // The MCP wrappers in app/mcp-tools.js frequently rewrite `{action: "X"}`
+  // into a prefixed Go handler name before calling the binary — e.g.
+  //   meta_ads({action:"kill"})         → `meta-kill`         (no "ads" stem)
+  //   decisions({action:"queue"})       → `decision-queue`    (singular)
+  //   competitor_spy({action:"ads-by-brand"}) → `foreplay-ads-by-brand`
+  // The tool-name-based candidates in collectActionReferences therefore miss
+  // these on purpose (we do not want to hardcode a per-tool prefix table in
+  // this validator — it would go stale the moment a new tool ships). Fall
+  // back to a suffix match: any Go handler whose name ends with `-<raw>` is
+  // treated as coverage for the reference. The signal is weaker than an
+  // exact match but strictly stronger than the previous false-positive
+  // warning — a skill typo that coincidentally shares a suffix with a real
+  // handler is both rare and cheap to spot by eye during review.
   for (const ref of refs) {
-    const hit = ref.candidates.some((c) => mainGoActions.has(c));
+    let hit = ref.candidates.some((c) => mainGoActions.has(c));
+    if (!hit) {
+      const suffix = `-${ref.raw}`;
+      for (const action of mainGoActions) {
+        if (action.endsWith(suffix)) { hit = true; break; }
+      }
+    }
     if (!hit) {
       warnings.push(
-        `${skill.name}: references action "${ref.raw}" which is NOT in autocmo-core/main.go (tried: ${ref.candidates.join(', ')}) — rename or stale?`
+        `${skill.name}: references action "${ref.raw}" which is NOT in autocmo-core/main.go (tried: ${ref.candidates.join(', ')}, or any handler ending with "-${ref.raw}") — rename or stale?`
       );
     }
   }
@@ -399,6 +418,7 @@ module.exports = {
   listSkills,
   readFrontmatter,
   collectActionReferences,
+  validateActionCoverage,
   cosine,
   tokenize,
   vectorize,

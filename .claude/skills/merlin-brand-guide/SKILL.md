@@ -218,4 +218,4 @@ Once `brand_guide({ action: "write" })` succeeds, tell the user the guide is rea
 
 ## If `brand_guide({ action: "write" })` rejects your output
 
-Read the error carefully — it names the exact field and the exact rule violated. Fix only that field. Do not rewrite sections that weren't flagged. Re-run self-critique. Re-submit.
+Read the error carefully — it names the exact field and the exact rule violated. Fix only that field. Re-run self-critique. Re-submit.
