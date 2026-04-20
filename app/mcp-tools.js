@@ -989,8 +989,21 @@ function buildTools(tool, z, ctx) {
         }
         return { summary: `Scraped ${url}`, signal };
       } catch (e) {
+        // REGRESSION GUARD (2026-04-20): every scrape failure must map to
+        // a structured envelope so the onboarding skill can tell the user
+        // "scrape took too long, retry or try a simpler URL" instead of
+        // leaving the UI frozen. Timeout is the single hang mode that
+        // paying users have hit — surface it with TIMEOUT so Claude's
+        // next_action is retry_or_split rather than a dead-end error.
+        const raw = (e && e.message) || String(e);
+        const isTimeout = (e && e.code === 'TIMEOUT') || /timed? ?out|ScrapeTimeoutError/i.test(raw);
+        if (isTimeout) {
+          return envelope.fail(errors.makeError('TIMEOUT', {
+            message: `Brand scrape took too long for ${url}. The site may be slow or blocking automated requests. Retry, or try the apex domain (e.g. https://example.com) instead of a subpath.`,
+          }));
+        }
         return envelope.fail(errors.makeError('INTERNAL_ERROR', {
-          message: `Scrape failed: ${redactOutput(e && e.message || String(e), '')}`,
+          message: `Scrape failed: ${redactOutput(raw, '')}`,
         }));
       }
     },

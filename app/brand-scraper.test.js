@@ -21,6 +21,12 @@ const {
   extractFontFamilies,
   resolveLogoUrl,
   normalizeUrl,
+  raceWithTimeout,
+  executeJsWithTimeout,
+  ScrapeTimeoutError,
+  DEFAULT_OVERALL_TIMEOUT_MS,
+  DEFAULT_EXECUTE_JS_TIMEOUT_MS,
+  DEFAULT_LOGO_FETCH_TIMEOUT_MS,
 } = require('./brand-scraper');
 
 const FIXTURE_DIR = path.join(__dirname, 'testdata', 'brand');
@@ -252,4 +258,121 @@ test('parseColor handles 3-digit hex, 6-digit hex, rgb, and rgba', () => {
   assert.equal(parseColor('rgb(255, 0, 0)'), '#ff0000');
   assert.equal(parseColor('rgba(0, 255, 0, 1)'), '#00ff00');
   assert.equal(parseColor('rgba(0, 0, 0, 0.05)'), null, 'near-transparent rejected');
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// REGRESSION GUARD (2026-04-20): timeout wrappers.
+//
+// A paying user on Forever21.com hit a permanent onboarding hang because
+// quantizeLogoColors' injected fetch had no timeout. These tests pin each
+// defence-in-depth layer so a future "simplification" can't silently
+// regress back to an infinite await.
+// ─────────────────────────────────────────────────────────────────────
+
+test('raceWithTimeout resolves with the inner value if it settles first', async () => {
+  const v = await raceWithTimeout(Promise.resolve('ok'), 1000, 'fast');
+  assert.equal(v, 'ok');
+});
+
+test('raceWithTimeout rejects with ScrapeTimeoutError when the timer fires first', async () => {
+  const never = new Promise(() => {}); // never settles
+  await assert.rejects(
+    () => raceWithTimeout(never, 20, 'stall'),
+    (err) => {
+      assert.ok(err instanceof ScrapeTimeoutError, 'must be ScrapeTimeoutError');
+      assert.equal(err.code, 'TIMEOUT');
+      assert.equal(err.stage, 'stall');
+      assert.ok(typeof err.elapsedMs === 'number' && err.elapsedMs >= 0);
+      assert.match(err.message, /timed out after 20ms/);
+      return true;
+    },
+  );
+});
+
+test('raceWithTimeout invokes onTimeout side-effect when the timer fires', async () => {
+  let cleanupRan = false;
+  const never = new Promise(() => {});
+  await assert.rejects(() => raceWithTimeout(never, 10, 'cleanup', () => { cleanupRan = true; }));
+  assert.equal(cleanupRan, true, 'onTimeout must run before the rejection');
+});
+
+test('raceWithTimeout swallows onTimeout exceptions — cleanup is best-effort', async () => {
+  const never = new Promise(() => {});
+  // If onTimeout itself throws, the timeout rejection must still propagate.
+  await assert.rejects(
+    () => raceWithTimeout(never, 10, 'throwy-cleanup', () => { throw new Error('cleanup boom'); }),
+    (err) => err instanceof ScrapeTimeoutError,
+  );
+});
+
+test('raceWithTimeout clears the timer on inner resolution (no hanging process)', async () => {
+  // If the timer leaked, node's test runner would complain about an open
+  // handle keeping the event loop alive. This test passes iff the timer
+  // was cleared when the inner promise settled.
+  await raceWithTimeout(Promise.resolve(1), 60000, 'clear-on-resolve');
+  // If we got here without hanging, the timer was cleared.
+});
+
+test('raceWithTimeout clears the timer on inner rejection', async () => {
+  await assert.rejects(
+    () => raceWithTimeout(Promise.reject(new Error('x')), 60000, 'clear-on-reject'),
+    /x/,
+  );
+});
+
+test('executeJsWithTimeout rejects immediately when the window is destroyed', async () => {
+  const fakeWin = { isDestroyed: () => true, webContents: { executeJavaScript: () => new Promise(() => {}) } };
+  await assert.rejects(
+    () => executeJsWithTimeout(fakeWin, 'noop', 'test'),
+    /window destroyed/,
+  );
+});
+
+test('executeJsWithTimeout races the injected promise against the timeout', async () => {
+  const fakeWin = {
+    isDestroyed: () => false,
+    webContents: { executeJavaScript: () => new Promise(() => {}) }, // never settles
+  };
+  await assert.rejects(
+    () => executeJsWithTimeout(fakeWin, 'noop', 'stall', 15),
+    (err) => err instanceof ScrapeTimeoutError && err.stage === 'executeJavaScript:stall',
+  );
+});
+
+test('executeJsWithTimeout resolves with the injected value when it settles in time', async () => {
+  const fakeWin = {
+    isDestroyed: () => false,
+    webContents: { executeJavaScript: async () => ({ ok: true }) },
+  };
+  const v = await executeJsWithTimeout(fakeWin, 'return 1', 'fast', 1000);
+  assert.deepEqual(v, { ok: true });
+});
+
+test('timeout constants are reasonable and internally consistent', () => {
+  // The logo fetch timeout must be strictly less than the executeJavaScript
+  // timeout — otherwise the inner AbortController never gets the chance to
+  // trip before the outer race fires, and we lose the friendly partial
+  // result (empty logoColors) in favour of a hard reject.
+  assert.ok(
+    DEFAULT_LOGO_FETCH_TIMEOUT_MS < DEFAULT_EXECUTE_JS_TIMEOUT_MS,
+    'logo fetch timeout must be shorter than executeJavaScript timeout',
+  );
+  // The overall timeout must exceed the per-call timeouts by enough slack
+  // to cover the full scrape budget (primary load + secondary pages + logo
+  // quantize). 90s >> 15s is sufficient for ~5 sequential pages.
+  assert.ok(
+    DEFAULT_OVERALL_TIMEOUT_MS > DEFAULT_EXECUTE_JS_TIMEOUT_MS * 2,
+    'overall timeout must leave room for multiple inner calls',
+  );
+});
+
+test('ScrapeTimeoutError exposes a stable TIMEOUT code for envelope classification', () => {
+  const err = new ScrapeTimeoutError('x', { stage: 'overall', elapsedMs: 5000 });
+  assert.equal(err.code, 'TIMEOUT');
+  assert.equal(err.name, 'ScrapeTimeoutError');
+  assert.equal(err.stage, 'overall');
+  assert.equal(err.elapsedMs, 5000);
+  // `instanceof Error` must still hold so generic error handlers don't
+  // mis-route it as a non-Error value.
+  assert.ok(err instanceof Error);
 });

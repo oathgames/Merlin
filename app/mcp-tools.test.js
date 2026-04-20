@@ -220,6 +220,72 @@ test('brand_scrape rejects non-URL input before loading the scraper module', asy
   assert.match(out.content[0].text, /http\(s\) URL/);
 });
 
+// REGRESSION GUARD (2026-04-20): paying user on Forever21.com hit a
+// permanent onboarding hang when the scraper's logo fetch stalled forever.
+// The handler must now classify any ScrapeTimeoutError into a TIMEOUT
+// envelope so the skill can tell the user "scrape took too long, retry"
+// instead of spinning silently. These two tests pin both the code branch
+// and the user-facing message — a future refactor that rewrites the catch
+// block must keep both.
+function withStubbedScraper(stub, run) {
+  // The mcp-tools handler does `require('./brand-scraper')` inline, so we
+  // inject a stub via require.cache and restore the real module after.
+  const path = require('path');
+  const resolved = require.resolve('./brand-scraper');
+  const original = require.cache[resolved];
+  require.cache[resolved] = {
+    id: resolved,
+    filename: resolved,
+    loaded: true,
+    exports: stub,
+  };
+  return run().finally(() => {
+    if (original) require.cache[resolved] = original;
+    else delete require.cache[resolved];
+  });
+}
+
+test('brand_scrape classifies ScrapeTimeoutError into a TIMEOUT envelope', async () => {
+  const { tool, registry } = makeFakeTool();
+  buildTools(tool, makeFakeZ(), makeCtx());
+  const entry = registry.find(t => t.name === 'brand_scrape');
+  const stub = {
+    scrapeBrand: async () => {
+      const err = new Error('brand-scraper: overall timed out after 90000ms');
+      err.name = 'ScrapeTimeoutError';
+      err.code = 'TIMEOUT';
+      throw err;
+    },
+  };
+  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://forever21.com/' }));
+  const env = envelope.parse(out);
+  assert.ok(env, 'response must carry an envelope');
+  assert.equal(env.ok, false);
+  assert.equal(env.error.code, 'TIMEOUT');
+  // User-facing message must name the URL and suggest retry — not a raw
+  // stack trace. Friendly-error rule applies to every error-surfacing path.
+  assert.match(env.error.message, /took too long/i);
+  assert.match(env.error.message, /forever21\.com/);
+  assert.match(env.error.message, /retry|try/i);
+  // next_action must be retry_or_split so Claude knows this is transient.
+  assert.equal(env.error.next_action, 'retry_or_split');
+});
+
+test('brand_scrape falls through to INTERNAL_ERROR for non-timeout scrape failures', async () => {
+  const { tool, registry } = makeFakeTool();
+  buildTools(tool, makeFakeZ(), makeCtx());
+  const entry = registry.find(t => t.name === 'brand_scrape');
+  const stub = {
+    scrapeBrand: async () => { throw new Error('brand-scraper: navigation failed: dns (ERR_NAME_NOT_RESOLVED) for https://nosuch.example/'); },
+  };
+  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://nosuch.example/' }));
+  const env = envelope.parse(out);
+  assert.ok(env);
+  assert.equal(env.ok, false);
+  assert.equal(env.error.code, 'INTERNAL_ERROR');
+  assert.match(env.error.message, /Scrape failed/);
+});
+
 test('brand_guide validate requires brandGuide payload', async () => {
   const { tool, registry } = makeFakeTool();
   buildTools(tool, makeFakeZ(), makeCtx());

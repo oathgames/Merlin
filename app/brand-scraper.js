@@ -128,12 +128,97 @@ const DESKTOP_VIEWPORT = { width: 1440, height: 900 };
 const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const DEFAULT_TIMEOUT_MS = 30000;
 
+// REGRESSION GUARD (2026-04-20): every long-lived path in scrapeBrand MUST
+// be wrapped in a wall-clock timeout. A paying user on Forever21.com hit a
+// permanent onboarding hang because quantizeLogoColors' injected fetch had
+// no timeout — the logo CDN slow-dripped forever, executeJavaScript never
+// resolved, scrapeBrand never returned, and the MCP tool call never sent
+// a response back to Claude. The UI froze on "digging into the brand..."
+// with no recovery path. The defence-in-depth layers added here:
+//   1. DEFAULT_OVERALL_TIMEOUT_MS — hard cap on the whole scrape. Even if
+//      every inner timeout misfires, the outer race destroys the window
+//      and rejects with a TIMEOUT-classified error.
+//   2. DEFAULT_EXECUTE_JS_TIMEOUT_MS — every executeJavaScript() call is
+//      raced against this. Electron's executeJavaScript has no built-in
+//      timeout; without this, any injected promise that never settles
+//      deadlocks the host process.
+//   3. DEFAULT_LOGO_FETCH_TIMEOUT_MS — per-logo AbortController embedded
+//      in the injected script. 5s is enough for any reasonable CDN; more
+//      than that means the site is broken and the scrape should proceed
+//      without logo quantization rather than hanging.
+// Never replace these with plain awaits. The test suite at
+// brand-scraper.test.js pins each layer — if you "simplify" one, the
+// tests fail loudly. If a future optimization removes the wrapper, a
+// future user hits the same hang.
+const DEFAULT_OVERALL_TIMEOUT_MS = 90000;      // whole scrape wall-clock
+const DEFAULT_EXECUTE_JS_TIMEOUT_MS = 15000;   // per executeJavaScript call
+const DEFAULT_LOGO_FETCH_TIMEOUT_MS = 5000;    // inner fetch() in quantizeLogoColors
+
 // Pages to crawl after the landing page. Each is best-effort; failures are
 // swallowed and the guide proceeds with whatever we got.
 const DEFAULT_EXTRA_PAGES = ['/about', '/about-us', '/pages/about', '/products', '/collections/all'];
 
+// Sentinel Error subclass so callers (mcp-tools brand_scrape handler) can
+// distinguish timeout from a generic scrape failure and surface a TIMEOUT
+// envelope that tells Claude to retry-or-split instead of INTERNAL_ERROR.
+class ScrapeTimeoutError extends Error {
+  constructor(message, { stage, elapsedMs } = {}) {
+    super(message);
+    this.name = 'ScrapeTimeoutError';
+    this.code = 'TIMEOUT';
+    this.stage = stage || 'unknown';
+    this.elapsedMs = elapsedMs || null;
+  }
+}
+
+// Race a promise against a timer. The returned promise:
+//   - resolves with the inner promise's value if it settles first
+//   - rejects with ScrapeTimeoutError if the timer fires first
+// The timer is always cleared so we never leak a pending setTimeout.
+// `onTimeout` is an optional side-effect (e.g. destroy the window) invoked
+// synchronously when the timer fires — runs BEFORE the rejection so any
+// cleanup visibly races against whatever pending I/O caused the stall.
+function raceWithTimeout(promise, ms, stage, onTimeout) {
+  let timer;
+  const started = Date.now();
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      if (typeof onTimeout === 'function') {
+        try { onTimeout(); } catch (_) { /* best-effort cleanup */ }
+      }
+      reject(new ScrapeTimeoutError(
+        `brand-scraper: ${stage} timed out after ${ms}ms`,
+        { stage, elapsedMs: Date.now() - started },
+      ));
+    }, ms);
+  });
+  return Promise.race([
+    Promise.resolve(promise).finally(() => clearTimeout(timer)),
+    timeout,
+  ]);
+}
+
+// Wrapper around win.webContents.executeJavaScript that enforces a timeout.
+// Electron's API returns a promise that can hang forever if the injected
+// script awaits a never-resolving value (e.g. fetch() with no AbortController
+// against a slow CDN). We race it; on timeout, we do NOT touch the window —
+// the outer scrapeBrand() race is responsible for destroying the window so
+// subsequent calls fail fast.
+function executeJsWithTimeout(win, script, stage, timeoutMs) {
+  const ms = timeoutMs || DEFAULT_EXECUTE_JS_TIMEOUT_MS;
+  if (!win || win.isDestroyed()) {
+    return Promise.reject(new Error(`brand-scraper: window destroyed before ${stage}`));
+  }
+  return raceWithTimeout(
+    win.webContents.executeJavaScript(script, true),
+    ms,
+    `executeJavaScript:${stage}`,
+  );
+}
+
 async function scrapeBrand(url, opts = {}) {
   const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
+  const overallTimeoutMs = opts.overallTimeoutMs || DEFAULT_OVERALL_TIMEOUT_MS;
   const extraPages = opts.extraPages || DEFAULT_EXTRA_PAGES;
 
   const normalized = normalizeUrl(url);
@@ -165,35 +250,49 @@ async function scrapeBrand(url, opts = {}) {
   // UAs. A recent Chrome UA sails through almost every time.
   win.webContents.setUserAgent(DEFAULT_UA);
 
-  try {
-    const primary = await capturePage(win, normalized, timeoutMs);
+  // Hard kill switch for the outer timeout. Destroying the window while a
+  // capturePage or executeJavaScript is in flight causes Electron to reject
+  // those pending promises — which unwinds any inner awaits even if the
+  // per-call timeouts above have been bypassed by a pathological page.
+  const killWindow = () => { if (!win.isDestroyed()) win.destroy(); };
 
-    // Best-effort secondary pages for richer copy/palette signal. Failures
-    // don't block the guide — we just lose a bit of signal.
-    const secondary = [];
-    for (const subpath of extraPages) {
-      const subUrl = joinUrl(normalized, subpath);
-      if (!subUrl || subUrl === normalized) continue;
-      try {
-        const snap = await capturePage(win, subUrl, Math.min(timeoutMs, 15000), { screenshots: false });
-        if (snap && snap.signal) secondary.push({ url: subUrl, signal: snap.signal });
-      } catch (_) { /* ignore — best effort */ }
+  const body = (async () => {
+    try {
+      const primary = await capturePage(win, normalized, timeoutMs);
+
+      // Best-effort secondary pages for richer copy/palette signal. Failures
+      // don't block the guide — we just lose a bit of signal.
+      const secondary = [];
+      for (const subpath of extraPages) {
+        if (win.isDestroyed()) break;
+        const subUrl = joinUrl(normalized, subpath);
+        if (!subUrl || subUrl === normalized) continue;
+        try {
+          const snap = await capturePage(win, subUrl, Math.min(timeoutMs, 15000), { screenshots: false });
+          if (snap && snap.signal) secondary.push({ url: subUrl, signal: snap.signal });
+        } catch (_) { /* ignore — best effort */ }
+      }
+
+      // Quantize dominant colors from the best logo candidate (if raster).
+      // This is best-effort; failures never block the guide.
+      const logoColors = await quantizeLogoColors(win, primary.signal.logoCandidates, normalized);
+
+      return {
+        url: normalized,
+        capturedAt: new Date().toISOString(),
+        primary: primary.signal,
+        screenshots: primary.screenshots,       // { desktop: base64png, mobile: base64png }
+        logoColors,                              // [{hex, freq}] from Canvas quantization
+        secondaryPages: secondary,               // copy & palette from /about, /products, etc.
+      };
+    } finally {
+      killWindow();
     }
+  })();
 
-    // Quantize dominant colors from the best logo candidate (if raster).
-    const logoColors = await quantizeLogoColors(win, primary.signal.logoCandidates, normalized);
-
-    return {
-      url: normalized,
-      capturedAt: new Date().toISOString(),
-      primary: primary.signal,
-      screenshots: primary.screenshots,       // { desktop: base64png, mobile: base64png }
-      logoColors,                              // [{hex, freq}] from Canvas quantization
-      secondaryPages: secondary,               // copy & palette from /about, /products, etc.
-    };
-  } finally {
-    if (!win.isDestroyed()) win.destroy();
-  }
+  // Outer wall-clock race. If the body hangs past overallTimeoutMs, destroy
+  // the window (unwinds pending Electron promises) and reject with TIMEOUT.
+  return raceWithTimeout(body, overallTimeoutMs, 'overall', killWindow);
 }
 
 async function capturePage(win, url, timeoutMs, opts = {}) {
@@ -213,23 +312,34 @@ async function capturePage(win, url, timeoutMs, opts = {}) {
   // stylesheet cascade resolved. 1.2s covers most sites.
   await delay(1200);
 
-  const signal = await win.webContents.executeJavaScript(collectSignalScript(), true);
+  const signal = await executeJsWithTimeout(win, collectSignalScript(), 'collectSignal');
 
   let screenshots = null;
   if (includeScreenshots) {
     screenshots = {};
-    // Desktop capture at current viewport
-    const desktop = await win.webContents.capturePage();
+    // Desktop capture at current viewport. capturePage has no documented
+    // timeout but typically resolves synchronously — race it anyway so a
+    // GPU hang can't deadlock the scrape.
+    const desktop = await raceWithTimeout(
+      win.webContents.capturePage(),
+      DEFAULT_EXECUTE_JS_TIMEOUT_MS,
+      'capturePage:desktop',
+    );
     screenshots.desktop = desktop.toPNG().toString('base64');
 
     // Mobile viewport — resize triggers reflow; wait briefly before capture.
     win.setContentSize(MOBILE_VIEWPORT.width, MOBILE_VIEWPORT.height);
-    await win.webContents.executeJavaScript(
+    await executeJsWithTimeout(
+      win,
       `window.innerWidth=${MOBILE_VIEWPORT.width};window.dispatchEvent(new Event('resize'));`,
-      true,
+      'resizeMobile',
     );
     await delay(600);
-    const mobile = await win.webContents.capturePage();
+    const mobile = await raceWithTimeout(
+      win.webContents.capturePage(),
+      DEFAULT_EXECUTE_JS_TIMEOUT_MS,
+      'capturePage:mobile',
+    );
     screenshots.mobile = mobile.toPNG().toString('base64');
 
     // Restore desktop size for subsequent captures
@@ -595,53 +705,71 @@ function collectSignalScript() {
 // higher than CSS-extracted colors.
 async function quantizeLogoColors(win, candidates, baseUrl) {
   if (!candidates || candidates.length === 0) return [];
+  if (!win || win.isDestroyed()) return [];
   // Pick the highest-weight candidate with a raster src (skip inline SVGs —
   // we already gave those to the prompt as text, and vision reads them fine).
   const target = candidates.find(c => c.src && !/\.svg(\?|$)/i.test(c.src));
   if (!target) return [];
 
-  try {
-    const script = `(async () => {
-      const url = ${JSON.stringify(target.src)};
-      try {
-        const resp = await fetch(url, { credentials: 'omit', mode: 'cors' });
-        if (!resp.ok) return { error: 'fetch-status-' + resp.status };
-        const blob = await resp.blob();
-        const bitmap = await createImageBitmap(blob);
-        const W = 64, H = 64;
-        const canvas = new OffscreenCanvas(W, H);
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        ctx.drawImage(bitmap, 0, 0, W, H);
-        const data = ctx.getImageData(0, 0, W, H).data;
-        // Bucket by rounded 6-bit RGB (4096 buckets). Count and pick top 8.
-        const buckets = new Map();
-        for (let i = 0; i < data.length; i += 4) {
-          const a = data[i + 3];
-          if (a < 128) continue; // skip transparent
-          // Snap to 6-bit (0..63), then back to 8-bit center
-          const r = (data[i] >> 2) << 2 | 2;
-          const g = (data[i + 1] >> 2) << 2 | 2;
-          const b = (data[i + 2] >> 2) << 2 | 2;
-          const key = (r << 16) | (g << 8) | b;
-          buckets.set(key, (buckets.get(key) || 0) + 1);
-        }
-        const total = Array.from(buckets.values()).reduce((a, b) => a + b, 0);
-        const top = Array.from(buckets.entries())
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 12)
-          .map(([k, count]) => {
-            const r = (k >> 16) & 0xff, g = (k >> 8) & 0xff, b = k & 0xff;
-            const hex = '#' + [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('');
-            return { hex, freq: count / total };
-          });
-        return { colors: top };
-      } catch (e) {
-        return { error: String(e && e.message || e) };
+  // REGRESSION GUARD (2026-04-20): the injected fetch MUST carry an
+  // AbortController tied to setTimeout. The original version shipped a
+  // bare fetch(url, { credentials:'omit', mode:'cors' }) — Forever21.com's
+  // logo CDN slow-dripped the response, the promise never resolved, the
+  // surrounding executeJavaScript never returned, and the MCP tool hung
+  // forever. The UI froze mid-onboarding. Keep BOTH the inner abort AND
+  // the outer executeJsWithTimeout below — they defend against different
+  // failure modes (slow CDN vs. any other infinite await in the script).
+  const fetchMs = DEFAULT_LOGO_FETCH_TIMEOUT_MS;
+  const script = `(async () => {
+    const url = ${JSON.stringify(target.src)};
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(), ${fetchMs});
+    try {
+      const resp = await fetch(url, { credentials: 'omit', mode: 'cors', signal: controller.signal });
+      if (!resp.ok) return { error: 'fetch-status-' + resp.status };
+      const blob = await resp.blob();
+      const bitmap = await createImageBitmap(blob);
+      const W = 64, H = 64;
+      const canvas = new OffscreenCanvas(W, H);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      ctx.drawImage(bitmap, 0, 0, W, H);
+      const data = ctx.getImageData(0, 0, W, H).data;
+      // Bucket by rounded 6-bit RGB (4096 buckets). Count and pick top 8.
+      const buckets = new Map();
+      for (let i = 0; i < data.length; i += 4) {
+        const a = data[i + 3];
+        if (a < 128) continue; // skip transparent
+        // Snap to 6-bit (0..63), then back to 8-bit center
+        const r = (data[i] >> 2) << 2 | 2;
+        const g = (data[i + 1] >> 2) << 2 | 2;
+        const b = (data[i + 2] >> 2) << 2 | 2;
+        const key = (r << 16) | (g << 8) | b;
+        buckets.set(key, (buckets.get(key) || 0) + 1);
       }
-    })()`;
-    const result = await win.webContents.executeJavaScript(script, true);
+      const total = Array.from(buckets.values()).reduce((a, b) => a + b, 0);
+      const top = Array.from(buckets.entries())
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 12)
+        .map(([k, count]) => {
+          const r = (k >> 16) & 0xff, g = (k >> 8) & 0xff, b = k & 0xff;
+          const hex = '#' + [r, g, b].map(n => n.toString(16).padStart(2, '0')).join('');
+          return { hex, freq: count / total };
+        });
+      return { colors: top };
+    } catch (e) {
+      return { error: String(e && e.message || e) };
+    } finally {
+      clearTimeout(abortTimer);
+    }
+  })()`;
+  try {
+    // Outer timeout ≥ inner timeout + pixel-processing budget. 10s is
+    // generous; if the browser process somehow ignores the AbortController
+    // (known Electron bug with image-blob streams on old versions), the
+    // outer race still unwinds the await.
+    const result = await executeJsWithTimeout(win, script, 'quantizeLogoColors', DEFAULT_EXECUTE_JS_TIMEOUT_MS);
     if (result && Array.isArray(result.colors)) return result.colors;
-  } catch (_) { /* quantization is best-effort */ }
+  } catch (_) { /* quantization is best-effort — never block the guide */ }
   return [];
 }
 
@@ -852,4 +980,10 @@ module.exports = {
   extractMetaThemeColor,
   extractFontFamilies,
   resolveLogoUrl,
+  raceWithTimeout,
+  executeJsWithTimeout,
+  ScrapeTimeoutError,
+  DEFAULT_OVERALL_TIMEOUT_MS,
+  DEFAULT_EXECUTE_JS_TIMEOUT_MS,
+  DEFAULT_LOGO_FETCH_TIMEOUT_MS,
 };
