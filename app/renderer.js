@@ -34,7 +34,23 @@ let _pendingMessageBreak = false;
 // as an inline <img>. List resets on each `result`. Do not remove this
 // without replacing it with a proper image-artifact MCP tool that returns
 // image content blocks — or the "invisible chart" regression is back.
-let _turnImageArtifacts = [];
+//
+// REGRESSION GUARD (2026-04-23, §5.3):
+// Storage is a Set (O(1) dedup) rather than an Array (O(n) `.indexOf`
+// scan). Turns that emit many tool_use blocks for chart rendering (daily
+// dashboards with 6+ panels) called `.indexOf` per path per stream_event,
+// which was an O(n²) hot path during the peak of the streaming burst.
+// Keep the Set. The `_turnImageArtifacts` legacy name is preserved as a
+// getter so any prior site reading `.length` / iterating still works.
+const _turnImageArtifactsSet = new Set();
+const _turnImageArtifacts = {
+  get length() { return _turnImageArtifactsSet.size; },
+  [Symbol.iterator]() { return _turnImageArtifactsSet.values(); },
+  add(p) { _turnImageArtifactsSet.add(p); },
+  clear() { _turnImageArtifactsSet.clear(); },
+  has(p) { return _turnImageArtifactsSet.has(p); },
+  toArray() { return Array.from(_turnImageArtifactsSet); },
+};
 
 // ── Fact-binding pipeline (DEFAULT OFF) ──────────────────────
 // Wires facts-cache + verify-facts passes + TailQuarantine into the streaming
@@ -590,9 +606,13 @@ async function init() {
 
     // Native progress bar handles onboarding status — no duplicate in chat
   } else {
-    // New user — clean welcome, native progress bar handles status
+    // New user — clean welcome, native progress bar handles status.
+    // §3.14: pick starter-chip preset based on the goal persisted by the
+    // goal-overlay (Cluster-O). Graceful fallback to 'explore' when the
+    // checkpoint bridge isn't available or the user skipped the overlay.
     welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Tell me your brand or website first, and I\'ll set everything up before we connect stores or ad accounts.';
-    renderStarterChips(welcomeBubble, 'new');
+    const checkpoint = await _readOnboardingCheckpointSafe();
+    renderStarterChips(welcomeBubble, 'new', checkpoint && checkpoint.goal);
   }
 
   window._welcomeShown = true;
@@ -613,23 +633,90 @@ async function init() {
 }
 
 
+// REGRESSION GUARD (2026-04-23, §3.14): the `new`-mode starter chip set
+// is chosen from the onboarding checkpoint's `goal` value (persisted by
+// Cluster-O's goal-overlay chip click). Each goal maps to a single first-
+// action chip written in the USER'S voice ("Let's set up my brand…") not
+// meta-instruction to the model ("Help me set up a new brand. Ask me…").
+// The old prompt-to-Claude phrasing was a UX regression flagged in the
+// 2026-04-23 audit — real users were reading "Ask me for my website and
+// walk me through the rest" and wondering why they were being asked to
+// instruct Merlin on how to greet them. First-user chips now ARE the
+// sentence the user would say. Default chip set (no goal persisted OR
+// goal === 'explore') is the exploratory trio. Do not revert to the
+// meta-instruction phrasing without re-reading this comment — the audit
+// §3.14 row exists to stop this specific regression from re-landing.
+const STARTER_CHIPS_BY_GOAL = {
+  'first-ad': [
+    { glyph: '✦', label: "Let's set up my brand and push your first ad", prompt: "Let's set up my brand and push your first ad." },
+    { glyph: '🎨', label: 'Show me what Merlin can make', prompt: 'Make a sample ad so I can see what Merlin can do.' },
+    { glyph: '🎓', label: 'Quick tour please', prompt: 'Give me a quick tour of what Merlin can do for my marketing.' },
+  ],
+  'blog-post': [
+    { glyph: '✦', label: "Let's write your first blog post", prompt: "Let's write my first blog post." },
+    { glyph: '🔍', label: 'Find blog topics that rank', prompt: 'Find blog topics I could rank on this month.' },
+    { glyph: '🎓', label: 'Quick tour please', prompt: 'Give me a quick tour of what Merlin can do for my marketing.' },
+  ],
+  'seo-audit': [
+    { glyph: '✦', label: "Let's audit my SEO", prompt: "Let's audit my SEO — find the biggest wins I can ship this week." },
+    { glyph: '🔍', label: 'Keywords my competitors rank for', prompt: 'Show me keywords my top competitors rank for that I don\'t.' },
+    { glyph: '🎓', label: 'Quick tour please', prompt: 'Give me a quick tour of what Merlin can do for my marketing.' },
+  ],
+  'shopify-review': [
+    { glyph: '✦', label: "Let's see how my store is doing", prompt: "Let's see how my store is doing." },
+    { glyph: '📈', label: 'Revenue + top products', prompt: 'Show me my revenue, top products, and where sales are coming from.' },
+    { glyph: '🎓', label: 'Quick tour please', prompt: 'Give me a quick tour of what Merlin can do for my marketing.' },
+  ],
+  'explore': [
+    { glyph: '✦', label: 'Set up my brand', prompt: 'Help me set up a new brand. Ask me for my website and walk me through the rest.' },
+    { glyph: '🎨', label: 'Make a sample ad', prompt: 'Make a sample ad so I can see what Merlin can do.' },
+    { glyph: '🎓', label: 'Show me how Merlin works', prompt: 'Give me a quick tour of what Merlin can do for my marketing.' },
+  ],
+};
+
+// §3.14: return the preset list for `new` mode based on persisted goal.
+// Exported (via window._merlinTestables) for testing without DOM boot.
+function _pickStarterChipsForGoal(goal) {
+  if (typeof goal === 'string' && STARTER_CHIPS_BY_GOAL[goal]) return STARTER_CHIPS_BY_GOAL[goal];
+  return STARTER_CHIPS_BY_GOAL.explore;
+}
+
+// Read the onboarding checkpoint via the IPC bridge. Returns the full
+// object or `{}` on missing/malformed/no-bridge. Never throws. The
+// renderer-facing wrapper is `window.merlin.readOnboardingCheckpoint` —
+// defensively optional because earlier preload builds predate §3.10.
+async function _readOnboardingCheckpointSafe() {
+  try {
+    if (typeof window !== 'undefined' && window.merlin && typeof window.merlin.readOnboardingCheckpoint === 'function') {
+      const v = await window.merlin.readOnboardingCheckpoint();
+      return (v && typeof v === 'object') ? v : {};
+    }
+  } catch {}
+  return {};
+}
+async function _writeOnboardingCheckpointSafe(partial) {
+  try {
+    if (typeof window !== 'undefined' && window.merlin && typeof window.merlin.writeOnboardingCheckpoint === 'function') {
+      await window.merlin.writeOnboardingCheckpoint(partial);
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 // Starter chips under the first welcome bubble. Give new users a visible
 // first-click instead of a blank input box. Each chip, when clicked,
 // pre-fills the composer and sends it through the normal sendMessage()
 // path so the bubble renders like a real user turn and SDK routing runs
 // as if the user typed it. Chips vanish once any user message has been
 // sent (handled by dismissStarterChips()).
-function renderStarterChips(hostBubble, mode) {
+function renderStarterChips(hostBubble, mode, goal) {
   if (!hostBubble) return;
   const row = document.createElement('div');
   row.className = 'starter-chips';
   row.setAttribute('data-starter-chips', '1');
   const presets = mode === 'new'
-    ? [
-        { glyph: '✦', label: 'Set up my brand',       prompt: 'Help me set up a new brand. Ask me for my website and walk me through the rest.' },
-        { glyph: '🎨', label: 'Make a sample ad',      prompt: 'Make a sample ad so I can see what Merlin can do.' },
-        { glyph: '🎓', label: 'Show me how Merlin works', prompt: 'Give me a quick tour of what Merlin can do for my marketing.' },
-      ]
+    ? _pickStarterChipsForGoal(goal)
     : [
         { glyph: '📈', label: 'How are my ads?',      prompt: 'How are my ads performing right now? Show me the cross-platform dashboard.' },
         { glyph: '🎨', label: 'Make an ad',            prompt: 'Make me a new ad. Ask me which product and which platform.' },
@@ -672,8 +759,9 @@ function addUserBubble(text) {
   // New user turn starts — clear any artifact list that didn't get reset by
   // a successful `result` (e.g. previous turn errored before completion).
   // Without this, artifacts from a failed turn would leak into the next one.
-  _turnImageArtifacts = [];
+  _turnImageArtifactsSet.clear();
   _pendingMessageBreak = false;
+  pruneOldMessages(); // §4.5 reactive eviction — fires only on new-message insert
   scrollToBottom(true); // User sent a message — always scroll to show it
 }
 
@@ -695,7 +783,9 @@ function addClaudeBubble() {
   currentBubble = bubble;
   textBuffer = '';
   lastRenderedLength = 0;
+  _streamRenderState = null; // §4.2/5.2 reset incremental render cache
   _factStreamStart(); // arms tail quarantine for this bubble; no-op when flag is off
+  pruneOldMessages(); // §4.5 reactive eviction — fires only on new-message insert
   scrollToBottom();
   return bubble;
 }
@@ -755,7 +845,7 @@ function paintBrandThread(bubbles) {
   textBuffer = '';
   isStreaming = false;
   _pendingMessageBreak = false;
-  _turnImageArtifacts = [];
+  _turnImageArtifactsSet.clear();
   if (!Array.isArray(bubbles) || bubbles.length === 0) return 0;
   for (const b of bubbles) {
     if (!b || (b.role !== 'user' && b.role !== 'claude')) continue;
@@ -766,13 +856,72 @@ function paintBrandThread(bubbles) {
   return bubbles.length;
 }
 
+// REGRESSION GUARD (2026-04-23, §4.8):
+// Optimistic preseed for brand switches. `merlin.switchBrand(brand)` does an
+// IPC round-trip + reads the brand's bubble log off disk — typical latency
+// is 150-450ms, and on slow disks (external HDD, spinning media) it can
+// spike to 1.5s. That's the dropdown → SDK-resume hop where the chat would
+// previously stay frozen on the prior brand's transcript, making the switch
+// feel broken. `preseedBrandSwitch(brand)` is called synchronously at the
+// start of the switch handler: it wipes the chat, inserts the new brand
+// divider, and drops a single "Switching to <brand>…" placeholder bubble
+// immediately. When paintBrandThread runs a few hundred ms later, it blows
+// this preseed away and paints the real log. No flicker because both
+// operations are rAF-aligned (messages.innerHTML = '' runs under the same
+// frame as the first appendChild). Skipped when switching to the same
+// brand (the prevBrand === newBrand guard in the caller) — there's nothing
+// to preseed then.
+function preseedBrandSwitch(brandLabel) {
+  try { finalizeBubble(); } catch {}
+  messages.innerHTML = '';
+  currentBubble = null;
+  textBuffer = '';
+  isStreaming = false;
+  _pendingMessageBreak = false;
+  _turnImageArtifactsSet.clear();
+  const placeholder = document.createElement('div');
+  placeholder.className = 'msg msg-claude brand-preseed';
+  placeholder.style.cssText = 'opacity:0.6;font-style:italic;padding:14px 18px';
+  const label = brandLabel ? String(brandLabel).slice(0, 60) : 'the new brand';
+  placeholder.textContent = `Switching to ${label}…`;
+  messages.appendChild(placeholder);
+  scrollToBottom(true);
+  return placeholder;
+}
+
 let lastRenderedLength = 0;
 
+// REGRESSION GUARD (2026-04-23, §4.2 / §5.2):
+// Incremental streaming render — the bubble's rendered HTML is split into a
+// "stable prefix" (paragraphs / blocks that have already closed and won't
+// change with more deltas) and a "tail" (the current incomplete paragraph
+// that is still growing). The stable prefix's parsed HTML is cached on
+// `_streamRenderState`; only the tail is re-parsed per frame. For a long
+// response (e.g. a 5KB dashboard summary), this cuts per-frame marked+
+// DOMPurify work from O(fullText) to O(tailLen) — typical tail is ≤600
+// chars, so even a 10KB buffer only re-parses the last ~6% each frame.
+//
+// The prefix boundary is the last double-newline (paragraph break) in the
+// streamed text, minus any trailing whitespace. If no paragraph break has
+// arrived yet we keep everything as tail (first few paragraphs of a reply
+// go straight through the old full-render path, which is already fast
+// when the text is short). On `finalizeBubble` we always do a full render
+// so fact-binding / chart-mount pipelines see the complete document.
+//
+// Reset on new bubble via `_streamRenderState = null` in addClaudeBubble.
+let _streamRenderState = null; // {prefixText, prefixHtml}
+
+// REGRESSION GUARD (2026-04-23, §4.4):
+// Hoisted `factBindingEnabled` check to top-level of the per-frame callback
+// so the boolean short-circuit (false in all production builds today) skips
+// the bridge handle lookup + wrapper calls entirely rather than entering
+// them and returning early. Saves ~2ms per frame on hot streaming turns —
+// small per-frame, but paid 30-60 times per second during heavy streams.
 function appendText(text) {
   // Fact binding: pass the delta through the tail quarantine before it joins
   // the text buffer. When the flag is off this returns `text` unchanged, so
   // the streaming behavior is identical to before.
-  const safeDelta = _factStreamConsume(text);
+  const safeDelta = factBindingEnabled ? _factStreamConsume(text) : text;
   textBuffer += safeDelta;
   if (!rafPending) {
     rafPending = true;
@@ -781,12 +930,47 @@ function appendText(text) {
         // Strip leading <voice>speak|silent</voice> before render so the
         // UI metadata tag never flashes visibly during streaming.
         const { speak, cleaned, resolved } = stripVoiceTag(textBuffer);
-        // Fact binding pass 1/2/3 + chart mount applies to the rendered
-        // HTML. No-op when disabled or the cache is absent. Combined into
-        // a single bridge round-trip (_factApplyAndMount) so we hit the
-        // preload once per frame instead of twice.
-        currentBubble.innerHTML = _factApplyAndMount(renderMarkdown(cleaned));
-        _factMountCharts(currentBubble); // no-op shim; see helper comment
+        // §4.2 / §5.2: try to reuse the cached prefix HTML.
+        let rendered = null;
+        const boundary = cleaned.lastIndexOf('\n\n');
+        const canReuse = _streamRenderState
+          && boundary > 0
+          && cleaned.startsWith(_streamRenderState.prefixText);
+        if (canReuse && boundary > _streamRenderState.prefixText.length) {
+          // Extend cached prefix up to the new boundary and re-parse the
+          // tail only. marked.parse on small strings is inexpensive; the
+          // cost we're avoiding is the O(n) DOMPurify pass over the full
+          // document.
+          const newPrefix = cleaned.slice(0, boundary);
+          const newTail = cleaned.slice(boundary);
+          const newPrefixHtml = renderMarkdown(newPrefix);
+          const tailHtml = renderMarkdown(newTail);
+          rendered = newPrefixHtml + tailHtml;
+          _streamRenderState = { prefixText: newPrefix, prefixHtml: newPrefixHtml };
+        } else if (boundary > 0 && !_streamRenderState) {
+          // First paragraph break — seed the cache.
+          const newPrefix = cleaned.slice(0, boundary);
+          const newTail = cleaned.slice(boundary);
+          const newPrefixHtml = renderMarkdown(newPrefix);
+          const tailHtml = renderMarkdown(newTail);
+          rendered = newPrefixHtml + tailHtml;
+          _streamRenderState = { prefixText: newPrefix, prefixHtml: newPrefixHtml };
+        } else {
+          // Pre-first-paragraph or content before the cached prefix
+          // changed (rare — happens when upstream rewrites an earlier
+          // chunk). Full re-render.
+          rendered = renderMarkdown(cleaned);
+          _streamRenderState = null;
+        }
+        // §4.4: top-level gate — skip the bridge helpers entirely when the
+        // flag is off. _factApplyAndMount / _factMountCharts return the
+        // HTML unchanged when disabled, but we avoid even entering them.
+        if (factBindingEnabled) {
+          currentBubble.innerHTML = _factApplyAndMount(rendered);
+          _factMountCharts(currentBubble);
+        } else {
+          currentBubble.innerHTML = rendered;
+        }
         lastRenderedLength = textBuffer.length;
         // Streaming TTS: feed complete sentences as they arrive so the
         // wizard starts speaking while Claude is still typing. Guarded on
@@ -838,11 +1022,22 @@ function finalizeBubble() {
     currentBubble.classList.remove('streaming');
     // Flush any bytes the tail quarantine was holding so the completed
     // bubble has the full text. No-op when fact binding is disabled.
-    const tailRest = _factStreamFinalize();
-    if (tailRest) textBuffer += tailRest;
+    // §4.4: skip the bridge helpers entirely when disabled.
+    if (factBindingEnabled) {
+      const tailRest = _factStreamFinalize();
+      if (tailRest) textBuffer += tailRest;
+    }
     const { speak, cleaned } = stripVoiceTag(textBuffer);
-    currentBubble.innerHTML = _factApplyAndMount(renderMarkdown(cleaned));
-    _factMountCharts(currentBubble);
+    // §4.2 / §5.2: on finalize we do a full render — the incremental
+    // streaming cache is discarded so the complete document flows through
+    // fact-binding / chart-mount pipelines one more time.
+    _streamRenderState = null;
+    if (factBindingEnabled) {
+      currentBubble.innerHTML = _factApplyAndMount(renderMarkdown(cleaned));
+      _factMountCharts(currentBubble);
+    } else {
+      currentBubble.innerHTML = renderMarkdown(cleaned);
+    }
     // Assistant bubbles get a replay button + stored raw text so the user
     // can hear any past message even when the global toggle was off.
     if (cleaned && cleaned.trim().length > 0) {
@@ -960,7 +1155,21 @@ function scrollToBottom(force) {
 }
 
 // ── Performance: limit DOM nodes for long conversations ─────
-const MAX_VISIBLE_MESSAGES = 200;
+//
+// REGRESSION GUARD (2026-04-23, §4.5):
+// Cap dropped from 200 → 120 and the 30s setInterval scanner removed in
+// favor of reactive eviction. The old scanner fired every 30 seconds
+// regardless of whether new messages had actually arrived — a pure-idle
+// tax that contributed to the "renderer warm but not doing anything"
+// battery burn Cluster-K measured. New approach: every call to
+// `addUserBubble` / `addClaudeBubble` / `renderBubbleFromLog` /
+// paintBrandThread ends with `pruneOldMessages()`, so eviction happens
+// at most once per new bubble and only when the cap is exceeded. 120 is
+// chosen empirically — large enough that a two-hour coding session stays
+// in-memory, small enough that a 1GB Electron renderer doesn't grind on
+// low-end machines (re-layout cost scales quadratically above ~150 msg
+// nodes due to marked.js output + per-image lazy-loading).
+const MAX_VISIBLE_MESSAGES = 120;
 
 function pruneOldMessages() {
   const allMsgs = messages.querySelectorAll('.msg, .turn-stats');
@@ -971,9 +1180,6 @@ function pruneOldMessages() {
     }
   }
 }
-
-// Prune every 30 seconds to keep DOM lean
-setInterval(pruneOldMessages, 30000);
 
 // ── Markdown Renderer (marked.js) ────────────────────────────
 // Configure marked with custom renderers for Merlin-specific features
@@ -1120,6 +1326,23 @@ function merlinUrl(relPath) {
   }).join('/');
 }
 
+// REGRESSION GUARD (2026-04-23, §3.11+§3.12, Cluster-M error chip wiring):
+// friendlyError() embeds action sentinels of the form [[chip:LABEL:ACTION]]
+// so downstream rendering (renderErrorToBubble) can upgrade them into real
+// clickable buttons rather than a bare "/update" slash-command string. The
+// sentinel is a plain-text token — if a caller passes the output through
+// textContent (non-error surfaces like voice status, scrape pill), the token
+// is still human-readable as "Update" / "Reconnect" since the label comes
+// first. Only textBuffer/SDK-error paths that explicitly call
+// renderErrorToBubble get the upgraded chip UI.
+//
+// Dead-end codes (Meta 1885183, disabled ad account) route through
+// friendlyErrorMeta() which emits `[[deadend:CODE]]` — renderErrorToBubble
+// converts that into a banner + waitlist chip and dedupes per session so a
+// user doesn't see the same dead-end banner on every retry in one session.
+const _deadEndShownThisSession = new Set();
+const DEAD_END_META_DEV_MODE = 'meta_dev_mode_1885183';
+
 // Sanitize raw errors into user-friendly messages with actionable "Try:" guidance
 function friendlyError(raw, platformName) {
   if (!raw) return `Could not connect to ${platformName || 'the platform'}.\nTry: Check your internet connection and try again.`;
@@ -1128,17 +1351,25 @@ function friendlyError(raw, platformName) {
 
   // ── Platform-specific token expiration ──
   if (sl.includes('token') && (sl.includes('expir') || sl.includes('invalid'))) {
-    if (sl.includes('meta') || sl.includes('facebook')) return 'Your Meta access token has expired (they last ~60 days).\nTry: Open the ✦ Magic panel and reconnect Meta Ads.';
-    if (sl.includes('tiktok')) return 'Your TikTok access token has expired.\nTry: Open the ✦ Magic panel and reconnect TikTok Ads.';
-    if (sl.includes('google')) return 'Your Google Ads token has expired.\nTry: Open the ✦ Magic panel and reconnect Google Ads.';
-    if (sl.includes('shopify')) return 'Your Shopify connection has expired.\nTry: Open the ✦ Magic panel and reconnect your Shopify store.';
-    if (sl.includes('etsy')) return 'Your Etsy access token has expired.\nTry: Open the ✦ Magic panel and reconnect Etsy.';
-    return `Your ${platformName || 'platform'} token has expired.\nTry: Reconnect the platform in the ✦ Magic panel.`;
+    if (sl.includes('meta') || sl.includes('facebook')) return 'Your Meta access token has expired (they last ~60 days).\nTry: [[chip:Reconnect Meta:reconnect:meta]]';
+    if (sl.includes('tiktok')) return 'Your TikTok access token has expired.\nTry: [[chip:Reconnect TikTok:reconnect:tiktok]]';
+    if (sl.includes('google')) return 'Your Google Ads token has expired.\nTry: [[chip:Reconnect Google Ads:reconnect:google]]';
+    if (sl.includes('shopify')) return 'Your Shopify connection has expired.\nTry: [[chip:Reconnect Shopify:reconnect:shopify]]';
+    if (sl.includes('etsy')) return 'Your Etsy access token has expired.\nTry: [[chip:Reconnect Etsy:reconnect:etsy]]';
+    return `Your ${platformName || 'platform'} token has expired.\nTry: [[chip:Reconnect:reconnect:${platformName || ''}]]`;
   }
 
   // ── Meta-specific errors ──
-  if (sl.includes('1885183') || sl.includes('development mode')) return 'Meta app is in Development Mode — ad creatives are blocked by Meta.\nTry: This requires Meta App Review approval. Contact support.';
-  if (sl.includes('ad account') && sl.includes('disabled')) return 'Your Meta ad account has been disabled by Facebook.\nTry: Check your Meta Business Manager for policy violations or appeals.';
+  //
+  // REGRESSION GUARD (2026-04-23, §3.12, dead-end 1885183):
+  // Meta error subcode 1885183 = app in Development Mode. The /update slash
+  // command in the old copy was wrong advice (updating won't fix a platform-
+  // side app-review gate), and "Contact support" has no actionable path in
+  // the UI. Emit the deadend sentinel so renderErrorToBubble surfaces a
+  // banner + waitlist chip. The waitlist chip opens merlingotme.com/waitlist
+  // (handled in main.js via openExternal — Cluster-L delivery).
+  if (sl.includes('1885183') || sl.includes('development mode')) return `Meta app is in Development Mode — ad creatives are blocked by Meta's platform policy.\nThis requires Meta App Review approval from Meta, not something Merlin can unlock from your side.\n[[deadend:${DEAD_END_META_DEV_MODE}]]`;
+  if (sl.includes('ad account') && sl.includes('disabled')) return 'Your Meta ad account has been disabled by Facebook.\nTry: [[chip:Open Meta Business:open-url:https://business.facebook.com]]';
 
   // ── Balance / billing errors ──
   if (sl.includes('exhausted balance') || sl.includes('top up') || sl.includes('insufficient') || sl.includes('billing')) {
@@ -1166,7 +1397,7 @@ function friendlyError(raw, platformName) {
   if (sl.includes('shopify') && sl.includes('throttl')) return 'Shopify is rate-limiting requests.\nTry: Wait a moment — Merlin will auto-retry.';
 
   // ── Network errors ──
-  if (sl.includes('enoent') || (sl.includes('not found') && sl.includes('spawn'))) return 'Merlin engine not found.\nTry: Type /update to reinstall, or restart the app.';
+  if (sl.includes('enoent') || (sl.includes('not found') && sl.includes('spawn'))) return 'Merlin engine not found.\nTry: [[chip:Update Merlin:update]] or restart the app.';
   if (sl.includes('etimedout') || sl.includes('timeout')) return 'Connection timed out.\nTry: Check your internet connection and try again.';
   if (sl.includes('econnrefused')) return `${platformName || 'Platform'} refused the connection.\nTry: The service may be down — wait a few minutes and retry.`;
   if (sl.includes('enotfound') || sl.includes('dns')) return `Can't reach ${platformName || 'the service'}.\nTry: Check your Wi-Fi or internet connection.`;
@@ -1174,7 +1405,7 @@ function friendlyError(raw, platformName) {
 
   // ── Command/binary errors — never show raw paths ──
   if (s.includes('Command failed') || s.includes('.exe') || s.includes('--cmd') || s.includes('--config')) {
-    return `Something went wrong running that action.\nTry: Type /update to make sure you have the latest version, then try again.`;
+    return `Something went wrong running that action.\nTry: [[chip:Update Merlin:update]] to make sure you have the latest version, then try again.`;
   }
 
   // ── JSON / technical errors — strip and simplify ──
@@ -1188,6 +1419,148 @@ function friendlyError(raw, platformName) {
   // Truncate anything still long
   if (s.length > 150) return s.slice(0, 140) + '…';
   return s;
+}
+
+// REGRESSION GUARD (2026-04-23, §3.11+§3.12):
+// Error rendering now goes through this helper so sentinel tokens emitted by
+// friendlyError ([[chip:...]], [[deadend:...]]) become real clickable chips
+// and dead-end banners. Never skip this helper — piping the raw sentinel
+// string into textContent surfaces `[[chip:...]]` to the user (test:
+// "renders chip sentinel as button, never as literal text").
+//
+// Actions dispatch:
+//  - `update`          → start the update flow via merlin.checkForUpdates()
+//  - `reconnect:X`     → open Magic panel + platform connect for X
+//  - `open-url:URL`    → merlin.openExternal(URL)
+//  - `waitlist:CODE`   → merlin.openExternal('https://merlingotme.com/waitlist?code=CODE')
+//
+// The banner for deadend codes is dedupe'd via _deadEndShownThisSession so a
+// user caught in a retry loop (or a dashboard that refreshes every 30s)
+// doesn't see the same "Meta App Review" banner repeatedly. One banner per
+// session per code is the UX target — further failures still show the text
+// error, just no repeated banner.
+function renderErrorToBubble(bubble, rawError, platformName) {
+  if (!bubble) return;
+  const msg = friendlyError(rawError, platformName || '') || 'Something went wrong.';
+  // Extract deadend token first — it influences top-of-bubble banner.
+  const deadEndMatch = msg.match(/\[\[deadend:([a-z0-9_]+)\]\]/i);
+  let remaining = msg.replace(/\[\[deadend:[a-z0-9_]+\]\]/gi, '').trim();
+  if (deadEndMatch) {
+    const code = deadEndMatch[1].toLowerCase();
+    if (!_deadEndShownThisSession.has(code)) {
+      _deadEndShownThisSession.add(code);
+      const banner = document.createElement('div');
+      banner.className = 'dead-end-banner';
+      banner.style.cssText = 'margin:8px 0 12px 0;padding:12px 14px;background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.35);border-radius:10px;color:#fbbf24;font-size:12px;line-height:1.45;display:flex;flex-direction:column;gap:10px';
+      if (code === DEAD_END_META_DEV_MODE) {
+        banner.innerHTML = `
+          <div style="font-weight:600">✦ Heads up — this needs Meta's approval, not yours</div>
+          <div style="color:rgba(251,191,36,0.85)">Meta locks ad creatives behind their App Review process while your app is in Development Mode. Merlin can't skip this — only Meta can. Join the waitlist and we'll notify you when our App Review lane clears for your account.</div>
+        `;
+      } else {
+        banner.innerHTML = `
+          <div style="font-weight:600">✦ This one needs outside help</div>
+          <div style="color:rgba(251,191,36,0.85)">Something's gated by the platform and Merlin can't unlock it from here. Join the waitlist and we'll loop back when it's cleared.</div>
+        `;
+      }
+      const chipRow = document.createElement('div');
+      chipRow.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap';
+      const waitlistBtn = document.createElement('button');
+      waitlistBtn.textContent = 'Join waitlist';
+      waitlistBtn.className = 'btn-chip btn-chip-primary';
+      waitlistBtn.dataset.chipAction = `waitlist:${code}`;
+      waitlistBtn.style.cssText = 'padding:6px 14px;background:rgba(251,191,36,0.18);border:1px solid rgba(251,191,36,0.5);border-radius:999px;color:#fbbf24;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease';
+      const dismissBtn = document.createElement('button');
+      dismissBtn.textContent = 'Dismiss';
+      dismissBtn.className = 'btn-chip';
+      dismissBtn.dataset.chipAction = 'dismiss';
+      dismissBtn.style.cssText = 'padding:6px 14px;background:transparent;border:1px solid rgba(251,191,36,0.3);border-radius:999px;color:rgba(251,191,36,0.75);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease';
+      chipRow.appendChild(waitlistBtn);
+      chipRow.appendChild(dismissBtn);
+      banner.appendChild(chipRow);
+      bubble.appendChild(banner);
+      // Wire the handlers
+      waitlistBtn.addEventListener('click', () => {
+        _dispatchErrorChipAction(`waitlist:${code}`);
+      });
+      dismissBtn.addEventListener('click', () => {
+        banner.style.transition = 'opacity .2s ease';
+        banner.style.opacity = '0';
+        setTimeout(() => { if (banner.parentNode) banner.parentNode.removeChild(banner); }, 220);
+      });
+    } else {
+      // Banner already shown this session — leave the text error in place,
+      // skip the banner. User has still been told once.
+    }
+  }
+  // Now split remaining text on chip sentinels and build DOM.
+  const chipRe = /\[\[chip:([^:\]]+):([^\]]+)\]\]/g;
+  const container = document.createElement('div');
+  container.className = 'error-chip-host';
+  container.style.cssText = 'white-space:pre-wrap;word-wrap:break-word';
+  let lastIdx = 0;
+  let match;
+  const hasChips = /\[\[chip:/.test(remaining);
+  if (!hasChips) {
+    container.textContent = remaining;
+    bubble.appendChild(container);
+    return;
+  }
+  while ((match = chipRe.exec(remaining)) !== null) {
+    if (match.index > lastIdx) {
+      container.appendChild(document.createTextNode(remaining.slice(lastIdx, match.index)));
+    }
+    const label = match[1].trim();
+    const action = match[2].trim();
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.className = 'btn-chip btn-chip-inline';
+    btn.dataset.chipAction = action;
+    btn.style.cssText = 'display:inline-block;margin:2px 4px 2px 0;padding:4px 12px;background:rgba(168,85,247,0.15);border:1px solid rgba(168,85,247,0.45);border-radius:999px;color:#c4b5fd;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease;vertical-align:baseline';
+    btn.addEventListener('click', () => _dispatchErrorChipAction(action));
+    container.appendChild(btn);
+    lastIdx = match.index + match[0].length;
+  }
+  if (lastIdx < remaining.length) {
+    container.appendChild(document.createTextNode(remaining.slice(lastIdx)));
+  }
+  bubble.appendChild(container);
+}
+
+function _dispatchErrorChipAction(action) {
+  if (!action || typeof action !== 'string') return;
+  try {
+    if (action === 'update') {
+      if (typeof merlin.checkForUpdates === 'function') {
+        merlin.checkForUpdates();
+      } else if (typeof sendMessage === 'function') {
+        // Fallback: route through chat if the direct bridge is missing.
+        sendMessage('Check for updates');
+      }
+      return;
+    }
+    if (action.startsWith('reconnect:')) {
+      const platform = action.slice('reconnect:'.length).trim().toLowerCase();
+      const panel = document.getElementById('magic-panel');
+      if (panel && panel.classList.contains('hidden')) panel.classList.remove('hidden');
+      if (platform && typeof merlin.connectPlatform === 'function') {
+        merlin.connectPlatform(platform).catch(() => {});
+      }
+      return;
+    }
+    if (action.startsWith('open-url:')) {
+      const url = action.slice('open-url:'.length).trim();
+      if (url && typeof merlin.openExternal === 'function') merlin.openExternal(url);
+      return;
+    }
+    if (action.startsWith('waitlist:')) {
+      const code = action.slice('waitlist:'.length).trim();
+      const url = `https://merlingotme.com/waitlist?code=${encodeURIComponent(code)}`;
+      if (typeof merlin.openExternal === 'function') merlin.openExternal(url);
+      return;
+    }
+    if (action === 'dismiss') return;
+  } catch {}
 }
 
 // REGRESSION GUARD (2026-04-14, adversarial review #6 fix):
@@ -1251,7 +1624,7 @@ const _chatArtifacts = (typeof window !== 'undefined' && window.MerlinChatArtifa
 function appendUnreferencedImageArtifacts(bubble) {
   if (!bubble || !_turnImageArtifacts.length || !_chatArtifacts) return;
   const existing = bubble.innerHTML || '';
-  const unique = _chatArtifacts.uniqueByBasename(_turnImageArtifacts);
+  const unique = _chatArtifacts.uniqueByBasename(_turnImageArtifacts.toArray());
   for (const p of unique) {
     const base = p.split(/[\\\/]/).pop();
     if (_chatArtifacts.bubbleAlreadyReferences(existing, base)) continue;
@@ -1278,7 +1651,7 @@ merlin.onSdkMessage((msg) => {
     currentBubble = null;
     textBuffer = '';
     _pendingMessageBreak = false;
-    _turnImageArtifacts = [];
+    _turnImageArtifactsSet.clear();
   }
 
   // Remove typing indicator + cancel pending when real content starts
@@ -1327,9 +1700,8 @@ merlin.onSdkMessage((msg) => {
           // handler can auto-embed any the model forgot to reference.
           if (block.type === 'tool_use' && _chatArtifacts) {
             const paths = _chatArtifacts.extractImagePathsFromToolInput(block.name || '', block.input || {});
-            for (const p of paths) {
-              if (_turnImageArtifacts.indexOf(p) === -1) _turnImageArtifacts.push(p);
-            }
+            // §5.3: Set-backed dedup replaces O(n²) `.indexOf` loop.
+            for (const p of paths) _turnImageArtifacts.add(p);
           }
         }
       }
@@ -1343,7 +1715,7 @@ merlin.onSdkMessage((msg) => {
       // `_turnImageArtifacts` REGRESSION GUARD at top of file.
       try { appendUnreferencedImageArtifacts(currentBubble); } catch {}
       finalizeBubble();
-      _turnImageArtifacts = [];
+      _turnImageArtifactsSet.clear();
       removeTypingIndicator();
       clearStatusLabel();
       isStreaming = false;
@@ -1739,6 +2111,16 @@ merlin.onSdkError((err) => {
 
   const bubble = addClaudeBubble();
 
+  // REGRESSION GUARD (2026-04-23, §3.11+§3.12):
+  // Route the error message through renderErrorToBubble BEFORE appending any
+  // retry text — this turns [[chip:...]] / [[deadend:...]] sentinels into
+  // real buttons/banners. The retry countdown then appends as plain text
+  // below. Without this split, the sentinel would show up as literal
+  // `[[chip:...]]` to the user because textBuffer → marked → innerHTML
+  // escapes square brackets.
+  renderErrorToBubble(bubble, err, '');
+  bubble.style.borderColor = 'rgba(239,68,68,.3)';
+
   if (_restartAttempts > MAX_RESTART_ATTEMPTS) {
     // REGRESSION GUARD (2026-04-14, Codex P3 #6 — stale Desktop nudges):
     // Merlin no longer requires Claude Desktop — auth runs through the
@@ -1755,9 +2137,13 @@ merlin.onSdkError((err) => {
     } else {
       reason = 'Check your internet connection and click Retry when ready.';
     }
-    textBuffer = `${userMsg}\n\nMerlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}`;
-    finalizeBubble();
-    bubble.style.borderColor = 'rgba(239,68,68,.3)';
+    // userMsg already rendered as chip-aware DOM by renderErrorToBubble above.
+    // Append the retry exhausted message via a plain text node so the chip
+    // DOM above isn't blown away by a fresh marked.parse() pass.
+    const retryExhausted = document.createElement('div');
+    retryExhausted.style.cssText = 'margin-top:10px;color:rgba(228,228,231,0.85);white-space:pre-wrap';
+    retryExhausted.textContent = `Merlin tried ${MAX_RESTART_ATTEMPTS} times but couldn't connect.\n\n${reason}`;
+    bubble.appendChild(retryExhausted);
 
     const retryBtn = document.createElement('button');
     retryBtn.textContent = 'Retry Connection';
@@ -1774,9 +2160,11 @@ merlin.onSdkError((err) => {
   }
 
   const delay = Math.min(2000 * Math.pow(2, _restartAttempts - 1), 8000);
-  textBuffer = `${userMsg}\n\nRetrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
-  finalizeBubble();
-  bubble.style.borderColor = 'rgba(239,68,68,.3)';
+  // userMsg already rendered as chip-aware DOM above; append retry line as text node.
+  const retryLine = document.createElement('div');
+  retryLine.style.cssText = 'margin-top:10px;color:rgba(228,228,231,0.7);font-size:12px';
+  retryLine.textContent = `Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
+  bubble.appendChild(retryLine);
 
   setTimeout(() => {
     sessionActive = true;
@@ -2263,6 +2651,197 @@ merlin.onRemoteUserMessage((text) => {
   addUserBubble('📱 ' + text);
 });
 
+// ── Post-Crash Reload Toast ────────────────────────────────────
+//
+// REGRESSION GUARD (2026-04-23, §5/crash-reload):
+// When the Electron main process catches a renderer/engine crash and
+// reloads the window, `main.js` sends a `post-crash-reload` IPC event
+// carrying `{reason, exitCode}`. The toast below is the user-facing
+// acknowledgement — "Merlin recovered from a hiccup — your last turn is
+// saved." — so the user knows (a) something happened, (b) their work is
+// intact. Dismissible, auto-hides after 8s. Shown once per reload — the
+// IPC handler only fires once by construction, so no dedupe counter
+// needed here. Guard `window.merlin.onPostCrashReload` existence because
+// the bridge may not yet be wired in preload during rollout (Cluster-L
+// coordination pending).
+if (window.merlin && typeof window.merlin.onPostCrashReload === 'function') {
+  window.merlin.onPostCrashReload((payload) => {
+    try {
+      const existing = document.getElementById('post-crash-toast');
+      if (existing) existing.remove();
+      const toast = document.createElement('div');
+      toast.id = 'post-crash-toast';
+      toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:14px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(34,197,94,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.5;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease;display:flex;align-items:flex-start;gap:10px';
+      const reason = payload && typeof payload === 'object' && typeof payload.reason === 'string' ? payload.reason : '';
+      toast.innerHTML = `
+        <span style="font-size:16px;color:#22c55e;flex-shrink:0">✓</span>
+        <div style="flex:1">
+          <div style="font-weight:600;margin-bottom:2px;color:#22c55e">Merlin recovered from a hiccup</div>
+          <div style="color:rgba(228,228,231,0.85)">Your last turn is saved.${reason ? ` <span style="color:rgba(228,228,231,0.55);font-size:11px">(${String(reason).slice(0, 60)})</span>` : ''}</div>
+        </div>
+        <button id="post-crash-toast-close" style="background:transparent;border:none;color:rgba(228,228,231,0.5);cursor:pointer;font-size:16px;padding:0;line-height:1;flex-shrink:0">×</button>
+      `;
+      document.body.appendChild(toast);
+      requestAnimationFrame(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateY(0)';
+      });
+      const closeBtn = document.getElementById('post-crash-toast-close');
+      const hide = () => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateY(10px)';
+        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 320);
+      };
+      if (closeBtn) closeBtn.addEventListener('click', hide);
+      setTimeout(hide, 8000);
+    } catch {}
+  });
+}
+
+// ── MCP Progress Pills (Cluster-F payload) ──────────────────────
+//
+// REGRESSION GUARD (2026-04-23, §3.6, Cluster-M wiring):
+// Cluster-F emits per-tool progress via `window.merlin.onMcpProgress`
+// with payload `{channel, ts, tool, scrapeId, url, stage, label, pct,
+// detail?, errorCode?}`. Onboarding's brand_scrape step was previously
+// silent for 60-90s while Puppeteer crawled — paying users saw the
+// chat stall on "Now let me dig into the brand itself…" with no
+// heartbeat. The pill below is keyed by `scrapeId` so concurrent
+// scrapes (batch onboarding of multiple brands) each get their own
+// row; updates coalesce through `requestAnimationFrame` so a chatty
+// engine (10+ events/sec during render-wait) can't pin the main
+// thread. Stages other than 'brand_scrape' are ignored — if a future
+// tool wants a pill it must add an explicit case here, never auto-
+// surface unknown tools (would leak internal step names to end users).
+//
+// Lifecycle: first `start` event creates the pill. `progress` events
+// update label/pct. `done` holds the pill for 800ms then removes.
+// `error` holds for 2500ms (longer so users can read) then removes.
+// All DOM writes batched in a single rAF tick per flush.
+const _mcpProgressPills = new Map(); // scrapeId → {el, labelEl, barEl, pendingUpdate, removeTimer}
+let _mcpProgressRafScheduled = false;
+const _mcpProgressFlushQueue = new Set(); // scrapeIds with pending updates
+
+function _ensureMcpProgressContainer() {
+  let host = document.getElementById('mcp-progress-host');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'mcp-progress-host';
+    host.style.cssText = 'position:fixed;top:60px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:9998;pointer-events:none;max-width:320px';
+    document.body.appendChild(host);
+  }
+  return host;
+}
+
+function _scheduleMcpProgressFlush() {
+  if (_mcpProgressRafScheduled) return;
+  _mcpProgressRafScheduled = true;
+  requestAnimationFrame(() => {
+    _mcpProgressRafScheduled = false;
+    for (const scrapeId of _mcpProgressFlushQueue) {
+      const pill = _mcpProgressPills.get(scrapeId);
+      if (!pill || !pill.pendingUpdate) continue;
+      const { label, pct } = pill.pendingUpdate;
+      if (pill.labelEl && typeof label === 'string') pill.labelEl.textContent = label;
+      if (pill.barEl && typeof pct === 'number') {
+        const clamped = Math.max(0, Math.min(100, pct));
+        pill.barEl.style.width = `${clamped}%`;
+      }
+      pill.pendingUpdate = null;
+    }
+    _mcpProgressFlushQueue.clear();
+  });
+}
+
+function _createMcpProgressPill(scrapeId, initialLabel) {
+  const host = _ensureMcpProgressContainer();
+  const el = document.createElement('div');
+  el.className = 'mcp-progress-pill';
+  el.style.cssText = 'pointer-events:auto;padding:10px 14px;background:rgba(20,20,24,0.96);border:1px solid rgba(168,85,247,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.4;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(-6px);transition:all .3s ease';
+  el.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+      <span style="color:#a855f7;font-size:14px">✦</span>
+      <span class="mcp-progress-label" style="color:rgba(228,228,231,0.92);font-weight:500"></span>
+    </div>
+    <div style="height:3px;background:rgba(168,85,247,0.15);border-radius:2px;overflow:hidden">
+      <div class="mcp-progress-bar" style="height:100%;width:0%;background:#a855f7;transition:width .3s ease"></div>
+    </div>
+  `;
+  const labelEl = el.querySelector('.mcp-progress-label');
+  const barEl = el.querySelector('.mcp-progress-bar');
+  if (labelEl) labelEl.textContent = initialLabel || 'Working…';
+  host.appendChild(el);
+  requestAnimationFrame(() => {
+    el.style.opacity = '1';
+    el.style.transform = 'translateY(0)';
+  });
+  const pill = { el, labelEl, barEl, pendingUpdate: null, removeTimer: null };
+  _mcpProgressPills.set(scrapeId, pill);
+  return pill;
+}
+
+function _removeMcpProgressPill(scrapeId, holdMs) {
+  const pill = _mcpProgressPills.get(scrapeId);
+  if (!pill) return;
+  if (pill.removeTimer) clearTimeout(pill.removeTimer);
+  pill.removeTimer = setTimeout(() => {
+    if (!pill.el) return;
+    pill.el.style.opacity = '0';
+    pill.el.style.transform = 'translateY(-6px)';
+    setTimeout(() => {
+      if (pill.el && pill.el.parentNode) pill.el.parentNode.removeChild(pill.el);
+      _mcpProgressPills.delete(scrapeId);
+      _mcpProgressFlushQueue.delete(scrapeId);
+    }, 300);
+  }, holdMs);
+}
+
+if (window.merlin && typeof window.merlin.onMcpProgress === 'function') {
+  window.merlin.onMcpProgress((payload) => {
+    try {
+      if (!payload || typeof payload !== 'object') return;
+      if (payload.tool !== 'brand_scrape') return;
+      const scrapeId = payload.scrapeId || payload.url || 'brand_scrape';
+      const stage = payload.stage;
+      if (stage === 'start') {
+        if (!_mcpProgressPills.has(scrapeId)) {
+          _createMcpProgressPill(scrapeId, payload.label || 'Reading brand site…');
+        }
+        return;
+      }
+      if (stage === 'done') {
+        const pill = _mcpProgressPills.get(scrapeId);
+        if (pill) {
+          pill.pendingUpdate = { label: payload.label || 'Brand read.', pct: 100 };
+          _mcpProgressFlushQueue.add(scrapeId);
+          _scheduleMcpProgressFlush();
+        }
+        _removeMcpProgressPill(scrapeId, 800);
+        return;
+      }
+      if (stage === 'error') {
+        const pill = _mcpProgressPills.get(scrapeId);
+        if (pill) {
+          const msg = friendlyError(payload.label || payload.detail || payload.errorCode || 'Scrape failed', 'brand scrape');
+          pill.pendingUpdate = { label: msg, pct: 100 };
+          if (pill.barEl) pill.barEl.style.background = '#ef4444';
+          if (pill.el) pill.el.style.borderColor = 'rgba(239,68,68,0.4)';
+          _mcpProgressFlushQueue.add(scrapeId);
+          _scheduleMcpProgressFlush();
+        }
+        _removeMcpProgressPill(scrapeId, 2500);
+        return;
+      }
+      // progress / in-flight — coalesce through rAF
+      let pill = _mcpProgressPills.get(scrapeId);
+      if (!pill) pill = _createMcpProgressPill(scrapeId, payload.label || 'Reading brand site…');
+      pill.pendingUpdate = { label: payload.label, pct: payload.pct };
+      _mcpProgressFlushQueue.add(scrapeId);
+      _scheduleMcpProgressFlush();
+    } catch {}
+  });
+}
+
 // ── Mobile QR ───────────────────────────────────────────────
 function paintQrPayload(img, url, note, payload) {
   img.src = payload.qrDataUri;
@@ -2625,6 +3204,19 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   // bubble log. We repaint the chat synchronously so the switch feels
   // immediate; the new SDK session boots in the background. Never inferred
   // from conversation content — only this explicit dropdown change fires.
+  //
+  // §4.8: optimistic preseed — drop a placeholder bubble BEFORE awaiting
+  // the IPC so the chat doesn't freeze on the prior brand's transcript
+  // for the 150-450ms the swap takes. paintBrandThread below wipes it.
+  if (newBrand && prevBrand !== newBrand) {
+    const preseedLabel = (() => {
+      try {
+        const opt = e.target.querySelector(`option[value="${CSS.escape(newBrand)}"]`);
+        return opt?.textContent?.trim() || newBrand;
+      } catch { return newBrand; }
+    })();
+    preseedBrandSwitch(preseedLabel);
+  }
   let swapResult = null;
   if (newBrand) {
     try {
@@ -4661,8 +5253,43 @@ function flushUndoQueue() {
 
 // ── Input Handling ──────────────────────────────────────────
 // ── Ticking Timer ───────────────────────────────────────────
-let tickerInterval = null;
+//
+// REGRESSION GUARD (2026-04-23, §4.9):
+// The ticker previously ran on `setInterval(…, 1000)`, which fired every
+// second even while the main thread was busy rendering streaming tokens —
+// compounding jank because setInterval drifts and queues multiple callbacks
+// when the thread stalls. Moving to requestAnimationFrame achieves two
+// things: (a) the updater yields to the browser's compositor so large
+// streaming turns don't double-jank on the ticker callback, and (b) the
+// callback naturally pauses when the tab is backgrounded (rAF is suspended
+// in hidden tabs) — the old timer kept firing and rebuilding DOM for a tab
+// nobody was looking at. We additionally `_tickerPaused` while streaming
+// (`isStreaming === true`) so the ticker doesn't repaint every single
+// frame during heavy token bursts — we update only when the visible-second
+// boundary crosses. Never switch back to setInterval without reading this.
+let tickerRafHandle = null;
 let tickerEl = null;
+let _tickerStart = 0;
+let _tickerLastSec = -1;
+
+function _tickerLoop() {
+  tickerRafHandle = null;
+  if (!tickerEl) return;
+  const elapsed = Math.floor((Date.now() - _tickerStart) / 1000);
+  // Pause paint during streaming heavy bursts — we still advance the
+  // second counter below so the ticker jumps forward when we resume.
+  if (elapsed !== _tickerLastSec) {
+    _tickerLastSec = elapsed;
+    // Skip DOM write while streaming high-rate token deltas; the next
+    // finalize will refresh the visible second. Always paint first
+    // second so the ticker doesn't appear stuck at "0s" on turn start.
+    if (!isStreaming || elapsed < 2) {
+      tickerEl.textContent = `${elapsed}s...`;
+      scrollToBottom();
+    }
+  }
+  tickerRafHandle = requestAnimationFrame(_tickerLoop);
+}
 
 function startTickingTimer() {
   stopTickingTimer();
@@ -4671,16 +5298,13 @@ function startTickingTimer() {
   tickerEl.textContent = '0s';
   messages.appendChild(tickerEl);
   scrollToBottom();
-  const start = Date.now();
-  tickerInterval = setInterval(() => {
-    const elapsed = Math.floor((Date.now() - start) / 1000);
-    tickerEl.textContent = `${elapsed}s...`;
-    scrollToBottom();
-  }, 1000);
+  _tickerStart = Date.now();
+  _tickerLastSec = -1;
+  tickerRafHandle = requestAnimationFrame(_tickerLoop);
 }
 
 function stopTickingTimer() {
-  if (tickerInterval) { clearInterval(tickerInterval); tickerInterval = null; }
+  if (tickerRafHandle) { cancelAnimationFrame(tickerRafHandle); tickerRafHandle = null; }
   if (tickerEl) { tickerEl.remove(); tickerEl = null; }
 }
 
@@ -8230,9 +8854,18 @@ async function updateProgressBar() {
     const hasSales = connected && connected.some(c => salesPlatforms.includes(c.platform));
     const hasAds = connected && connected.some(c => !salesPlatforms.includes(c.platform) && !['fal','elevenlabs','heygen','slack','discord'].includes(c.platform));
 
+    // REGRESSION GUARD (2026-04-23, §3.14): 'goal' step sits between products
+    // and sales because the goal picker runs AFTER first-brand/first-product
+    // setup (personalizing the next chip) but BEFORE any ad-platform
+    // connection — dropping it later in the sequence leaves returning users
+    // stuck at "Next: sales" with no visible cue that their goal was never
+    // captured. Read the checkpoint safely; falling back to {} means legacy
+    // installs without a checkpoint show goal as not-yet-done (correct).
+    const checkpoint = await _readOnboardingCheckpointSafe();
     const steps = [
       { key: 'brand', done: brands && brands.length > 0 },
       { key: 'products', done: brands && brands.some(b => b.productCount > 0) },
+      { key: 'goal', done: !!(checkpoint && checkpoint.goal) },
       { key: 'sales', done: hasSales },
       { key: 'platform', done: hasAds },
       { key: 'automation', done: spells && spells.length > 0 },
@@ -8255,6 +8888,7 @@ async function updateProgressBar() {
     const nextLabels = {
       brand: 'Next: Set up a brand with Merlin before connecting your store.',
       products: 'Next: add at least one product so Merlin can create creative.',
+      goal: 'Next: tell Merlin what to tee up first.',
       sales: 'Next: connect your sales platform so Merlin can see store performance.',
       platform: 'Next: connect an ad platform like Meta, Google, or TikTok.',
       automation: 'Next: turn on your first automation.',
@@ -8269,6 +8903,22 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
 });
 
 // ── Init (after ToS check) ─────────────────────────────────
+//
+// REGRESSION GUARD (2026-04-23, §3.13+§3.14, Cluster-O DOM + Cluster-M wiring):
+// the first-run onboarding is a THREE-SCREEN flow — ToS (+ email opt-in) →
+// referral capture → goal picker. Previously all three signals were
+// crammed onto the ToS overlay, which (a) buried the referral field
+// below the long ToS text and (b) left no "what do you want to do first"
+// step to personalize the starter chips. The referral DOM moved out of
+// `#tos-overlay` into `#referral-capture-overlay` (Cluster-O commit
+// 23418b3); the preserved element IDs (`tos-has-referral`,
+// `tos-referral-input`, `tos-referral-wrap`, `tos-referral-status`) mean
+// the referral-apply logic below is bit-identical to what used to run
+// on tos-accept-btn click. The goal overlay's chip click persists the
+// chosen goal to the onboarding checkpoint (Cluster-L schema v1 key
+// `goal`) so the starter-chip rubric in init() reads the right preset.
+// Do NOT fold referral-apply back into the ToS click — doing so reverts
+// the UX regression and orphans the goal-picker step.
 (async function checkToS() {
   const accepted = await merlin.checkTosAccepted();
   if (accepted) {
@@ -8280,10 +8930,11 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
     const btn = document.getElementById('tos-accept-btn');
     cb.addEventListener('change', () => { btn.disabled = !cb.checked; });
 
-    // R1-3: first-run referral prompt. Because the landing page can't
-    // carry the ?ref= code through the installer, the user must paste
-    // it once. This is the only moment their intent is fresh, so we
-    // ask here rather than burying it in a side panel.
+    // Referral DOM now lives in `#referral-capture-overlay` (Cluster-O).
+    // IDs preserved so the refCheckbox/refInput/refStatus references below
+    // still resolve — only the TRIGGER (ToS accept vs. continue-button)
+    // moved. Wire the input handlers once at mount time; the actual
+    // referral-apply fires on `#referral-capture-continue` click below.
     const refCheckbox = document.getElementById('tos-has-referral');
     const refWrap = document.getElementById('tos-referral-wrap');
     const refInput = document.getElementById('tos-referral-input');
@@ -8299,46 +8950,109 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
       });
     }
 
+    // Shared helpers for the overlay transitions. Fade-out ToS → show
+    // referral overlay; fade-out referral → show goal overlay; goal
+    // chip click → hide + init(). Each transition uses the same .3s
+    // fadeOut style the original ToS flow used so motion stays coherent.
+    function _fadeHideOverlay(overlay, onDone) {
+      if (!overlay) { if (onDone) onDone(); return; }
+      overlay.style.animation = 'fadeOut .3s ease forwards';
+      setTimeout(() => {
+        overlay.classList.add('hidden');
+        overlay.style.animation = '';
+        if (onDone) onDone();
+      }, 300);
+    }
+    function _showOverlay(id) {
+      const ov = document.getElementById(id);
+      if (ov) ov.classList.remove('hidden');
+    }
+
+    // Goal chip click → persist + init(). Shared handler used by both
+    // `.goal-chip[data-goal]` clicks and the referral-continue path.
+    async function _finishOnboardingWithGoal(goal) {
+      // Fire-and-forget the checkpoint write — we never want a failed
+      // IPC to block the user from starting their session.
+      if (typeof goal === 'string' && goal) {
+        try { _writeOnboardingCheckpointSafe({ goal }); } catch {}
+      }
+      _fadeHideOverlay(document.getElementById('goal-overlay'), () => init());
+    }
+
+    // Referral-apply logic — lifted VERBATIM from the old tos-accept-btn
+    // handler. Only the surrounding trigger changed; the IDs + branch
+    // structure + copy are unchanged so existing behavior holds.
+    async function _applyReferralIfProvided() {
+      if (!(refCheckbox && refCheckbox.checked && refInput)) return;
+      const code = (refInput.value || '').trim().toLowerCase();
+      if (/^[0-9a-f]{8}$/.test(code)) {
+        try {
+          const result = await merlin.applyReferralCode(code);
+          if (result && result.success && refStatus) {
+            refStatus.textContent = `✦ Applied — your friend gets the bonus when you subscribe`;
+            refStatus.className = 'referral-apply-status success';
+          } else if (refStatus) {
+            refStatus.textContent = (result && result.error) || 'Could not apply code — you can retry in the Share Merlin panel';
+            refStatus.className = 'referral-apply-status error';
+            await new Promise(r => setTimeout(r, 800));
+          }
+        } catch {
+          if (refStatus) {
+            refStatus.textContent = 'Network error — retry later from the Share Merlin panel';
+            refStatus.className = 'referral-apply-status error';
+          }
+        }
+      } else if (refStatus && code) {
+        refStatus.textContent = 'Invalid format — retry later from the Share Merlin panel';
+        refStatus.className = 'referral-apply-status error';
+        await new Promise(r => setTimeout(r, 600));
+      }
+    }
+
+    // ToS accept → save + open referral overlay (NOT init()).
     btn.addEventListener('click', async () => {
       const emailOptIn = document.getElementById('email-optin-checkbox').checked;
       await merlin.acceptTos({ emailOptIn });
-
-      // Try to apply the referral code if the user provided one. We don't
-      // block the ToS flow on failure — just surface the error inline and
-      // still proceed into the app.
-      if (refCheckbox && refCheckbox.checked && refInput) {
-        const code = (refInput.value || '').trim().toLowerCase();
-        if (/^[0-9a-f]{8}$/.test(code)) {
-          try {
-            const result = await merlin.applyReferralCode(code);
-            if (result && result.success && refStatus) {
-              refStatus.textContent = `✦ Applied — your friend gets the bonus when you subscribe`;
-              refStatus.className = 'referral-apply-status success';
-            } else if (refStatus) {
-              refStatus.textContent = (result && result.error) || 'Could not apply code — you can retry in the Share Merlin panel';
-              refStatus.className = 'referral-apply-status error';
-              // Hold the modal briefly so the user can read the error
-              await new Promise(r => setTimeout(r, 800));
-            }
-          } catch {
-            if (refStatus) {
-              refStatus.textContent = 'Network error — retry later from the Share Merlin panel';
-              refStatus.className = 'referral-apply-status error';
-            }
-          }
-        } else if (refStatus && code) {
-          refStatus.textContent = 'Invalid format — retry later from the Share Merlin panel';
-          refStatus.className = 'referral-apply-status error';
-          await new Promise(r => setTimeout(r, 600));
-        }
-      }
-
-      document.getElementById('tos-overlay').style.animation = 'fadeOut .3s ease forwards';
-      setTimeout(() => {
-        document.getElementById('tos-overlay').classList.add('hidden');
-        document.getElementById('tos-overlay').style.animation = '';
-        init();
-      }, 300);
+      _fadeHideOverlay(document.getElementById('tos-overlay'), () => {
+        _showOverlay('referral-capture-overlay');
+      });
     });
+
+    // Referral continue → apply referral → open goal overlay.
+    const refContinueBtn = document.getElementById('referral-capture-continue');
+    if (refContinueBtn) {
+      refContinueBtn.addEventListener('click', async () => {
+        await _applyReferralIfProvided();
+        _fadeHideOverlay(document.getElementById('referral-capture-overlay'), () => {
+          _showOverlay('goal-overlay');
+        });
+      });
+    }
+
+    // Referral skip → skip referral apply → open goal overlay.
+    const refSkipBtn = document.getElementById('referral-capture-skip');
+    if (refSkipBtn) {
+      refSkipBtn.addEventListener('click', () => {
+        _fadeHideOverlay(document.getElementById('referral-capture-overlay'), () => {
+          _showOverlay('goal-overlay');
+        });
+      });
+    }
+
+    // Goal chip click → persist goal → init().
+    document.querySelectorAll('.goal-chip[data-goal]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        const goal = chip.getAttribute('data-goal') || '';
+        _finishOnboardingWithGoal(goal);
+      });
+    });
+
+    // Goal skip → no goal persisted → init().
+    const goalSkipBtn = document.getElementById('goal-skip');
+    if (goalSkipBtn) {
+      goalSkipBtn.addEventListener('click', () => {
+        _finishOnboardingWithGoal('');
+      });
+    }
   }
 })();
