@@ -21,8 +21,43 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const Module = require('node:module');
 
 const APP_DIR = __dirname;
+
+// ─────────────────────────────────────────────────────────────────────
+// ws-module stub — installed BEFORE any require('./ws-server')
+// ─────────────────────────────────────────────────────────────────────
+//
+// `ws-server.js` does `const { WebSocketServer } = require('ws')` at the
+// top of the module, but the CI workflow `.github/workflows/app-unit-tests.yml`
+// deliberately skips `npm install` (tests are meant to run on Node stdlib
+// + in-file stubs only — same pattern as `relay-client.test.js`). Without
+// this stub, loading `./ws-server` below fails with
+// `Error: Cannot find module 'ws'` and the whole file aborts before any
+// source-scan or runtime-behavior test runs. The stub is a no-op class —
+// the runtime-behavior tests below never call `start()`, so the fake
+// `WebSocketServer` never gets constructed; broadcast/hooks only touch
+// the client map which is managed in pure JS inside `ws-server.js`.
+const origResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, parent, ...rest) {
+  if (request === 'ws') return 'ws-stub';
+  return origResolve.call(this, request, parent, ...rest);
+};
+(function installWsStub() {
+  const wsStub = {};
+  wsStub.WebSocketServer = function FakeWebSocketServer() {
+    this.on = () => {};
+    this.close = () => {};
+    this.handleUpgrade = () => {};
+    this.emit = () => {};
+    this.clients = new Set();
+  };
+  wsStub.WebSocket = function FakeWebSocket() {};
+  wsStub.WebSocket.OPEN = 1;
+  wsStub.OPEN = 1;
+  require.cache['ws-stub'] = { id: 'ws-stub', filename: 'ws-stub', loaded: true, exports: wsStub };
+})();
 
 // ─────────────────────────────────────────────────────────────────────
 // Source-scan regression tests (Rule 11)
