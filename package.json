@@ -24,6 +24,14 @@
     "appId": "com.merlin.desktop",
     "productName": "Merlin",
     "asar": true,
+    "protocols": [
+      {
+        "name": "Merlin",
+        "schemes": [
+          "merlin"
+        ]
+      }
+    ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/claude-agent-sdk/**/*",
       "node_modules/onnxruntime-node/**/*",

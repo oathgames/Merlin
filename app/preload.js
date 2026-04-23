@@ -329,6 +329,48 @@ contextBridge.exposeInMainWorld('merlin', {
     const h = (_, err) => cb(err); ipcRenderer.on('update-error', h);
     return () => ipcRenderer.removeListener('update-error', h);
   },
+  // §2.7: merlin:// URLs routed in from open-url (Mac) or second-instance
+  // (Win/Linux). URL schema TBD; payload is the raw URL string — renderer
+  // parses it. Returns an unsubscribe handle.
+  onMerlinDeepLink: (cb) => {
+    const h = (_, url) => { try { cb(url); } catch {} };
+    ipcRenderer.on('merlin-deep-link', h);
+    return () => ipcRenderer.removeListener('merlin-deep-link', h);
+  },
+  // §3.6: progress events emitted by long-running MCP tools (brand_scrape,
+  // image/video generation). Payload shape is the envelope documented in
+  // app/mcp-tools.js § "Progress event emission" — { channel, tool,
+  // scrapeId, stage, label, pct?, url?, ts, detail? }. Callers typically
+  // filter by `tool` or `scrapeId` to correlate multi-stage events.
+  onMcpProgress: (cb) => {
+    const h = (_, payload) => { try { cb(payload); } catch {} };
+    ipcRenderer.on('mcp-progress', h);
+    return () => ipcRenderer.removeListener('mcp-progress', h);
+  },
+  // §3.9: OAuth pending-flow chips. Main process polls `oauth-pending-list`
+  // every 30s and pushes the result here; renderer renders a chip row in
+  // the connections panel. Payload: { pending: [{provider, provider_name,
+  // started_unix, expires_unix, minutes_remaining, auth_url}], checkedAt }.
+  onOAuthPending: (cb) => {
+    const h = (_, payload) => { try { cb(payload); } catch {} };
+    ipcRenderer.on('oauth-pending', h);
+    return () => ipcRenderer.removeListener('oauth-pending', h);
+  },
+  // §3.10: onboarding checkpoint persistence. Schema v1 whitelist:
+  // { pending_products_for_autopilot, vertical_confirmed, autopilot_asked,
+  //   goal, setup_step, tos_accepted_at, referral_captured }. Renderer reads
+  // at startup to resume the right screen; writes partial updates as the
+  // user advances through referral → goal → init().
+  readOnboardingCheckpoint: () => ipcRenderer.invoke('onboarding-checkpoint-read'),
+  writeOnboardingCheckpoint: (partial) => ipcRenderer.invoke('onboarding-checkpoint-write', partial),
+  // §6.2: fired once on did-finish-load after a render-process-gone reload.
+  // Renderer shows a one-shot "Merlin recovered from a hiccup" toast.
+  // Payload: { reason, exitCode }.
+  onPostCrashReload: (cb) => {
+    const h = (_, payload) => { try { cb(payload); } catch {} };
+    ipcRenderer.on('post-crash-reload', h);
+    return () => ipcRenderer.removeListener('post-crash-reload', h);
+  },
   onTrialExpired: (cb) => {
     const h = () => cb(); ipcRenderer.on('trial-expired', h);
     return () => ipcRenderer.removeListener('trial-expired', h);
@@ -377,6 +419,17 @@ contextBridge.exposeInMainWorld('merlin', {
     if (bytes.length > 50 * 1024 * 1024) throw new Error('audio too large');
     return ipcRenderer.invoke('transcribe-audio', bytes);
   },
+
+  // §2.6: OS-level mic permission. These wrap the Electron `systemPreferences`
+  // TCC helpers on macOS and are no-ops elsewhere (return granted=true).
+  // Use micPermissionStatus() before attempting getUserMedia on first launch
+  // so we can render a clean "Enable mic" card instead of a silent rejection.
+  // micPermissionRequest() shows the native TCC prompt exactly once; subsequent
+  // calls when the user previously denied return false silently — wire
+  // micPermissionOpenSettings() to the "Open System Settings" button.
+  micPermissionStatus: () => ipcRenderer.invoke('mic-permission-status'),
+  micPermissionRequest: () => ipcRenderer.invoke('mic-permission-request'),
+  micPermissionOpenSettings: () => ipcRenderer.invoke('mic-permission-open-settings'),
 
   // Voice output: text → Kokoro TTS → WAV bytes for playback in renderer.
   // Returns { success: true, audio: Uint8Array } | { aborted: true } | { error }.

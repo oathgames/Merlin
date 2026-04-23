@@ -31,6 +31,14 @@ const path = require('path');
 const JOB_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const DEFAULT_DIR_NAME = '.merlin-jobs';
 
+// Periodic prune cadence. Long-idle Electron sessions (user leaves Merlin
+// open overnight, one scrape at 9am and nothing until 3pm, etc.) previously
+// let terminal job records pile up in the registry because _pruneOld was
+// only invoked lazily on JobStore construction and NOT on any timer. A
+// persistent timer fires every PRUNE_INTERVAL_MS regardless of activity so
+// the registry stays bounded even in idle-all-day sessions.
+const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 // Terminal states — once reached, state is frozen except for retention cleanup.
 const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled']);
 
@@ -63,12 +71,62 @@ class JobStore {
     }
     this.dir = opts.dir;
     this.retentionMs = typeof opts.retentionMs === 'number' ? opts.retentionMs : JOB_RETENTION_MS;
+    this.pruneIntervalMs = typeof opts.pruneIntervalMs === 'number' ? opts.pruneIntervalMs : PRUNE_INTERVAL_MS;
     // In-memory registry of { jobId -> { cancelFn } } for running jobs. NOT
     // persisted — a restart loses the ability to cancel in-flight work, which
     // is fine because the binary process is also killed by the restart.
     this._cancelHandles = new Map();
+    // Re-entry guard for _pruneOld. The filesystem work is synchronous today
+    // but we may add an async prune path later; this guard makes the method
+    // safe to call concurrently regardless.
+    this._pruning = false;
+    // Handle for the periodic prune timer. `null` after shutdown(). Opting
+    // out entirely (pruneIntervalMs=0) is supported for tests.
+    this._pruneInterval = null;
     this._ensureDir();
     this._pruneOld();
+    this._startPruneInterval();
+  }
+
+  /**
+   * Start the periodic _pruneOld timer. Idempotent — a second call is a
+   * no-op while a timer is already active. The timer is unref'd so it
+   * never holds Electron's event loop open at app.quit().
+   */
+  _startPruneInterval() {
+    if (this._pruneInterval) return;
+    if (!this.pruneIntervalMs || this.pruneIntervalMs <= 0) return;
+    const timer = setInterval(() => {
+      this._pruneOld();
+    }, this.pruneIntervalMs);
+    // unref() on Node Timeout objects detaches the timer from the libuv
+    // ref count so Electron can exit cleanly on app.quit() without waiting
+    // for the next tick. Guard the call — in test/mocked environments the
+    // returned value may be a simple object without unref().
+    if (timer && typeof timer.unref === 'function') {
+      timer.unref();
+    }
+    this._pruneInterval = timer;
+  }
+
+  /**
+   * Clean shutdown — clears the periodic prune timer. Safe to call multiple
+   * times. Intended to be called from Electron's `before-quit` handler
+   * (Cluster-L owns main.js wiring).
+   */
+  shutdown() {
+    this._stopPruneInterval();
+  }
+
+  /**
+   * Explicit alias for shutdown() — stops only the prune interval, in case
+   * callers want a narrower verb. Both names are kept in the public surface.
+   */
+  _stopPruneInterval() {
+    if (this._pruneInterval) {
+      clearInterval(this._pruneInterval);
+      this._pruneInterval = null;
+    }
   }
 
   _ensureDir() {
@@ -296,30 +354,53 @@ class JobStore {
   }
 
   /**
-   * Prune terminal jobs older than retentionMs. Called on construction and
-   * safely callable on a cron. Never touches non-terminal jobs.
+   * Prune terminal jobs older than retentionMs. Called on construction, on
+   * every enqueue path that needs it, and by the periodic 6h timer. Never
+   * touches non-terminal jobs. Re-entry is guarded — if a second call
+   * arrives while one is in progress, the second call is a no-op.
    */
   _pruneOld() {
-    let names;
+    if (this._pruning) return { dropped: 0, bytesFreed: 0, skipped: true };
+    this._pruning = true;
+    let dropped = 0;
+    let bytesFreed = 0;
     try {
-      names = fs.readdirSync(this.dir);
-    } catch {
-      return;
-    }
-    const now = Date.now();
-    for (const name of names) {
-      if (!name.endsWith('.json')) continue;
-      const fp = path.join(this.dir, name);
-      let raw;
-      try { raw = fs.readFileSync(fp, 'utf8'); } catch { continue; }
-      let job;
-      try { job = JSON.parse(raw); } catch { continue; }
-      if (!job || !TERMINAL_STATES.has(job.state)) continue;
-      if (now - (job.updatedAt || 0) > this.retentionMs) {
-        try { fs.unlinkSync(fp); } catch {}
+      let names;
+      try {
+        names = fs.readdirSync(this.dir);
+      } catch {
+        return { dropped, bytesFreed, skipped: false };
       }
+      const now = Date.now();
+      for (const name of names) {
+        if (!name.endsWith('.json')) continue;
+        const fp = path.join(this.dir, name);
+        let raw;
+        try { raw = fs.readFileSync(fp, 'utf8'); } catch { continue; }
+        let job;
+        try { job = JSON.parse(raw); } catch { continue; }
+        if (!job || !TERMINAL_STATES.has(job.state)) continue;
+        if (now - (job.updatedAt || 0) > this.retentionMs) {
+          const size = Buffer.byteLength(raw, 'utf8');
+          try {
+            fs.unlinkSync(fp);
+            dropped += 1;
+            bytesFreed += size;
+          } catch {}
+        }
+      }
+      if (dropped > 0) {
+        // Match the convention used by sibling mcp-* modules: `[module]` prefix
+        // at console.debug for non-error visibility.
+        try {
+          console.debug(`[mcp-jobs] pruned ${dropped} terminal job(s), freed ${bytesFreed} bytes`);
+        } catch {}
+      }
+      return { dropped, bytesFreed, skipped: false };
+    } finally {
+      this._pruning = false;
     }
   }
 }
 
-module.exports = { JobStore, JOB_RETENTION_MS, TERMINAL_STATES, DEFAULT_DIR_NAME };
+module.exports = { JobStore, JOB_RETENTION_MS, PRUNE_INTERVAL_MS, TERMINAL_STATES, DEFAULT_DIR_NAME };

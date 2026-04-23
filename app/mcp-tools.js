@@ -28,6 +28,113 @@ const { defineTool } = require('./mcp-define-tool');
 const { DEFAULT_POLICIES } = require('./mcp-preview');
 const { buildMetaIntentTools } = require('./mcp-meta-intent');
 
+// ── Progress event emission (Task 3.1) ───────────────────────
+//
+// MCP tools cannot stream partial results from a single tool call — the
+// call settles exactly once. For long-running tools like `brand_scrape`
+// (up to 90s), we fire progress EVENTS via ctx.emitProgress so the
+// renderer (Cluster-M §3.6) can animate a live pill without blocking
+// the agent. The model still narrates from its own side (SKILL.md
+// "Narration exception for long tools" section added by Cluster-E);
+// this channel is UI-only.
+//
+// Event shape (every payload carries these fields):
+//   {
+//     channel: 'mcp-progress',          // fixed string; preload.js routes on this
+//     tool:    'brand_scrape',          // originating tool name
+//     scrapeId: '<32 hex>',             // unique per invocation, correlates multi-stage UI
+//     stage:   'start' | 'scanning' | 'done' | 'error' | 'timeout',
+//     label:   'Reading homepage',      // short human label — matches SKILL narration examples
+//     pct:     0.0 .. 1.0,              // optional coarse progress
+//     url:     'https://...',           // original request URL
+//     ts:      <unix-ms>,               // event timestamp
+//     detail?: { products?: number, logoCandidates?: number, logoColors?: number,
+//                secondaryPages?: number, error?: string },
+//   }
+//
+// emitScrapeProgress is a no-op when ctx.emitProgress is missing (unit
+// tests, older Electron hosts that haven't wired the IPC channel yet).
+// Errors inside the emitter NEVER propagate — this is best-effort telemetry.
+function emitScrapeProgress(ctx, payload) {
+  if (!ctx || typeof ctx.emitProgress !== 'function') return;
+  try {
+    ctx.emitProgress(Object.assign({
+      channel: 'mcp-progress',
+      ts: Date.now(),
+    }, payload));
+  } catch (_) { /* never let a telemetry emit crash a tool call */ }
+}
+
+// ── Scrape-timeout tracker (Task 3.2) ────────────────────────
+//
+// Per-URL "did this URL already time out in this session?" tracker, so
+// a SECOND scrape timeout on the same URL bumps the agent into the
+// manual-entry fallback path instead of looping on retry_or_split
+// forever. Scoped to the module (not global), 10-minute TTL per entry,
+// bounded in size so a pathological agent that generates thousands of
+// distinct URLs cannot leak memory. LRU-ish: when we exceed the cap, we
+// drop the oldest half of entries (cheap, predictable, no heap growth).
+const SCRAPE_TIMEOUT_TTL_MS = 10 * 60 * 1000;      // 10 minutes
+const SCRAPE_TIMEOUT_MAX_ENTRIES = 512;            // bound memory footprint
+const _scrapeTimeoutTracker = new Map();           // url → timeoutAtMs (expiry)
+
+// Normalize a URL for tracking. Different case / trailing-slash variants
+// of the same site should count as the SAME url, otherwise the fallback
+// never triggers (the agent retries with `https://Example.com/` after
+// `https://example.com` timed out and we miss the match). Best-effort —
+// if parsing fails we fall back to the raw trimmed string.
+function _normalizeTrackedUrl(raw) {
+  if (!raw || typeof raw !== 'string') return '';
+  const trimmed = raw.trim();
+  try {
+    const u = new URL(trimmed);
+    const host = (u.hostname || '').toLowerCase();
+    const pathname = (u.pathname || '/').replace(/\/+$/, '') || '/';
+    return `${u.protocol}//${host}${pathname}${u.search || ''}`;
+  } catch (_) {
+    return trimmed.toLowerCase();
+  }
+}
+
+function _pruneScrapeTimeoutTracker(now) {
+  // Drop expired entries.
+  for (const [k, exp] of _scrapeTimeoutTracker) {
+    if (exp <= now) _scrapeTimeoutTracker.delete(k);
+  }
+  // Cap size — drop the oldest ~half if we're still over the limit.
+  if (_scrapeTimeoutTracker.size > SCRAPE_TIMEOUT_MAX_ENTRIES) {
+    const drop = Math.ceil(_scrapeTimeoutTracker.size / 2);
+    const it = _scrapeTimeoutTracker.keys();
+    for (let i = 0; i < drop; i++) {
+      const k = it.next().value;
+      if (k === undefined) break;
+      _scrapeTimeoutTracker.delete(k);
+    }
+  }
+}
+
+function _hasRecentScrapeTimeout(url) {
+  const key = _normalizeTrackedUrl(url);
+  if (!key) return false;
+  const now = Date.now();
+  _pruneScrapeTimeoutTracker(now);
+  const exp = _scrapeTimeoutTracker.get(key);
+  return typeof exp === 'number' && exp > now;
+}
+
+function _recordScrapeTimeout(url) {
+  const key = _normalizeTrackedUrl(url);
+  if (!key) return;
+  const now = Date.now();
+  _scrapeTimeoutTracker.set(key, now + SCRAPE_TIMEOUT_TTL_MS);
+  _pruneScrapeTimeoutTracker(now);
+}
+
+// Test-only — resets the tracker between tests so order doesn't leak.
+function _resetScrapeTimeoutTrackerForTests() {
+  _scrapeTimeoutTracker.clear();
+}
+
 // ── Budget validation ────────────────────────────────────────
 //
 // Claude occasionally pre-converts dollar budgets to cents (e.g. passes 1000
@@ -975,6 +1082,21 @@ function buildTools(tool, z, ctx) {
           message: `brand-scraper module failed to load: ${e.message}`,
         }));
       }
+
+      // Per-invocation correlation ID — lets the renderer (Cluster-M §3.6)
+      // stitch multi-stage progress events for a single scrape into one pill
+      // even if another scrape starts before this one finishes.
+      const scrapeId = crypto.randomBytes(16).toString('hex');
+      const startedAt = Date.now();
+      emitScrapeProgress(ctx, {
+        tool: 'brand_scrape',
+        scrapeId,
+        stage: 'start',
+        label: 'Reading homepage',
+        pct: 0.05,
+        url,
+      });
+
       try {
         const signal = await scrapeBrand(url);
         if (!includeScreenshots && signal.screenshots) {
@@ -987,6 +1109,43 @@ function buildTools(tool, z, ctx) {
           if (signal.homepage_html) signal.homepage_html = '[elided — pass includeHtml:true]';
           if (signal.about_html) signal.about_html = '[elided — pass includeHtml:true]';
         }
+
+        // Derive counts the UI + SKILL narration can mirror. Defensive —
+        // the signal shape is authored by brand-scraper.js; if any field
+        // moves or goes missing we still emit a clean `done` event rather
+        // than crashing the handler.
+        const primary = (signal && signal.primary) || {};
+        const productTitles = Array.isArray(primary.copy && primary.copy.productTitles)
+          ? primary.copy.productTitles.length : 0;
+        const logoCandidates = Array.isArray(primary.logoCandidates)
+          ? primary.logoCandidates.length : 0;
+        const logoColors = Array.isArray(signal && signal.logoColors)
+          ? signal.logoColors.length : 0;
+        const secondaryPages = Array.isArray(signal && signal.secondaryPages)
+          ? signal.secondaryPages.length : 0;
+
+        emitScrapeProgress(ctx, {
+          tool: 'brand_scrape',
+          scrapeId,
+          stage: 'done',
+          // Matches the "Found 14 products" / "Downloaded logo" vocabulary
+          // called out in the narration-exception section of merlin-setup
+          // SKILL.md (Cluster-E commit 32a78b2). If this wording ever drifts,
+          // update the SKILL narration examples in lockstep.
+          label: productTitles > 0
+            ? `Found ${productTitles} product${productTitles === 1 ? '' : 's'}`
+            : 'Scrape complete',
+          pct: 1,
+          url,
+          detail: {
+            products: productTitles,
+            logoCandidates,
+            logoColors,
+            secondaryPages,
+            elapsedMs: Date.now() - startedAt,
+          },
+        });
+
         return { summary: `Scraped ${url}`, signal };
       } catch (e) {
         // REGRESSION GUARD (2026-04-20): every scrape failure must map to
@@ -998,10 +1157,103 @@ function buildTools(tool, z, ctx) {
         const raw = (e && e.message) || String(e);
         const isTimeout = (e && e.code === 'TIMEOUT') || /timed? ?out|ScrapeTimeoutError/i.test(raw);
         if (isTimeout) {
+          // Task 3.2 — second timeout within 10min on the SAME URL bumps
+          // the agent into the manual-entry fallback path. First timeout
+          // still returns retry_or_split (the existing Rule-13-compliant
+          // behavior). `_hasRecentScrapeTimeout` is checked BEFORE we
+          // record the new timeout so "first scrape ever for this URL"
+          // does not false-fire the fallback. The structured `data`
+          // payload the Electron UI uses to render a manual-entry card
+          // is documented in merlin-setup SKILL.md — keep the field names
+          // in sync with that guide.
+          const repeated = _hasRecentScrapeTimeout(url);
+          _recordScrapeTimeout(url);
+
+          emitScrapeProgress(ctx, {
+            tool: 'brand_scrape',
+            scrapeId,
+            stage: 'timeout',
+            label: repeated
+              ? 'Still timing out — switching to manual entry'
+              : 'Scrape timed out — you can retry',
+            pct: 1,
+            url,
+            detail: { repeated, elapsedMs: Date.now() - startedAt },
+          });
+
+          if (repeated) {
+            return envelope.fail(
+              errors.makeError('TIMEOUT', {
+                message: `We couldn't reach ${url} twice in a row. Skip the scrape and enter your brand basics manually — it takes about 30 seconds.`,
+                next_action: 'manual_entry_fallback',
+              }),
+              {
+                data: {
+                  // Schema the renderer uses to draw the manual-entry card.
+                  // Cluster-M (§3.6 pill) should NOT consume this — this is
+                  // for the model / a future renderer card. The pill
+                  // listens to ctx.emitProgress(mcp-progress) events; this
+                  // payload is for the agent-side prompt flow.
+                  manualEntry: {
+                    url,
+                    reason: 'repeat_scrape_timeout',
+                    // Field keys match the shapes merlin-setup SKILL.md
+                    // asks for during brand onboarding — keep these in
+                    // sync with the SKILL's brand.md scaffolding.
+                    fields: [
+                      {
+                        key: 'brandName',
+                        label: 'Brand name',
+                        placeholder: 'e.g. Madchill',
+                        required: true,
+                      },
+                      {
+                        key: 'vertical',
+                        label: 'What kind of business?',
+                        type: 'choice',
+                        options: [
+                          'Ecommerce/DTC',
+                          'SaaS/Software',
+                          'Agency/Service',
+                          'Other',
+                        ],
+                        required: true,
+                      },
+                      {
+                        key: 'productList',
+                        label: 'Products or offerings (one per line)',
+                        type: 'multiline',
+                        placeholder: 'Classic Hoodie\nEveryday Jogger\n...',
+                        required: false,
+                      },
+                      {
+                        key: 'logoPath',
+                        label: 'Drag your logo here (optional)',
+                        type: 'file',
+                        accept: 'image/png,image/jpeg,image/svg+xml',
+                        required: false,
+                      },
+                    ],
+                  },
+                },
+              },
+            );
+          }
+
           return envelope.fail(errors.makeError('TIMEOUT', {
             message: `Brand scrape took too long for ${url}. The site may be slow or blocking automated requests. Retry, or try the apex domain (e.g. https://example.com) instead of a subpath.`,
           }));
         }
+
+        emitScrapeProgress(ctx, {
+          tool: 'brand_scrape',
+          scrapeId,
+          stage: 'error',
+          label: 'Scrape failed',
+          pct: 1,
+          url,
+          detail: { elapsedMs: Date.now() - startedAt, error: 'internal' },
+        });
         return envelope.fail(errors.makeError('INTERNAL_ERROR', {
           message: `Scrape failed: ${redactOutput(raw, '')}`,
         }));
@@ -1220,4 +1472,9 @@ module.exports = {
   isBrandMissing,
   BRAND_OPTIONAL_ACTIONS,
   BUDGET_HARD_CEILING,
+  // Progress + fallback internals — exported so tests can clear the tracker
+  // between runs. `_resetScrapeTimeoutTrackerForTests` MUST NOT be called
+  // from production code; it exists solely to keep test isolation clean.
+  _resetScrapeTimeoutTrackerForTests,
+  SCRAPE_TIMEOUT_TTL_MS,
 };

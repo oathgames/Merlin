@@ -16,7 +16,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { buildTools, runBinary } = require('./mcp-tools');
+const {
+  buildTools,
+  runBinary,
+  _resetScrapeTimeoutTrackerForTests,
+} = require('./mcp-tools');
 const envelope = require('./mcp-envelope');
 
 // ─────────────────────────────────────────────────────────────────────
@@ -354,4 +358,254 @@ test('platform_login returns success without leaking tokens', async () => {
   assert.equal(env.ok, true);
   assert.equal(env.data.success, true);
   assert.equal(env.data.platform, 'shopify');
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Progress-event emission (Task 3.1, rsi-batch-1 Cluster-F)
+//
+// brand_scrape is the canonical long-running tool (up to 90s). The MCP
+// contract settles ONCE, so the renderer needs out-of-band progress
+// events to animate a pill / status line. These tests pin the event
+// shape Cluster-M (§3.6) consumes — drift here silently breaks the UI.
+//
+// Channel: 'mcp-progress'
+// Every payload must carry: channel, tool, scrapeId, stage, label, url, ts.
+// Stages: start → done (happy path) OR start → timeout OR start → error.
+// ─────────────────────────────────────────────────────────────────────
+
+function makeCtxCapturingProgress() {
+  const events = [];
+  const ctx = makeCtx({
+    emitProgress: (payload) => { events.push(payload); },
+  });
+  return { ctx, events };
+}
+
+test('brand_scrape emits start + done progress events on happy path', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  const { ctx, events } = makeCtxCapturingProgress();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+  const stub = {
+    scrapeBrand: async () => ({
+      url: 'https://madchill.com',
+      primary: {
+        copy: { productTitles: ['Classic Hoodie', 'Joggers', 'Tee'] },
+        logoCandidates: [{ src: 'https://cdn/logo.png', source: 'json-ld', weight: 100 }],
+      },
+      logoColors: [{ hex: '#000000', freq: 0.5 }, { hex: '#ffffff', freq: 0.3 }],
+      secondaryPages: [{ url: 'https://madchill.com/about', signal: {} }],
+    }),
+  };
+  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://madchill.com' }));
+  const env = envelope.parse(out);
+  assert.ok(env);
+  assert.equal(env.ok, true);
+
+  // At minimum: one start event + one done event (may have more in future).
+  assert.ok(events.length >= 2, `expected >=2 progress events, got ${events.length}`);
+  const start = events[0];
+  const done = events[events.length - 1];
+
+  // Start event — cold-narration label the SKILL mirrors.
+  assert.equal(start.channel, 'mcp-progress');
+  assert.equal(start.tool, 'brand_scrape');
+  assert.equal(start.stage, 'start');
+  assert.equal(start.label, 'Reading homepage');
+  assert.equal(start.url, 'https://madchill.com');
+  assert.ok(typeof start.scrapeId === 'string' && start.scrapeId.length >= 16);
+  assert.ok(typeof start.ts === 'number' && start.ts > 0);
+
+  // Done event — derived counts match SKILL narration examples.
+  assert.equal(done.channel, 'mcp-progress');
+  assert.equal(done.stage, 'done');
+  assert.match(done.label, /Found 3 products/);
+  assert.equal(done.url, 'https://madchill.com');
+  assert.equal(done.scrapeId, start.scrapeId, 'scrapeId must be stable across events for one invocation');
+  assert.ok(done.detail);
+  assert.equal(done.detail.products, 3);
+  assert.equal(done.detail.logoCandidates, 1);
+  assert.equal(done.detail.logoColors, 2);
+  assert.equal(done.detail.secondaryPages, 1);
+  assert.ok(typeof done.detail.elapsedMs === 'number');
+});
+
+test('brand_scrape progress event "done" label falls back to "Scrape complete" when zero products', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  const { ctx, events } = makeCtxCapturingProgress();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+  const stub = {
+    scrapeBrand: async () => ({
+      url: 'https://example-saas.com',
+      primary: { copy: { productTitles: [] }, logoCandidates: [] },
+      logoColors: [],
+      secondaryPages: [],
+    }),
+  };
+  await withStubbedScraper(stub, () => entry.handler({ url: 'https://example-saas.com' }));
+  const done = events[events.length - 1];
+  assert.equal(done.stage, 'done');
+  assert.equal(done.label, 'Scrape complete');
+  assert.equal(done.detail.products, 0);
+});
+
+test('brand_scrape progress emission is no-op when ctx.emitProgress is missing', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  // makeCtx() intentionally omits emitProgress so this exercises the
+  // graceful no-op path the pre-wiring Electron host will be in.
+  const ctx = makeCtx();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+  const stub = {
+    scrapeBrand: async () => ({
+      url: 'https://noprogress.com',
+      primary: { copy: { productTitles: [] }, logoCandidates: [] },
+      logoColors: [],
+      secondaryPages: [],
+    }),
+  };
+  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://noprogress.com' }));
+  const env = envelope.parse(out);
+  assert.ok(env);
+  assert.equal(env.ok, true, 'scrape must succeed even without an emitProgress wiring');
+});
+
+test('brand_scrape emits error progress event on non-timeout failures', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  const { ctx, events } = makeCtxCapturingProgress();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+  const stub = {
+    scrapeBrand: async () => { throw new Error('brand-scraper: dns fail'); },
+  };
+  await withStubbedScraper(stub, () => entry.handler({ url: 'https://nosuch.example/' }));
+  const err = events[events.length - 1];
+  assert.equal(err.stage, 'error');
+  assert.equal(err.tool, 'brand_scrape');
+  assert.equal(err.url, 'https://nosuch.example/');
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Manual-entry fallback on repeat timeout (Task 3.2, rsi-batch-1 Cluster-F)
+//
+// First timeout → classic retry_or_split envelope (Rule 13 compatible).
+// Second timeout on the SAME URL within 10min → manual_entry_fallback,
+// carrying a structured payload the UI can render into a fill-in card.
+// ─────────────────────────────────────────────────────────────────────
+
+function timeoutStub() {
+  return {
+    scrapeBrand: async () => {
+      const err = new Error('brand-scraper: overall timed out after 90000ms');
+      err.name = 'ScrapeTimeoutError';
+      err.code = 'TIMEOUT';
+      throw err;
+    },
+  };
+}
+
+test('brand_scrape first timeout still returns retry_or_split (Rule 13 preserved)', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  const { ctx, events } = makeCtxCapturingProgress();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+
+  const out = await withStubbedScraper(timeoutStub(), () =>
+    entry.handler({ url: 'https://first-timeout.example/' }));
+  const env = envelope.parse(out);
+  assert.ok(env);
+  assert.equal(env.ok, false);
+  assert.equal(env.error.code, 'TIMEOUT');
+  assert.equal(env.error.next_action, 'retry_or_split');
+  // Progress event must flag this as a non-repeat so Cluster-M's pill can
+  // show "timed out — retrying" instead of the terminal manual-entry label.
+  const evt = events[events.length - 1];
+  assert.equal(evt.stage, 'timeout');
+  assert.equal(evt.detail.repeated, false);
+  assert.match(evt.label, /retry/i);
+});
+
+test('brand_scrape second timeout on same URL triggers manual_entry_fallback', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  const { ctx, events } = makeCtxCapturingProgress();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+
+  // First timeout (retry_or_split).
+  await withStubbedScraper(timeoutStub(), () =>
+    entry.handler({ url: 'https://repeat-timeout.example/' }));
+  // Second timeout (manual_entry_fallback).
+  const out2 = await withStubbedScraper(timeoutStub(), () =>
+    entry.handler({ url: 'https://repeat-timeout.example/' }));
+
+  const env = envelope.parse(out2);
+  assert.ok(env);
+  assert.equal(env.ok, false);
+  assert.equal(env.error.code, 'TIMEOUT');
+  assert.equal(env.error.next_action, 'manual_entry_fallback',
+    'second timeout must route to manual entry, not retry_or_split');
+  assert.match(env.error.message, /manually/i);
+
+  // Structured payload the UI uses to render the fill-in card.
+  assert.ok(env.data, 'fallback response must carry a data envelope');
+  assert.ok(env.data.manualEntry, 'data.manualEntry is required for the fallback UI');
+  assert.equal(env.data.manualEntry.reason, 'repeat_scrape_timeout');
+  assert.equal(env.data.manualEntry.url, 'https://repeat-timeout.example/');
+  assert.ok(Array.isArray(env.data.manualEntry.fields));
+  // The schema MUST cover the four core onboarding inputs the SKILL
+  // relies on: brand name, vertical, product list, logo. Without these
+  // the photo-drop fallback line in merlin-setup SKILL.md cannot resolve.
+  const fieldKeys = env.data.manualEntry.fields.map(f => f.key);
+  for (const required of ['brandName', 'vertical', 'productList', 'logoPath']) {
+    assert.ok(fieldKeys.includes(required), `manualEntry.fields is missing "${required}"`);
+  }
+
+  // Progress event for the second timeout must flag repeated=true.
+  const evt = events[events.length - 1];
+  assert.equal(evt.stage, 'timeout');
+  assert.equal(evt.detail.repeated, true);
+});
+
+test('brand_scrape manual-entry tracker treats URL variants as the same site', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  const { ctx } = makeCtxCapturingProgress();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+
+  // First timeout with trailing slash.
+  await withStubbedScraper(timeoutStub(), () =>
+    entry.handler({ url: 'https://variant.example/' }));
+  // Second timeout without trailing slash + different case should normalize
+  // to the same tracked URL and trip the fallback.
+  const out2 = await withStubbedScraper(timeoutStub(), () =>
+    entry.handler({ url: 'https://Variant.example' }));
+  const env = envelope.parse(out2);
+  assert.equal(env.error.next_action, 'manual_entry_fallback');
+});
+
+test('brand_scrape manual-entry tracker does NOT cross-contaminate different URLs', async () => {
+  _resetScrapeTimeoutTrackerForTests();
+  const { tool, registry } = makeFakeTool();
+  const { ctx } = makeCtxCapturingProgress();
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'brand_scrape');
+
+  // Timeout for site A.
+  await withStubbedScraper(timeoutStub(), () =>
+    entry.handler({ url: 'https://site-a.example/' }));
+  // First timeout for site B (different origin) must still be retry_or_split,
+  // not manual_entry_fallback — the tracker is per-URL, not global.
+  const outB = await withStubbedScraper(timeoutStub(), () =>
+    entry.handler({ url: 'https://site-b.example/' }));
+  const envB = envelope.parse(outB);
+  assert.equal(envB.error.next_action, 'retry_or_split',
+    'first-ever timeout for a NEW URL must not borrow another URL\'s fallback state');
 });

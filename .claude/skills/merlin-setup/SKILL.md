@@ -12,6 +12,8 @@ bytes_justification: 38KB — setup is loaded only on first run per brand (rare)
 DO NOT print any ASCII art, banners, feature lists, or folder structure diagrams.
 DO NOT narrate each setup step. The app has a native progress bar — do the work silently and show results (images, final summary). No play-by-play.
 
+**Narration exception for long tools (>5s expected duration):** the silent-preflight rule above applies to fast tools. For any tool expected to take more than ~5 seconds — currently `brand_scrape` (up to 90s), the vertical detection pass inside the scrape, and any product-import step (`/products.json` fetch + image downloads) — the model MAY emit ONE short in-progress status line when the tool starts, plus one short status line for each interim progress event the tool emits (e.g. "Read homepage", "Found 14 products", "Downloaded logo"). Keep each line to a single sentence, no headers, no bullet lists. These tools emit structured progress events (see `mcp-tools.js` progress emit pattern); mirror the event's own short label rather than inventing prose. Fast tools (`connection_status`, `config`, `goal-set`, `platform_login` pre-auth, etc.) stay fully silent — this exception narrows to the long scrape/import path only.
+
 **The goal: WOW the user in 30 seconds.** Show their own content back to them — logo, products, images — in real time.
 
 ### A) Brand + Product setup
@@ -23,6 +25,18 @@ DO NOT narrate each setup step. The app has a native progress bar — do the wor
 - **SaaS/Software**: skip Shopify entirely. Focus on ad platforms (Meta/Google/TikTok), landing audits, blog/SEO, social. Products = features or plans.
 - **Agency/Service**: skip Shopify. Focus on lead-gen ads, landing pages, email.
 - NEVER suggest "import from Shopify" for non-ecommerce brands — it confuses users.
+
+**VERTICAL CONFIRMATION (MANDATORY — do not skip).** Immediately after `brand_scrape` returns a detected vertical, and BEFORE any vertical-specific branching (Shopify connect prompt, product import, automation questions), use `AskUserQuestion` to confirm the detected vertical with the user. Schema:
+- Question: *"I read your site as **[detected vertical]** — is that right?"*
+- Options: exactly 4 chips, in this order:
+  1. The detected vertical (the default answer, phrased as an affirmative e.g. *"Yes — Ecommerce/DTC"*).
+  2. Three likely alternates chosen from the vertical taxonomy based on the brand signal — e.g. if scrape detected Ecommerce/DTC, alternates are `SaaS/Software`, `Agency/Service`, `Something else` (let me describe). If scrape detected SaaS, alternates are `Ecommerce/DTC`, `Agency/Service`, `Something else`. Keep the chip list to exactly 4 total (per clarify-intent SKILL rules on chip count).
+- Descriptions: one short line per chip, plain English (e.g. *"Physical products, Shopify-style"*, *"Subscription software / app"*, *"Agency, consulting, or local service"*, *"Let me describe it"*).
+- If the user picks the detected vertical: proceed with that vertical's flow.
+- If the user picks an alternate: persist the user-confirmed vertical (overriding the scrape detection) and branch to that vertical's flow.
+- If the user picks `Something else`: ask ONE free-text follow-up, then persist whatever vertical label the user gave.
+- Persist the **confirmed** vertical to `brand.md`'s `vertical:` field — this is the authoritative value used by all downstream routing. Do NOT write the pre-confirmation detected value.
+- Cross-cluster: the onboarding state file (Cluster-L §3.10) should flip `vertical_confirmed: true` after this question resolves so the question is not re-asked on a resumed session.
 
 2. **Do all of this silently — no step narration, just show results:**
 
@@ -78,6 +92,14 @@ DO NOT narrate each setup step. The app has a native progress bar — do the wor
    - The goal file is user-editable markdown — they can open it in any editor and add priorities / constraints / context prose. Reading is via `{"action": "goal-get", "brand": "<brand>"}`.
 
    **Automation (CONSENT REQUIRED — ask the user before creating scheduled tasks):**
+
+   **Product-count gate (MANDATORY — do not ask autopilot consent without products).** Before showing the autopilot consent question, check `productCount` — the number of products successfully imported from the scrape / `/products.json` / photo drop. Branch:
+   - **`productCount >= 1`** → proceed with the autopilot consent question below.
+   - **`productCount === 0`** → **skip the autopilot question entirely.** Creating daily-creative / ad-optimize spells before any product exists produces empty, embarrassing output on the first run. Instead, surface one single-line prompt:
+
+     *"Drop product photos or a product URL to enable daily creatives."*
+
+     Set the onboarding-state flag `pending_products_for_autopilot: true` on the onboarding checkpoint file (Cluster-L §3.10 owns the persistence — write through whatever helper that cluster exposes). On a future launch, after at least one product exists, the onboarding flow reads this flag and re-asks the autopilot consent question at that point. Skip sections B and the autopilot-branch summary; jump to the `autopilot-off` / "no products yet" final-summary variant that tells the user how to drop products and invites them to the Spellbook later.
 
    Scheduled tasks will generate creatives, kill/scale ads, and adjust budgets without per-action confirmation — so they require explicit opt-in. Do NOT call `mcp__scheduled-tasks__create_scheduled_task` before the user answers the question below. Use `AskUserQuestion` with ONE question first:
 

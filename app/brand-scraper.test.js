@@ -24,6 +24,10 @@ const {
   raceWithTimeout,
   executeJsWithTimeout,
   ScrapeTimeoutError,
+  isUsefulPartial,
+  settleOverallRace,
+  clonePartial,
+  SCRAPE_STAGES,
   DEFAULT_OVERALL_TIMEOUT_MS,
   DEFAULT_EXECUTE_JS_TIMEOUT_MS,
   DEFAULT_LOGO_FETCH_TIMEOUT_MS,
@@ -463,5 +467,292 @@ test('REGRESSION GUARD (2026-04-20): brand-scraper only constructs ONE BrowserWi
     1,
     `brand-scraper.js must construct exactly one BrowserWindow (found ${matches.length}). ` +
     `Any new scraper BrowserWindow needs its own hardened config and its own test coverage.`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// Task 3.5 — partial BrandSignal on overall timeout.
+//
+// When the outer 90s race fires, scrapeBrand no longer drops everything —
+// it resolves with { ok: false, partial, timed_out_stage, error } so the
+// caller can decide (via isUsefulPartial) whether the partial is rich
+// enough to proceed. Non-timeout rejects still propagate unchanged.
+//
+// `scrapeBrand` can't be directly unit-tested without Electron, so the
+// timeout contract is exercised via the extracted `settleOverallRace`
+// helper that wraps the same race + branch. The happy-path shape is
+// exercised via a mocked body promise.
+// ─────────────────────────────────────────────────────────────────────
+
+test('isUsefulPartial: empty partial is not useful', () => {
+  assert.equal(isUsefulPartial(undefined), false);
+  assert.equal(isUsefulPartial(null), false);
+  assert.equal(isUsefulPartial({}), false);
+  assert.equal(isUsefulPartial({ url: 'https://x.test/' }), false);
+});
+
+test('isUsefulPartial: title alone is not enough (threshold is >=2 of 4)', () => {
+  const p = { primary: { copy: { title: 'Acme Supply Co' } } };
+  assert.equal(isUsefulPartial(p), false);
+});
+
+test('isUsefulPartial: title + description passes the threshold', () => {
+  const p = {
+    primary: {
+      copy: {
+        title: 'Acme Supply Co',
+        metaDescription: 'Hand-dipped candles and small-batch soap',
+      },
+    },
+  };
+  assert.equal(isUsefulPartial(p), true);
+});
+
+test('isUsefulPartial: heroParagraph counts as description', () => {
+  const p = {
+    primary: {
+      copy: {
+        title: 'Acme',
+        heroParagraph: 'Small-batch candles from Vermont.',
+      },
+    },
+  };
+  assert.equal(isUsefulPartial(p), true);
+});
+
+test('isUsefulPartial: products + logoColors (no title, no desc) still passes', () => {
+  const p = {
+    primary: {
+      copy: { productTitles: ['Candle A', 'Candle B'] },
+      logoCandidates: [],
+    },
+    logoColors: [{ hex: '#ff6f00', freq: 0.4 }],
+  };
+  assert.equal(isUsefulPartial(p), true);
+});
+
+test('isUsefulPartial: whitespace-only title does NOT count', () => {
+  const p = {
+    primary: {
+      copy: {
+        title: '   ',
+        metaDescription: 'About us',
+      },
+    },
+  };
+  // Only 1 signal (description) — below threshold.
+  assert.equal(isUsefulPartial(p), false);
+});
+
+test('isUsefulPartial: logoCandidates present counts as logo signal', () => {
+  const p = {
+    primary: {
+      copy: { title: 'Acme' },
+      logoCandidates: [{ src: 'https://acme.test/logo.png', weight: 100 }],
+    },
+  };
+  assert.equal(isUsefulPartial(p), true);
+});
+
+test('isUsefulPartial: empty arrays do not count', () => {
+  const p = {
+    primary: {
+      copy: { title: 'Acme', productTitles: [] },
+      logoCandidates: [],
+    },
+    logoColors: [],
+  };
+  // Only title populated — below threshold.
+  assert.equal(isUsefulPartial(p), false);
+});
+
+test('settleOverallRace: overall timeout resolves with populated partial + timed_out_stage', async () => {
+  // Body that never settles — simulate a scrape that hangs past 90s.
+  const body = new Promise(() => {});
+  const partial = {
+    url: 'https://acme.test/',
+    capturedAt: '2026-04-23T12:00:00.000Z',
+    primary: {
+      copy: {
+        title: 'Acme Supply Co',
+        metaDescription: 'Hand-dipped candles from Vermont',
+        productTitles: ['Beeswax Candle', 'Soy Taper'],
+      },
+      logoCandidates: [{ src: 'https://acme.test/logo.png', weight: 100 }],
+    },
+  };
+  let killed = false;
+  const res = await settleOverallRace(body, 20, {
+    getPartial: () => partial,
+    getStage: () => 'logo-quantize',
+    killWindow: () => { killed = true; },
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.timed_out_stage, 'logo-quantize');
+  assert.match(res.error, /timed out after 20ms/);
+  // Partial is JSON-cloned (deep copy, not the same reference).
+  assert.notEqual(res.partial, partial);
+  assert.equal(res.partial.primary.copy.title, 'Acme Supply Co');
+  assert.equal(res.partial.primary.copy.productTitles.length, 2);
+  assert.equal(killed, true, 'killWindow side-effect must fire on overall timeout');
+  // Contract with Cluster-F: isUsefulPartial on the returned partial
+  // correctly classifies it as useful.
+  assert.equal(isUsefulPartial(res.partial), true);
+});
+
+test('settleOverallRace: overall timeout with empty partial → isUsefulPartial false', async () => {
+  // Body never settles; partial never got populated because primary-load
+  // itself hung.
+  const body = new Promise(() => {});
+  const partial = {
+    url: 'https://slowsite.test/',
+    capturedAt: '2026-04-23T12:00:00.000Z',
+  };
+  const res = await settleOverallRace(body, 20, {
+    getPartial: () => partial,
+    getStage: () => 'primary-load',
+    killWindow: () => {},
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.timed_out_stage, 'primary-load');
+  // Caller MUST be able to distinguish "partial timeout we can use" from
+  // "full timeout, show manual entry" via isUsefulPartial.
+  assert.equal(isUsefulPartial(res.partial), false);
+});
+
+test('settleOverallRace: happy path passes body result through unchanged', async () => {
+  const fullResult = {
+    ok: true,
+    url: 'https://acme.test/',
+    capturedAt: '2026-04-23T12:00:00.000Z',
+    primary: { copy: { title: 'Acme' } },
+    screenshots: { desktop: 'base64...', mobile: 'base64...' },
+    logoColors: [{ hex: '#ff6f00', freq: 0.4 }],
+    secondaryPages: [],
+    partial: { url: 'https://acme.test/', capturedAt: '2026-04-23T12:00:00.000Z' },
+  };
+  const body = Promise.resolve(fullResult);
+  const res = await settleOverallRace(body, 1000, {
+    getPartial: () => ({}),
+    getStage: () => 'complete',
+    killWindow: () => {},
+  });
+  assert.equal(res, fullResult, 'happy-path result must be returned by identity');
+  assert.equal(res.ok, true);
+});
+
+test('settleOverallRace: inner timeout (non-overall stage) still propagates as throw', async () => {
+  // Simulates an inner ScrapeTimeoutError (e.g. executeJavaScript:collectSignal)
+  // — these must NOT be caught and converted to a partial resolve; the caller's
+  // existing error classifier depends on them reaching the catch.
+  const innerErr = new ScrapeTimeoutError('inner stall', { stage: 'executeJavaScript:collectSignal', elapsedMs: 15000 });
+  const body = Promise.reject(innerErr);
+  await assert.rejects(
+    () => settleOverallRace(body, 1000, {
+      getPartial: () => ({}),
+      getStage: () => 'primary-signal',
+      killWindow: () => {},
+    }),
+    (err) => {
+      assert.ok(err instanceof ScrapeTimeoutError);
+      assert.equal(err.stage, 'executeJavaScript:collectSignal');
+      return true;
+    },
+  );
+});
+
+test('settleOverallRace: non-TIMEOUT errors (navigation fail, SSRF) still propagate as throw', async () => {
+  const navErr = new Error('navigation failed: DNS resolve error (-105) for https://foo.test/');
+  const body = Promise.reject(navErr);
+  await assert.rejects(
+    () => settleOverallRace(body, 1000, {
+      getPartial: () => ({}),
+      getStage: () => 'primary-load',
+      killWindow: () => {},
+    }),
+    /navigation failed/,
+  );
+});
+
+test('settleOverallRace: overall timeout clonePartial is deep — mutating original does not affect result', async () => {
+  const body = new Promise(() => {});
+  const partial = {
+    url: 'https://acme.test/',
+    primary: { copy: { title: 'Acme', productTitles: ['A', 'B'] } },
+  };
+  const res = await settleOverallRace(body, 20, {
+    getPartial: () => partial,
+    getStage: () => 'secondary-pages',
+    killWindow: () => {},
+  });
+  assert.equal(res.ok, false);
+  // Mutate the original after the race has resolved — the returned
+  // partial must be a deep clone, not the live accumulator reference.
+  partial.primary.copy.title = 'MUTATED';
+  partial.primary.copy.productTitles.push('C');
+  assert.equal(res.partial.primary.copy.title, 'Acme');
+  assert.equal(res.partial.primary.copy.productTitles.length, 2);
+});
+
+test('clonePartial: strips non-serializable values per REGRESSION GUARD (2026-04-23)', () => {
+  // A future stage authors must not accidentally write a BrowserWindow
+  // or other Electron handle into `partial`. JSON.stringify drops
+  // functions and handles some circular refs cleanly; anything that
+  // throws falls back to the safe subset.
+  const withFn = { url: 'https://x.test/', secret: () => 42 };
+  const cloned = clonePartial(withFn);
+  assert.equal(cloned.url, 'https://x.test/');
+  assert.equal(cloned.secret, undefined, 'functions must be dropped on clone');
+
+  // Circular refs fall back to the shallow-safe subset.
+  const circular = { url: 'https://c.test/', capturedAt: '2026-04-23T00:00:00Z' };
+  circular.self = circular;
+  const cc = clonePartial(circular);
+  assert.equal(cc.url, 'https://c.test/');
+  assert.equal(cc.capturedAt, '2026-04-23T00:00:00Z');
+  // The 'self' field is either stripped or the whole thing fell back
+  // to the safe subset — either way, no stack overflow, no crash.
+});
+
+test('clonePartial: handles null/undefined input without throwing', () => {
+  assert.deepEqual(clonePartial(null), {});
+  assert.deepEqual(clonePartial(undefined), {});
+});
+
+test('SCRAPE_STAGES: exposed in a stable order matching the scrapeBrand flow', () => {
+  // If a future refactor inserts a new stage, append it near the right
+  // position and keep 'complete' last. This test documents the contract.
+  assert.ok(Array.isArray(SCRAPE_STAGES));
+  assert.ok(SCRAPE_STAGES.includes('pre-navigation'));
+  assert.ok(SCRAPE_STAGES.includes('primary-load'));
+  assert.ok(SCRAPE_STAGES.includes('primary-signal'));
+  assert.ok(SCRAPE_STAGES.includes('secondary-pages'));
+  assert.ok(SCRAPE_STAGES.includes('logo-quantize'));
+  assert.equal(SCRAPE_STAGES[SCRAPE_STAGES.length - 1], 'complete');
+});
+
+// REGRESSION GUARD (2026-04-23): The scrapeBrand return shape is the
+// Cluster-F <-> Cluster-G contract. Both ok paths return `{ ok, url,
+// capturedAt, primary, screenshots, logoColors, secondaryPages, partial }`;
+// the timeout path returns `{ ok:false, partial, timed_out_stage, error }`.
+// The shape is exercised end-to-end by settleOverallRace tests above;
+// this source-scan pins the invariant that scrapeBrand keeps using
+// `settleOverallRace` as the single exit point (not raceWithTimeout
+// directly) so the partial-resolve branch can never be bypassed.
+test('REGRESSION GUARD (2026-04-23): scrapeBrand routes through settleOverallRace, not raw raceWithTimeout', () => {
+  // Extract just the body of scrapeBrand — matches from "async function scrapeBrand"
+  // to the first top-level close-brace.
+  const fnMatch = SCRAPER_SOURCE.match(/async function scrapeBrand\b[\s\S]*?^}/m);
+  assert.ok(fnMatch, 'scrapeBrand function body not found in source');
+  const body = fnMatch[0];
+  assert.match(
+    body,
+    /return\s+settleOverallRace\b/,
+    'scrapeBrand must return via settleOverallRace so the partial-timeout branch is guaranteed reachable',
+  );
+  assert.doesNotMatch(
+    body,
+    /return\s+raceWithTimeout\b/,
+    'scrapeBrand must NOT return raceWithTimeout directly — that path rejects on timeout and drops the partial signal',
   );
 });

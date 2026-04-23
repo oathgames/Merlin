@@ -10,7 +10,22 @@
 // the weighting rules that separate brand colors from framework defaults.
 //
 // Public API:
-//   scrapeBrand(url, { timeoutMs, extraPages }) → Promise<BrandSignal>
+//   scrapeBrand(url, { timeoutMs, extraPages }) → Promise<ScrapeResult>
+//     where ScrapeResult is one of:
+//       // Happy path (all stages completed):
+//       { ok: true, url, capturedAt, primary, screenshots, logoColors,
+//         secondaryPages, partial }
+//       // Overall (90s) timeout — partial-return contract (Task 3.5):
+//       { ok: false, partial, timed_out_stage, error }
+//   isUsefulPartial(partial) → boolean
+//     True if ≥2 of {title, description, products, logo} are populated.
+//     Cluster-F's MCP handler uses this to decide: partial usable → resolve
+//     with partial envelope; below threshold → treat as full timeout and
+//     route to manual-entry fallback.
+//
+// Non-overall rejections (SSRF guard, navigation failure, inner
+// executeJavaScript timeouts) still throw — the caller's existing error
+// classifier depends on that path.
 //
 // Design notes:
 // - Hidden BrowserWindow; show:false means the window is never visible.
@@ -216,6 +231,31 @@ function executeJsWithTimeout(win, script, stage, timeoutMs) {
   );
 }
 
+// REGRESSION GUARD (2026-04-23): `partial` must contain ONLY plain serializable
+// values (strings, numbers, booleans, arrays of same, plain objects). Never
+// write a BrowserWindow handle, a WebContents reference, an OffscreenCanvas,
+// a Blob, or any other Electron/DOM object into `partial`. The object is
+// returned to the caller (mcp-tools.js brand_scrape handler) which stringifies
+// it into an MCP envelope; any non-serializable field crashes the envelope
+// builder with a TypeError at the exact moment the user needs a graceful
+// timeout fallback. If you add a new stage, confirm its output passes through
+// a `JSON.parse(JSON.stringify(...))` roundtrip in the test suite before
+// appending it to `partial`.
+//
+// Stages (in execution order), each writing to `partial` the moment its value
+// is known. Ordered so the earliest/cheapest signal lands first — if the
+// overall 90s race fires at second N, the partial reflects everything up to
+// stage-break N.
+const SCRAPE_STAGES = /** @type {const} */ ([
+  'pre-navigation',    // default before any work
+  'primary-load',      // homepage navigation in flight
+  'primary-signal',    // primary.signal collected (title/copy/palette/logos)
+  'primary-screenshot',// desktop + mobile capturePage complete
+  'secondary-pages',   // extra /about, /products etc crawl
+  'logo-quantize',     // quantizeLogoColors running against best candidate
+  'complete',          // all stages done — happy path
+]);
+
 async function scrapeBrand(url, opts = {}) {
   const timeoutMs = opts.timeoutMs || DEFAULT_TIMEOUT_MS;
   const overallTimeoutMs = opts.overallTimeoutMs || DEFAULT_OVERALL_TIMEOUT_MS;
@@ -275,13 +315,38 @@ async function scrapeBrand(url, opts = {}) {
   // per-call timeouts above have been bypassed by a pathological page.
   const killWindow = () => { if (!win.isDestroyed()) win.destroy(); };
 
+  // Shared partial accumulator. Written to incrementally by `body`; read by
+  // the outer timeout path to produce a partial result instead of total loss.
+  // Stays serializable per the REGRESSION GUARD above.
+  const partial = {
+    url: normalized,
+    capturedAt: new Date().toISOString(),
+  };
+  // Current stage pointer — advanced in lockstep with the async flow.
+  // On overall timeout, this is the value reported back as `timed_out_stage`.
+  let currentStage = 'pre-navigation';
+
   const body = (async () => {
     try {
+      currentStage = 'primary-load';
       const primary = await capturePage(win, normalized, timeoutMs);
+      // Stage 1 output: primary signal (title, copy, palette, logos, typography).
+      // Store immediately so a timeout during secondary-pages or logo-quantize
+      // still returns this.
+      currentStage = 'primary-signal';
+      if (primary && primary.signal) {
+        partial.primary = primary.signal;
+      }
+      currentStage = 'primary-screenshot';
+      if (primary && primary.screenshots) {
+        partial.screenshots = primary.screenshots;
+      }
 
       // Best-effort secondary pages for richer copy/palette signal. Failures
       // don't block the guide — we just lose a bit of signal.
+      currentStage = 'secondary-pages';
       const secondary = [];
+      partial.secondaryPages = secondary; // mutated by reference as we go
       for (const subpath of extraPages) {
         if (win.isDestroyed()) break;
         const subUrl = joinUrl(normalized, subpath);
@@ -294,24 +359,106 @@ async function scrapeBrand(url, opts = {}) {
 
       // Quantize dominant colors from the best logo candidate (if raster).
       // This is best-effort; failures never block the guide.
+      currentStage = 'logo-quantize';
       const logoColors = await quantizeLogoColors(win, primary.signal.logoCandidates, normalized);
+      partial.logoColors = logoColors;
 
+      currentStage = 'complete';
+      // Happy-path return — superset of `partial`, plus the envelope fields
+      // Cluster-F's MCP handler keys off.
       return {
+        ok: true,
         url: normalized,
-        capturedAt: new Date().toISOString(),
+        capturedAt: partial.capturedAt,
         primary: primary.signal,
         screenshots: primary.screenshots,       // { desktop: base64png, mobile: base64png }
         logoColors,                              // [{hex, freq}] from Canvas quantization
         secondaryPages: secondary,               // copy & palette from /about, /products, etc.
+        // Mirror of the accumulator so the caller can uniformly pick .partial
+        // regardless of ok/!ok — simplifies Cluster-F's envelope mapper.
+        partial: clonePartial(partial),
       };
     } finally {
       killWindow();
     }
   })();
 
-  // Outer wall-clock race. If the body hangs past overallTimeoutMs, destroy
-  // the window (unwinds pending Electron promises) and reject with TIMEOUT.
-  return raceWithTimeout(body, overallTimeoutMs, 'overall', killWindow);
+  return settleOverallRace(body, overallTimeoutMs, {
+    getPartial: () => partial,
+    getStage: () => currentStage,
+    killWindow,
+  });
+}
+
+// Settle the outer 90s race in one place so the "overall-timeout → partial
+// resolve, inner-timeout → rethrow, happy-path → pass through" contract can
+// be unit tested without spinning up an Electron BrowserWindow. The whole
+// file's partial-return contract lives and dies with this helper; Cluster-F
+// consumes its output shape directly.
+async function settleOverallRace(bodyPromise, overallTimeoutMs, { getPartial, getStage, killWindow }) {
+  try {
+    return await raceWithTimeout(bodyPromise, overallTimeoutMs, 'overall', killWindow);
+  } catch (err) {
+    if (err instanceof ScrapeTimeoutError && err.stage === 'overall') {
+      // Body is abandoned (window destroyed, inner promise will reject and be
+      // swallowed by its finally). Return the accumulator snapshot. Whichever
+      // stage was mid-flight is reported via `timed_out_stage`.
+      return {
+        ok: false,
+        partial: clonePartial(typeof getPartial === 'function' ? getPartial() : {}),
+        timed_out_stage: typeof getStage === 'function' ? getStage() : 'unknown',
+        error: err.message,
+      };
+    }
+    // Inner timeouts (collectSignal, capturePage:desktop, quantizeLogoColors,
+    // etc.) surface as ScrapeTimeoutError with a non-'overall' stage — those
+    // still propagate so the caller's existing catch classifies them. Any
+    // other Error (navigation failure, SSRF from subpath) also propagates.
+    throw err;
+  }
+}
+
+// Clone the accumulator into a plain JSON-serializable object. Guards the
+// REGRESSION GUARD above: a JSON roundtrip is the cheapest proof that the
+// payload contains no Electron/DOM handles. If a stage ever writes a non-
+// serializable value, this roundtrip strips it silently (acceptable — the
+// field is lost, but the envelope stays valid).
+function clonePartial(p) {
+  try {
+    return JSON.parse(JSON.stringify(p || {}));
+  } catch (_) {
+    // JSON.stringify threw (circular ref or BigInt). Fall back to a shallow
+    // defensive copy of known-safe fields only.
+    return {
+      url: p && typeof p.url === 'string' ? p.url : null,
+      capturedAt: p && typeof p.capturedAt === 'string' ? p.capturedAt : null,
+    };
+  }
+}
+
+// Decide whether a partial scrape result is rich enough to proceed with.
+// Threshold: ≥2 of {title, description, products, logo} populated. Below
+// that, the caller should treat the scrape as a full timeout and route to
+// the manual-entry fallback (3.2). Above it, the caller can prefill the
+// brand guide with what we got and ask the user to fill the rest.
+//
+// Pure helper — no I/O, no mutation. Cluster-F's test imports this directly.
+function isUsefulPartial(partial) {
+  if (!partial || typeof partial !== 'object') return false;
+  const primary = partial.primary || {};
+  const copy = primary.copy || {};
+
+  const hasTitle = typeof copy.title === 'string' && copy.title.trim().length > 0;
+  const hasDescription =
+    (typeof copy.metaDescription === 'string' && copy.metaDescription.trim().length > 0) ||
+    (typeof copy.heroParagraph === 'string' && copy.heroParagraph.trim().length > 0);
+  const hasProducts = Array.isArray(copy.productTitles) && copy.productTitles.length > 0;
+  const hasLogo =
+    (Array.isArray(primary.logoCandidates) && primary.logoCandidates.length > 0) ||
+    (Array.isArray(partial.logoColors) && partial.logoColors.length > 0);
+
+  const score = [hasTitle, hasDescription, hasProducts, hasLogo].filter(Boolean).length;
+  return score >= 2;
 }
 
 async function capturePage(win, url, timeoutMs, opts = {}) {
@@ -1002,6 +1149,10 @@ module.exports = {
   raceWithTimeout,
   executeJsWithTimeout,
   ScrapeTimeoutError,
+  isUsefulPartial,
+  settleOverallRace,
+  clonePartial,
+  SCRAPE_STAGES,
   DEFAULT_OVERALL_TIMEOUT_MS,
   DEFAULT_EXECUTE_JS_TIMEOUT_MS,
   DEFAULT_LOGO_FETCH_TIMEOUT_MS,

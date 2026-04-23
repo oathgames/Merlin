@@ -98,13 +98,40 @@ async function createMerlinMcpServer(ctx) {
 
   const allTools = buildTools(tool, z, ctx);
 
+  // §4.6 — stabilize MCP tool-block bytes across releases so Anthropic's
+  // prompt cache keeps hitting on the tool-definitions prefix.
+  //
+  // The Claude Agent SDK auto-applies `cache_control: { type: 'ephemeral' }`
+  // on the system + tools block; the breakpoint lives between `tools` and
+  // the first user turn. Any byte that changes in the tools block
+  // invalidates the cached prefix, so the first message of every session
+  // after a release would re-tokenize the full tool schema (~15-20k
+  // tokens across our ~20 MCP tools — that's a ~1-2s latency hit + a few
+  // cents per user on every first turn).
+  //
+  // Server name is ALREADY stable ('merlin' → tools surface as
+  // `mcp__merlin__<name>` in the schema). What we previously burned
+  // cache on was `version: require('../package.json').version` — a
+  // version bump nudged the tools-block bytes and nuked the prefix.
+  //
+  // Pin to a stable sentinel. The SDK only uses `version` for MCP
+  // introspection responses (`initialize`, `ping`) — it's NOT
+  // load-bearing for tool dispatch or for the agent's prompt. The app
+  // version we actually care about (shipped to users, displayed in
+  // About) lives in package.json and is unaffected.
+  //
+  // If you ever BUMP this sentinel, expect one cache-miss latency spike
+  // per user on the first message of the release and plan comms
+  // accordingly. Do not make it a computed value.
+  const MCP_TOOL_SCHEMA_VERSION = '1.0.0';
+
   const server = createSdkMcpServer({
     name: 'merlin',
-    version: require('../package.json').version,
+    version: MCP_TOOL_SCHEMA_VERSION,
     tools: allTools,
   });
 
-  console.log(`[mcp] Merlin server registered with ${allTools.length} tools`);
+  console.log(`[mcp] Merlin server registered with ${allTools.length} tools (schema v${MCP_TOOL_SCHEMA_VERSION})`);
   return server;
 }
 

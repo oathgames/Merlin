@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { JobStore, TERMINAL_STATES } = require('./mcp-jobs');
+const { JobStore, TERMINAL_STATES, PRUNE_INTERVAL_MS } = require('./mcp-jobs');
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'merlin-jobs-test-'));
@@ -222,4 +222,102 @@ test('TERMINAL_STATES contains the expected states', () => {
   assert.ok(TERMINAL_STATES.has('cancelled'));
   assert.equal(TERMINAL_STATES.has('running'), false);
   assert.equal(TERMINAL_STATES.has('queued'), false);
+});
+
+// ── Periodic prune timer (task 5.5) ─────────────────────────────
+
+test('PRUNE_INTERVAL_MS defaults to 6 hours', () => {
+  assert.equal(PRUNE_INTERVAL_MS, 6 * 60 * 60 * 1000);
+});
+
+test('timer is created on construction and has unref() applied', () => {
+  const store = new JobStore({ dir: tmpDir() });
+  // Timer handle is exposed via the private field so tests can introspect.
+  assert.ok(store._pruneInterval, 'constructor must start a prune timer');
+  // Node Timeout objects are also Refable — confirm the timer is currently
+  // unref'd so Electron can exit on app.quit() without waiting for the
+  // next prune. Node exposes hasRef() on Timeout objects.
+  if (typeof store._pruneInterval.hasRef === 'function') {
+    assert.equal(store._pruneInterval.hasRef(), false, 'timer must be unref\'d');
+  }
+  store.shutdown();
+});
+
+test('shutdown() clears the periodic prune timer', () => {
+  const store = new JobStore({ dir: tmpDir() });
+  assert.ok(store._pruneInterval);
+  store.shutdown();
+  assert.equal(store._pruneInterval, null);
+  // Idempotent — second shutdown is a no-op, not a throw.
+  store.shutdown();
+  assert.equal(store._pruneInterval, null);
+});
+
+test('_stopPruneInterval() is an alias that also clears the timer', () => {
+  const store = new JobStore({ dir: tmpDir() });
+  assert.ok(store._pruneInterval);
+  store._stopPruneInterval();
+  assert.equal(store._pruneInterval, null);
+});
+
+test('periodic timer calls _pruneOld every pruneIntervalMs (mock timers)', async (t) => {
+  // Use node:test mock timers to advance fake time without waiting 6 real
+  // hours. Drive a short pruneIntervalMs so we can fire multiple ticks.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const store = new JobStore({ dir: tmpDir(), pruneIntervalMs: 1000 });
+
+  let callCount = 0;
+  const originalPrune = store._pruneOld.bind(store);
+  store._pruneOld = function () {
+    callCount += 1;
+    return originalPrune();
+  };
+
+  // Advance fake time 3 intervals — expect 3 periodic invocations.
+  t.mock.timers.tick(3100);
+  assert.equal(callCount, 3, `expected 3 ticks, got ${callCount}`);
+
+  store.shutdown();
+  // After shutdown, further ticks must not call _pruneOld.
+  t.mock.timers.tick(5000);
+  assert.equal(callCount, 3, 'shutdown() must stop further periodic prunes');
+
+  t.mock.timers.reset();
+});
+
+test('_pruneOld drops terminal jobs past retention and returns count/bytes', async () => {
+  const dir = tmpDir();
+  // Use a very short retention so we don't have to mock Date.
+  const store = new JobStore({ dir, retentionMs: 10, pruneIntervalMs: 0 });
+  const { jobId } = store.start({
+    tool: 'test_tool',
+    runFn: async () => ({ ok: true, data: null }),
+  });
+  await waitForState(store, jobId, 'done');
+  // Wait past retention.
+  await tick(30);
+  const result = store._pruneOld();
+  assert.ok(result.dropped >= 1, `expected >=1 dropped, got ${result.dropped}`);
+  assert.ok(result.bytesFreed > 0, `expected bytesFreed>0, got ${result.bytesFreed}`);
+  assert.equal(store.get(jobId), null, 'job file must be removed after prune');
+  store.shutdown();
+});
+
+test('_pruneOld re-entry is guarded (skipped:true on concurrent call)', () => {
+  const store = new JobStore({ dir: tmpDir(), pruneIntervalMs: 0 });
+  // Force the guard state then call — simulates a re-entrant invocation.
+  store._pruning = true;
+  const result = store._pruneOld();
+  assert.equal(result.skipped, true);
+  assert.equal(result.dropped, 0);
+  // Reset so shutdown path doesn't leave the flag dirty for GC.
+  store._pruning = false;
+  store.shutdown();
+});
+
+test('pruneIntervalMs:0 opts out of the periodic timer', () => {
+  const store = new JobStore({ dir: tmpDir(), pruneIntervalMs: 0 });
+  assert.equal(store._pruneInterval, null, 'no timer should be scheduled');
+  // shutdown() on a store without a timer is still safe.
+  store.shutdown();
 });

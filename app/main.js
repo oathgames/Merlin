@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, Tray, shell, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, nativeTheme, Menu, Tray, shell, safeStorage, systemPreferences } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -155,24 +155,111 @@ function installApplicationMenu() {
   }
 })();
 
-// Report crashes to Wisdom API for structured error monitoring
-process.on('uncaughtException', (err) => {
-  console.error('[CRASH]', err);
+// §6.4 / §6.5 — Crash telemetry + auto-restart with loop cap.
+//
+// Strategy: every hard error (uncaughtException OR renderer crash) fires
+// a best-effort wisdom ping, then relaunches AT MOST 3 times in a 10-
+// minute window. Past the cap the process exits without relaunch so a
+// deterministic crash (bad config, corrupt state) doesn't pin the CPU
+// in a spin loop that's worse UX than a single "Merlin crashed" dialog.
+//
+// The cap lives on disk because every relaunch is a fresh process and
+// in-memory counters reset. Stored under StateDir as .merlin-relaunch
+// (a small JSON {windowStartMs, count}). Lives next to merlin-config
+// so it's covered by the hook blocklist.
+//
+// For unhandledRejection: previously console-log only. Now forwarded to
+// the wisdom ping channel as `e: 'unhandled_rejection'`. This is NOT a
+// relaunch trigger — rejected promises rarely indicate a process-wide
+// fault and relaunching on every one would trigger the 3/10 cap on an
+// install with any chatty async library.
+
+const RELAUNCH_STATE_FILE = '.merlin-relaunch';
+const RELAUNCH_CAP = 3;
+const RELAUNCH_WINDOW_MS = 10 * 60 * 1000;
+
+function _relaunchStatePath() {
+  try { return stateFile(RELAUNCH_STATE_FILE); } catch { return null; }
+}
+function _readRelaunchState() {
+  const p = _relaunchStatePath();
+  if (!p) return { windowStartMs: 0, count: 0 };
+  try {
+    const raw = fs.readFileSync(p, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object') {
+      return {
+        windowStartMs: Number(parsed.windowStartMs) || 0,
+        count: Number(parsed.count) || 0,
+      };
+    }
+  } catch {}
+  return { windowStartMs: 0, count: 0 };
+}
+function _writeRelaunchState(state) {
+  const p = _relaunchStatePath();
+  if (!p) return;
+  try {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(state), { mode: 0o600 });
+  } catch {}
+}
+function _tryRelaunchWithCap() {
+  const now = Date.now();
+  const state = _readRelaunchState();
+  // Window-reset: if the tracked window is stale, the crash is NOT part
+  // of a burst — fresh budget.
+  if (now - state.windowStartMs > RELAUNCH_WINDOW_MS) {
+    state.windowStartMs = now;
+    state.count = 0;
+  }
+  state.count += 1;
+  _writeRelaunchState(state);
+  if (state.count > RELAUNCH_CAP) {
+    console.error(`[CRASH] relaunch cap hit (${state.count}/${RELAUNCH_CAP} in ${RELAUNCH_WINDOW_MS / 60000}min) — exiting without relaunch`);
+    try { app.exit(1); } catch { process.exit(1); }
+    return;
+  }
+  console.error(`[CRASH] relaunching (${state.count}/${RELAUNCH_CAP} in window)`);
+  try { app.relaunch(); } catch {}
+  try { app.exit(1); } catch { process.exit(1); }
+}
+
+function _pingWisdomCrash(kind, err) {
   try {
     const https = require('https');
+    const msg = err && err.message ? String(err.message) : String(err || '');
+    const stack = err && err.stack ? String(err.stack) : '';
     const payload = JSON.stringify({
       id: '', v: require('../package.json').version, p: process.platform,
-      e: 'crash', error: err.message, stack: (err.stack || '').slice(0, 500),
+      e: kind, error: msg.slice(0, 500), stack: stack.slice(0, 500),
     });
     const req = https.request('https://api.merlingotme.com/api/ping', {
       method: 'POST',
+      timeout: 3000,
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
     });
+    req.on('error', () => {}); // best-effort — never let the ping throw
     req.write(payload);
     req.end();
   } catch (e) { console.error('[ping]', e.message); }
+}
+
+process.on('uncaughtException', (err) => {
+  console.error('[CRASH]', err);
+  _pingWisdomCrash('crash', err);
+  _tryRelaunchWithCap();
 });
-process.on('unhandledRejection', (reason) => { console.error('[UNHANDLED]', reason); });
+
+// §6.5 — unhandled promise rejections were console-only. Forward to the
+// wisdom crash channel as 'unhandled_rejection'. We do NOT relaunch on
+// these — a stray unhandled rejection rarely indicates process-wide
+// damage and blind relaunches would saturate the cap on installs with
+// any chatty async library.
+process.on('unhandledRejection', (reason) => {
+  console.error('[UNHANDLED]', reason);
+  _pingWisdomCrash('unhandled_rejection', reason instanceof Error ? reason : new Error(String(reason)));
+});
 
 // App install location (where Electron binary + asar + extraResources live)
 // extraResources go to: Mac = Contents/Resources/, Windows = resources/
@@ -182,41 +269,226 @@ const appInstall = app.isPackaged
     : path.join(path.dirname(app.getPath('exe')), 'resources'))
   : path.join(__dirname, '..');
 
-// Workspace location (where brands, config, results live).
-// macOS: ~/Library/Application Support/Merlin — avoids iCloud Documents sync which
-// causes conflicts with binaries, vault files, and temp+rename state writes.
-// Windows: Documents/Merlin — user-accessible, no sync issues.
-const appRoot = app.isPackaged
-  ? (process.platform === 'darwin'
-    ? path.join(app.getPath('userData')) // ~/Library/Application Support/Merlin
-    : path.join(app.getPath('documents'), 'Merlin'))
-  : path.join(__dirname, '..');
-// Ensure workspace exists early — the SDK probe uses it as cwd and fails
+// Workspace layout (RSI §1.3 — Cluster-B contract, 2026-04-23):
+//   ContentDir  — user-visible files: brands/, assets/, results/, activity.jsonl.
+//   StateDir    — hot state, FLAT layout: merlin-config.json, .merlin-vault*,
+//                 .merlin-ratelimit*, .merlin-audit*, .merlin-tokens*,
+//                 .merlin-config-tmp-*. NO .claude/tools/ nesting for new installs.
+//
+// Per-OS defaults:
+//   Windows: ContentDir = %USERPROFILE%\Merlin,  StateDir = %APPDATA%\Merlin
+//   macOS:   ContentDir = ~/Merlin,              StateDir = ~/Library/Application Support/Merlin
+//   Linux:   ContentDir = ~/Merlin,              StateDir = $XDG_CONFIG_HOME/Merlin (or ~/.config/Merlin)
+//   Dev:     ContentDir = StateDir = <repo root>  (unchanged from legacy).
+//
+// StateDir resolution order (per Cluster-B contract):
+//   (1) process.env.MERLIN_STATE_DIR   (primary, wins over pointer file)
+//   (2) <ContentDir>/MERLIN_STATE_DIR.txt contents (UTF-8, absolute path, no trailing NL required)
+//   (3) legacy <ContentDir>/.claude/tools/  (back-compat for installs that predate this PR)
+//   (4) default per-OS StateDir
+//
+// `appRoot` remains an alias for ContentDir — existing call sites that read
+// brands/assets/results/activity.jsonl stay correct. New code that touches
+// hot state must use `stateDir` or the `stateFile(name)` helper.
+function defaultContentDir() {
+  if (!app.isPackaged) return path.join(__dirname, '..');
+  // Windows: user-visible %USERPROFILE%\Merlin. macOS + Linux: ~/Merlin.
+  return path.join(os.homedir(), 'Merlin');
+}
+function defaultStateDir() {
+  if (!app.isPackaged) return path.join(__dirname, '..');
+  if (process.platform === 'win32') {
+    // APPDATA (Roaming) — NOT LOCALAPPDATA. Matches Cluster-B's
+    // determineWorkspacePaths() exactly; APPDATA roams with the user profile.
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming');
+    return path.join(appData, 'Merlin');
+  }
+  if (process.platform === 'darwin') {
+    return path.join(app.getPath('userData')); // ~/Library/Application Support/Merlin
+  }
+  // Linux: prefer XDG_CONFIG_HOME, then ~/.config/Merlin.
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg && path.isAbsolute(xdg)) return path.join(xdg, 'Merlin');
+  return path.join(os.homedir(), '.config', 'Merlin');
+}
+function resolveStateDir(contentDir) {
+  // (1) Env var wins.
+  const envVal = process.env.MERLIN_STATE_DIR;
+  if (envVal && envVal.trim()) {
+    const v = envVal.trim();
+    try {
+      if (path.isAbsolute(v)) { fs.mkdirSync(v, { recursive: true }); return v; }
+    } catch {}
+  }
+  // (2) Pointer file in ContentDir.
+  try {
+    const ptrPath = path.join(contentDir, 'MERLIN_STATE_DIR.txt');
+    if (fs.existsSync(ptrPath)) {
+      const v = fs.readFileSync(ptrPath, 'utf8').trim();
+      if (v && path.isAbsolute(v)) {
+        try { fs.mkdirSync(v, { recursive: true }); } catch {}
+        return v;
+      }
+    }
+  } catch {}
+  // (3) Legacy nested path (only when it actually holds state).
+  try {
+    const legacy = path.join(contentDir, '.claude', 'tools');
+    if (fs.existsSync(path.join(legacy, 'merlin-config.json'))) {
+      return legacy;
+    }
+  } catch {}
+  // (4) Default per-OS.
+  const def = defaultStateDir();
+  try { fs.mkdirSync(def, { recursive: true }); } catch {}
+  return def;
+}
+
+const appRoot = defaultContentDir();
+// Ensure ContentDir exists early — the SDK probe uses it as cwd and fails
 // with ENOENT if it doesn't exist yet (race with bootstrapWorkspace on first launch).
 try { fs.mkdirSync(appRoot, { recursive: true }); } catch {}
 
-// macOS migration: move workspace from ~/Documents/Merlin (iCloud-synced) to
-// ~/Library/Application Support/Merlin (not synced). One-time, idempotent.
-if (app.isPackaged && process.platform === 'darwin') {
-  const oldRoot = path.join(app.getPath('documents'), 'Merlin');
-  if (oldRoot !== appRoot && fs.existsSync(oldRoot) && fs.existsSync(path.join(oldRoot, '.claude'))) {
-    try {
-      // Only migrate if new location is empty (prevent overwriting existing data)
-      const newHasData = fs.existsSync(path.join(appRoot, '.claude'));
-      if (!newHasData) {
-        const { execSync } = require('child_process');
-        const { execFileSync } = require('child_process');
-        execFileSync('cp', ['-Rn', oldRoot + '/', appRoot + '/'], { timeout: 30000 });
-        // Leave a breadcrumb so user knows where their data went
-        fs.writeFileSync(path.join(oldRoot, 'MOVED.txt'),
-          `Your Merlin workspace moved to:\n${appRoot}\n\nThis avoids iCloud sync conflicts.\nYou can safely delete this folder.\n`);
-        console.log(`[migration] Workspace migrated from ${oldRoot} to ${appRoot}`);
-      }
-    } catch (e) {
-      console.error('[migration] macOS workspace move failed:', e.message);
-    }
+const stateDir = resolveStateDir(appRoot);
+try { fs.mkdirSync(stateDir, { recursive: true }); } catch {}
+
+// Write the pointer file once we've resolved StateDir — so subsequent launches,
+// Go binary calls, and sibling tools (bootstrapper, scheduled tasks) converge on
+// the same path without needing the env var. Idempotent: skip if already correct.
+function writeStateDirPointer() {
+  if (!app.isPackaged) return;
+  try {
+    const ptrPath = path.join(appRoot, 'MERLIN_STATE_DIR.txt');
+    let existing = null;
+    try { existing = fs.readFileSync(ptrPath, 'utf8').trim(); } catch {}
+    if (existing === stateDir) return;
+    fs.writeFileSync(ptrPath, stateDir, 'utf8');
+  } catch (e) {
+    console.warn('[workspace] pointer write failed:', e.message);
   }
 }
+writeStateDirPointer();
+
+// Helpers for FLAT StateDir file paths. Use these for NEW state file writes.
+// Existing call sites that use path.join(appRoot, '.claude', 'tools', name)
+// continue to work when a legacy install's StateDir IS that nested directory;
+// Cluster-B's bootstrapper migration flattens new installs into StateDir.
+function stateFile(name) { return path.join(stateDir, name); }
+
+// Workspace migration (RSI §1.3 — app side).
+// Cluster-B's bootstrapper handles migration at install time, BUT users who
+// launch Merlin after a manual extract, dev tree, or upgrade-without-bootstrapper
+// hop need the same treatment from the Electron side. Idempotent: skip any file
+// that already exists at the destination.
+//
+// Historical: macOS migration from ~/Documents/Merlin → ~/Library/Application Support/Merlin
+// shipped in v0.9.x. This version generalizes it to also handle
+//   (a) Windows Documents/Merlin  →  %USERPROFILE%\Merlin + %APPDATA%\Merlin split
+//   (b) macOS Library/App Support/Merlin (monolithic)  →  ~/Merlin + Library split
+//   (c) Any legacy <ContentDir>/.claude/tools/ contents  →  FLAT StateDir
+const STATE_FILE_PATTERNS = [
+  /^merlin-config\.json$/i,
+  /^\.merlin-config-[a-z0-9_-]+\.json$/i,
+  /^\.merlin-config-tmp-[a-z0-9_-]+\.json$/i,
+  /^\.merlin-tokens/i,
+  /^\.merlin-vault/i,
+  /^\.merlin-ratelimit/i,
+  /^\.merlin-audit/i,
+];
+function isStateFileName(name) {
+  return STATE_FILE_PATTERNS.some((re) => re.test(name));
+}
+function logMigration(line) {
+  try {
+    const logPath = path.join(appRoot, 'activity.jsonl');
+    fs.mkdirSync(appRoot, { recursive: true });
+    fs.appendFileSync(logPath, JSON.stringify({ ts: new Date().toISOString(), kind: 'migration', ...line }) + '\n');
+  } catch {}
+}
+function migrateTreeToSplit(oldRoot) {
+  // Walk oldRoot, routing state files to stateDir (FLAT), everything else
+  // to appRoot preserving relative path. Skip-on-exists. Idempotent.
+  let stateMoved = 0, contentMoved = 0, skipped = 0;
+  function walk(relDir) {
+    const abs = path.join(oldRoot, relDir);
+    let entries;
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    for (const ent of entries) {
+      const relPath = path.join(relDir, ent.name);
+      const absSrc = path.join(oldRoot, relPath);
+      if (ent.isDirectory()) {
+        // Skip breadcrumb / pointer files we may have written in prior runs.
+        if (relPath === '.' || ent.name === 'MOVED.txt' || ent.name === 'MOVED-TO-NEW-LOCATION.txt') continue;
+        walk(relPath);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      if (isStateFileName(ent.name)) {
+        const dst = path.join(stateDir, ent.name);
+        try {
+          if (fs.existsSync(dst)) { skipped++; continue; }
+          fs.mkdirSync(path.dirname(dst), { recursive: true });
+          fs.copyFileSync(absSrc, dst);
+          stateMoved++;
+        } catch (e) { console.warn('[migration] state copy failed:', absSrc, e.message); }
+      } else {
+        // Content: preserve relative path, but collapse `.claude/tools/` state leftovers
+        // (the isStateFileName check already handled that branch; anything else under
+        // .claude/tools — e.g. binaries — stays content-side because the installer
+        // owns those, and legacy dev layouts may expect them there).
+        const dst = path.join(appRoot, relPath);
+        try {
+          if (fs.existsSync(dst)) { skipped++; continue; }
+          fs.mkdirSync(path.dirname(dst), { recursive: true });
+          fs.copyFileSync(absSrc, dst);
+          contentMoved++;
+        } catch (e) { console.warn('[migration] content copy failed:', absSrc, e.message); }
+      }
+    }
+  }
+  walk('.');
+  return { stateMoved, contentMoved, skipped };
+}
+function maybeMigrateFromDocuments() {
+  if (!app.isPackaged) return;
+  try {
+    const candidates = [];
+    const documentsDir = (() => { try { return app.getPath('documents'); } catch { return null; } })();
+    if (documentsDir) candidates.push(path.join(documentsDir, 'Merlin'));
+    // Mac-only legacy: Library/App Support/Merlin held BOTH content and state in one tree.
+    if (process.platform === 'darwin') {
+      const legacyMono = path.join(app.getPath('userData'));
+      if (legacyMono !== stateDir && legacyMono !== appRoot) candidates.push(legacyMono);
+    }
+    for (const oldRoot of candidates) {
+      if (!oldRoot || oldRoot === appRoot || oldRoot === stateDir) continue;
+      if (!fs.existsSync(oldRoot)) continue;
+      // Only migrate if it looks like a real Merlin workspace.
+      const looksLikeWorkspace =
+        fs.existsSync(path.join(oldRoot, '.claude')) ||
+        fs.existsSync(path.join(oldRoot, 'assets', 'brands')) ||
+        fs.existsSync(path.join(oldRoot, 'merlin-config.json'));
+      if (!looksLikeWorkspace) continue;
+      // Breadcrumb guards re-run.
+      const breadcrumb = path.join(oldRoot, 'MOVED-TO-NEW-LOCATION.txt');
+      if (fs.existsSync(breadcrumb)) continue;
+      const result = migrateTreeToSplit(oldRoot);
+      try {
+        fs.writeFileSync(breadcrumb,
+          `Your Merlin workspace moved to split locations:\n` +
+          `  Content (brands, assets, results): ${appRoot}\n` +
+          `  State   (config, vault, tokens):   ${stateDir}\n\n` +
+          `This split keeps hot state out of OneDrive / iCloud sync.\n` +
+          `You can safely delete this folder after verifying the new ones.\n`);
+      } catch {}
+      console.log(`[migration] ${oldRoot} → ContentDir=${appRoot} StateDir=${stateDir} (state=${result.stateMoved} content=${result.contentMoved} skipped=${result.skipped})`);
+      logMigration({ source: oldRoot, contentDir: appRoot, stateDir, ...result });
+    }
+  } catch (e) {
+    console.error('[migration] workspace migration failed:', e.message);
+  }
+}
+maybeMigrateFromDocuments();
 
 // ── Node.js Runtime for SDK Subprocesses ────────────────────
 // The Claude Agent SDK spawns `node cli.js` as a subprocess. Non-developer
@@ -878,6 +1150,12 @@ let tray = null;
 let forceQuit = false;
 let resolveNextMessage = null;
 const activeChildProcesses = new Set(); // track spawned Merlin.exe for cleanup
+// §G7 — Holds the most recent MCP ctx so `before-quit` can reach
+// ctx.jobStore (the in-process JobStore backing long-running MCP tools
+// like full-site SEO audits). Set after each successful
+// createMerlinMcpServer. Cleared on shutdown. Re-set on brand switch /
+// session restart.
+let _lastMcpCtx = null;
 let pendingMessageQueue = []; // Queue messages sent before SDK is ready
 let pendingApprovals = new Map();
 let activeQuery = null;
@@ -1087,6 +1365,47 @@ async function createWindow() {
   });
 
   win.loadFile(path.join(__dirname, 'index.html'));
+  // §2.7: flush any merlin:// deep link that arrived before the window loaded.
+  win.webContents.on('did-finish-load', () => {
+    flushPendingDeepLink();
+  });
+
+  // §6.2 — Handle a dead renderer. Before this lived here, a renderer
+  // crash (OOM from a runaway marked+DOMPurify reparse, WebGL driver
+  // panic, GPU process kill) left the main process alive with a blank
+  // window and no way back — users had to force-quit. The Electron
+  // event fires for every renderer fault: reason ∈ { 'crashed',
+  // 'killed', 'oom', 'launch-failed', 'integrity-failure' }, all of
+  // which warrant a reload banner + a wisdom ping so we know about it.
+  //
+  // Reload strategy: webContents.reload() if the window is still
+  // visible (user still has the app focused — single refresh, minimal
+  // surprise). If the window is hidden / blurred, let it be — a
+  // next-launch reload is less disruptive than grabbing focus to show
+  // a banner.
+  win.webContents.on('render-process-gone', (_event, details) => {
+    const reason = (details && details.reason) || 'unknown';
+    const exitCode = (details && details.exitCode) || 0;
+    console.error(`[render-crash] reason=${reason} exitCode=${exitCode}`);
+    _pingWisdomCrash('render_crash', new Error(`render-process-gone: ${reason} (exit ${exitCode})`));
+    // Don't fight Electron's default behaviour for launch-failed —
+    // that's a pre-ready state where reload() would throw.
+    if (reason === 'launch-failed') return;
+    try {
+      if (!win.isDestroyed()) {
+        // Show a reload banner via the renderer if it survives the
+        // reload — the renderer's main.js hook listens for this
+        // channel to surface a toast: "Merlin reloaded after a
+        // crash — your last message is in the input box."
+        win.webContents.once('did-finish-load', () => {
+          try { win.webContents.send('post-crash-reload', { reason, exitCode }); } catch {}
+        });
+        win.webContents.reload();
+      }
+    } catch (e) {
+      console.error('[render-crash] reload failed:', e.message);
+    }
+  });
 
   // Open external links in OS default browser (opens Discord app if installed)
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -1933,9 +2252,11 @@ async function handleToolApproval(toolName, input) {
 }
 
 // Personal email domains — if user's email is on one of these, we can't infer their brand
+// §3.4: keep this list exhaustive. A miss here means we infer a brand domain from a personal
+// mailbox (e.g. "joe@pm.me" → brand "pm.me") and onboarding derails into scraping ProtonMail.
 const PERSONAL_EMAIL_DOMAINS = new Set([
   'gmail.com','yahoo.com','hotmail.com','outlook.com','aol.com','icloud.com',
-  'mail.com','protonmail.com','proton.me','zoho.com','yandex.com','live.com',
+  'mail.com','protonmail.com','proton.me','pm.me','zoho.com','yandex.com','live.com',
   'msn.com','me.com','mac.com','hey.com','fastmail.com','tutanota.com',
 ]);
 
@@ -2094,7 +2415,11 @@ async function startSession(brandOverride) {
   let mcpConfig = {};
   try {
     const { createMerlinMcpServer } = require('./mcp-server');
-    const merlinMcp = await createMerlinMcpServer({
+    // §G7 — pass ctx as a stable object so before-quit can reach
+    // ctx.jobStore via _lastMcpCtx. createMerlinMcpServer mutates ctx
+    // to set ctx.jobStore (see mcp-server.js:93), so holding the ctx
+    // reference holds the JobStore reference.
+    const mcpCtx = {
       getBinaryPath,
       readConfig,
       readBrandConfig,
@@ -2116,7 +2441,20 @@ async function startSession(brandOverride) {
       awaitStartupChecks: () => (_startupChecksPromise || Promise.resolve()),
       isBinaryTooOld,
       minBinaryVersion: MIN_BINARY_VERSION,
-    });
+      // §3.6 — progress emitter for long-running MCP tools (brand_scrape,
+      // image/video gen, etc.). Forwarded to the renderer via the
+      // `mcp-progress` IPC channel; preload exposes onMcpProgress(cb) so
+      // the magic tab can animate a live pill. No-op when the window is
+      // gone (scheduled runs, post-quit stragglers).
+      emitProgress: (payload) => {
+        try {
+          if (!win || win.isDestroyed() || !win.webContents) return;
+          win.webContents.send('mcp-progress', payload);
+        } catch (_) { /* telemetry path — never let an emit crash a tool call */ }
+      },
+    };
+    const merlinMcp = await createMerlinMcpServer(mcpCtx);
+    _lastMcpCtx = mcpCtx;
     mcpConfig = { merlin: merlinMcp };
   } catch (err) {
     console.error('[mcp] Failed to create Merlin MCP server:', err.message);
@@ -2398,14 +2736,33 @@ async function startSession(brandOverride) {
       }
 
       if (win && !win.isDestroyed()) {
-        const serialized = structuredClone(msg);
-        serialized._internal = _suppressNextResponse;
-        // Clear suppression flag ONLY on 'result' (full turn complete, not partial 'assistant')
-        if (_suppressNextResponse && msg.type === 'result') {
-          _suppressNextResponse = false;
+        // §4.1 — kill the structuredClone storm. The old code deep-cloned
+        // every stream event (including tool-result trees that can be
+        // 100s of KB) purely so we could stamp `_internal` without
+        // mutating the SDK's own object. On a busy renderer (100+
+        // stream events/s) this added measurable latency to tool
+        // execution.
+        //
+        // Renderer only checks `msg._internal` as a truthy flag
+        // (`if (msg._internal) return;` — see renderer.js:1271), so:
+        //   - hot path (suppression OFF): send msg directly. Absence of
+        //     `_internal` is equivalent to `_internal: false`. Zero
+        //     allocation. Electron IPC + ws-server JSON.stringify each
+        //     do their own serialization downstream — we don't need a
+        //     pre-clone.
+        //   - cold path (suppression ON): shallow-spread once to stamp
+        //     `_internal: true` without polluting the SDK's object.
+        //     O(top-level keys) instead of deep O(tree).
+        // `_suppressNextResponse` clears on the terminating `result`
+        // message — that's where the mutation happens, so clear AFTER
+        // the send is kicked off.
+        let outbound = msg;
+        if (_suppressNextResponse) {
+          outbound = { ...msg, _internal: true };
+          if (msg.type === 'result') _suppressNextResponse = false;
         }
-        win.webContents.send('sdk-message', serialized);
-        wsServer.broadcast('sdk-message', serialized);
+        win.webContents.send('sdk-message', outbound);
+        wsServer.broadcast('sdk-message', outbound);
 
         // Cache dashboard/insights responses for the revenue tracker
         if (msg.type === 'tool_result' || msg.type === 'tool_use') {
@@ -2687,15 +3044,20 @@ ipcMain.handle('trigger-claude-login', async () => {
         console.warn('[claude-login] fs.watch setup failed:', e.message);
       }
 
-      // 3-minute timeout — accounts for slow browsers, 2FA prompts, user
-      // typing codes, and corporate SSO redirect chains.
+      // §3.3 — 5-minute UX timeout. Previous 3-minute cap was too tight for
+      // corporate SSO chains that bounce through an IdP, a company portal,
+      // a VPN reauth, and back — users on those paths would hit the timeout
+      // during the 2FA step itself. 5 min is the empirical ceiling for the
+      // longest real-world flow (IdP → MFA → consent → CLI paste) and
+      // matches Claude's own web-signin timeout budget.
+      const CLAUDE_LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
       const uxTimeout = setTimeout(() => {
-        console.error('[claude-login] timed out after 180s');
+        console.error(`[claude-login] timed out after ${CLAUDE_LOGIN_TIMEOUT_MS / 1000}s`);
         try { credWatcher?.close(); } catch {}
         try { child.kill(); } catch {}
         if (win && !win.isDestroyed()) win.webContents.send('auth-code-dismiss');
         finish({ success: false, timedOut: true, error: 'Login timed out. Try again or use an API key.' });
-      }, 180000);
+      }, CLAUDE_LOGIN_TIMEOUT_MS);
 
       // Cap the captured CLI output. We only need the tail for error messages
       // and the paste-prompt regex; the subprocess can run for up to the UX
@@ -3696,6 +4058,77 @@ async function transcribeAudioImpl(audioBytes) {
 
 ipcMain.handle('transcribe-audio', async (_, audioBytes) => transcribeAudioImpl(audioBytes));
 
+// §2.6: OS-level microphone permission status + request.
+//
+// Why this exists even though setPermissionCheckHandler already allows `microphone`:
+//   Electron's permission handlers govern CHROMIUM's internal gate. On macOS
+//   the OS also maintains its own TCC database (System Settings > Privacy &
+//   Security > Microphone). If the user denied it there — or never saw the
+//   prompt because a prior launch crashed before the first getUserMedia —
+//   getUserMedia throws NotAllowedError with no distinguishable error code,
+//   leaving the renderer unable to tell "user said no in the system prompt"
+//   apart from "Chromium denied it" or "mic hardware missing."
+//
+// These IPCs let the renderer:
+//   (a) pre-check the TCC state before showing the record button, so we can
+//       render a "Enable mic in System Settings" card up-front instead of a
+//       failed record attempt.
+//   (b) trigger the native TCC prompt exactly once on first-use, so users
+//       who never saw the initial dialog get a fresh chance to grant.
+//
+// Windows / Linux: Electron reports 'granted' unconditionally (the OS has no
+// per-app mic ACL on Win10 outside Store apps, and on Linux PipeWire/PulseAudio
+// aren't gated by the app layer). These handlers simply return success on
+// those platforms so the renderer flow is uniform.
+ipcMain.handle('mic-permission-status', async () => {
+  try {
+    if (process.platform !== 'darwin') return { status: 'granted', platform: process.platform };
+    if (!systemPreferences || typeof systemPreferences.getMediaAccessStatus !== 'function') {
+      return { status: 'unknown', platform: 'darwin', reason: 'api-missing' };
+    }
+    const status = systemPreferences.getMediaAccessStatus('microphone');
+    // Possible values: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'
+    return { status: status || 'unknown', platform: 'darwin' };
+  } catch (e) {
+    return { status: 'unknown', platform: process.platform, error: e && e.message };
+  }
+});
+
+ipcMain.handle('mic-permission-request', async () => {
+  try {
+    if (process.platform !== 'darwin') return { granted: true, platform: process.platform };
+    if (!systemPreferences || typeof systemPreferences.askForMediaAccess !== 'function') {
+      return { granted: false, platform: 'darwin', reason: 'api-missing' };
+    }
+    // Returns a Promise<boolean>. If the status was 'denied' or 'restricted'
+    // the prompt does NOT re-appear — the OS silently returns false and the
+    // user must toggle it in System Settings. The renderer should surface a
+    // "Open System Settings > Privacy > Microphone" link on false.
+    const granted = await systemPreferences.askForMediaAccess('microphone');
+    return { granted: !!granted, platform: 'darwin' };
+  } catch (e) {
+    return { granted: false, platform: process.platform, error: e && e.message };
+  }
+});
+
+// Open Mac's TCC settings pane directly. Handy after `mic-permission-request`
+// returns false — lets the user flip the toggle without hunting through menus.
+ipcMain.handle('mic-permission-open-settings', async () => {
+  try {
+    if (process.platform === 'darwin') {
+      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
+      return { ok: true };
+    }
+    if (process.platform === 'win32') {
+      await shell.openExternal('ms-settings:privacy-microphone');
+      return { ok: true };
+    }
+    return { ok: false, reason: 'unsupported-platform' };
+  } catch (e) {
+    return { ok: false, error: e && e.message };
+  }
+});
+
 // Voice tools (ffmpeg, whisper-cli, ggml-small.en-q5_1.bin) are bundled into the
 // Electron installer at build time — see "Bundle voice tools" in
 // autocmo-core/.github/workflows/release.yml and package.json extraResources.
@@ -4577,6 +5010,28 @@ const briefingLastNotified = new Map(); // path -> last date string already noti
 const briefingDebounce = new Map();     // path -> NodeJS.Timeout
 let briefingWatcher = null;
 
+// §5.4 — Drop entries from briefingLastNotified whose underlying file no
+// longer exists (brand deleted / manual cleanup) or whose tracked date is
+// older than 14 days. Without this the map grows one entry per brand per
+// briefing file for the lifetime of the process; long-running installs
+// (spells running daily for months) accumulate stale keys. Runs on every
+// watch tick for zero-cost deletion pressure.
+function pruneBriefingLastNotified() {
+  const cutoff = Date.now() - (14 * 24 * 60 * 60 * 1000);
+  for (const [full, dateKey] of briefingLastNotified) {
+    let drop = false;
+    if (!fs.existsSync(full)) {
+      drop = true;
+    } else {
+      // dateKey is a YYYY-MM-DD-ish string written by the briefing
+      // producer. Parse defensively — unparseable strings keep the entry.
+      const ts = Date.parse(dateKey);
+      if (Number.isFinite(ts) && ts < cutoff) drop = true;
+    }
+    if (drop) briefingLastNotified.delete(full);
+  }
+}
+
 function startBriefingNotifier() {
   try { fs.mkdirSync(appRoot, { recursive: true }); } catch {}
   // Seed state from briefings already on disk so the first fs.watch event
@@ -4592,6 +5047,9 @@ function startBriefingNotifier() {
       } catch {}
     }
   } catch {}
+  // Prune immediately after seeding so cold-start doesn't carry stale
+  // entries forward from a previous session.
+  pruneBriefingLastNotified();
 
   try {
     briefingWatcher = fs.watch(appRoot, { persistent: false }, (_event, filename) => {
@@ -4604,6 +5062,10 @@ function startBriefingNotifier() {
       briefingDebounce.set(full, setTimeout(() => {
         briefingDebounce.delete(full);
         maybeNotifyBriefing(full);
+        // §5.4 — tack pruning onto the post-notify tail so memory stays
+        // bounded without a separate timer. Cheap scan (Map is tiny —
+        // one entry per brand).
+        pruneBriefingLastNotified();
       }, 500));
     });
   } catch (err) {
@@ -4794,15 +5256,43 @@ const perfCache = {};
 // mtime resolution. This cache is shared across computePerfSummary (perf bar)
 // and get-agency-report (reports overlay), so a single brand's dashboard is
 // parsed at most once across the two call paths.
+//
+// §5.1 — LRU-bounded at DASHBOARD_CACHE_MAX entries. Agencies can have
+// 50+ brands and each brand accumulates one dashboard file per polled
+// period (1d/7d/30d × multiple poll windows). Unbounded, the cache
+// grows to cover every brand × every period × every result file ever
+// opened. Dashboard JSONs are ~20-50KB each parsed; 64 entries × 50KB
+// = ~3MB ceiling.
+//
+// Recency is tracked by Map insertion order (JS Map preserves it).
+// On hit we re-insert to move the key to the tail; on overflow we
+// evict the head (oldest).
+const DASHBOARD_CACHE_MAX = 64;
 const dashboardFileCache = new Map();
+function _touchDashboardCache(key, value) {
+  // Re-insert so the key moves to the tail (most-recently-used end).
+  if (dashboardFileCache.has(key)) dashboardFileCache.delete(key);
+  dashboardFileCache.set(key, value);
+  // Evict the oldest entry when over the bound. Map iteration order is
+  // insertion order; .keys().next().value is the LRU entry.
+  while (dashboardFileCache.size > DASHBOARD_CACHE_MAX) {
+    const oldest = dashboardFileCache.keys().next().value;
+    if (oldest === undefined) break;
+    dashboardFileCache.delete(oldest);
+  }
+}
 async function readDashboardJson(fullPath) {
   let st;
   try { st = await fs.promises.stat(fullPath); } catch { return null; }
   const hit = dashboardFileCache.get(fullPath);
-  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.data;
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) {
+    // LRU: bump to tail on hit so hot paths stay resident.
+    _touchDashboardCache(fullPath, hit);
+    return hit.data;
+  }
   let data = null;
   try { data = JSON.parse(await fs.promises.readFile(fullPath, 'utf8')); } catch {}
-  dashboardFileCache.set(fullPath, { mtimeMs: st.mtimeMs, size: st.size, data });
+  _touchDashboardCache(fullPath, { mtimeMs: st.mtimeMs, size: st.size, data });
   return data;
 }
 
@@ -4821,11 +5311,33 @@ async function computePerfSummary(days, brandName) {
   // exact bug this guard exists to prevent.
   const resultsDir = brandName ? path.join(appRoot, 'results', brandName) : path.join(appRoot, 'results');
   const allFiles = [];
+  // §5.7 — filter by mtime before we even stat-parse each file. On
+  // long-lived installs the results/<brand>/ directory accumulates one
+  // dashboard_YYYYMMDD_HHMMSS.json per poll (sometimes 4-8/day across
+  // periods). A 1-year-old install for a steady advertiser could have
+  // 1000+ files. We only ever compare `latest` vs `prev` for the trend
+  // arrow, so anything older than the lookback window + buffer is
+  // wasted stat+parse work AND a memory tax on dashboardFileCache.
+  //
+  // 60d is the floor: the longest-window perf bar button is 30d, and
+  // the trend comparator picks the *previous file of the same period*
+  // — so a 30d-period file 45d old is still a legitimate 'prev'.
+  // Double the window as a safety margin for retrospective reports.
+  const mtimeCutoffMs = Date.now() - (60 * 24 * 60 * 60 * 1000);
   try {
-    for (const f of await fs.promises.readdir(resultsDir)) {
-      if (f.startsWith('dashboard_') && f.endsWith('.json')) {
-        allFiles.push({ name: f, path: path.join(resultsDir, f) });
-      }
+    const entries = await fs.promises.readdir(resultsDir, { withFileTypes: true });
+    const statJobs = entries
+      .filter((e) => e.isFile && e.isFile() && e.name.startsWith('dashboard_') && e.name.endsWith('.json'))
+      .map(async (e) => {
+        const full = path.join(resultsDir, e.name);
+        try {
+          const st = await fs.promises.stat(full);
+          if (st.mtimeMs < mtimeCutoffMs) return null;
+          return { name: e.name, path: full };
+        } catch { return null; }
+      });
+    for (const entry of await Promise.all(statJobs)) {
+      if (entry) allFiles.push(entry);
     }
   } catch {}
   if (allFiles.length === 0) return null;
@@ -5472,37 +5984,107 @@ const BRAND_KEYS = [
 // This is a local desktop app on the user's device — encryption added complexity
 // that broke the binary/IPC boundary without meaningful security benefit.
 
+// §5.8 — Hot-path cache. readConfig() is called on EVERY inbound stream
+// event (voice tag resolution, spell lookup, brand resolution), on every
+// MCP tool call, and from a half-dozen IPC handlers. Each call was doing
+// fs.readFileSync + JSON.parse, which on a 20KB config is ~0.5-1ms and
+// triggers a full disk read on SMB/USB filesystems.
+//
+// Cache is keyed by file mtime + size. Miss → re-parse. Hit → return the
+// memoised object. size is a second signal because SMB / USB have coarse
+// mtime (1s resolution on FAT32, 2s on some SMB builds).
+//
+// We deep-freeze the cached object so callers can't accidentally mutate
+// the shared reference — every mutation site uses writeConfig() which
+// clears the cache explicitly.
+let _readConfigCache = null; // { mtimeMs, size, cfg }
+function _invalidateReadConfigCache() { _readConfigCache = null; }
+
+// §5.8 — Sweep orphaned .merlin-config-tmp-*.json files older than 24h
+// from the tools dir. These are produced by writeConfig's atomic
+// tmp+rename — an interrupted write (power loss, crash between write and
+// rename) leaves one behind. Each one is a full config copy (plaintext
+// tokens + brand data) so unbounded growth is both a disk + security
+// hygiene issue. 24h is long enough that any legitimate in-flight write
+// has long since completed or been retried.
+let _readConfigTmpSweepLastRun = 0;
+function _maybeSweepConfigTmp(toolsDir) {
+  const now = Date.now();
+  // Only scan once per 15 minutes (the sweep does a readdir + stat-each
+  // which we don't want to amortize onto every readConfig call).
+  if (now - _readConfigTmpSweepLastRun < 15 * 60 * 1000) return;
+  _readConfigTmpSweepLastRun = now;
+  const cutoffMs = now - (24 * 60 * 60 * 1000);
+  try {
+    for (const name of fs.readdirSync(toolsDir)) {
+      // Match both shapes used in the wild:
+      //   .merlin-config-tmp-<rand>.json  (newer atomic-write sibling)
+      //   merlin-config.json.tmp           (legacy in-place tmp)
+      if (!/^\.merlin-config-tmp-.*\.json$/.test(name) && name !== 'merlin-config.json.tmp') continue;
+      const full = path.join(toolsDir, name);
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs < cutoffMs) fs.unlinkSync(full);
+      } catch {}
+    }
+  } catch {}
+}
+
 function readConfig() {
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
-  let cfg = {};
-  try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
 
-  // One-time migration: merge encrypted .merlin-tokens back into plaintext config
-  const tokensFilePath = path.join(appRoot, '.claude', 'tools', '.merlin-tokens');
+  // §5.8 — mtime cache. Check stat first; only re-parse on change.
   try {
-    const buf = fs.readFileSync(tokensFilePath);
-    let tokens;
-    if (canUseSafeStorage()) {
-      try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
+    const st = fs.statSync(configPath);
+    if (_readConfigCache
+        && _readConfigCache.mtimeMs === st.mtimeMs
+        && _readConfigCache.size === st.size) {
+      return _readConfigCache.cfg;
+    }
+    // Miss — read and cache.
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch {}
+    _readConfigCache = { mtimeMs: st.mtimeMs, size: st.size, cfg };
+
+    // Opportunistic tmp-file sweep. Runs at most once per 15 min
+    // regardless of how often readConfig is called.
+    _maybeSweepConfigTmp(path.dirname(configPath));
+
+    // One-time migration: merge encrypted .merlin-tokens back into plaintext config
+    const tokensFilePath = path.join(appRoot, '.claude', 'tools', '.merlin-tokens');
+    try {
+      const buf = fs.readFileSync(tokensFilePath);
+      let tokens;
+      if (canUseSafeStorage()) {
+        try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
+          tokens = JSON.parse(buf.toString('utf8'));
+        }
+      } else if (process.platform === 'darwin' && looksEncrypted(buf) && safeStorage.isEncryptionAvailable()) {
+        // macOS legacy migration — one keychain prompt then never again
+        try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
+          try { fs.renameSync(tokensFilePath, tokensFilePath + '.legacy'); } catch {}
+          throw new Error('legacy decrypt denied');
+        }
+      } else {
         tokens = JSON.parse(buf.toString('utf8'));
       }
-    } else if (process.platform === 'darwin' && looksEncrypted(buf) && safeStorage.isEncryptionAvailable()) {
-      // macOS legacy migration — one keychain prompt then never again
-      try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch {
-        try { fs.renameSync(tokensFilePath, tokensFilePath + '.legacy'); } catch {}
-        throw new Error('legacy decrypt denied');
-      }
-    } else {
-      tokens = JSON.parse(buf.toString('utf8'));
-    }
-    Object.assign(cfg, tokens);
-    // Write merged config and delete the tokens file
-    writeConfig(cfg);
-    try { fs.unlinkSync(tokensFilePath); } catch {}
-    console.log('[config] migrated .merlin-tokens into plaintext config');
-  } catch {} // no tokens file — fine
+      Object.assign(cfg, tokens);
+      // Write merged config and delete the tokens file. writeConfig
+      // invalidates the cache so the next call re-stats the freshly
+      // merged file.
+      writeConfig(cfg);
+      try { fs.unlinkSync(tokensFilePath); } catch {}
+      console.log('[config] migrated .merlin-tokens into plaintext config');
+    } catch {} // no tokens file — fine
 
-  return cfg;
+    return cfg;
+  } catch {
+    // stat failed — config absent or unreadable. Return the previous
+    // cache (if any) to keep the caller alive, else {}. Do NOT cache
+    // the empty object (we'd poison the cache and never reload).
+    if (_readConfigCache && _readConfigCache.cfg) return _readConfigCache.cfg;
+    return {};
+  }
 }
 
 let _configLock = false;
@@ -5516,9 +6098,112 @@ function writeConfig(cfg) {
     const tmpPath = configPath + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
     fs.renameSync(tmpPath, configPath);
+    // §5.8 — invalidate readConfig's mtime cache so the next reader
+    // re-stats. Safer than trying to pre-populate (would miss file-
+    // level mtime drift on some filesystems).
+    _invalidateReadConfigCache();
   } catch (err) { console.error('[config] write failed:', err.message); }
   finally { _configLock = false; }
 }
+
+// §3.10 — Onboarding checkpoint.
+//
+// Problem: onboarding is a multi-step chat-driven flow (goal → brand →
+// products → connections → ToS → autopilot) that can span multiple app
+// launches (user closes the lid during OAuth, restarts tomorrow). Without
+// a checkpoint the agent has to re-infer progress from memory.md / brand
+// files every launch, and misreads the state about 10 % of the time —
+// re-asking the same question, double-logging a ToS acceptance, or
+// skipping the autopilot offer because the last session ended right
+// after the user said "yes please" but before the toggle flipped.
+//
+// Solution: a small JSON checkpoint file under StateDir, written by the
+// onboarding tools after each step. Hook blocklist protects it as a
+// normal `.merlin-*` file.
+//
+// Schema: {
+//   goal: string,                      // "get sales" / "build brand" / …
+//   pending_products_for_autopilot: string[], // product slugs the user said yes to
+//   vertical_confirmed: bool,
+//   autopilot_asked: bool,
+//   setup_step: string,                // "goal" / "brand" / "products" / "connect" / "tos" / "autopilot" / "done"
+//   tos_accepted_at: string | null,    // ISO timestamp
+//   referral_captured: bool,
+//   _schema_version: 1,
+//   _updated_at: string,               // ISO timestamp, auto-stamped
+// }
+//
+// Unknown fields are preserved on write-through so a newer version of the
+// schema doesn't lose data when an older binary round-trips the file.
+const ONBOARDING_CHECKPOINT_FILE = '.merlin-onboarding.json';
+const ONBOARDING_SCHEMA_VERSION = 1;
+const ONBOARDING_ALLOWED_STEPS = new Set(['goal', 'brand', 'products', 'connect', 'tos', 'autopilot', 'done']);
+
+function onboardingCheckpointPath() {
+  // Lives under the StateDir resolved by Cluster-B's contract (RSI §1.3).
+  // FLAT layout — sits next to merlin-config.json in the FLAT StateDir OR
+  // inside `.claude/tools/` for legacy installs that haven't been migrated
+  // yet. resolveStateDir picks the right one so this just uses stateFile().
+  return stateFile(ONBOARDING_CHECKPOINT_FILE);
+}
+
+function readOnboardingCheckpoint() {
+  try {
+    const raw = fs.readFileSync(onboardingCheckpointPath(), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+function writeOnboardingCheckpoint(partial) {
+  const current = readOnboardingCheckpoint();
+  const merged = { ...current, ...(partial || {}) };
+  // Sanitize known-typed fields. Unknown fields pass through unchanged.
+  if (merged.setup_step != null && !ONBOARDING_ALLOWED_STEPS.has(merged.setup_step)) {
+    // Reject invalid step values rather than silently persisting garbage.
+    delete merged.setup_step;
+  }
+  if (merged.tos_accepted_at != null && typeof merged.tos_accepted_at !== 'string') {
+    delete merged.tos_accepted_at;
+  }
+  if (merged.pending_products_for_autopilot != null) {
+    if (!Array.isArray(merged.pending_products_for_autopilot)) {
+      delete merged.pending_products_for_autopilot;
+    } else {
+      merged.pending_products_for_autopilot = merged.pending_products_for_autopilot
+        .filter((v) => typeof v === 'string' && v.length > 0 && v.length < 200);
+    }
+  }
+  for (const boolField of ['vertical_confirmed', 'autopilot_asked', 'referral_captured']) {
+    if (merged[boolField] != null && typeof merged[boolField] !== 'boolean') {
+      merged[boolField] = !!merged[boolField];
+    }
+  }
+  merged._schema_version = ONBOARDING_SCHEMA_VERSION;
+  merged._updated_at = new Date().toISOString();
+  const full = onboardingCheckpointPath();
+  try {
+    fs.mkdirSync(path.dirname(full), { recursive: true });
+    const tmp = full + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2), { mode: 0o600 });
+    fs.renameSync(tmp, full);
+  } catch (err) {
+    console.error('[onboarding-checkpoint] write failed:', err.message);
+  }
+  return merged;
+}
+
+// IPC bridge so onboarding MCP tools can read + bump the checkpoint.
+ipcMain.handle('onboarding-checkpoint-read', async () => readOnboardingCheckpoint());
+ipcMain.handle('onboarding-checkpoint-write', async (_event, partial) => {
+  if (!partial || typeof partial !== 'object' || Array.isArray(partial)) {
+    return { ok: false, error: 'partial must be a plain object' };
+  }
+  return { ok: true, checkpoint: writeOnboardingCheckpoint(partial) };
+});
 
 // ── Per-Brand Config ──────────────────────────────────────
 function readBrandConfig(brandName) {
@@ -7767,16 +8452,89 @@ async function installUpdateFromLatestRelease() {
         child.unref();
       };
     } else if (process.platform === 'darwin') {
-      const a = data.assets.find(x => /\.dmg$/i.test(x.name)) || data.assets.find(x => /-mac.*\.zip$/i.test(x.name));
-      if (!a) throw new Error('No Mac installer in release');
-      assetName = a.name;
+      // Arch-aware asset pick (§2.8): arm64 Macs must not get x64 DMGs.
+      assetName = pickMacInstallerAssetName(data.assets);
+      if (!assetName) throw new Error(`No Mac installer in release for ${process.arch}`);
       runner = (filePath) => {
-        const { spawn } = require('child_process');
-        // Show guidance before opening DMG — non-technical users need instructions
+        // §2.5: hdiutil attach + ditto (in-place replace) — no user drag required.
+        // Prior version: `spawn('open', [dmg])` displayed Finder window, relied on
+        // user to drag icon to Applications. Non-technical users left the window
+        // open and never completed the update, running stale versions for weeks.
+        //
+        // New flow:
+        //   1. hdiutil attach -nobrowse -readonly -mountpoint <tmp> <dmg>
+        //   2. ditto <mount>/Merlin.app /Applications/Merlin.app  (or wherever the
+        //      current bundle lives — we resolve it from app.getPath('exe')).
+        //   3. hdiutil detach -force <mount>
+        //   4. spawn `open -n /Applications/Merlin.app` to relaunch, then exit.
+        //
+        // Errors fall back to the legacy `open <dmg>` behaviour so users can
+        // complete the drag manually rather than get stuck.
+        const { spawnSync, spawn } = require('child_process');
         if (win && !win.isDestroyed()) {
-          win.webContents.send('update-progress', 'Opening installer — drag Merlin to your Applications folder to complete the update.');
+          win.webContents.send('update-progress', 'Installing update in place...');
         }
-        spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref();
+        // Mount point under tmpdir — unique per run to avoid collisions.
+        const mountDir = path.join(os.tmpdir(), `merlin-dmg-${Date.now()}`);
+        let mountedAt = null;
+        let targetAppPath = null;
+        try {
+          fs.mkdirSync(mountDir, { recursive: true });
+          // Attach DMG. stdout contains mount point on last line; we also passed
+          // -mountpoint explicitly so we already know it.
+          const attach = spawnSync('hdiutil', [
+            'attach', filePath,
+            '-nobrowse', '-readonly',
+            '-mountpoint', mountDir,
+            '-noautoopen',
+          ], { encoding: 'utf8', timeout: 60000 });
+          if (attach.status !== 0) {
+            throw new Error(`hdiutil attach failed (${attach.status}): ${attach.stderr || attach.stdout || ''}`);
+          }
+          mountedAt = mountDir;
+          // Locate Merlin.app inside the mount. DMGs typically have exactly one
+          // .app at the root, but guard against multiple by picking the one
+          // whose name matches the current app.
+          const mountEntries = fs.readdirSync(mountDir, { withFileTypes: true });
+          const appDir = mountEntries.find((d) => d.isDirectory() && /\.app$/i.test(d.name) && /merlin/i.test(d.name));
+          if (!appDir) throw new Error('Merlin.app not found inside DMG');
+          const srcAppPath = path.join(mountDir, appDir.name);
+          // Resolve the CURRENT app bundle to overwrite. app.getPath('exe') is
+          //   /Applications/Merlin.app/Contents/MacOS/Merlin
+          // so we walk up three levels.
+          targetAppPath = path.resolve(path.dirname(app.getPath('exe')), '..', '..');
+          if (!targetAppPath.endsWith('.app')) {
+            throw new Error(`Could not resolve current .app bundle from ${app.getPath('exe')}`);
+          }
+          // `ditto` preserves xattrs, resource forks, and codesigning metadata.
+          // `cp -R` loses some of this on older macOS versions. --rsrc is default.
+          const ditto = spawnSync('ditto', [srcAppPath, targetAppPath], {
+            encoding: 'utf8',
+            timeout: 120000,
+          });
+          if (ditto.status !== 0) {
+            throw new Error(`ditto failed (${ditto.status}): ${ditto.stderr || ''}`);
+          }
+          // Detach before relaunch (force in case Finder is holding a handle).
+          try { spawnSync('hdiutil', ['detach', '-force', mountedAt], { timeout: 30000 }); } catch {}
+          mountedAt = null;
+          // Clear any quarantine attribute on the freshly copied bundle.
+          try { spawnSync('xattr', ['-dr', 'com.apple.quarantine', targetAppPath], { timeout: 15000 }); } catch {}
+          // Relaunch the updated bundle detached from this process.
+          spawn('open', ['-n', targetAppPath], { detached: true, stdio: 'ignore' }).unref();
+          return; // installation succeeded — outer handler will quit the app
+        } catch (err) {
+          console.error('[update][mac]', err && err.message);
+          // Cleanup mount if we got that far.
+          if (mountedAt) {
+            try { spawnSync('hdiutil', ['detach', '-force', mountedAt], { timeout: 30000 }); } catch {}
+          }
+          if (win && !win.isDestroyed()) {
+            win.webContents.send('update-progress', 'Automatic install failed — opening the installer. Drag Merlin to Applications to finish.');
+          }
+          // Fallback to the old behaviour so the user isn't stranded.
+          spawn('open', [filePath], { detached: true, stdio: 'ignore' }).unref();
+        }
       };
     } else {
       throw new Error('Auto-install not supported on this platform');
@@ -8041,7 +8799,14 @@ function compareVersions(a, b) {
 // version check — especially during forced-update recovery after a failed
 // install where config may be missing or corrupted.
 async function getBinaryVersion() {
-  const binaryPath = getBinaryPath();
+  return getBinaryVersionAt(getBinaryPath());
+}
+
+// §2.1 — Probe a specific binary path for its reported version. Used by
+// ensureBinaryMinVersion to prefer the bundled install-local copy over a
+// stale workspace copy before deciding to download.
+async function getBinaryVersionAt(binaryPath) {
+  if (!binaryPath) return null;
   try { fs.accessSync(binaryPath); } catch { return null; }
   const { execFile } = require('child_process');
   return new Promise((resolve) => {
@@ -8136,6 +8901,34 @@ async function ensureBinaryMinVersion(onProgress = null) {
   if (current && compareVersions(current, MIN_BINARY_VERSION) >= 0) {
     _binaryTooOld = false;
     return { ok: true, version: current };
+  }
+
+  // §2.1 — Prefer the bundled install-local binary before falling back to a
+  // network download. Historical Mac pain: installer shipped a fresh Merlin
+  // binary under .app/Contents/Resources/.claude/tools/, but because the
+  // previous run had left a stale copy at <ContentDir>/.claude/tools/,
+  // `getBinaryPath()` would prefer the workspace copy (incorrect lookup
+  // order in older builds), return an outdated version, and trigger a full
+  // engine download every launch — ~40s of progress bar for no reason.
+  //
+  // `getBinaryPath()` has since been fixed to prefer install-local. This
+  // block is a belt-and-braces second check: explicitly ask for the
+  // install-local version by path. If it satisfies MIN, return OK without
+  // touching the network or workspace. A mismatch here means the bundled
+  // binary genuinely is too old and a download is warranted.
+  try {
+    const binaryName = process.platform === 'win32' ? 'Merlin.exe' : 'Merlin';
+    const installLocalPath = path.join(appInstall, '.claude', 'tools', binaryName);
+    if (fs.existsSync(installLocalPath)) {
+      const installLocalVersion = await getBinaryVersionAt(installLocalPath);
+      if (installLocalVersion && compareVersions(installLocalVersion, MIN_BINARY_VERSION) >= 0) {
+        _binaryTooOld = false;
+        console.log(`[engine] using bundled install-local binary v${installLocalVersion} (workspace copy was stale)`);
+        return { ok: true, version: installLocalVersion, source: 'install-local' };
+      }
+    }
+  } catch (e) {
+    console.warn('[engine] install-local probe failed:', e.message);
   }
 
   console.log(`[engine] current=${current || 'unknown'} requires=>=${MIN_BINARY_VERSION} — updating`);
@@ -8252,15 +9045,53 @@ async function ensureBinary(opts = {}) {
   return true;
 }
 
-// Returns true if the release contains an installer asset for THIS platform.
-// Used to skip update toasts for releases that didn't ship a Mac DMG (e.g.
-// when CI minutes were exhausted and the build was done locally on Windows).
+// Returns true if the release contains an installer asset for THIS platform
+// AND architecture. Used to skip update toasts for releases that didn't ship
+// a Mac DMG for the user's arch (arm64 user on an Intel-only release, or
+// vice versa) — a mismatch would download an installer that refuses to open.
+//
+// Mac asset naming (per release.yml): Merlin-mac-arm64.dmg, Merlin-mac-x64.dmg,
+// plus the legacy universal Merlin-mac.dmg (pre-arch-split releases). If a
+// universal DMG is present we treat it as a match for either arch.
 function releaseHasInstallerForPlatform(assets) {
   if (!Array.isArray(assets)) return false;
   if (!assets.some(a => a && a.name === 'checksums.txt')) return false;
   if (process.platform === 'win32') return assets.some(a => /^Merlin\.Setup\..*\.exe$/i.test(a.name));
-  if (process.platform === 'darwin') return assets.some(a => /\.dmg$/i.test(a.name) || /-mac.*\.zip$/i.test(a.name));
+  if (process.platform === 'darwin') {
+    const names = assets.map((a) => (a && a.name) || '');
+    const hasArchDmg = (arch) => {
+      const tag = arch === 'arm64' ? '(arm64|aarch64|apple)' : '(x64|amd64|intel)';
+      const re = new RegExp(`-mac-${tag}.*\\.dmg$`, 'i');
+      return names.some((n) => re.test(n));
+    };
+    // Universal DMG (no arch suffix): matches any arch.
+    const hasUniversalDmg = names.some((n) => /^Merlin[^-]*-mac\.dmg$/i.test(n) || /^Merlin\.dmg$/i.test(n));
+    // Legacy zip fallback (arch-less).
+    const hasZip = names.some((n) => /-mac.*\.zip$/i.test(n));
+    if (hasArchDmg(process.arch)) return true;
+    if (hasUniversalDmg) return true;
+    if (hasZip) return true;
+    return false;
+  }
   return true;
+}
+
+// Pick the single Mac asset name that matches this platform + arch. Returns
+// null if no suitable asset exists. Caller decides whether to surface the
+// "no installer for your arch" error vs retry later. Preference order:
+// arch-specific DMG > universal DMG > any zip (last-resort).
+function pickMacInstallerAssetName(assets) {
+  if (!Array.isArray(assets)) return null;
+  const names = assets.map((a) => (a && a.name) || '').filter(Boolean);
+  const arch = process.arch;
+  const tag = arch === 'arm64' ? '(arm64|aarch64|apple)' : '(x64|amd64|intel)';
+  const archRe = new RegExp(`-mac-${tag}.*\\.dmg$`, 'i');
+  const archHit = names.find((n) => archRe.test(n));
+  if (archHit) return archHit;
+  const universal = names.find((n) => /^Merlin[^-]*-mac\.dmg$/i.test(n) || /^Merlin\.dmg$/i.test(n));
+  if (universal) return universal;
+  const zip = names.find((n) => /-mac.*\.zip$/i.test(n));
+  return zip || null;
 }
 
 async function checkForUpdates() {
@@ -8653,10 +9484,62 @@ async function downloadAndApplyUpdate() {
 
 // ── App Lifecycle ───────────────────────────────────────────
 
+// Deep-link buffer: merlin:// URLs may arrive before the window is ready
+// (macOS: open-url can fire before app.whenReady; Windows: second-instance
+// may fire while the first instance is still bootstrapping). Buffer them
+// and flush once the window is available.
+let _pendingDeepLink = null;
+function deliverDeepLink(url) {
+  if (!url || typeof url !== 'string' || !/^merlin:\/\//i.test(url)) return;
+  if (win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading()) {
+    try { win.webContents.send('merlin-deep-link', url); } catch {}
+    return;
+  }
+  _pendingDeepLink = url;
+}
+function flushPendingDeepLink() {
+  if (!_pendingDeepLink) return;
+  const url = _pendingDeepLink;
+  _pendingDeepLink = null;
+  deliverDeepLink(url);
+}
+
+// Register Merlin as the default handler for merlin:// URLs. Electron writes
+// the registration to:
+//   Windows: HKCU\Software\Classes\merlin (idempotent; re-registers every launch
+//            so a repair/rebuild picks up new protocol bindings without an
+//            installer run).
+//   macOS:   Info.plist via electron-builder `protocols` block (below in
+//            package.json). setAsDefaultProtocolClient reinforces it at runtime
+//            so dev builds also resolve merlin:// without a full reinstall.
+// Guarded: OS registration only makes sense when the binary is stable (packaged
+// builds or when invoked with an explicit exe path). In dev the call is a no-op
+// because electron.exe shouldn't be the OS default handler.
+if (app.isPackaged) {
+  try { app.setAsDefaultProtocolClient('merlin'); } catch {}
+} else if (process.platform === 'win32' && process.argv.length >= 2) {
+  // Dev on Windows: register against the current launcher so local testing works.
+  try { app.setAsDefaultProtocolClient('merlin', process.execPath, [path.resolve(process.argv[1])]); } catch {}
+}
+
 // Single instance lock — prevent multiple windows
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.exit(0); } // exit(0) is synchronous — quit() is async and flashes a taskbar icon before closing
-app.on('second-instance', () => {
+
+// macOS delivers merlin://… via open-url. This fires BEFORE whenReady on cold
+// start when the user clicks a deep-link that launches the app, so we buffer.
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  deliverDeepLink(url);
+});
+
+app.on('second-instance', (_event, argv) => {
+  // Windows / Linux deliver merlin://… as the last argv entry when the OS
+  // hands the URL to an already-running instance.
+  try {
+    const urlArg = Array.isArray(argv) ? argv.find((a) => typeof a === 'string' && /^merlin:\/\//i.test(a)) : null;
+    if (urlArg) deliverDeepLink(urlArg);
+  } catch {}
   if (win && !win.isDestroyed()) {
     win.show();
     if (win.isMinimized()) win.restore();
@@ -8843,6 +9726,19 @@ app.whenReady().then(async () => {
     }
     activeChildProcesses.clear();
     if (briefingWatcher) { try { briefingWatcher.close(); } catch {} briefingWatcher = null; }
+    // §G7 — Stop the JobStore's periodic prune timer so the event loop
+    // doesn't hold the process open past before-quit. Safe to call
+    // multiple times (JobStore.shutdown is idempotent) and safe when
+    // there's no jobStore (tests, failed MCP init) — the guarded chain
+    // returns undefined.
+    try {
+      if (_lastMcpCtx && _lastMcpCtx.jobStore && typeof _lastMcpCtx.jobStore.shutdown === 'function') {
+        _lastMcpCtx.jobStore.shutdown();
+      }
+    } catch (e) {
+      console.error('[before-quit] jobStore.shutdown failed:', e && e.message);
+    }
+    _lastMcpCtx = null;
   });
 
   // REGRESSION GUARD (2026-04-14, Codex P2 #4 — silent auto-start):
@@ -8943,6 +9839,80 @@ app.whenReady().then(async () => {
 
   setTimeout(runTokenWatchdog, 60 * 1000);
   setInterval(runTokenWatchdog, 4 * 60 * 60 * 1000);
+
+  // §3.9 — OAuth pending-flow chip poller. Cluster-D landed the persistence
+  // + `oauth-pending-list` / `oauth-resume` actions (7f00e6e). Here we poll
+  // every 30s while the window is visible and push the result to the
+  // renderer on the `oauth-pending` IPC channel. Renderer renders a chip
+  // row in the connections panel; click invokes `oauth-resume` via the
+  // existing mcp tool surface.
+  //
+  // Poll semantics:
+  //   - Only poll when the window exists and is visible. No-ops otherwise
+  //     (hidden window, post-quit, first 3s after launch).
+  //   - Errors are swallowed — missing binary / first-launch / no config
+  //     all produce an empty pending list via the Go binary. A failure
+  //     means we just don't emit this tick.
+  //   - A single inflight poll is guarded via `_oauthPendingInflight` so a
+  //     slow 30s tick never overlaps the next.
+  let _oauthPendingInflight = false;
+  const runOAuthPendingPoll = async () => {
+    if (_oauthPendingInflight) return;
+    if (!win || win.isDestroyed() || !win.isVisible || !win.isVisible()) return;
+    const binaryPath = getBinaryPath();
+    try { fs.accessSync(binaryPath); } catch { return; }
+    // Match the watchdog's config path convention so the binary resolves the
+    // same projectRoot + StateDir. Cluster-D writes `.merlin-oauth-pending.json`
+    // next to this config so the readback lives under StateDir automatically.
+    const globalConfigPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+    try { fs.accessSync(globalConfigPath); } catch {
+      // No config yet → no possible pending OAuth. Still push an empty
+      // result so the renderer can clear any stale chips.
+      try { win.webContents.send('oauth-pending', { pending: [], checkedAt: Date.now() }); } catch {}
+      return;
+    }
+    _oauthPendingInflight = true;
+    const { execFile } = require('child_process');
+    const cmdObj = { action: 'oauth-pending-list' };
+    try {
+      const stdout = await new Promise((resolve) => {
+        const child = execFile(
+          binaryPath,
+          ['--config', globalConfigPath, '--cmd', JSON.stringify(cmdObj)],
+          { timeout: 15000, cwd: appRoot, windowsHide: true, maxBuffer: 1 * 1024 * 1024 },
+          (err, out) => resolve(err ? '' : (out || '')),
+        );
+        activeChildProcesses.add(child);
+        child.on('exit', () => activeChildProcesses.delete(child));
+      });
+      let payload = { pending: [] };
+      if (stdout && stdout.trim()) {
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          if (parsed && Array.isArray(parsed.pending)) payload = parsed;
+        } catch (_) { /* malformed stdout — treat as empty */ }
+      }
+      if (win && !win.isDestroyed() && win.webContents) {
+        try { win.webContents.send('oauth-pending', { ...payload, checkedAt: Date.now() }); } catch {}
+      }
+    } finally {
+      _oauthPendingInflight = false;
+    }
+  };
+  // First poll ~5s after launch (give the binary time to land), then
+  // every 30s thereafter. The chip UI is only rendered when connections
+  // panel is open so the data is free if the user never looks.
+  setTimeout(() => { runOAuthPendingPoll().catch(() => {}); }, 5000);
+  setInterval(() => { runOAuthPendingPoll().catch(() => {}); }, 30000);
+
+  // Expose a handle so the renderer can force an immediate poll after the
+  // user clicks "Resume sign-in" or dismisses a chip — the caller awaits
+  // the promise so the UI can reflect the fresh state without waiting for
+  // the next scheduled tick.
+  ipcMain.handle('oauth-pending-refresh', async () => {
+    await runOAuthPendingPoll();
+    return { ok: true };
+  });
 
   // Lightweight telemetry — one ping on launch, no PII
   setTimeout(() => {

@@ -74,6 +74,7 @@
   <div id="progress-steps" class="progress-steps">
     <span class="progress-step" data-step="brand">Brand created</span>
     <span class="progress-step" data-step="products">Products added</span>
+    <span class="progress-step" data-step="goal">Goal picked</span>
     <span class="progress-step" data-step="sales">Sales platform connected</span>
     <span class="progress-step" data-step="platform">Ad platform connected</span>
     <span class="progress-step" data-step="automation">Automation active</span>
@@ -420,16 +421,58 @@
         <input type="checkbox" id="email-optin-checkbox" style="margin-top:4px">
         <span style="font-size:13px;color:var(--muted)">Send me tips and best practices (unsub anytime)</span>
       </label>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:14px">
+    </div>
+    <button id="tos-accept-btn" class="btn-primary" disabled>Get Started</button>
+  </div>
+</div>
+
+<!-- Referral capture (post-ToS). Moved off the ToS screen so the legal
+     compliance moment isn't cluttered with a data-capture ask (task 3.13).
+     Opens automatically once after accepting ToS; can be skipped. Same
+     DOM ids as before so renderer.js's existing referral-apply handler
+     (see tos-has-referral / tos-referral-input / tos-referral-status
+     bindings) continues to work — Cluster-M will relocate the trigger
+     from tos-accept-btn to referral-capture-continue in Wave 5. -->
+<div id="referral-capture-overlay" class="overlay hidden">
+  <div class="setup-card">
+    <div class="setup-mascot">✦</div>
+    <h1>Got a referral code?</h1>
+    <p class="setup-sub">A friend's code adds 7 trial days — totally optional.</p>
+    <div style="margin:16px 0;text-align:left">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
         <input type="checkbox" id="tos-has-referral" style="margin:0">
-        <span style="font-size:13px;color:var(--muted)">I have a referral code from a friend</span>
+        <span style="font-size:13px;color:var(--muted)">Yes, I have a code from a friend</span>
       </label>
       <div id="tos-referral-wrap" class="hidden" style="margin-top:10px;display:flex;gap:6px">
         <input id="tos-referral-input" class="referral-apply-input" type="text" maxlength="8" placeholder="e.g. a1b2c3d4" autocomplete="off" spellcheck="false" style="flex:1">
       </div>
       <div id="tos-referral-status" class="referral-apply-status"></div>
     </div>
-    <button id="tos-accept-btn" class="btn-primary" disabled>Get Started</button>
+    <button id="referral-capture-continue" class="btn-primary">Continue</button>
+    <button id="referral-capture-skip" class="btn-secondary" style="margin-top:8px">Skip for now</button>
+  </div>
+</div>
+
+<!-- Goal step (task 3.15). Asks the user what they want Merlin to do
+     first so the starter chip (§3.14) can preseed the most useful next
+     action. Chip values are stable keys; labels are user-voice (no
+     platform jargon). Selection is stored via renderer.js (Cluster-M,
+     Wave 5) via the data-goal attribute on each chip; renderer.js
+     will hide this overlay and persist the chosen goal to the
+     onboarding checkpoint file (§3.10 coupling). -->
+<div id="goal-overlay" class="overlay hidden">
+  <div class="setup-card" style="max-width:420px">
+    <div class="setup-mascot">✦</div>
+    <h1>What first?</h1>
+    <p class="setup-sub">Pick one — Merlin will tee it up. You can change your mind anytime.</p>
+    <div id="goal-chips" class="goal-chips" style="display:flex;flex-direction:column;gap:8px;margin:16px 0">
+      <button type="button" class="goal-chip btn-secondary" data-goal="first-ad">Launch my first ad</button>
+      <button type="button" class="goal-chip btn-secondary" data-goal="blog-post">Write a blog post</button>
+      <button type="button" class="goal-chip btn-secondary" data-goal="seo-audit">Check my SEO</button>
+      <button type="button" class="goal-chip btn-secondary" data-goal="shopify-review">See how my store is doing</button>
+      <button type="button" class="goal-chip btn-secondary" data-goal="explore">Just exploring</button>
+    </div>
+    <button id="goal-skip" class="btn-secondary">Skip for now</button>
   </div>
 </div>
 

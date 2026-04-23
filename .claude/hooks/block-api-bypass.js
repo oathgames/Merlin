@@ -169,6 +169,14 @@ const PROTECTED_PATH_PATTERNS = [
   // atomic-write siblings per Rule 7.
   /\.merlin-facts-key(\.|$)/i,
   /\.merlin-facts\.[a-z0-9_-]+\.jsonl(\.|$)/i,
+  // In-flight OAuth state (CSRF + PKCE verifier) persisted across restarts so
+  // resume-OAuth chips can recover a flow whose browser tab closed before the
+  // localhost /callback fired. The file is short-lived (10min expiry) but
+  // contains active state tokens and PKCE verifiers that match the session's
+  // in-memory map — a stolen copy in the window between start and callback
+  // would let an attacker race the legitimate callback and claim the token.
+  // `(\.|$)` covers .tmp/.bak atomic-write siblings per Rule 7.
+  /\.merlin-oauth-pending(\.|$)/i,
   /\.rate-state(\.|$)/i,
   /\.rate-secret(\.|$)/i,
   // REGRESSION GUARD (2026-04-14, adversary loop 2):
