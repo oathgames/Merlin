@@ -7280,7 +7280,56 @@ async function loadArchive() {
     };
     ads = ads.slice().sort((a, b) => adValue(b) - adValue(a));
 
+    // Group by campaignName so the Archive "Ads" tab reads like a Campaign
+    // Manager dashboard, not a flat firehose — each Merlin campaign
+    // (Testing / Scaling / Retargeting, or whatever the user named them on
+    // the platform) gets its own header with ad-count + total spend. Ads
+    // without a campaign label (legacy rows pre-2026-04-22, or non-Meta
+    // platforms that don't yet populate the fields) fall into an
+    // "Uncategorized" bucket that renders last. Headers only appear when
+    // there are 2+ buckets so single-campaign / legacy-only brands stay
+    // flat and uncluttered.
+    //
+    // The actual bucketing lives in archive-campaign-group.js so it can be
+    // unit-tested from Node — we just consume `{ flatAds, showHeaders }`
+    // plus a key function here and preserve the existing forEach shape.
+    const MerlinArchiveCampaignGroup = window.MerlinArchiveCampaignGroup;
+    const { groups: campaignGroups, flatAds, showHeaders: showCampaignHeaders } =
+      MerlinArchiveCampaignGroup.groupLiveAdsByCampaign(ads);
+    const NO_CAMPAIGN_KEY = MerlinArchiveCampaignGroup.NO_CAMPAIGN_KEY;
+    const groupByKey = new Map(campaignGroups.map(g => [g.key, g]));
+    ads = flatAds;
+    let currentGroupKey = null;
+    const fmtGroupSpend = (n) => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n.toFixed(2)}`;
+    const campaignKeyForAd = (ad) => {
+      const name = (ad.campaignName || '').trim();
+      return name ? `${(ad.platform || '').toLowerCase()}::${name}` : NO_CAMPAIGN_KEY;
+    };
+
     ads.forEach(ad => {
+      if (showCampaignHeaders) {
+        const key = campaignKeyForAd(ad);
+        if (key !== currentGroupKey) {
+          const g = groupByKey.get(key);
+          const header = document.createElement('div');
+          header.className = 'archive-campaign-header';
+          const label = g.name || 'Uncategorized';
+          const count = g.ads.length;
+          const spend = g.totalSpend;
+          const platformBadge = g.platform
+            ? `<span class="platform-badge platform-${g.platform.toLowerCase()}">${escapeHtml(g.platform)}</span>`
+            : '';
+          const spendChip = spend > 0 ? ` · ${fmtGroupSpend(spend)}` : '';
+          header.innerHTML = `
+            <span class="archive-campaign-name" title="${escapeHtml(label)}">${escapeHtml(label)}</span>
+            ${platformBadge}
+            <span class="archive-campaign-meta">${count} ad${count === 1 ? '' : 's'}${spendChip}</span>
+          `;
+          grid.appendChild(header);
+          currentGroupKey = key;
+        }
+      }
+
       const card = document.createElement('div');
       card.className = 'archive-card';
 

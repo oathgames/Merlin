@@ -42,6 +42,8 @@ jobs:
         run: node app/relay-client.test.js
       - name: archive-scanner behavior
         run: node app/archive-scanner.test.js
+      - name: archive campaign grouping (Archive "Ads" tab)
+        run: node app/archive-campaign-group.test.js
       - name: oauth persist roundtrip
         run: node app/oauth-persist.test.js
       - name: sentence splitter

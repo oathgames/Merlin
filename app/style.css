@@ -2382,6 +2382,39 @@ body.platform-mac .titlebar-drag{
   align-content: start;
 }
 
+/* Campaign group headers for the Archive "Ads" tab. Span the full row so
+   cards underneath stay in the 2-column grid. Kept low-chrome — this is a
+   separator, not a heavy section title. */
+.archive-campaign-header {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px 4px 2px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--border);
+  margin-top: 4px;
+}
+.archive-campaign-header:first-child {
+  margin-top: 0;
+}
+.archive-campaign-header .archive-campaign-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.archive-campaign-header .archive-campaign-meta {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
 .archive-card {
   position: relative;
   background: var(--surface);

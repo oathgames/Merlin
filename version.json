@@ -24,6 +24,7 @@
     "app/renderer.js",
     "app/index.html",
     "app/style.css",
+    "app/archive-campaign-group.js",
     "app/archive-scanner.js",
     "app/artifact-parser.js",
     "app/async-barrier.js",
