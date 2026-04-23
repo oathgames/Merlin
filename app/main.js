@@ -2164,8 +2164,40 @@ async function startSession(brandOverride) {
   // information the model sees. Our brand/product context flows through
   // SKILL.md + the resumeSessionId conversation state below, not the
   // SDK's dynamic sections, so nothing brand-specific is affected.
+  // LATENCY TUNING (2026-04-23) — three knobs work together to cut
+  // round-trip time for every paying user. Each one depends on the other
+  // two; removing any single knob re-introduces the specific slow path
+  // the other two don't cover. See REGRESSION GUARD block below.
+  //
+  //   (a) `model` — pin Sonnet 4.6. Without this, the SDK inherits the
+  //       user's account default, which is Opus for Max-plan users. Opus
+  //       TTFT on Merlin's ~20KB system prompt + MCP tool spec runs ~2×
+  //       Sonnet's. Quality delta on the interactive chat thread (routing,
+  //       analysis, brief authoring) is not perceptible to users; heavy
+  //       turns (tournament synthesizer, copy-quality panel, rubric judge)
+  //       escalate via Task/subagent where per-agent `model:` can request
+  //       Opus for that subagent only.
+  //
+  //   (b) `settings.excludeDynamicSections` — already handled in the
+  //       systemPrompt object above. Lives with the system prompt itself
+  //       because that's where the cached prefix is built.
+  //
+  //   (c) `settings.autoCompactWindow: 200000` — the SDK auto-compacts at
+  //       roughly 92% of this value. Its default (160k on Sonnet/Opus)
+  //       triggers compact at ~147k, which on a long-lived per-brand
+  //       `resume` session is hit within weeks of heavy use. Raising to
+  //       200k lets the full published model window fill before paying
+  //       the compact latency spike — going higher is a no-op (the model
+  //       truncates at 200k regardless), going lower re-introduces the
+  //       premature-compact cost. Merlin's per-brand threads are
+  //       intentionally long-lived (memory compounds across sessions), so
+  //       delaying compact as long as safely possible is the right
+  //       default for this product. When compact eventually fires, the
+  //       `compact_boundary` system message surfaces in the stream for
+  //       telemetry.
   const queryOptions = {
     cwd: appRoot,
+    model: 'claude-sonnet-4-6',
     permissionMode: 'acceptEdits',
     includePartialMessages: true,
     settingSources: ['project'],
@@ -2177,6 +2209,14 @@ async function startSession(brandOverride) {
       preset: 'claude_code',
       append: VOICE_TAG_INSTRUCTION,
       excludeDynamicSections: true,
+    },
+    // Inline `settings` layer — highest priority among user-controlled
+    // settings per SDK docs. Merges with `.claude/settings.json` loaded
+    // via `settingSources: ['project']`, with these values winning on
+    // any key collision. Keep this object to settings that must hold for
+    // every install regardless of what the project settings file says.
+    settings: {
+      autoCompactWindow: 200000,
     },
   };
   // Per-brand SDK session resume. When a brand has a prior sessionId, Claude
@@ -2304,6 +2344,57 @@ async function startSession(brandOverride) {
         if (stripped.length > 0) {
           threads.appendBubble(appRoot, activeBrand, 'claude', stripped);
         }
+      }
+
+      // LATENCY TELEMETRY (2026-04-23) — verify the three latency knobs
+      // (model pin, excludeDynamicSections cache, autoCompactWindow) are
+      // actually delivering. Without this log, a regression that breaks
+      // the cached prefix (e.g. a future SDK upgrade that re-introduces
+      // dynamic sections) is invisible until TTFT doubles in customer
+      // reports. The fields we care about per turn:
+      //   - cache_read_input_tokens   → should dominate after warm-up;
+      //                                  near-zero on first turn and every
+      //                                  turn after that is a red flag
+      //                                  that the cache prefix is being
+      //                                  fragmented somewhere upstream.
+      //   - cache_creation_input_tokens → one-time cost per cached block
+      //                                   (re-paid on server-side cache
+      //                                   expiry, 5min idle); steady-state
+      //                                   non-zero means we're NOT hitting
+      //                                   cache on subsequent turns.
+      //   - input_tokens              → the delta that changes turn-to-turn
+      //                                  (the new user message + any new
+      //                                  tool results). Keep an eye on
+      //                                  this across a long session — if
+      //                                  it grows unbounded, auto-compact
+      //                                  isn't firing when it should.
+      //   - duration_ms / duration_api_ms → wall-clock vs. API-only time.
+      //                                     Gap between them is client-side
+      //                                     (MCP tool execution, local
+      //                                     processing).
+      // The log line is one-per-turn, structured for grep/jq in both
+      // Electron main-process stdout and the ws-server broadcast so the
+      // pwa/dev-tools tab can surface cache health live.
+      if (msg && msg.type === 'result' && msg.subtype === 'success' && msg.usage) {
+        const u = msg.usage;
+        const inTok = u.input_tokens || 0;
+        const outTok = u.output_tokens || 0;
+        const cacheRead = u.cache_read_input_tokens || 0;
+        const cacheCreate = u.cache_creation_input_tokens || 0;
+        const totalIn = inTok + cacheRead + cacheCreate;
+        // Cache hit rate — what % of input tokens this turn came from the
+        // prompt cache (free + fast) vs. were freshly tokenized. A healthy
+        // warm conversation should be >90%; <50% consistently means the
+        // cache prefix is fragmented.
+        const hitRate = totalIn > 0 ? ((cacheRead / totalIn) * 100).toFixed(1) : '0.0';
+        const cost = typeof msg.total_cost_usd === 'number' ? msg.total_cost_usd.toFixed(4) : 'n/a';
+        const durMs = msg.duration_ms || 0;
+        const apiMs = msg.duration_api_ms || 0;
+        console.log(
+          `[sdk-usage] turn=${msg.num_turns || '?'} in=${inTok} out=${outTok} `
+          + `cache_read=${cacheRead} cache_create=${cacheCreate} `
+          + `hit_rate=${hitRate}% cost=$${cost} dur=${durMs}ms api=${apiMs}ms`
+        );
       }
 
       if (win && !win.isDestroyed()) {
