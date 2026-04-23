@@ -2672,15 +2672,37 @@ if (window.merlin && typeof window.merlin.onPostCrashReload === 'function') {
       const toast = document.createElement('div');
       toast.id = 'post-crash-toast';
       toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:14px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(34,197,94,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.5;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease;display:flex;align-items:flex-start;gap:10px';
-      const reason = payload && typeof payload === 'object' && typeof payload.reason === 'string' ? payload.reason : '';
+      // REGRESSION GUARD (2026-04-23, Rule 6 review gate):
+      // Electron's render-process-gone `details.reason` is a raw string from
+      // Chromium and must NEVER land in `innerHTML` verbatim — `.slice(0, N)`
+      // on a raw value is the exact anti-pattern Rule 6 prohibits. Map the
+      // known enum values to plain-English labels via a static lookup; drop
+      // the hint entirely for anything unrecognized.
+      const CRASH_REASON_LABELS = {
+        'crashed': 'the app crashed',
+        'oom': 'it ran out of memory',
+        'killed': 'the system stopped it',
+        'abnormal-exit': 'it shut down unexpectedly',
+        'launch-failed': 'it failed to start',
+        'integrity-failure': 'a file was corrupted',
+      };
+      const rawReason = payload && typeof payload === 'object' && typeof payload.reason === 'string' ? payload.reason : '';
+      const reasonLabel = Object.prototype.hasOwnProperty.call(CRASH_REASON_LABELS, rawReason) ? CRASH_REASON_LABELS[rawReason] : '';
       toast.innerHTML = `
         <span style="font-size:16px;color:#22c55e;flex-shrink:0">✓</span>
-        <div style="flex:1">
+        <div style="flex:1" id="post-crash-toast-body">
           <div style="font-weight:600;margin-bottom:2px;color:#22c55e">Merlin recovered from a hiccup</div>
-          <div style="color:rgba(228,228,231,0.85)">Your last turn is saved.${reason ? ` <span style="color:rgba(228,228,231,0.55);font-size:11px">(${String(reason).slice(0, 60)})</span>` : ''}</div>
+          <div style="color:rgba(228,228,231,0.85)">Your last turn is saved.</div>
         </div>
         <button id="post-crash-toast-close" style="background:transparent;border:none;color:rgba(228,228,231,0.5);cursor:pointer;font-size:16px;padding:0;line-height:1;flex-shrink:0">×</button>
       `;
+      if (reasonLabel) {
+        const hint = document.createElement('div');
+        hint.style.cssText = 'color:rgba(228,228,231,0.55);font-size:11px;margin-top:4px';
+        hint.textContent = `(${reasonLabel})`;
+        const body = toast.querySelector('#post-crash-toast-body');
+        if (body) body.appendChild(hint);
+      }
       document.body.appendChild(toast);
       requestAnimationFrame(() => {
         toast.style.opacity = '1';
