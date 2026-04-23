@@ -1150,6 +1150,12 @@ let tray = null;
 let forceQuit = false;
 let resolveNextMessage = null;
 const activeChildProcesses = new Set(); // track spawned Merlin.exe for cleanup
+// §G7 — Holds the most recent MCP ctx so `before-quit` can reach
+// ctx.jobStore (the in-process JobStore backing long-running MCP tools
+// like full-site SEO audits). Set after each successful
+// createMerlinMcpServer. Cleared on shutdown. Re-set on brand switch /
+// session restart.
+let _lastMcpCtx = null;
 let pendingMessageQueue = []; // Queue messages sent before SDK is ready
 let pendingApprovals = new Map();
 let activeQuery = null;
@@ -2409,7 +2415,11 @@ async function startSession(brandOverride) {
   let mcpConfig = {};
   try {
     const { createMerlinMcpServer } = require('./mcp-server');
-    const merlinMcp = await createMerlinMcpServer({
+    // §G7 — pass ctx as a stable object so before-quit can reach
+    // ctx.jobStore via _lastMcpCtx. createMerlinMcpServer mutates ctx
+    // to set ctx.jobStore (see mcp-server.js:93), so holding the ctx
+    // reference holds the JobStore reference.
+    const mcpCtx = {
       getBinaryPath,
       readConfig,
       readBrandConfig,
@@ -2442,7 +2452,9 @@ async function startSession(brandOverride) {
           win.webContents.send('mcp-progress', payload);
         } catch (_) { /* telemetry path — never let an emit crash a tool call */ }
       },
-    });
+    };
+    const merlinMcp = await createMerlinMcpServer(mcpCtx);
+    _lastMcpCtx = mcpCtx;
     mcpConfig = { merlin: merlinMcp };
   } catch (err) {
     console.error('[mcp] Failed to create Merlin MCP server:', err.message);
@@ -9690,6 +9702,19 @@ app.whenReady().then(async () => {
     }
     activeChildProcesses.clear();
     if (briefingWatcher) { try { briefingWatcher.close(); } catch {} briefingWatcher = null; }
+    // §G7 — Stop the JobStore's periodic prune timer so the event loop
+    // doesn't hold the process open past before-quit. Safe to call
+    // multiple times (JobStore.shutdown is idempotent) and safe when
+    // there's no jobStore (tests, failed MCP init) — the guarded chain
+    // returns undefined.
+    try {
+      if (_lastMcpCtx && _lastMcpCtx.jobStore && typeof _lastMcpCtx.jobStore.shutdown === 'function') {
+        _lastMcpCtx.jobStore.shutdown();
+      }
+    } catch (e) {
+      console.error('[before-quit] jobStore.shutdown failed:', e && e.message);
+    }
+    _lastMcpCtx = null;
   });
 
   // REGRESSION GUARD (2026-04-14, Codex P2 #4 — silent auto-start):
