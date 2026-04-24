@@ -26,6 +26,23 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'merlin', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } },
 ]);
 
+// Single gate for every OS-level link open. Renderer-originated URLs used to
+// flow into shell.openExternal via two different paths — the new-window
+// handler (filtered) and the right-click "Open Link" menu item (unfiltered) —
+// which meant a crafted markdown link like file:///C:/… or javascript:…
+// could trigger arbitrary OS protocol handlers from the context menu. All
+// call sites now share this helper and defer to the same http/https allowlist.
+function openExternalSafe(url) {
+  if (typeof url !== 'string') return false;
+  if (!/^https?:\/\//i.test(url)) return false;
+  try {
+    shell.openExternal(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function installApplicationMenu() {
   // macOS requires an application menu with Edit role entries for Cmd+C/V/X/A
   // to work in any input field. Electron 41 on recent macOS builds has been
@@ -1353,6 +1370,20 @@ async function createWindow() {
     '.pdf': 'application/pdf',
   };
 
+  // Subdirectory allowlist — only user-facing media folders are reachable
+  // via the renderer. Before this was pinned, any file under appRoot was
+  // fetchable: renderer content could read CLAUDE.md, memory.md, version.json,
+  // package.json, per-brand plaintext config (.claude/tools/.merlin-config-*),
+  // and any other file the process could open. The traversal guard alone
+  // only rejected ../ escapes out of appRoot — it didn't stop merlin://foo.md
+  // from serving appRoot/foo.md.
+  //
+  // If you need to expose a new subdirectory, add it here explicitly rather
+  // than loosening the check — the default-deny is the load-bearing property.
+  const ALLOWED_MERLIN_ROOTS = ['results', 'assets', 'pwa'].map(
+    (r) => path.resolve(appRoot, r) + path.sep
+  );
+
   protocol.handle('merlin', async (request) => {
     // Keep the same URL parsing the original handler used — treating the
     // entire `merlin://...` tail as a relative path. Using `new URL()` would
@@ -1362,6 +1393,20 @@ async function createWindow() {
     const filePath = path.resolve(appRoot, requested);
     const resolvedRoot = path.resolve(appRoot);
     if (!filePath.startsWith(resolvedRoot + path.sep) && filePath !== resolvedRoot) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    // Subdir allowlist: the renderer can only reach results/, assets/, pwa/.
+    if (!ALLOWED_MERLIN_ROOTS.some((r) => filePath.startsWith(r))) {
+      return new Response('Forbidden', { status: 403 });
+    }
+
+    // Extension allowlist: refuse anything not in MIME_TYPES rather than
+    // falling through to application/octet-stream. No .md, .json, .log, .js,
+    // .html, etc. — keeping this to image/video/audio/pdf only closes the
+    // broad "renderer-initiated filesystem browse" class of bug.
+    const ext = path.extname(filePath).toLowerCase();
+    if (!MIME_TYPES[ext]) {
       return new Response('Forbidden', { status: 403 });
     }
 
@@ -1375,8 +1420,7 @@ async function createWindow() {
       return new Response('Not found', { status: 404 });
     }
 
-    const ext = path.extname(filePath).toLowerCase();
-    const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+    const contentType = MIME_TYPES[ext];
     const totalSize = stat.size;
 
     // Parse Range header — Chromium's <video> element issues these
@@ -1490,9 +1534,7 @@ async function createWindow() {
 
   // Open external links in OS default browser (opens Discord app if installed)
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      shell.openExternal(url);
-    }
+    openExternalSafe(url);
     return { action: 'deny' }; // Never open new Electron windows
   });
 
@@ -1566,7 +1608,7 @@ async function createWindow() {
     if (params.linkURL) {
       items.push({ type: 'separator' });
       items.push({ label: 'Copy Link', click: () => { require('electron').clipboard.writeText(params.linkURL); } });
-      items.push({ label: 'Open Link', click: () => { shell.openExternal(params.linkURL); } });
+      items.push({ label: 'Open Link', click: () => { openExternalSafe(params.linkURL); } });
     }
     if (items.length > 0) {
       Menu.buildFromTemplate(items).popup({ window: win });
@@ -4669,9 +4711,7 @@ ipcMain.handle('get-filler-audio', () => {
 
 ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
 ipcMain.handle('open-external-url', (_, url) => {
-  if (typeof url === 'string' && (url.startsWith('https://') || url.startsWith('http://'))) {
-    shell.openExternal(url);
-  }
+  openExternalSafe(url);
 });
 ipcMain.handle('open-merlin-folder', () => { shell.openPath(appRoot); });
 
@@ -6039,16 +6079,22 @@ function reportBypassTelemetry(toolName, reason) {
 
 // ── Credential Vault ──────────────────────────────────────
 // AES-256-GCM encrypted file shared between Electron and the Go binary.
-// Both sides derive the SAME key from hostname + username + constant,
-// so either can read what the other wrote. Vault file lives OUTSIDE the
-// workspace at %APPDATA%/Merlin/.vault (Windows) or equivalent — Claude
-// cannot access it via Read/Bash (hook-blocked).
+// Both sides derive the SAME key from hostname + username + per-install
+// salt, so either can read what the other wrote. Vault file lives OUTSIDE
+// the workspace at %APPDATA%/Merlin/.vault (Windows) or equivalent —
+// Claude cannot access it via Read/Bash (hook-blocked).
 //
 // Key derivation MUST match vault.go's vaultKey() exactly. If you change
 // one, you MUST change the other.
+//
+// File versions:
+//   v: 1 — legacy (hostname + username only). Readable but not writable;
+//          the next save auto-upgrades to v: 2.
+//   v: 2 — salted (hostname + username + per-install salt stored at
+//          <vaultDir>/.vault-salt). All new writes use v: 2.
 const _vaultCrypto = require('crypto');
 
-function _vaultDeriveKey() {
+function _vaultDeriveKey(salt) {
   const hostname = (os.hostname() || '').toLowerCase();
   let username = (os.userInfo().username || '').toLowerCase();
   // Strip Windows domain prefix (DOMAIN\user → user)
@@ -6060,6 +6106,10 @@ function _vaultDeriveKey() {
   h.update(hostname);
   h.update(Buffer.from([0x1f]));
   h.update(username);
+  if (salt && salt.length > 0) {
+    h.update(Buffer.from([0x1f]));
+    h.update(salt);
+  }
   return h.digest(); // 32 bytes → AES-256
 }
 
@@ -6076,10 +6126,36 @@ function _vaultFilePath() {
   return path.join(base, '.vault');
 }
 
-let _vaultKeyCache = null;
-function _vaultKey() {
-  if (!_vaultKeyCache) _vaultKeyCache = _vaultDeriveKey();
-  return _vaultKeyCache;
+function _vaultSaltFilePath() {
+  return _vaultFilePath() + '-salt';
+}
+
+// Read the per-install salt, returning null if absent (legacy v1 layout).
+// Empty files are treated as missing so a truncated write can't lock the
+// vault. MUST stay byte-for-byte compatible with vault.go:loadVaultSalt.
+function _vaultLoadSalt() {
+  try {
+    const b = fs.readFileSync(_vaultSaltFilePath());
+    if (!b || b.length === 0) return null;
+    return b;
+  } catch (e) {
+    if (e.code === 'ENOENT') return null;
+    throw e;
+  }
+}
+
+// Generate a fresh 32-byte salt on first write. Atomic via tmp+rename.
+// Returns the salt in use (either pre-existing or freshly generated).
+function _vaultEnsureSalt() {
+  const existing = _vaultLoadSalt();
+  if (existing) return existing;
+  const salt = _vaultCrypto.randomBytes(32);
+  const p = _vaultSaltFilePath();
+  try { fs.mkdirSync(path.dirname(p), { recursive: true, mode: 0o700 }); } catch {}
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, salt, { mode: 0o600 });
+  fs.renameSync(tmp, p);
+  return salt;
 }
 
 // Returns the vault contents as a plain JS object: { "brand/key": "token", ... }
@@ -6091,7 +6167,19 @@ function vaultLoad() {
     throw e;
   }
   const fv = JSON.parse(raw.toString('utf8'));
-  if (fv.v !== 1) throw new Error('Vault version ' + fv.v + ' unsupported');
+  // Pick the key derivation matching the file version. v1 predates the
+  // per-install salt and decrypts without it; v2 requires the salt file
+  // and fails loudly if the salt is missing (same contract as vault.go).
+  let key;
+  if (fv.v === 1) {
+    key = _vaultDeriveKey(null);
+  } else if (fv.v === 2) {
+    const salt = _vaultLoadSalt();
+    if (!salt) throw new Error('Vault version 2 requires salt file — .vault-salt missing');
+    key = _vaultDeriveKey(salt);
+  } else {
+    throw new Error('Vault version ' + fv.v + ' unsupported');
+  }
   const nonce = Buffer.from(fv.nonce, 'base64');
   const ct = Buffer.from(fv.ciphertext, 'base64');
   // Node's createDecipheriv wants (algorithm, key, iv). For GCM we also set the auth tag.
@@ -6099,7 +6187,7 @@ function vaultLoad() {
   const tagLen = 16;
   const authTag = ct.slice(ct.length - tagLen);
   const ciphertext = ct.slice(0, ct.length - tagLen);
-  const decipher = _vaultCrypto.createDecipheriv('aes-256-gcm', _vaultKey(), nonce);
+  const decipher = _vaultCrypto.createDecipheriv('aes-256-gcm', key, nonce);
   decipher.setAuthTag(authTag);
   let pt = decipher.update(ciphertext);
   pt = Buffer.concat([pt, decipher.final()]);
@@ -6107,13 +6195,17 @@ function vaultLoad() {
 }
 
 function vaultSave(map) {
+  // Always write v2 with a salted key — generates salt on first write so
+  // a legacy v1 vault auto-upgrades the next time anything is saved.
+  const salt = _vaultEnsureSalt();
+  const key = _vaultDeriveKey(salt);
   const pt = Buffer.from(JSON.stringify(map), 'utf8');
   const nonce = _vaultCrypto.randomBytes(12); // standard GCM nonce size
-  const cipher = _vaultCrypto.createCipheriv('aes-256-gcm', _vaultKey(), nonce);
+  const cipher = _vaultCrypto.createCipheriv('aes-256-gcm', key, nonce);
   let ct = cipher.update(pt);
   ct = Buffer.concat([ct, cipher.final(), cipher.getAuthTag()]); // tag appended
   const fv = {
-    v: 1,
+    v: 2,
     nonce: nonce.toString('base64'),
     ciphertext: ct.toString('base64'),
   };
@@ -6424,7 +6516,26 @@ ipcMain.handle('onboarding-checkpoint-write', async (_event, partial) => {
 });
 
 // ── Per-Brand Config ──────────────────────────────────────
+
+// Defense-in-depth for every entrypoint that composes a filesystem path from
+// a brand name. The Electron preload pre-validates renderer IPC args against
+// BRAND_RE (see app/preload.js:51 + main.js:5904), but MCP tool schemas
+// accept raw strings — a tool call like
+// { name: "meta_setup_account", args: { brand: "../../evil" } } would flow
+// straight into path.join(appRoot, ".claude", "tools",
+// \`.merlin-config-${brand}.json\`) and write outside the tools dir.
+// Applying the same regex here makes every path builder safe regardless of
+// whether the caller is the renderer, the MCP stdio channel, or a test.
+const _BRAND_SAFE_RE = /^[a-z0-9_-]{1,100}$/i;
+function assertBrandSafe(brandName) {
+  if (brandName === undefined || brandName === null || brandName === '') return;
+  if (typeof brandName !== 'string' || !_BRAND_SAFE_RE.test(brandName)) {
+    throw new Error('invalid brand name');
+  }
+}
+
 function readBrandConfig(brandName) {
+  assertBrandSafe(brandName);
   const cfg = readConfig();
   if (!brandName) return cfg;
 
@@ -6484,6 +6595,7 @@ function readBrandConfig(brandName) {
 // Used by buildStrictBrandConfig for the refresh-perf path where global
 // credentials MUST NOT leak into a brand's dashboard pull.
 function readBrandOnlyBrandCreds(brandName) {
+  assertBrandSafe(brandName);
   if (!brandName) return {};
   const brandConfigPath = path.join(appRoot, '.claude', 'tools', `.merlin-config-${brandName}.json`);
   let brandCfg = {};
@@ -6522,6 +6634,7 @@ function readBrandOnlyBrandCreds(brandName) {
 // Do not modify this to fall back to global for any BRAND_KEYS key. See the
 // full incident writeup on the refresh-perf handler.
 function buildStrictBrandConfig(brandName) {
+  assertBrandSafe(brandName);
   if (!brandName) return readConfig();
 
   // Global base — provides shared tools, outputDir, vertical, etc. Resolves
@@ -6555,6 +6668,7 @@ function buildStrictBrandConfig(brandName) {
 }
 
 function writeBrandTokens(brandName, tokens) {
+  assertBrandSafe(brandName);
   if (!brandName || !tokens || Object.keys(tokens).length === 0) return;
   const tokenPath = path.join(appRoot, '.claude', 'tools', `.merlin-config-${brandName}.json`);
   try {

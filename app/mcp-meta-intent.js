@@ -65,6 +65,10 @@ function validationEnvelope(message, data) {
  */
 function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBudget }) {
   const tools = [];
+  // Mirror of app/preload.js BRAND_RE + main.js assertBrandSafe(). MCP calls
+  // bypass the renderer's preload validation, so every brand input is bound
+  // to this regex at the zod layer. See the matching comment in mcp-tools.js.
+  const brandSchema = z.string().regex(/^[a-z0-9_-]{1,100}$/i, 'invalid brand');
 
   // Shared: every spend-triggering intent tool runs the cents-detection guard
   // before hitting runBinary. Defense-in-depth over the binary's own cap.
@@ -86,7 +90,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     brandRequired: true,
     concurrency: { platform: 'meta' },
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
     },
     handler: async (args) => {
       const result = await runBinary(ctx, 'meta-discover', args);
@@ -122,7 +126,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     brandRequired: true,
     concurrency: { platform: 'meta' },
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       batchCount: z.number().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort by: spend, roas, ctr, clicks, impressions, cpc, purchases'),
       sortOrder: z.enum(['asc', 'desc']).optional().describe('Sort order (default: desc)'),
@@ -142,7 +146,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     preview: false,
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       adImagePath: z.string().optional().describe('Absolute path to the ad image'),
       adVideoPath: z.string().optional().describe('Absolute path to the ad video'),
       adHeadline: z.string().describe('Ad headline text'),
@@ -191,7 +195,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       return r;
     },
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       ads: z.array(z.object({
         imagePath: z.string().optional(),
         videoPath: z.string().optional(),
@@ -239,7 +243,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       return r;
     },
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       adId: z.string().describe('Source ad ID to scale from'),
       dailyBudget: z.number().describe('New daily budget in DOLLARS'),
       previousBudget: z.number().optional().describe('Original daily budget — required for blast-radius math. If omitted, preview gate is skipped.'),
@@ -273,7 +277,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       return r;
     },
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       adId: z.string().optional().describe('Ad ID to pause (use this OR campaignId)'),
       campaignId: z.string().optional().describe('Campaign ID to pause — every ad under it stops'),
     },
@@ -296,7 +300,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     preview: false,
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       adId: z.string().describe('Ad ID to re-activate'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-activate', args)),
@@ -325,7 +329,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       return r;
     },
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       adId: z.string().describe('Target ad ID'),
       dailyBudget: z.number().describe('New daily budget in DOLLARS'),
       previousBudget: z.number().optional().describe('Previous daily budget — required for blast-radius math. If omitted, preview gate is skipped.'),
@@ -348,7 +352,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     preview: false,
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       campaignId: z.string().optional().describe('Source campaign for the audience'),
       adId: z.string().optional().describe('Source ad for the audience'),
     },
@@ -366,7 +370,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     preview: false,
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       adId: z.string().describe('Ad to promote into the retargeting set'),
       dailyBudget: z.number().optional().describe('Daily budget for the retargeting ad set (defaults to source ad\'s budget)'),
     },
@@ -387,7 +391,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     brandRequired: true,
     concurrency: { platform: 'meta' },
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       adId: z.string().optional().describe('Source ad (audience derived from its engagers)'),
       campaignId: z.string().optional().describe('Source campaign (audience derived from its engagers)'),
     },
@@ -408,7 +412,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     longRunning: true,
     input: {
-      brand: z.string().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       status: z.enum(['active', 'paused', 'all']).optional().describe('Filter ads by status (default: all)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-import', args, { timeout: 120000 })),
@@ -426,7 +430,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     brandRequired: true,
     concurrency: { platform: 'meta' },
     input: {
-      brand: z.string().describe('Brand name (context only — the query targets a competitor)'),
+      brand: brandSchema.describe('Brand name (context only — the query targets a competitor)'),
       competitor: z.string().optional().describe('Competitor Page name or ID'),
       searchTerms: z.string().optional().describe('Freeform ad-library search (e.g. "protein powder")'),
       limit: z.number().optional().describe('Max ads to return (default: 25)'),

@@ -18,7 +18,6 @@
 const { execFile } = require('child_process');
 const crypto = require('crypto');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const { redactOutput } = require('./mcp-redact');
 const { extractArtifacts } = require('./artifact-parser');
@@ -27,6 +26,18 @@ const errors = require('./mcp-errors');
 const { defineTool } = require('./mcp-define-tool');
 const { DEFAULT_POLICIES } = require('./mcp-preview');
 const { buildMetaIntentTools } = require('./mcp-meta-intent');
+
+// Regex shared between the MCP zod tightening here and the main-process
+// assertBrandSafe() guard in main.js. Mirror of app/preload.js:BRAND_RE.
+//
+// Why tighten at the MCP layer too: the preload gate validates renderer IPC
+// args, but MCP calls bypass the renderer and arrive via stdio. Without a
+// regex here, a tool call like { brand: "../../.." } would reach zod as a
+// plain string and flow into path.join() (see writeBrandTokens /
+// readBrandConfig in main.js) before the defense-in-depth guard rejected
+// it. Validating at the schema layer fails faster, with a clearer error
+// back to the caller, and documents the contract.
+const BRAND_NAME_PATTERN = /^[a-z0-9_-]{1,100}$/i;
 
 // ── Progress event emission (Task 3.1) ───────────────────────
 //
@@ -337,11 +348,6 @@ async function runBinary(ctx, action, args, opts = {}) {
       return resolve({ text: 'No configuration found. Connect a platform first.', error: true });
     }
 
-    // Write temp config — named .merlin-config-tmp-{hex}.json so it matches
-    // the PROTECTED_COMMAND_PATTERNS regex and can't be read via cat/grep.
-    const tmpName = `.merlin-config-tmp-${crypto.randomBytes(16).toString('hex')}.json`;
-    const tmpPath = path.join(os.tmpdir(), tmpName);
-
     // Build the Command JSON from MCP args
     const cmdObj = { action };
     // Map MCP field names to binary Command struct fields
@@ -354,43 +360,64 @@ async function runBinary(ctx, action, args, opts = {}) {
       }
     }
 
-    try {
-      fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    } catch (e) {
-      return resolve({ text: `Failed to write temp config: ${e.message}`, error: true });
-    }
+    // Pipe config over stdin instead of writing it to os.tmpdir() as a
+    // plaintext JSON file. The old flow wrote resolved vault secrets to
+    // disk with mode 0o600 (ineffective on Windows) and relied on a
+    // best-effort unlink in the exit callback — a crash/kill between write
+    // and exit left secrets on disk indefinitely. With stdin the bytes
+    // never leave RAM.
+    //
+    // The binary still needs a --config *path hint* because downstream
+    // code (logActivity, activity.jsonl, output dir derivation) walks up
+    // from it to find the project root. We pass the real workspace path
+    // even though the binary won't read the file.
+    const configPathHint = path.join(ctx.appRoot, '.claude', 'tools', 'merlin-config.json');
 
     const timeout = opts.timeout || 300000; // 5 min default
-    const child = execFile(binaryPath, ['--config', tmpPath, '--cmd', JSON.stringify(cmdObj)], {
-      timeout,
-      cwd: ctx.appRoot,
-    }, (err, stdout, stderr) => {
-      // Delete temp config IMMEDIATELY — don't wait
-      try { fs.unlinkSync(tmpPath); } catch {}
+    const child = execFile(
+      binaryPath,
+      ['--config-stdin', '--config', configPathHint, '--cmd', JSON.stringify(cmdObj)],
+      {
+        timeout,
+        cwd: ctx.appRoot,
+      },
+      (err, stdout, stderr) => {
+        // Track for cleanup on app exit
+        if (ctx.activeChildProcesses) ctx.activeChildProcesses.delete(child);
 
-      // Track for cleanup on app exit
-      if (ctx.activeChildProcesses) ctx.activeChildProcesses.delete(child);
+        if (err && !stdout) {
+          // Binary failed with no output — redact the error message too
+          const errMsg = redactOutput('', stderr || err.message);
+          return resolve({ text: errMsg || 'Action failed. Try again.', error: true });
+        }
 
-      if (err && !stdout) {
-        // Binary failed with no output — redact the error message too
-        const errMsg = redactOutput('', stderr || err.message);
-        return resolve({ text: errMsg || 'Action failed. Try again.', error: true });
+        // Redact BOTH stdout and stderr
+        const sanitized = redactOutput(stdout || '', stderr || '');
+        // Extract artifact bundles emitted by the binary's sentinel block.
+        // `cleanText` substitutes each sentinel with a markdown gallery so
+        // Claude echoes the inline previews verbatim; `bundles` is the
+        // structured payload for the renderer to draw a gallery card. See
+        // app/artifact-parser.js for the contract (REGRESSION GUARD 2026-04-19).
+        const { cleanText, bundles } = extractArtifacts(sanitized);
+        resolve({
+          text: cleanText || 'Done.',
+          artifacts: bundles && bundles.length ? bundles : undefined,
+          error: err ? true : false,
+        });
       }
+    );
 
-      // Redact BOTH stdout and stderr
-      const sanitized = redactOutput(stdout || '', stderr || '');
-      // Extract artifact bundles emitted by the binary's sentinel block.
-      // `cleanText` substitutes each sentinel with a markdown gallery so
-      // Claude echoes the inline previews verbatim; `bundles` is the
-      // structured payload for the renderer to draw a gallery card. See
-      // app/artifact-parser.js for the contract (REGRESSION GUARD 2026-04-19).
-      const { cleanText, bundles } = extractArtifacts(sanitized);
-      resolve({
-        text: cleanText || 'Done.',
-        artifacts: bundles && bundles.length ? bundles : undefined,
-        error: err ? true : false,
-      });
-    });
+    // Write the config JSON to stdin and close. Guarded because the
+    // child may exit early (bad binary, missing exe) before we finish
+    // writing; the stream emits 'error' in that case and we'd otherwise
+    // crash the Electron main process.
+    try {
+      if (child.stdin) {
+        child.stdin.on('error', () => {});
+        child.stdin.write(JSON.stringify(cfg));
+        child.stdin.end();
+      }
+    } catch {}
 
     if (ctx.activeChildProcesses) ctx.activeChildProcesses.add(child);
   });
@@ -446,6 +473,10 @@ function validationEnvelope(message, data) {
  */
 function buildTools(tool, z, ctx) {
   const tools = [];
+  // Canonical brand-name zod schema — use `brandSchema.optional()` or
+  // `brandSchema.describe(...)` at every `brand: ...` input. See the
+  // BRAND_NAME_PATTERN comment above for why this is defense-in-depth.
+  const brandSchema = z.string().regex(BRAND_NAME_PATTERN, 'invalid brand');
 
   // ── connection_status ─────────────────────────────────────
   tools.push(defineTool({
@@ -455,7 +486,7 @@ function buildTools(tool, z, ctx) {
     idempotent: true,
     costImpact: 'none',
     brandRequired: false,
-    input: { brand: z.string().optional().describe('Brand name (uses active brand if omitted)') },
+    input: { brand: brandSchema.optional().describe('Brand name (uses active brand if omitted)') },
     handler: async ({ brand }) => {
       try {
         const connections = ctx.getConnections(brand || '');
@@ -480,7 +511,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['push', 'insights', 'kill', 'activate', 'duplicate', 'setup', 'discover', 'warmup', 'retarget', 'lookalike', 'setup-retargeting', 'adlib', 'catalog', 'budget', 'bulk-push', 'lockdown', 'import']).describe('The operation to perform'),
-      brand: z.string().optional().describe('Brand name'),
+      brand: brandSchema.optional().describe('Brand name'),
       adId: z.string().optional().describe('Ad ID (for kill/duplicate/lockdown)'),
       campaignId: z.string().optional().describe('Target campaign ID'),
       campaignName: z.string().optional().describe('Campaign name'),
@@ -569,7 +600,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'lookalike']).describe('The operation to perform'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       adId: z.string().optional(),
       campaignId: z.string().optional(),
       dailyBudget: z.number().optional(),
@@ -601,7 +632,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       adId: z.string().optional(),
       campaignId: z.string().optional(),
       adImagePath: z.string().optional(),
@@ -632,7 +663,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['push', 'insights', 'kill', 'setup', 'status', 'products', 'orders']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       adId: z.string().optional(),
       campaignId: z.string().optional(),
       dailyBudget: z.number().optional(),
@@ -657,7 +688,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'shopify' },
     input: {
       action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       batchCount: z.number().optional().describe('Days of data (for analytics/orders)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'shopify-' + args.action, args)),
@@ -674,7 +705,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'klaviyo' },
     input: {
       action: z.enum(['performance', 'lists', 'campaigns']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       batchCount: z.number().optional().describe('Days of data'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'klaviyo-' + args.action, args)),
@@ -696,7 +727,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'applovin' },
     input: {
       action: z.enum(['status', 'max-report', 'ad-report', 'campaign-performance', 'manage']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       batchCount: z.number().optional().describe('Days of data (default 7, max 365)'),
       limit: z.number().optional().describe('Max rows returned'),
     },
@@ -717,7 +748,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'postscript' },
     input: {
       action: z.enum(['status', 'subscribers', 'campaigns', 'keywords', 'automations']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       limit: z.number().optional().describe('Max rows returned'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'postscript-' + args.action, args)),
@@ -733,7 +764,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     input: {
       action: z.enum(['audit', 'revenue']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       batchCount: z.number().optional().describe('Days of data'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'email-' + args.action, args)),
@@ -749,7 +780,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     input: {
       action: z.enum(['audit', 'keywords', 'rankings', 'fix-alt', 'track', 'gaps', 'update-rank']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       url: z.string().optional().describe('Target URL (for audit)'),
     },
     handler: async (args) => {
@@ -771,7 +802,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['image', 'batch', 'blog-post', 'blog-list', 'social-post']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       product: z.string().optional(),
       imagePrompt: z.string().optional().describe('Freeform image prompt'),
       imageCount: z.number().optional().describe('Number of images (1-4)'),
@@ -816,7 +847,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'fal' },
     preview: false,
     input: {
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       product: z.string().optional(),
       script: z.string().optional().describe('Custom script text'),
       format: z.string().optional().describe('"9:16", "16:9", or "1:1"'),
@@ -843,7 +874,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['clone', 'list', 'delete', 'list-avatars']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       voiceName: z.string().optional(),
       voiceId: z.string().optional(),
       voiceSampleDir: z.string().optional(),
@@ -865,7 +896,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     input: {
       action: z.enum(['dashboard', 'calendar', 'wisdom', 'report', 'competitor-scan', 'landing-audit']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       batchCount: z.number().optional().describe('Days of data'),
       url: z.string().optional().describe('URL (for landing-audit)'),
     },
@@ -902,7 +933,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     input: {
       action: z.enum(['profile', 'posts', 'insights']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'threads-' + args.action, args)),
   }, tool, z, ctx));
@@ -919,7 +950,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['accounts', 'campaigns', 'adgroups', 'ads', 'insights', 'create-campaign', 'create-ad', 'kill']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       campaignId: z.string().optional().describe('Campaign ID'),
       adId: z.string().optional().describe('Ad or ad group ID'),
       campaignName: z.string().optional().describe('Campaign name'),
@@ -947,7 +978,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['accounts', 'campaigns', 'setup', 'push', 'insights', 'kill', 'duplicate', 'budget']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       campaignId: z.string().optional().describe('Campaign ID or URN'),
       adId: z.string().optional().describe('Creative ID or URN'),
       campaignName: z.string().optional().describe('Campaign name'),
@@ -975,7 +1006,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'etsy' },
     input: {
       action: z.enum(['shop', 'products', 'orders']).describe('Operation'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       batchCount: z.number().optional().describe('Number of results to return (max 100)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'etsy-' + args.action, args)),
@@ -1058,7 +1089,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     input: {
       platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript']).describe('Platform to connect'),
-      brand: z.string().optional(),
+      brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
     handler: async (args) => {
@@ -1336,7 +1367,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     input: {
       action: z.enum(['validate', 'write', 'read']).describe('validate=dry-run checks only; write=persist to brand folder; read=return persisted guide'),
-      brand: z.string().optional().describe('Brand name — required for write and read'),
+      brand: brandSchema.optional().describe('Brand name — required for write and read'),
       brandGuide: z.any().optional().describe('The brand guide JSON object (required for validate and write)'),
     },
     handler: async (args) => {
@@ -1376,7 +1407,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     input: {
       action: z.enum(['queue']).describe('queue=list unconsumed DecisionFacts (kills needing replacements)'),
-      brand: z.string().optional().describe('Brand name'),
+      brand: brandSchema.optional().describe('Brand name'),
       sinceUnix: z.number().optional().describe('Only return decisions with Timestamp >= this Unix seconds value (default: all)'),
     },
     handler: async (args) => {
@@ -1457,7 +1488,7 @@ function buildTools(tool, z, ctx) {
     costImpact: 'none',
     brandRequired: false,
     input: {
-      brand: z.string().optional().describe('Filter by brand'),
+      brand: brandSchema.optional().describe('Filter by brand'),
       tool: z.string().optional().describe('Filter by tool name (e.g. "meta_bulk_push")'),
       state: z.enum(['queued', 'running', 'done', 'failed', 'cancelled']).optional().describe('Filter by state'),
       limit: z.number().optional().describe('Max results (default: 50)'),
