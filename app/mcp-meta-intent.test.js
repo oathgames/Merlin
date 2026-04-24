@@ -41,6 +41,7 @@ function makeFakeTool() {
 function makeFakeZ() {
   const chain = () => ({
     optional: () => chain(), describe: () => chain(), default: () => chain(),
+    regex: () => chain(), min: () => chain(), max: () => chain(),
   });
   return {
     string: () => chain(), number: () => chain(), boolean: () => chain(),

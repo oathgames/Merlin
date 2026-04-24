@@ -47,6 +47,9 @@ function makeFakeZ() {
       optional: () => chain(),
       describe: () => chain(),
       default: () => chain(),
+      regex: () => chain(),
+      min: () => chain(),
+      max: () => chain(),
     };
     return node;
   }
