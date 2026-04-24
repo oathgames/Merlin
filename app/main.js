@@ -10,6 +10,7 @@ const { createInitBarrier } = require('./async-barrier');
 const { verifyChecksumsSignature } = require('./update-verifier');
 const { cleanWhisperTranscript } = require('./whisper-transcript-clean');
 const spellConfig = require('./spell-config');
+const { runFastOpenOAuth, ACTIVE_PLATFORMS: FAST_OPEN_PLATFORMS } = require('./oauth-fast-open');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -3640,6 +3641,65 @@ ipcMain.handle('get-account-info', async () => {
   } catch { return null; }
 });
 
+// resolveShopifyShopInput — pick the best available shop identifier for
+// the fast-open path. Returns either a canonical .myshopify.com slug, a
+// custom domain (which oauth-fast-open.js's resolveShopifyShop then
+// resolves via /cart.js + SSRF guards), or null if the brand is missing
+// a website. Resolution order is strict and mirrors the original
+// runOAuthFlow ordering at lines 3778-3799 of the pre-refactor file:
+//   1. extra.store override passed by the caller
+//   2. Active brand's brand.md URL / Website field
+//   3. Active brand's productUrl in the per-brand config
+// We NEVER fall back to the global productUrl — seeding a different
+// brand's domain here would silently connect the wrong store.
+function resolveShopifyShopInput(brandName, extra) {
+  if (extra && extra.store) return String(extra.store).trim();
+  if (!brandName) return null;
+  try {
+    const brandMd = path.join(appRoot, 'assets', 'brands', brandName, 'brand.md');
+    const content = fs.readFileSync(brandMd, 'utf8');
+    const urlMatch =
+      content.match(/\*?\*?(?:URL|Website)\*?\*?\s*[:]\s*(https?:\/\/[^\s\n)]+)/i) ||
+      content.match(/\*?\*?(?:URL|Website)\*?\*?\s*[:]\s*([a-z0-9][a-z0-9.-]+\.[a-z]{2,}[^\s\n)]*)/i);
+    if (urlMatch) {
+      return urlMatch[1].replace(/^https?:\/\//, '').replace(/\/$/, '');
+    }
+  } catch { /* brand.md missing — fall through */ }
+  try {
+    const brandCfg = readBrandConfig(brandName);
+    if (brandCfg && brandCfg.productUrl) {
+      return String(brandCfg.productUrl).replace(/^https?:\/\//, '').replace(/\/$/, '');
+    }
+  } catch { /* config missing — fall through */ }
+  return null;
+}
+
+// applyExchangeResult — persist the binary's OAuth exchange output to the
+// vault + brand/global config and broadcast connections-changed so the
+// renderer's tile turns green. Shared between the fast-open path and
+// the legacy binary-login fallback so persistence semantics never drift.
+//
+// Vault split: sensitive fields (access tokens, refresh tokens, bot
+// tokens, webhook URLs) are redirected to the machine-bound vault via
+// splitOAuthPersistFields, which also emits @@VAULT:key@@ placeholders
+// into the writable public fields. The REGRESSION GUARD at
+// oauth-persist.js keeps sensitive-key classification in sync with
+// VAULT_SENSITIVE_KEYS.
+function applyExchangeResult(platform, brandName, isGlobalPlatform, parsed) {
+  const vaultBrand = (brandName && !isGlobalPlatform) ? brandName : '_global';
+  const { publicFields, placeholders } = splitOAuthPersistFields(vaultBrand, parsed);
+  if (brandName && !isGlobalPlatform) {
+    writeBrandTokens(brandName, { ...publicFields, ...placeholders });
+  } else {
+    const cfg = readConfig();
+    Object.assign(cfg, publicFields, placeholders);
+    if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
+    cfg._tokenTimestamps[platform] = Date.now();
+    writeConfig(cfg);
+  }
+  if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+}
+
 // Direct OAuth — bypasses SDK entirely, runs the binary from main process
 // Standalone OAuth flow — callable from both the IPC handler (UI clicks)
 // and the MCP platform_login tool. Returns { success, platform } or { error }.
@@ -3670,135 +3730,54 @@ async function runOAuthFlow(platform, brandName, extra) {
     };
   }
 
-  // Slack requires HTTPS redirect URI — binary handles token exchange (secrets stay in binary)
-  if (platform === 'slack') {
-    const slackClientId = '8988877007078.10822045906036'; // Public client ID (not a secret)
-    const slackRedirect = 'https://merlingotme.com/auth/callback';
-    const srv = require('http').createServer();
-    await new Promise(r => srv.listen(0, '127.0.0.1', r));
-    const port = srv.address().port;
-    const stateHex = require('crypto').randomBytes(16).toString('hex');
-    const fullState = `${stateHex}|${port}`;
-
-    const authUrl = `https://slack.com/oauth/v2/authorize?client_id=${slackClientId}&scope=chat:write,files:write,channels:read,channels:join,incoming-webhook&redirect_uri=${encodeURIComponent(slackRedirect)}&state=${encodeURIComponent(fullState)}`;
-    shell.openExternal(authUrl);
-
-    return new Promise((resolve) => {
-      const timeout = setTimeout(() => { srv.close(); resolve({ error: 'Timed out waiting for Slack authorization' }); }, 300000);
-
-      srv.on('request', (req, res) => {
-        const u = new URL(req.url, `http://localhost:${port}`);
-        if (u.pathname !== '/callback') return;
-        const code = u.searchParams.get('code');
-        const incomingState = u.searchParams.get('state');
-        if (incomingState !== stateHex && incomingState !== fullState) {
-          res.end('State mismatch'); clearTimeout(timeout); srv.close();
-          return resolve({ error: 'State mismatch — try again' });
-        }
-        if (!code) {
-          res.end('No code'); clearTimeout(timeout); srv.close();
-          return resolve({ error: u.searchParams.get('error') || 'No authorization code' });
-        }
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<html><body style="font-family:system-ui;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#09090b;color:#e4e4e7"><div style="text-align:center"><h2 style="color:#22c55e">&#10003; Connected to Slack</h2><p>You can close this tab.</p></div></body></html>');
-        clearTimeout(timeout);
-        srv.close();
-
-        // Binary exchanges code for token (secret stays in binary, never in this file)
-        const { execFile } = require('child_process');
-        const cmd = JSON.stringify({ action: 'slack-exchange', code, redirectUri: slackRedirect });
-        const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
-          timeout: 30000, cwd: appRoot,
-        }, (err, stdout) => {
-          activeChildProcesses.delete(child);
-          if (err) return resolve({ error: err.message });
-          try {
-            const lines = stdout.split('\n');
-            let jsonStart = -1, jsonEnd = -1;
-            for (let i = lines.length - 1; i >= 0; i--) {
-              if (lines[i].trim() === '}' && jsonEnd < 0) jsonEnd = i;
-              if (lines[i].trim() === '{' && jsonEnd >= 0) { jsonStart = i; break; }
-            }
-            const jsonStr = jsonStart >= 0 ? lines.slice(jsonStart, jsonEnd + 1).join('\n') : null;
-            if (!jsonStr) throw new Error('No JSON in output');
-            const result = JSON.parse(jsonStr);
-            const cfg = readConfig();
-            for (const [k, v] of Object.entries(result || {})) {
-              if (VAULT_SENSITIVE_KEYS.includes(k) && isVaultRedactionMarker(v)) continue;
-              cfg[k] = v;
-            }
-            if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
-            cfg._tokenTimestamps.slack = Date.now();
-            writeConfig(cfg);
-            if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
-            resolve({ success: true, platform: 'slack' });
-          } catch (e) {
-            resolve({ error: 'Failed to parse Slack token response' });
-          }
-        });
-        activeChildProcesses.add(child);
-      });
-    });
-  }
-
-  const action = `${platform}-login`;
-  const cmdObj = { action };
-  // For Shopify, always pass the brand's CUSTOM DOMAIN (e.g. mad-chill.com).
-  // The binary's resolveShopifyStore converts it to the canonical .myshopify.com
-  // slug via the Shopify.shop JS variable with /cart.js verification. We do NOT
-  // trust cached `shopifyStore` values from the config — those may have been
-  // seeded with wrong data and persist indefinitely. Always re-resolve.
-  //
-  // Resolution order (strict — never falls back to a DIFFERENT brand):
-  //   1. extra.store override from caller
-  //   2. Active brand's brand.md URL field
-  //   3. Active brand's productUrl field in brand config
-  //   4. Global productUrl (legacy single-brand configs)
-  //
-  // If the active brand has no URL configured, we return a friendly error
-  // asking the user to set one — we do NOT silently connect a different brand.
-  if (platform === 'shopify') {
-    const readUrlFromBrandMd = (name) => {
-      try {
-        const brandMd = path.join(appRoot, 'assets', 'brands', name, 'brand.md');
-        const content = fs.readFileSync(brandMd, 'utf8');
-        // Match all common brand.md formats:
-        //   URL: https://example.com
-        //   Website: https://example.com
-        //   - **Website**: https://example.com
-        //   - **URL**: https://example.com
-        //   - **Website**: example.com  (no protocol)
-        const urlMatch = content.match(/\*?\*?(?:URL|Website)\*?\*?\s*[:]\s*(https?:\/\/[^\s\n)]+)/i)
-          || content.match(/\*?\*?(?:URL|Website)\*?\*?\s*[:]\s*([a-z0-9][a-z0-9.-]+\.[a-z]{2,}[^\s\n)]*)/i);
-        if (urlMatch) return urlMatch[1].replace(/^https?:\/\//, '').replace(/\/$/, '');
-      } catch {}
-      return null;
-    };
-
-    if (extra?.store) {
-      cmdObj.brand = extra.store;
-    } else if (brandName) {
-      // Step 2: active brand's brand.md
-      const url = readUrlFromBrandMd(brandName);
-      if (url) {
-        cmdObj.brand = url;
-      } else {
-        // Step 3: active brand's productUrl
-        const brandCfg = readBrandConfig(brandName);
-        if (brandCfg?.productUrl) {
-          cmdObj.brand = brandCfg.productUrl.replace(/^https?:\/\//, '').replace(/\/$/, '');
-        }
+  // Fast-open path — RFC 8252 browser-first. See app/oauth-fast-open.js
+  // and the Engineering Standard section in D:\autoCMO-claude\CLAUDE.md.
+  // Every platform in FAST_OPEN_PLATFORMS opens the browser in < 50 ms
+  // because the authorize URL is built here in Node and the local
+  // callback listener is bound here; the Go binary is only spawned for
+  // the post-exchange (BFF code → token + per-platform discovery),
+  // which runs while the user is reading the provider's Authorize page.
+  if (FAST_OPEN_PLATFORMS.includes(platform)) {
+    let shopInput;
+    if (platform === 'shopify') {
+      shopInput = resolveShopifyShopInput(brandName, extra);
+      if (!shopInput) {
+        return brandName
+          ? { error: `${brandName} needs a website before Shopify can connect. Ask Merlin to finish setting up this brand first, then try Shopify again.` }
+          : { error: 'Set up a brand with Merlin before connecting your store.' };
       }
-      if (!cmdObj.brand) {
-        return {
-          error: `${brandName} needs a website before Shopify can connect. Ask Merlin to finish setting up this brand first, then try Shopify again.`,
-        };
-      }
-    } else {
-      return { error: 'Set up a brand with Merlin before connecting your store.' };
     }
+    const fastResult = await runFastOpenOAuth(platform, {
+      binaryPath,
+      configPath,
+      appRoot,
+      brand: brandName,
+      shop: shopInput,
+      activeChildProcesses,
+    });
+    if (fastResult.error) return { error: fastResult.error };
+    const parsed = fastResult.result || {};
+    if (Object.keys(parsed).length === 0) {
+      // REGRESSION GUARD (2026-04-17, v1.4 Google Ads tile-not-green fix):
+      // If the binary persisted tokens via its own VaultPut + updateConfigField
+      // but we couldn't parse a result JSON, still broadcast connections-changed
+      // so the tile re-reads disk state and flips green.
+      if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+      return { success: true, platform };
+    }
+    applyExchangeResult(platform, brandName, isGlobalPlatform, parsed);
+    return { success: true, platform };
   }
-  const cmd = JSON.stringify(cmdObj);
+
+  // Legacy binary-login fallback. Spawns Merlin.exe <platform>-login which
+  // constructs the authorize URL, binds the listener, and opens the browser
+  // itself (200-400 ms binary-spawn overhead before the browser appears).
+  // Reserved for platforms whose OAuth flow is not yet ported to fast-open:
+  //   - Discord: bot-install flow returns guild_id, not a token (different
+  //              contract — needs a dedicated fast-open migration).
+  //   - Any future provider between code-landing and migration.
+  const action = `${platform}-login`;
+  const cmd = JSON.stringify({ action });
   const { execFile } = require('child_process');
 
   return new Promise((resolve) => {
@@ -3807,15 +3786,8 @@ async function runOAuthFlow(platform, brandName, extra) {
       cwd: appRoot,
     }, (err, stdout, stderr) => {
       activeChildProcesses.delete(child);
-      // Debug logs removed — uncomment to troubleshoot OAuth issues
-      if (err) {
-        console.error(`[oauth] ${action} err:`, err.message);
-        // Don't return early — check if stdout has valid JSON despite error exit code
-        // (binary may print JSON then exit non-zero from deferred cleanup)
-      }
-      // Parse the output — binary prints indented JSON after status messages
+      if (err) console.error(`[oauth] ${action} err:`, err.message);
       try {
-        // Extract JSON: find lines between last { and last }
         const lines = stdout.split('\n');
         let jsonStart = -1, jsonEnd = -1;
         for (let i = lines.length - 1; i >= 0; i--) {
@@ -3823,67 +3795,31 @@ async function runOAuthFlow(platform, brandName, extra) {
           if (lines[i].trim() === '{' && jsonEnd >= 0) { jsonStart = i; break; }
         }
         const jsonStr = jsonStart >= 0 ? lines.slice(jsonStart, jsonEnd + 1).join('\n') : null;
-        // console.log(`[oauth] extracted JSON:`, jsonStr);
         if (!jsonStr) throw new Error('No JSON in output');
         const result = JSON.parse(jsonStr);
         if (!result || Object.keys(result).length === 0) throw new Error('Empty JSON result');
-        // console.log(`[oauth] parsed result:`, JSON.stringify(result));
-        // Save tokens — sensitive values go to the vault, metadata goes
-        // to the brand config with @@VAULT@@ placeholders.
-        const vaultBrand = (brandName && !isGlobalPlatform) ? brandName : '_global';
-        const { publicFields, placeholders } = splitOAuthPersistFields(vaultBrand, result);
-        if (brandName && !isGlobalPlatform) {
-          writeBrandTokens(brandName, { ...publicFields, ...placeholders });
-        } else {
-          const cfg = readConfig();
-          Object.assign(cfg, publicFields, placeholders);
-          if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
-          cfg._tokenTimestamps[platform] = Date.now();
-          writeConfig(cfg);
-        }
-        if (win && !win.isDestroyed()) {
-          win.webContents.send('connections-changed');
-        }
+        applyExchangeResult(platform, brandName, isGlobalPlatform, result);
         resolve({ success: true, platform });
       } catch (parseErr) {
         console.error(`[oauth] JSON parse failed:`, parseErr.message);
-        // Binary output wasn't JSON — might have printed status messages
-        // Try to find JSON in the output
+        // Fallback: try line-by-line JSON.parse in case binary emitted a
+        // single-line JSON object with trailing log noise.
         const lines = (stdout || '').split('\n');
         for (const line of lines.reverse()) {
           try {
-            const parsed = JSON.parse(line.trim());
-            if (parsed && typeof parsed === 'object') {
-              const vaultBrand = (brandName && !isGlobalPlatform) ? brandName : '_global';
-              const { publicFields, placeholders } = splitOAuthPersistFields(vaultBrand, parsed);
-              if (brandName && !isGlobalPlatform) {
-                writeBrandTokens(brandName, { ...publicFields, ...placeholders });
-              } else {
-                const cfg = readConfig();
-                Object.assign(cfg, publicFields, placeholders);
-                if (!cfg._tokenTimestamps) cfg._tokenTimestamps = {};
-                cfg._tokenTimestamps[platform] = Date.now();
-                writeConfig(cfg);
-              }
-              if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+            const maybe = JSON.parse(line.trim());
+            if (maybe && typeof maybe === 'object') {
+              applyExchangeResult(platform, brandName, isGlobalPlatform, maybe);
               return resolve({ success: true, platform });
             }
-          } catch {}
+          } catch { /* ignore — keep scanning */ }
         }
         if (err) return resolve({ error: stderr || err.message });
-        // Binary exited 0 but Electron couldn't parse any JSON from stdout.
-        // The binary may still have persisted tokens via its own VaultPut +
-        // updateConfigField calls against the global config. Fire
-        // connections-changed so the tile re-reads disk state — without this,
-        // the renderer never refreshes and the tile stays gray even when the
-        // binary-side write succeeded.
-        //
         // REGRESSION GUARD (2026-04-17, v1.4 Google Ads tile-not-green fix):
-        // Previously this path returned {success: true} silently with no
-        // connections-changed broadcast. If stdout parsing ever regressed
-        // (extra log lines, tool-bar interleaving, locale issues) the tile
-        // would stay gray despite tokens being on disk, and the user had to
-        // switch brands or reload to see the green state.
+        // Binary exited 0 but stdout unparseable — tokens may already be
+        // on disk via the binary's own VaultPut path. Broadcast so the
+        // tile re-reads disk state; without this, the renderer stays
+        // gray even when persistence succeeded.
         if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
         resolve({ success: true, stdout });
       }
