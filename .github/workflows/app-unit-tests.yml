@@ -51,6 +51,15 @@ jobs:
       # branch (skips the retry loop and jumps straight to sign-in UI).
       - name: auth-error graceful fail lockdown
         run: node --test app/main-auth-error-intercept.test.js app/renderer-auth-error-fail-fast.test.js
+      # Stale-resume graceful fail — the v1.18.1 "No conversation found
+      # with session ID: <uuid>" incident canary. Locks down both the
+      # main.js isResumeFailure regex (auto-clears thread + silent
+      # restart) AND the renderer.js fail-fast branch (skips the 3x
+      # retry loop on stale-resume and shows a 'Start Fresh Session'
+      # button wired to startFreshSession IPC). Same incident shape as
+      # the v1.18.0 auth loop — non-retryable error blindly retried 3x.
+      - name: stale-resume graceful fail lockdown
+        run: node --test app/main-stale-resume-regex.test.js app/renderer-stale-resume-fail-fast.test.js
       - name: ws-server listen-bind lockdown
         run: node app/ws-server.test.js
       - name: relay-client contract

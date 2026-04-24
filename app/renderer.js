@@ -2126,6 +2126,28 @@ merlin.onSdkError((err) => {
     || errLower.includes('oauth token has been revoked')
     || errLower.includes('oauth token expired');
 
+  // REGRESSION GUARD (2026-04-24, stale-resume-graceful):
+  // Detect SDK stale-resume errors. main.js's catch-block has a widened
+  // `isResumeFailure` regex that auto-clears the stale sessionId and
+  // silently restarts — the user should never see this error. But if
+  // that recovery misses for any reason (race, future SDK wording change,
+  // thread-store write failure), the renderer MUST NOT run the 3× retry
+  // loop. Every retry re-reads the same stale sessionId from state and
+  // fails identically, ending on the useless generic "Retry Connection"
+  // button — the v1.18.1 incident shape.
+  //
+  // SDK wordings covered (grep cli.js): "No conversation found with
+  // session ID: <uuid>", "No conversation found to continue". The
+  // `returned an error result:` prefix is added by the SDK wrapper when
+  // converting a `result` message with `is_error:true` into a thrown
+  // exception — we match the underlying text so we don't depend on the
+  // prefix staying stable across SDK versions.
+  const isStaleResumeError = errLower.includes('no conversation found')
+    || errLower.includes('session not found')
+    || errLower.includes('no such session')
+    || errLower.includes('cannot resume')
+    || (errLower.includes('session id') && errLower.includes('not found'));
+
   const bubble = addClaudeBubble();
 
   // REGRESSION GUARD (2026-04-23, §3.11+§3.12):
@@ -2196,6 +2218,66 @@ merlin.onSdkError((err) => {
       }
     };
     bubble.appendChild(signInBtn);
+    return;
+  }
+
+  // REGRESSION GUARD (2026-04-24, stale-resume-graceful):
+  // Stale-resume errors (SDK "No conversation found with session ID: …")
+  // are NOT retryable — every retry re-reads the same stale UUID from
+  // thread storage and fails identically. The v1.18.1 incident shape
+  // was: user hits an expired/cleared SDK session → 3× retry loop all
+  // 404 on the same ID → "Merlin tried 3 times" bubble + useless
+  // "Retry Connection" button that just runs another doomed retry.
+  //
+  // main.js's catch-block has an `isResumeFailure` auto-recovery that
+  // clears the stale sessionId silently — this branch is the
+  // belt-and-suspenders for when that recovery misses (race, future
+  // SDK wording change, thread-store write failure). We skip the retry
+  // loop entirely and render a single "Start Fresh Session" button
+  // wired to `merlin.startFreshSession()` which clears the thread +
+  // restarts clean. On success, the user's last message replays just
+  // like the auth fail-fast path. No countdown, no "attempt 2 of 3".
+  //
+  // Classification lives in `isStaleResumeError` above; DO NOT fall
+  // through to the retry path on stale-resume — the retries cannot
+  // possibly succeed and every one of them shows the same raw SDK
+  // error to the user.
+  if (isStaleResumeError) {
+    _restartAttempts = 0; // reset circuit — the fresh-session restart isn't a retry in disguise
+    const freshBtn = document.createElement('button');
+    freshBtn.className = 'stale-resume-btn';
+    freshBtn.textContent = 'Start Fresh Session';
+    freshBtn.style.cssText = 'margin-top:12px;padding:8px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer';
+    freshBtn.onclick = async () => {
+      if (!merlin.startFreshSession) return;
+      freshBtn.disabled = true;
+      freshBtn.textContent = 'Starting fresh session...';
+      try {
+        const result = await merlin.startFreshSession();
+        if (result && result.success) {
+          freshBtn.remove();
+          sessionActive = true;
+          // Replay the triggering message if we have one, matching the
+          // auth fail-fast contract. Otherwise the fresh session will
+          // just reach the ready state and wait for input.
+          if (_lastUserMessage && typeof merlin.sendMessage === 'function') {
+            showTypingIndicator();
+            turnStartTime = Date.now();
+            turnTokens = 0;
+            startTickingTimer();
+            merlin.sendMessage(_lastUserMessage);
+          }
+          return;
+        }
+        freshBtn.disabled = false;
+        freshBtn.textContent = 'Start Fresh Session';
+      } catch (e) {
+        console.error('[stale-resume-retry]', e);
+        freshBtn.disabled = false;
+        freshBtn.textContent = 'Start Fresh Session';
+      }
+    };
+    bubble.appendChild(freshBtn);
     return;
   }
 
