@@ -201,6 +201,15 @@ const PROTECTED_PATH_PATTERNS = [
   // all be covered by the same blocklist rule.
   /[/\\]Merlin[/\\]\.vault(\.|$)/i,
   /[/\\]\.vault(\.|$)/i,
+  // Per-install vault salt sits alongside .vault and seeds the v2 key
+  // derivation (vault.go:vaultKey + app/main.js:_vaultDeriveKey, Codex
+  // P1 #5). The salt alone doesn't decrypt the vault (it still needs
+  // hostname + username), but leaking it narrows brute force from
+  // (hostname × username × salt) to (hostname × username) — a meaningful
+  // attacker advantage, so block it. `(\.|$)` covers `.vault-salt.tmp`
+  // per Rule 7. NOTE: `\.vault(\.|$)` above does NOT match `-salt` since
+  // `-` is neither dot nor end-of-string — this is a distinct entry.
+  /[/\\]\.vault-salt(\.|$)/i,
   /[/\\]\.rate-state\b/i,
   /[/\\]\.rate-secret\b/i,
   // MCP source files — redaction patterns must stay secret
@@ -243,6 +252,11 @@ const PROTECTED_COMMAND_PATTERNS = [
   /AppData.*\.vault\b/i,
   /Application Support.*\.vault\b/i,
   /\.config[/\\]merlin[/\\]\.vault\b/i,
+  // Vault salt — match anywhere in a shell command (grep/cp/mv/rm).
+  // `-salt` follows `.vault` so `\b` after `\.vault` doesn't catch it —
+  // need the explicit substring. See PROTECTED_PATH_PATTERNS for the
+  // path-anchored counterpart + rationale.
+  /\.vault-salt\b/i,
   // Protect framework files from mutation via cp/mv/rm
   /\.claude[/\\]hooks[/\\]/i,
   /\.claude[/\\]commands[/\\]/i,

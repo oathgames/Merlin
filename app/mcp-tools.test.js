@@ -47,6 +47,7 @@ function makeFakeZ() {
       optional: () => chain(),
       describe: () => chain(),
       default: () => chain(),
+      regex: () => chain(), // Codex 2026-04-24: brandSchema = z.string().regex(BRAND_RE, ...)
     };
     return node;
   }

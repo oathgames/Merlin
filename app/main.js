@@ -32,11 +32,39 @@ protocol.registerSchemesAsPrivileged([
 // which meant a crafted markdown link like file:///C:/… or javascript:…
 // could trigger arbitrary OS protocol handlers from the context menu. All
 // call sites now share this helper and defer to the same http/https allowlist.
+//
+// REGRESSION GUARD (2026-04-24, Codex P0 #2): every shell.openExternal in
+// app/main.js MUST go through this wrapper. main-codex-hardening.test.js
+// source-scans for raw shell.openExternal calls and fails CI on more than
+// one occurrence (the one inside openExternalSafe itself). The single
+// exception is _openSystemPrefsDeepLink below — hard-coded OS-settings
+// URIs (x-apple.systempreferences: / ms-settings:) whose schemes by
+// definition aren't http/https; see its comment for the allowlist.
 function openExternalSafe(url) {
   if (typeof url !== 'string') return false;
   if (!/^https?:\/\//i.test(url)) return false;
   try {
     shell.openExternal(url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Narrow allowlist for the two OS-settings deep-links Merlin uses
+// (mic-permission-open-settings). These URIs are CONSTANTS in our own
+// source, never renderer-supplied, and use schemes openExternalSafe
+// correctly rejects. The literal prefixes below are the only values
+// this helper will pass to shell.openExternal — any other URI returns
+// false.
+const _OS_PREFS_URIS = new Set([
+  'x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone',
+  'ms-settings:privacy-microphone',
+]);
+function _openSystemPrefsDeepLink(uri) {
+  if (!_OS_PREFS_URIS.has(uri)) return false;
+  try {
+    shell.openExternal(uri);
     return true;
   } catch {
     return false;
@@ -3141,7 +3169,7 @@ ipcMain.handle('install-claude', async () => {
     };
   }
 
-  shell.openExternal('https://claude.ai/download');
+  openExternalSafe('https://claude.ai/download');
   return {
     success: false,
     fallback: 'manual',
@@ -4353,12 +4381,16 @@ ipcMain.handle('mic-permission-request', async () => {
 ipcMain.handle('mic-permission-open-settings', async () => {
   try {
     if (process.platform === 'darwin') {
-      await shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone');
-      return { ok: true };
+      if (_openSystemPrefsDeepLink('x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone')) {
+        return { ok: true };
+      }
+      return { ok: false, reason: 'open-failed' };
     }
     if (process.platform === 'win32') {
-      await shell.openExternal('ms-settings:privacy-microphone');
-      return { ok: true };
+      if (_openSystemPrefsDeepLink('ms-settings:privacy-microphone')) {
+        return { ok: true };
+      }
+      return { ok: false, reason: 'open-failed' };
     }
     return { ok: false, reason: 'unsupported-platform' };
   } catch (e) {
@@ -4709,7 +4741,7 @@ ipcMain.handle('get-filler-audio', () => {
   return { audio: pick };
 });
 
-ipcMain.handle('open-claude-download', () => { shell.openExternal('https://claude.ai/download'); });
+ipcMain.handle('open-claude-download', () => { openExternalSafe('https://claude.ai/download'); });
 ipcMain.handle('open-external-url', (_, url) => {
   openExternalSafe(url);
 });
@@ -8484,7 +8516,7 @@ ipcMain.handle('open-subscribe', async () => {
     if (attr.type === 'affiliate') attrSuffix = `__aff_${safeCode}`;
     else if (attr.type === 'referral') attrSuffix = `__ref_${safeCode}`;
   }
-  shell.openExternal(
+  openExternalSafe(
     `${STRIPE_CHECKOUT_URL}?client_reference_id=${machineId}${attrSuffix}${emailParam}`,
   );
 
@@ -8531,7 +8563,16 @@ ipcMain.handle('open-manage', async () => {
     });
 
     if (status >= 200 && status < 300 && data.url) {
-      shell.openExternal(data.url);
+      if (!openExternalSafe(data.url)) {
+        // Server returned a URL with an unsupported scheme. Refuse rather
+        // than silently dropping the open — user gets a clear error so
+        // they can re-auth and get a fresh portal URL.
+        const errMsg = 'Billing portal returned an unexpected link type. Re-sync your subscription or contact support@merlingotme.com.';
+        if (win && !win.isDestroyed()) {
+          win.webContents.send('inline-message', { kind: 'error', text: errMsg });
+        }
+        return { ok: false, error: errMsg };
+      }
       return { ok: true };
     }
 
