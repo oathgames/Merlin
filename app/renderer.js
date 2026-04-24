@@ -2943,6 +2943,7 @@ const PLATFORM_DISPLAY_NAMES = {
   twitter: 'X', slack: 'Slack', discord: 'Discord', stripe: 'Stripe',
   fal: 'fal.ai', elevenlabs: 'ElevenLabs', heygen: 'HeyGen', arcads: 'Arcads',
   foreplay: 'Foreplay',
+  applovin: 'AppLovin', postscript: 'Postscript',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -4207,6 +4208,12 @@ const API_KEY_PLATFORMS = {
   heygen:     { key: 'heygenApiKey', label: 'HeyGen', placeholder: 'your-api-key', url: 'https://app.heygen.com/settings?nav=API' },
   arcads:     { key: 'arcadsApiKey', label: 'Arcads', placeholder: 'your-api-key', url: 'https://app.arcads.ai/settings' },
   foreplay:   { key: 'foreplayApiKey', label: 'Foreplay', placeholder: 'fp_xxxx...', url: 'https://app.foreplay.co/settings/api' },
+  postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx...', url: 'https://app.postscript.io/settings/api' },
+  // AppLovin default tile click saves the MAX (publisher) key. Users who have
+  // an AppDiscovery (advertiser) key instead — or both — can switch via the
+  // tile's right-click "Use my API key" override, which opens the two-input
+  // modal below.
+  applovin:   { key: 'applovinMaxReportKey', label: 'AppLovin (MAX)', placeholder: 'applovin-report-key', url: 'https://dash.applovin.com/o/account#keys' },
 };
 
 // Shopify-specific helpers — extracted so the context-menu "Use my API key"
@@ -4399,11 +4406,48 @@ function showMetaApiKeyModal(activeBrand) {
   });
 }
 
+// AppLovin two-key modal — used by the right-click override on the AppLovin
+// tile. MAX is publisher (monetization), AppDiscovery is advertiser (UA).
+// Either key alone is a valid connection; both is fine for dual-role users.
+function showApplovinApiKeyModal(activeBrand) {
+  showModal({
+    title: 'AppLovin — MAX Report Key',
+    body: 'Paste your MAX (publisher) report key. Leave blank if you only use AppDiscovery. (Step 1 of 2)',
+    inputPlaceholder: 'MAX report key (optional)',
+    confirmLabel: 'Next',
+    onConfirm: async (maxValue) => {
+      const maxKey = (maxValue || '').trim();
+      setTimeout(() => {
+        showModal({
+          title: 'AppLovin — AppDiscovery Report Key',
+          body: 'Paste your AppDiscovery (advertiser) report key. Leave blank if you only use MAX. (Step 2 of 2)',
+          inputPlaceholder: 'AppDiscovery report key (optional)',
+          confirmLabel: 'Save',
+          onConfirm: async (adValue) => {
+            const adKey = (adValue || '').trim();
+            if (!maxKey && !adKey) { showModalError('Enter at least one key'); throw new Error('validation'); }
+            if (maxKey) {
+              const r = await merlin.saveConfigField('applovinMaxReportKey', maxKey, activeBrand);
+              if (!r.success) { showModalError(r.error || 'Failed to save MAX key'); throw new Error('save'); }
+            }
+            if (adKey) {
+              const r = await merlin.saveConfigField('applovinAdReportKey', adKey, activeBrand);
+              if (!r.success) { showModalError(r.error || 'Failed to save AppDiscovery key'); throw new Error('save'); }
+            }
+            loadConnections();
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
 // Platforms that support a "Use my API key" right-click override. Each entry
 // maps the platform data attribute to its manual-credential modal.
 const MANUAL_KEY_HANDLERS = {
   shopify: showShopifyApiKeyModal,
   meta: showMetaApiKeyModal,
+  applovin: showApplovinApiKeyModal,
 };
 
 // Tile context menu — right-click to use a manual API key instead of OAuth.

@@ -1782,6 +1782,12 @@ const BANNED_API_HOSTS = [
   // Stripe — read-only reporting via the binary only (same reasoning as
   // block-api-bypass.js). Defense in depth: hook blocks first, canUseTool blocks second.
   'api.stripe.com', 'connect.stripe.com',
+  // AppLovin reporting (MAX publisher + AppDiscovery advertiser). All API calls
+  // must route through the binary so rate-limit preflight and key redaction run.
+  'r.applovin.com', 'o.applovin.com', 'ms.applovin.com',
+  // Postscript SMS — TCPA preflight (quiet hours, consent, 10DLC) is enforced
+  // in postscript.go and must never be bypassed by a direct call from the app.
+  'api.postscript.io',
 ];
 const ALLOWED_URL_PREFIXES = [
   'https://github.com/oathgames/',
@@ -5978,6 +5984,8 @@ const BRAND_KEYS = [
   'klaviyoAccessToken', 'klaviyoApiKey',
   'pinterestAccessToken',
   'slackBotToken', 'slackWebhookUrl',
+  'applovinMaxReportKey', 'applovinAdReportKey',
+  'postscriptApiKey',
 ];
 // ALL config is plaintext JSON — the Go binary reads it via --config flag.
 // No encryption. Tokens live alongside settings in the same file.
@@ -6744,6 +6752,22 @@ function getConnections(brandName) {
     if (globalCfg.heygenApiKey || vaultGet('_global', 'heygenApiKey')) connected.push({ platform: 'heygen', status: 'connected' });
     if (globalCfg.arcadsApiKey || vaultGet('_global', 'arcadsApiKey')) connected.push({ platform: 'arcads', status: 'connected' });
     if (globalCfg.foreplayApiKey || vaultGet('_global', 'foreplayApiKey')) connected.push({ platform: 'foreplay', status: 'connected' });
+    // AppLovin: two independent reporting keys (MAX publisher, AppDiscovery
+    // advertiser). Either one alone counts as connected — most users only have
+    // one account type. Per-brand keys also supported for multi-entity users.
+    if (
+      brandCfg.applovinMaxReportKey || brandCfg.applovinAdReportKey ||
+      (!brandName && (globalCfg.applovinMaxReportKey || globalCfg.applovinAdReportKey ||
+        vaultGet('_global', 'applovinMaxReportKey') || vaultGet('_global', 'applovinAdReportKey')))
+    ) {
+      connected.push({ platform: 'applovin', status: 'connected' });
+    }
+    if (
+      brandCfg.postscriptApiKey ||
+      (!brandName && (globalCfg.postscriptApiKey || vaultGet('_global', 'postscriptApiKey')))
+    ) {
+      connected.push({ platform: 'postscript', status: 'connected' });
+    }
     // Slack posting requires a webhook URL. Bot token alone (from OAuth) enables
     // channel discovery but NOT posting. Show "needs setup" if only bot token exists.
     if (globalCfg.slackWebhookUrl) {
@@ -6797,6 +6821,8 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       heygen: ['heygenApiKey'],
       arcads: ['arcadsApiKey'],
       foreplay: ['foreplayApiKey'],
+      applovin: ['applovinMaxReportKey', 'applovinAdReportKey'],
+      postscript: ['postscriptApiKey'],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };

@@ -240,6 +240,10 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   'meta-login', 'tiktok-login', 'google-login', 'amazon-login',
   'shopify-login', 'klaviyo-login', 'etsy-login', 'reddit-login',
   'linkedin-login', 'pinterest-login', 'snapchat-login', 'twitter-login',
+  // AppLovin + Postscript are API-key connectors (no OAuth). The *-login
+  // actions in the binary just verify the key and persist it — no brand
+  // context needed for the global-scoped case.
+  'applovin-max-login', 'applovin-ad-login', 'postscript-login',
   // Landing page audit takes a raw URL, no brand context needed
   'landing-audit',
   // Foreplay competitor ad spying — keyed on the competitor's domain/brand/ad,
@@ -676,6 +680,49 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'klaviyo-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── applovin ─────────────────────────────────────────────
+  // AppLovin reporting. Two independent endpoints:
+  //   - MAX (publisher, r.applovin.com/maxReport) — monetization for app owners
+  //   - AppDiscovery (advertiser, r.applovin.com/report) — UA campaign performance
+  // Management (campaign create/edit) requires a partner NDA and is intentionally
+  // surfaced as "manage" so the binary can return a clear escalation error.
+  tools.push(defineTool({
+    name: 'applovin',
+    description: 'AppLovin reporting — MAX monetization (publisher) and AppDiscovery UA performance (advertiser).',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'applovin' },
+    input: {
+      action: z.enum(['status', 'max-report', 'ad-report', 'campaign-performance', 'manage']).describe('Operation'),
+      brand: z.string().optional(),
+      batchCount: z.number().optional().describe('Days of data (default 7, max 365)'),
+      limit: z.number().optional().describe('Max rows returned'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'applovin-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── postscript ───────────────────────────────────────────
+  // Postscript SMS. send-campaign and send-message go through preflightTCPA
+  // (quiet hours, consent, 10DLC) before hitting the wire. List endpoints are
+  // read-only reporting. Login is an API-key verify flow.
+  tools.push(defineTool({
+    name: 'postscript',
+    description: 'Postscript SMS — subscribers, campaigns, keywords, automations (list + send with TCPA preflight).',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'postscript' },
+    input: {
+      action: z.enum(['status', 'subscribers', 'campaigns', 'keywords', 'automations']).describe('Operation'),
+      brand: z.string().optional(),
+      limit: z.number().optional().describe('Max rows returned'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'postscript-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── email ────────────────────────────────────────────────
   tools.push(defineTool({
     name: 'email',
@@ -1010,7 +1057,7 @@ function buildTools(tool, z, ctx) {
     costImpact: 'none',
     brandRequired: false,
     input: {
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript']).describe('Platform to connect'),
       brand: z.string().optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -1028,6 +1075,21 @@ function buildTools(tool, z, ctx) {
         return {
           summary: `${args.platform} integration is coming soon`,
           instructions: `${args.platform} is not yet available.`,
+        };
+      }
+      // API-key connectors (no OAuth): direct user to the tile input in the
+      // Connections panel. AppLovin MAX and AppDiscovery are two separate keys
+      // (publisher vs advertiser); the tile surfaces both inputs.
+      if (args.platform === 'applovin') {
+        return {
+          summary: 'AppLovin connects via API keys (MAX + AppDiscovery)',
+          instructions: 'Click the AppLovin tile in the Connections panel and paste your MAX Report Key (publisher) and/or AppDiscovery Report Key (advertiser). Find them in dash.applovin.com → Account → Keys. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'postscript') {
+        return {
+          summary: 'Postscript connects via API key',
+          instructions: 'Click the Postscript tile in the Connections panel and paste your API key from app.postscript.io → Settings → API. Then use connection_status to verify.',
         };
       }
       try {
