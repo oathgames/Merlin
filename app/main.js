@@ -2970,15 +2970,36 @@ async function startSession(brandOverride) {
     // Write to error log for production debugging (no DevTools in packaged builds)
     try { fs.appendFileSync(path.join(appRoot, '.merlin-errors.log'), `${new Date().toISOString()} SDK: ${errMsg}\n${err.stack || ''}\n`); } catch {}
 
+    // REGRESSION GUARD (2026-04-24, stale-resume-graceful):
     // Failed-resume fallback. If we asked the SDK to resume a session UUID
     // that no longer exists on disk (user cleared ~/.claude/projects, moved
     // machines, SDK format change, etc.), don't leave the brand stuck. Clear
     // the stale sessionId and restart — next send-message creates a fresh
-    // session and writes its UUID back via the init capture. Common symptom
-    // wording covered: "session not found", "no such session", "resume
-    // target", "cannot resume". Narrow match so we don't eat unrelated errors.
+    // session and writes its UUID back via the init capture.
+    //
+    // Incident 2026-04-24: a paying user on v1.18.1 hit
+    //   "Claude Code returned an error result: No conversation found with
+    //    session ID: 2f5a1d1a-90e6-48d6-bd3d-2decc60178bf"
+    // followed by "Merlin tried 3 times but couldn't connect" and a generic
+    // "Retry Connection" button that did nothing — because each retry
+    // re-read the same stale sessionId from disk and hit the same error.
+    // The OLD regex required the literal word "session" in phrases like
+    // "session not found", but the SDK emits "No conversation found with
+    // session ID: <uuid>" — uses "conversation", not "session", as the
+    // head noun. That one-word mismatch silently defeated the recovery.
+    //
+    // Authoritative SDK wordings (grep cli.js for "No conversation found"):
+    //   1. "No conversation found with session ID: ${id}"     (resume path)
+    //   2. "No conversation found to continue"                (--continue path)
+    // Both now match. DO NOT narrow this regex back to only "session" —
+    // the SDK owns the wording and has shipped both "conversation" and
+    // "session" as head nouns for the same recovery-eligible failure.
+    //
+    // Narrow match still: we only treat this as recoverable when
+    // `resumeSessionId` is set. If we never asked for a resume, this regex
+    // firing on a different code path would be a mis-classification.
     const isResumeFailure = resumeSessionId
-      && /session\s+(not\s+found|does\s+not\s+exist|missing)|no\s+such\s+session|resume\s+target|cannot\s+resume|invalid\s+session/i.test(errMsg);
+      && /session\s+(not\s+found|does\s+not\s+exist|missing)|no\s+such\s+session|no\s+conversation\s+found|resume\s+target|cannot\s+resume|invalid\s+session|cannot\s+find\s+(session|conversation)|conversation\s+(not\s+found|does\s+not\s+exist|missing)/i.test(errMsg);
     if (isResumeFailure && activeBrand) {
       console.warn(`[threads] resume failed for brand "${activeBrand}" (session ${resumeSessionId.slice(0, 8)}…); clearing and retrying fresh`);
       try { threads.clearThread(appRoot, activeBrand); } catch {}
@@ -3080,6 +3101,34 @@ ipcMain.handle('start-session', () => {
   if (app.isPackaged) validateNodeWrapper(); // C5: ensure wrapper points to current binary
   startSession();
   return { success: true };
+});
+
+// REGRESSION GUARD (2026-04-24, stale-resume-graceful):
+// Force a completely fresh SDK session: clear the persisted resume UUID
+// for the active brand, then start. Used by the renderer's stale-resume
+// fail-fast branch in onSdkError — belt-and-suspenders for the catch-block
+// `isResumeFailure` auto-recovery in the startSession async body. If that
+// recovery misses for any reason (race, future SDK wording change, thread
+// store write failure), the renderer can still punch through to a clean
+// boot without retrying the same stale sessionId. DO NOT call startSession()
+// directly on stale-resume — it would re-read the same UUID from threads
+// storage and hit the exact same error, which is the v1.18.1 incident
+// shape.
+ipcMain.handle('start-fresh-session', () => {
+  if (app.isPackaged) validateNodeWrapper();
+  let cleared = false;
+  try {
+    const activeBrand = readState().activeBrand || '';
+    if (activeBrand) {
+      threads.clearThread(appRoot, activeBrand);
+      cleared = true;
+      console.warn(`[stale-resume] cleared thread for brand "${activeBrand}" — starting fresh session`);
+    }
+  } catch (e) {
+    console.error('[stale-resume] clearThread failed:', e && e.message);
+  }
+  startSession();
+  return { success: true, cleared };
 });
 
 // Trigger the bundled Claude Agent SDK's `auth login` subprocess. The CLI:

@@ -132,6 +132,11 @@ contextBridge.exposeInMainWorld('merlin', {
 
   // Session
   startSession: () => ipcRenderer.invoke('start-session'),
+  // REGRESSION GUARD (2026-04-24, stale-resume-graceful): clears the
+  // persisted resume UUID for the active brand, then starts fresh. Used
+  // by the renderer fail-fast branch on stale-resume SDK errors so we
+  // don't loop retrying the same broken sessionId.
+  startFreshSession: () => ipcRenderer.invoke('start-fresh-session'),
   stopGeneration: () => ipcRenderer.invoke('stop-generation'),
   getAccountInfo: () => ipcRenderer.invoke('get-account-info'),
   getCredits: (brand) => ipcRenderer.invoke('get-credits', assertBrand(brand)),
