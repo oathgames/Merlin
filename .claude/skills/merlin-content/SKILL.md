@@ -346,6 +346,43 @@ For every generated blog, X/LinkedIn thread, short-form video script, social pos
 
 Every creative uses one: **curiosity-gap, pattern-interrupt, problem-agitation, POV, social-proof-frontload, skit, before-after, direct-address, voiceover-demo, testimonial-open.** Tag in `metadata.json`. QA rejects hooks <6/10 on attention pull.
 
+## Avatar Psychology (discovery layer that feeds angle + hook + openingScenario)
+
+Answers here populate the brief — the hook (0–3s), openingScenario, Schwartz awareness level, and angle choice all draw from this section. A brief missing these inputs produces copy that passes the Copy Quality Gate on form but fails on resonance.
+
+**Fears & insecurities** (→ `objection_first`, `problem-agitation` hook, PAS agitate beat)
+- 3am thought — the loop that keeps them up.
+- Imposter fear — what they pray no peer discovers.
+- Failure scenario — the worst-case movie they replay.
+- Competitive paranoia — the specific peer they secretly benchmark against.
+- Time anxiety — the deadline closing on them (age, season, runway).
+
+**Embarrassing situations** (→ `enemy`, `identity_shift`, `social_proof_pivot`)
+- Professional shame — the public-humiliation moment they dread.
+- Personal inadequacy — where they feel behind or not enough.
+- Social exposure — what they actively hide from friends / coworkers.
+- Past failure — the earlier attempt that still stings.
+- Status threat — what makes them look amateur.
+
+**Internal dialogue** (→ hook writing; verbatim voice capture for `direct-address` + `POV` hooks)
+- Self-talk — exact phrases they mutter to themselves.
+- Justification story — how they excuse the current state.
+- Hope vs cynicism — what they want to believe but don't dare.
+- Decision paralysis — the loop they spin when choosing.
+- Success fantasy — the daydream they return to.
+
+**Secret dreams & identity** (→ augments Dream Outcome in the Value Equation; feeds `identity_shift`, `insider`)
+- Status desire — recognition / revenge / control they won't say out loud.
+- Identity they want — who they'd like to be seen as (not what they want to own).
+- Legacy fear — what they dread being remembered for.
+- Transformation proof — the visible signal others would register.
+
+**Alternatives & hesitation refinements** (→ sharpens `failed_solution`, `mechanism`, `comparison_flip`, risk reversal)
+- Specific failed solution — the named brand/method that burned them, not "generic competitors."
+- Cheap failure — why the budget option made it worse.
+- Skepticism source — the past burn that makes them doubt YOU specifically.
+- Investment fear — the dollar threshold that flips "worth it" to "too risky."
+
 ## Creative Angles (the strategic stance — orthogonal to format + hook)
 
 Every brief declares a `creativeAngle` — the WHY behind the ad. Format is the visual container, hook is the first-2s attention grab, angle is the strategic argument the whole creative makes. Pick ONE per brief. The 10 canonical angles (enforced in `angle.go`):
