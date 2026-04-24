@@ -87,10 +87,23 @@ test('Stripe scope parity with autocmo-core/oauth.go getStripeOAuth', () => {
   // Source-scan: getStripeOAuth in oauth.go MUST also pin scope to read_only.
   // Drift between Node and Go is the core concern of Rule 9 — both sides
   // need to agree or the Worker's re-verification will fire on every login.
-  const goSrc = fs.readFileSync(
-    path.join(__dirname, '..', '..', 'autocmo-core', 'oauth.go'),
-    'utf8'
-  );
+  //
+  // Skip when the sibling autocmo-core/ checkout isn't on disk — matches the
+  // pattern used in autocmo-core/oauth_exchange_test.go (PR #88) for Go-side
+  // mirror checks. CI lanes and --app-only session worktrees only check out
+  // one repo; the parity check still runs in any environment that has both
+  // siblings, which is every dev workstation and the full-monorepo CI lane.
+  const goPath = path.join(__dirname, '..', '..', 'autocmo-core', 'oauth.go');
+  let goSrc;
+  try {
+    goSrc = fs.readFileSync(goPath, 'utf8');
+  } catch (err) {
+    // Sibling repo absent — log and skip without failing the suite. The
+    // test runner has no native skip primitive, so the conditional return
+    // is the equivalent.
+    console.log('     (skipped: autocmo-core/oauth.go not on disk — sibling repo absent)');
+    return;
+  }
   const stripeFactory = goSrc.match(/func getStripeOAuth[\s\S]*?^}/m);
   assert.ok(stripeFactory, 'getStripeOAuth not found in oauth.go');
   assert.ok(
