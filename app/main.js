@@ -5671,9 +5671,17 @@ ipcMain.handle('get-archive-items', async (_, filters = {}) => {
 });
 
 ipcMain.handle('check-tos-accepted', () => {
-  const stateFile = path.join(appRoot, '.merlin-state.json');
+  // REGRESSION GUARD (2026-04-24): identifier MUST NOT be `stateFile` — that
+  // shadows the module-scope helper `function stateFile(name)` declared at
+  // the top of the file (~line 376). Even though this variable is block-
+  // scoped and shadowing is legal JS, naming collisions with the helper make
+  // it trivial for a future edit to "hoist" one to module scope and trip
+  // "Identifier 'stateFile' has already been declared" — the exact bug that
+  // bricked v1.17.0 at launch for every installed user. Use
+  // `sessionStateFile` everywhere that means "the .merlin-state.json path."
+  const sessionStateFile = path.join(appRoot, '.merlin-state.json');
   try {
-    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    const state = JSON.parse(fs.readFileSync(sessionStateFile, 'utf8'));
     return !!state.tosAccepted;
   } catch { return false; }
 });
@@ -5743,10 +5751,20 @@ ipcMain.handle('check-claude-running', async () => {
 });
 
 // ── Session State Persistence (centralized, atomic) ─────────
-const stateFile = path.join(appRoot, '.merlin-state.json');
+// REGRESSION GUARD (2026-04-24): this identifier MUST NOT be `stateFile`. The
+// module-scope helper `function stateFile(name)` is declared at ~line 376,
+// and a module-scope `const stateFile = ...` here re-declares the same
+// identifier → `SyntaxError: Identifier 'stateFile' has already been
+// declared` at require-time. That error bricked v1.17.0 at launch for every
+// installed user (main process failed before any UI could render, so
+// auto-update couldn't run either — manual reinstall only). The test
+// `app/main-no-duplicate-toplevel-ids.test.js` source-scans for any new
+// top-level `const`/`let`/`var`/`function` that collides with an existing
+// top-level identifier in this file; do not bypass it.
+const sessionStateFile = path.join(appRoot, '.merlin-state.json');
 
 function readState() {
-  try { return JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(sessionStateFile, 'utf8')); } catch { return {}; }
 }
 
 // Prepend the current active brand to every user message so Claude always
@@ -5762,9 +5780,9 @@ function injectActiveBrand(text) {
 function writeState(data) {
   try {
     const state = { ...readState(), ...data };
-    const tmpPath = stateFile + '.tmp';
+    const tmpPath = sessionStateFile + '.tmp';
     fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
-    fs.renameSync(tmpPath, stateFile);
+    fs.renameSync(tmpPath, sessionStateFile);
     return true;
   } catch (e) {
     console.error('[state-write]', e.message);

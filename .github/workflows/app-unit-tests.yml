@@ -36,6 +36,14 @@ jobs:
       # Module._resolveFilename trick that stubs `ws` + `electron`).
       # If a new test genuinely needs a dependency, add `npm ci` here AND
       # a package-lock.json commit.
+      # main.js parse-gate — the v1.17.0 launch-crash canary. A module-scope
+      # `const stateFile = …` next to the existing `function stateFile(name)`
+      # shipped in v1.17.0 bricked the app with `SyntaxError: Identifier
+      # 'stateFile' has already been declared` on every install. This test
+      # parses main.js with vm.Script and source-scans for the specific
+      # identifier collision. If this flips red, DO NOT ship the release.
+      - name: main.js duplicate-toplevel-ids lockdown
+        run: node --test app/main-no-duplicate-toplevel-ids.test.js
       - name: ws-server listen-bind lockdown
         run: node app/ws-server.test.js
       - name: relay-client contract
