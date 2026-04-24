@@ -46,6 +46,16 @@ const BANNED_HOSTS = [
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and
   // could leak the Bearer API key via shell history.
   'public.api.foreplay.co',
+  // AppLovin reporting (MAX publisher + AppDiscovery advertiser). The binary
+  // enforces PreflightCheck against the shared rate-limit bucket; a direct
+  // curl would bypass it and could trip AppLovin's server-side QPM guard.
+  'r.applovin.com',
+  'o.applovin.com',
+  'ms.applovin.com',
+  // Postscript SMS. CRITICAL — postscript.go runs preflightTCPA (quiet hours,
+  // consent, 10DLC) before every send. A direct curl would bypass every one
+  // of those guards and is a TCPA-compliance blocker, not a convenience issue.
+  'api.postscript.io',
 ];
 
 // Shopify Admin API is blocked but OAuth authorize URL stays allowed (user-facing).
