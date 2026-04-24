@@ -4991,8 +4991,19 @@ async function loadSpells() {
 
   list.innerHTML = '';
 
-  // Build set of active spell IDs for deduplication
-  const activeIds = new Set((spells || []).map(s => s.id));
+  // Build set of active spell SLUGS for deduplication.
+  // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
+  // The prior implementation put full IDs (`merlin-{brand}-daily-ads`)
+  // into this set and compared them against `merlin-${t.spell}` below.
+  // The comparison never matched because the template key has no brand
+  // prefix, so every active spell ALSO rendered as an un-activated
+  // template row. Clicking the duplicate template re-created the spell
+  // for every brand. list-spells now returns `s.spell` (the bare slug
+  // — see spell-config.js:stripBrandPrefix) so dedup compares like-to-
+  // like. Fall back to id-minus-`merlin-` for older payloads.
+  const activeSlugs = new Set(
+    (spells || []).map(s => s.spell || (s.id || '').replace(/^merlin-/, '')).filter(Boolean)
+  );
 
   // Render active spells first (from disk)
   (spells || []).forEach(spell => {
@@ -5009,7 +5020,7 @@ async function loadSpells() {
   const allRows = [];
 
   templateData.forEach(t => {
-    if (activeIds.has(`merlin-${t.spell}`)) return;
+    if (activeSlugs.has(t.spell)) return;
     const row = document.createElement('div');
     row.className = 'spell-row spell-row-template';
     row.innerHTML = `
@@ -5041,7 +5052,22 @@ async function loadSpells() {
     turnTokens = 0;
     sessionActive = true;
     startTickingTimer();
-    merlin.sendMessage('I want to create a custom scheduled task. Ask me what I want to automate, what schedule I want, then create it using mcp__scheduled-tasks__create_scheduled_task.');
+    // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
+    // Instruct Claude to name the task with the `merlin-{brand}-` prefix
+    // the Spellbook list filter expects (list-spells drops any task whose
+    // id lacks `merlin-`, and the brand filter drops any task lacking
+    // `merlin-{brand}-`). Without this hint Claude picked freeform names
+    // and the resulting task was invisible in the Spellbook panel even
+    // though it ran on schedule.
+    const activeBrand = document.getElementById('brand-select')?.value || '';
+    const validBrand = activeBrand && activeBrand !== '__add__' && /^[a-z0-9_-]+$/i.test(activeBrand);
+    const namingHint = validBrand
+      ? ` Name it with the prefix "merlin-${activeBrand}-" (for example "merlin-${activeBrand}-my-task") so it appears in the Spellbook panel for brand ${activeBrand}.`
+      : ' Name it with a "merlin-" prefix (for example "merlin-my-task") so it appears in the Spellbook panel.';
+    merlin.sendMessage(
+      'I want to create a custom scheduled task. Ask me what I want to automate, what schedule I want, then create it using mcp__scheduled-tasks__create_scheduled_task.' +
+      namingHint,
+    );
   });
   allRows.push(customRow);
 

@@ -9,6 +9,7 @@ const threads = require('./threads');
 const { createInitBarrier } = require('./async-barrier');
 const { verifyChecksumsSignature } = require('./update-verifier');
 const { cleanWhisperTranscript } = require('./whisper-transcript-clean');
+const spellConfig = require('./spell-config');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -2905,12 +2906,20 @@ async function startSession(brandOverride) {
 
           // Persist status to config immediately
           // Update spell metadata in the correct store (global or brand-specific)
+          //
+          // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
+          // Read the previous consecutiveFailures count and increment it on
+          // failure. The prior code hard-coded `1` on any failure, which
+          // made the `>= 2` threshold in renderer.js buildSpellRow (the red
+          // dot-error state + the Retry button) unreachable no matter how
+          // many times a spell failed. Users got a permanent yellow warning
+          // with no remediation UI.
+          const prevMeta = spellConfig.readSpellConfig(readConfig(), taskId, appRoot);
           updateSpellConfig(taskId, {
             lastRun: timestamp,
             lastStatus: status,
             lastSummary: summary.slice(0, 200),
-            consecutiveFailures: (status === 'failed' || status === 'error')
-              ? 1 : 0, // simplified — previous value read from config
+            consecutiveFailures: spellConfig.computeNextFailureCount(prevMeta, status),
           });
 
           // System notification for failures (shows in Windows/macOS notification center)
@@ -3999,8 +4008,11 @@ ipcMain.handle('send-message', (_, text, options = {}) => {
   // Support silent/internal messages (no broadcast, suppressed response)
   if (options.silent) {
     _suppressNextResponse = true;
-    // Safety: auto-clear after 30 seconds in case 'result' event never fires
-    setTimeout(() => { _suppressNextResponse = false; }, 30000);
+    // Safety: auto-clear after 120 seconds in case 'result' event never fires.
+    // Bumped from 30s (2026-04-24 audit) — slow silent turns (scheduled-tasks
+    // MCP acks during high API load) were clearing the flag mid-turn and
+    // leaking the tail of the response into the chat.
+    setTimeout(() => { _suppressNextResponse = false; }, 120000);
   }
   // Inject current active brand so Claude always knows which brand the user selected
   const content = injectActiveBrand(text);
@@ -5049,7 +5061,10 @@ ipcMain.handle('create-spell', (_, taskId, cron, description, prompt, brandName)
   try {
     // Validate inputs
     if (typeof taskId !== 'string' || taskId.length > 100) return { success: false, error: 'invalid taskId' };
-    if (typeof cron !== 'string' || !/^[\d*,\/-]+(\s[\d*,\/-]+){4}$/.test(cron.trim())) return { success: false, error: 'invalid cron' };
+    // Delegate to the shared validator in spell-config.js so a cron that
+    // passes the test-suite validator also passes at the IPC boundary.
+    // See REGRESSION GUARD in spell-config.js at CRON_RE.
+    if (!spellConfig.isValidCron(cron)) return { success: false, error: 'invalid cron' };
     if (typeof description !== 'string' || description.length > 500) return { success: false, error: 'invalid description' };
     if (typeof prompt !== 'string' || prompt.length > 10000) return { success: false, error: 'prompt too long' };
     if (brandName && (typeof brandName !== 'string' || !/^[a-z0-9_-]+$/i.test(brandName))) return { success: false, error: 'invalid brand' };
@@ -7225,6 +7240,13 @@ ipcMain.handle('list-spells', (_, brandName) => {
 
       return {
         id: d.name,
+        // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
+        // Expose the bare spell slug (id minus `merlin-{brand}-` prefix)
+        // so the renderer's template-dedup set can compare like-to-like.
+        // Before this, activeIds was built from full IDs and compared
+        // against `merlin-${t.spell}` (no brand), missing every time —
+        // so every active spell ALSO rendered as a template row.
+        spell: spellConfig.stripBrandPrefix(d.name, appRoot),
         name,
         description,
         cron: meta.cron || cronFromFile || null,
@@ -7253,11 +7275,15 @@ ipcMain.handle('list-spells', (_, brandName) => {
   } catch (e) { console.error('[list-spells]', e.message); return []; }
 });
 
-// Helper: extract brand from spell task ID (merlin-{brand}-{spell} → brand)
+// Helper: extract brand from spell task ID (merlin-{brand}-{spell} → brand).
+// Delegates to spell-config.js which enumerates assets/brands/ for a
+// longest-prefix match — robust against custom spell slugs and brands whose
+// own names contain hyphens (e.g. "mad-chill"). See REGRESSION GUARD in
+// spell-config.js — the prior regex-only version returned null for
+// `creative-refresh` and any custom spell, silently desyncing brand-scoped
+// config from global config.
 function extractBrandFromSpellId(taskId) {
-  // Pattern: merlin-{brand}-{spellname} where brand is a slug
-  const match = taskId.match(/^merlin-([a-z0-9_-]+?)-(?:daily|performance|morning|weekly|seo|competitor|email|custom)/i);
-  return match ? match[1] : null;
+  return spellConfig.extractBrandFromSpellId(taskId, appRoot);
 }
 
 // Helper: update spell metadata in the correct config store
@@ -7281,25 +7307,55 @@ ipcMain.handle('update-spell-meta', (_, taskId, meta) => {
 
 ipcMain.handle('toggle-spell', (_, taskId, enabled) => {
   if (!taskId || typeof taskId !== 'string') return { success: false, error: 'invalid taskId' };
+  // Strict task ID shape — must match the filesystem slug grammar. Rejects
+  // path traversal and shell-meta chars before we echo the value into a
+  // Claude prompt.
+  if (!/^merlin-[a-z0-9_-]+$/i.test(taskId) || taskId.length > 200) {
+    return { success: false, error: 'invalid taskId' };
+  }
 
-  // Update local meta (writes to correct brand store)
+  // Update local meta first (writes to correct brand store)
   updateSpellConfig(taskId, { enabled });
 
-  // Ask Claude to actually enable/disable via MCP (suppressed — no chat chatter)
+  // Build the silent MCP sync message that actually flips the task in the
+  // scheduled-tasks daemon. Wrapped in suppress-next-response so the user
+  // never sees the "done" acknowledgement in chat.
+  const syncMsg = {
+    type: 'user',
+    message: { role: 'user', content:
+      `Silently ${enabled ? 'enable' : 'disable'} the scheduled task "${taskId}" using update_scheduled_task. Reply with only "done".`
+    }
+  };
+
+  // Fast path: an SDK turn is awaiting the next user message. Hand it off
+  // directly — no queue, no session restart.
   if (resolveNextMessage) {
     _suppressNextResponse = true;
-    setTimeout(() => { _suppressNextResponse = false; }, 30000);
-    resolveNextMessage({
-      type: 'user',
-      message: { role: 'user', content:
-        `Silently ${enabled ? 'enable' : 'disable'} the scheduled task "${taskId}" using update_scheduled_task. Reply with only "done".`
-      }
-    });
+    setTimeout(() => { _suppressNextResponse = false; }, 120000);
+    resolveNextMessage(syncMsg);
     return { success: true, synced: true };
   }
-  // Also handle when called via send-message with silent flag
-  // (toggle already updates config above, MCP sync is best-effort)
-  // Session not active — local state updated but MCP not called
+
+  // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
+  // No active SDK turn → queue the sync and kick off a session so the
+  // toggle actually lands. Previous behaviour returned { synced: false }
+  // silently, leaving the scheduled-tasks daemon on the old state: the
+  // user's toggle UI flipped to Off but the task kept firing on its
+  // existing schedule next cycle. This path mirrors the mobile-input
+  // queue in the ws-server handler (search for `pendingMessageQueue`).
+  if (pendingMessageQueue.length < 50) {
+    _suppressNextResponse = true;
+    setTimeout(() => { _suppressNextResponse = false; }, 120000);
+    pendingMessageQueue.push(syncMsg);
+    if (!activeQuery) {
+      try { startSession(); } catch (e) { console.warn('[toggle-spell] startSession failed:', e.message); }
+    }
+    return { success: true, synced: 'queued' };
+  }
+
+  // Queue is saturated (should never happen in practice — 50-msg cap).
+  // Local state still updated; surface the drop to the renderer so it
+  // knows the sync never went out.
   return { success: true, synced: false };
 });
 

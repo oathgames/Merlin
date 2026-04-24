@@ -77,6 +77,9 @@ function installDomGlobals() {
 installDomGlobals();
 
 const { SPELLS, MORNING_BRIEFING_PRESET, renderSpellbook, toggleSpellbook, buildTemplateRow } = require('./spellbook');
+// Shared cron validator so this test and the IPC handler in main.js can't
+// drift apart (the exact bug Bug 6 of the 2026-04-24 audit caught).
+const { isValidCron } = require('./spell-config');
 
 // ─────────────────────────────────────────────────────────────────────
 // SPELLS constant shape.
@@ -87,8 +90,7 @@ test('SPELLS constant has the expected shape for every template', () => {
   assert.ok(SPELLS.length >= 5, 'expected at least 5 preloaded spells');
   for (const s of SPELLS) {
     assert.ok(typeof s.spell === 'string' && s.spell.length > 0, `missing spell id: ${JSON.stringify(s)}`);
-    assert.ok(typeof s.cron === 'string' && /^[\d*\/,\-]+(\s+[\d*\/,\-]+){4}$/.test(s.cron),
-      `bad cron on ${s.spell}: ${s.cron}`);
+    assert.ok(isValidCron(s.cron), `bad cron on ${s.spell}: ${s.cron}`);
     assert.ok(typeof s.name === 'string' && s.name.length > 0);
     assert.ok(typeof s.desc === 'string' && s.desc.length > 0);
     assert.ok(typeof s.prompt === 'string' && s.prompt.length > 0);
