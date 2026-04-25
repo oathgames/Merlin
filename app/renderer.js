@@ -4376,75 +4376,104 @@ const API_KEY_PLATFORMS = {
   applovin:   { key: 'applovinMaxReportKey', label: 'AppLovin (MAX)', placeholder: 'applovin-report-key', url: 'https://dash.applovin.com/o/account#keys' },
 };
 
-// Shopify-specific helpers — extracted so the context-menu "Use my API key"
-// override can reuse the same OAuth retry and manual-credential paths.
-function runShopifyOAuthWithStore(activeBrand, store) {
-  const extra = store ? { store } : undefined;
-  return merlin.runOAuth('shopify', activeBrand, extra).then(result => {
-    if (result.error) {
-      // "needs a website" — the brand has no URL set in brand.md. Prompt for
-      // the store URL inline and retry. This is the flow Shopify reviewers
-      // hit when they haven't gone through brand setup. Must land them on the
-      // Merlin install page, not a dead-end error.
-      if (/needs a website|set up a brand|Store name required/i.test(result.error)) {
-        showModal({
-          title: 'Connect Shopify',
-          body: 'Enter your Shopify store URL to continue.',
-          inputPlaceholder: 'your-store.myshopify.com',
-          confirmLabel: 'Continue',
-          onConfirm: async (value) => {
-            if (!value || value.length < 3) { showModalError('Enter your store URL'); throw new Error('validation'); }
-            const cleaned = value.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
-            // Fire-and-forget retry after modal closes — runOAuth opens a
-            // browser and can take a few minutes, we shouldn't block the modal.
-            setTimeout(() => runShopifyOAuthWithStore(activeBrand, cleaned), 0);
-          },
-        });
-        return;
-      }
+// Shopify connect — App-Store-compliant install flow.
+//
+// REGRESSION GUARD (2026-04-25, App Store review unblock):
+//   Shopify App Store requirement 2.3.1 prohibits the renderer from
+//   collecting a .myshopify-domain URL or shop's domain via any input
+//   field. The previous implementation showed a modal with a shop-URL
+//   placeholder — a hard rejection ground. This file MUST NOT contain
+//   a Shopify store-URL input modal, a manual shpat_* token input
+//   modal, or any `merlin.saveConfigField(..., 'shopifyStore' ...)`
+//   call from a user-typed value. The install starts with
+//   merlin.runOAuth('shopify', ...) which short-circuits in main.js to
+//   shell.openExternal(SHOPIFY_CONNECT_URL) and returns
+//   { awaiting: 'browser' }. The token arrives back via
+//   merlin.onMerlinDeepLink → merlin.runShopifyHandoff. See
+//   shopify-app-review.test.js for the source-scan that pins this.
+function runShopifyOAuthWithStore(activeBrand) {
+  return merlin.runOAuth('shopify', activeBrand).then(result => {
+    if (result && result.error) {
       showModal({ title: 'Connection Failed', body: friendlyError(result.error, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
-    } else {
-      loadConnections();
+      return;
     }
+    if (result && result.awaiting === 'browser') {
+      showModal({
+        title: 'Finish in your browser',
+        body: 'Merlin opened Shopify in your browser. Pick the store you want to connect, then click Install. Merlin will reconnect automatically when you finish.',
+        confirmLabel: 'OK',
+        onConfirm: () => {},
+      });
+      return;
+    }
+    loadConnections();
   }).catch(err => {
     showModal({ title: 'Connection Failed', body: friendlyError(err.message, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
   });
 }
 
-function showShopifyApiKeyModal(activeBrand) {
-  // Two-step manual credential entry: store URL, then access token. This is
-  // the "Use my API key" override for users who have a private app / custom
-  // app token and want to skip the OAuth browser round-trip.
-  showModal({
-    title: 'Shopify — Store URL',
-    body: 'Enter your Shopify store URL. (Step 1 of 2)',
-    inputPlaceholder: 'your-store.myshopify.com',
-    confirmLabel: 'Next',
-    onConfirm: async (storeValue) => {
-      if (!storeValue || storeValue.length < 3) { showModalError('Enter your store URL'); throw new Error('validation'); }
-      const store = storeValue.trim().replace(/^https?:\/\//, '').replace(/\/$/, '');
-      setTimeout(() => {
-        showModal({
-          title: 'Shopify — Access Token',
-          body: 'Paste your Admin API access token (starts with shpat_). (Step 2 of 2)',
-          inputPlaceholder: 'shpat_xxxxxxxxxxxxxxxx',
-          confirmLabel: 'Save',
-          onConfirm: async (tokenValue) => {
-            if (!tokenValue || !tokenValue.trim().startsWith('shpat_')) {
-              showModalError('Token must start with shpat_');
-              throw new Error('validation');
-            }
-            const r1 = await merlin.saveConfigField('shopifyStore', store, activeBrand);
-            if (!r1.success) { showModalError(r1.error || 'Failed to save store'); throw new Error('save'); }
-            const r2 = await merlin.saveConfigField('shopifyAccessToken', tokenValue.trim(), activeBrand);
-            if (!r2.success) { showModalError(r2.error || 'Failed to save token'); throw new Error('save'); }
-            loadConnections();
-          },
-        });
-      }, 0);
-    },
+// onMerlinDeepLink handler — the post-install Shopify dashboard fires
+// merlin://oauth-complete?handoff=<base64url>&shop=<slug> after the
+// merchant completes consent. We parse the URL and dispatch to the
+// shopify-handoff binary action via the run-shopify-handoff IPC; the
+// resulting token is vaulted by applyExchangeResult on the main side.
+//
+// This is the ONLY oauth-complete deep link handler. If you add a new
+// platform that uses merlin:// for handoff, branch off the action
+// query param here — DO NOT register a second top-level
+// onMerlinDeepLink listener (only the most recent registration wins
+// for the deep-link buffer).
+(function registerOAuthDeepLinkHandler() {
+  if (typeof merlin === 'undefined' || typeof merlin.onMerlinDeepLink !== 'function') return;
+  merlin.onMerlinDeepLink((rawURL) => {
+    if (!rawURL || typeof rawURL !== 'string') return;
+    let parsed;
+    try { parsed = new URL(rawURL); } catch { return; }
+    if (parsed.protocol !== 'merlin:') return;
+    // REGRESSION GUARD (2026-04-25, security review): require a STRICT
+    // host match. A previous version accepted `parsed.pathname ===
+    // '//oauth-complete'` as a fallback to handle URL-parser quirks,
+    // but that allowed `merlin://attacker.com//oauth-complete?...` to
+    // pass — the parser lands host='attacker.com' and pathname=
+    // '//oauth-complete'. The pathname disjunct fired, the host check
+    // was bypassed, and the dispatch proceeded. The handoff was
+    // server-side single-use so impact was DoS-class, but the bypass
+    // itself was real. Strict host match closes the hole; the
+    // legitimate URL `merlin://oauth-complete?handoff=…` parses with
+    // host='oauth-complete' (verified in shopify-app-review.test.js).
+    if (parsed.host !== 'oauth-complete') {
+      // Future: dispatch other merlin:// actions here.
+      return;
+    }
+    const handoff = parsed.searchParams.get('handoff') || '';
+    const shop = parsed.searchParams.get('shop') || '';
+    if (!handoff || !/^[A-Za-z0-9_-]{22,86}$/.test(handoff)) {
+      showModal({ title: 'Connection Failed', body: 'The Shopify install link looked malformed. Reinstall from Shopify to try again.', confirmLabel: 'OK', onConfirm: () => {} });
+      return;
+    }
+    const activeBrand = getActiveBrandSelection();
+    if (!activeBrand) {
+      showModal({ title: 'Pick a brand first', body: 'Open a brand in Merlin, then click "Open in Merlin Desktop" on the Shopify dashboard again.', confirmLabel: 'OK', onConfirm: () => {} });
+      return;
+    }
+    merlin.runShopifyHandoff(handoff, activeBrand).then(result => {
+      if (result && result.error) {
+        showModal({ title: 'Shopify Install Failed', body: friendlyError(result.error, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
+        return;
+      }
+      const shopName = (result && result.shop) || shop || 'your store';
+      showModal({
+        title: 'Shopify connected',
+        body: `Merlin is now connected to ${shopName}.myshopify.com.`,
+        confirmLabel: 'OK',
+        onConfirm: () => {},
+      });
+      loadConnections();
+    }).catch(err => {
+      showModal({ title: 'Shopify Install Failed', body: friendlyError(err.message, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
+    });
   });
-}
+})();
 
 // In-flight guard — prevents a double-click from launching two OAuth
 // browser windows for the same platform. Cleared when the OAuth promise
@@ -4607,8 +4636,15 @@ function showApplovinApiKeyModal(activeBrand) {
 
 // Platforms that support a "Use my API key" right-click override. Each entry
 // maps the platform data attribute to its manual-credential modal.
+//
+// REGRESSION GUARD (2026-04-25, App Store review unblock):
+//   Shopify is intentionally absent. App Store requirement 2.3.1
+//   forbids any UI flow that asks for a .myshopify.com URL or shop's
+//   domain — the manual shpat_* path was that exact UI. The OAuth
+//   flow (left-click on the tile) is the only supported entry. DO NOT
+//   re-add a Shopify entry without first replacing the URL prompt
+//   with a Shopify-services-initiated flow.
 const MANUAL_KEY_HANDLERS = {
-  shopify: showShopifyApiKeyModal,
   meta: showMetaApiKeyModal,
   applovin: showApplovinApiKeyModal,
 };

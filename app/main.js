@@ -3771,10 +3771,45 @@ function applyExchangeResult(platform, brandName, isGlobalPlatform, parsed) {
   if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
 }
 
+// SHOPIFY_CONNECT_URL — the URL we open in the user's default browser
+// when they click "Connect Shopify". Goes to /connect/shopify on the
+// landing worker which sets a desktop-install-session cookie and 302s
+// to a Shopify-controlled host (apps.shopify.com listing or the
+// admin install URL pre-listing). The browser flow ends with the
+// post-install dashboard auto-firing merlin://oauth-complete?handoff=…
+// which we intercept in onMerlinDeepLink (renderer) and dispatch to
+// the shopify-handoff binary action via run-shopify-handoff IPC.
+//
+// REGRESSION GUARD (2026-04-25, App Store review unblock):
+//   This URL MUST point to a server-controlled host that performs the
+//   install-session cookie set + 302 to a Shopify-services entry. We
+//   never bypass to apps.shopify.com directly because that skips the
+//   cookie and breaks merlin:// auto-handoff. See worker.js
+//   /connect/shopify handler.
+const SHOPIFY_CONNECT_URL = 'https://merlingotme.com/connect/shopify';
+
 // Direct OAuth — bypasses SDK entirely, runs the binary from main process
 // Standalone OAuth flow — callable from both the IPC handler (UI clicks)
 // and the MCP platform_login tool. Returns { success, platform } or { error }.
 async function runOAuthFlow(platform, brandName, extra) {
+  // Shopify short-circuit. App Store requirement 2.3.1 prohibits the
+  // binary from collecting a shop URL or binding localhost; we just
+  // open the server-driven install URL in the user's browser and
+  // wait for the merlin:// deep link via onMerlinDeepLink. The
+  // shopify-handoff IPC handler does the actual binary spawn + token
+  // persist. Returning awaiting:'browser' tells the renderer to show
+  // a "Complete the install in your browser" hint instead of
+  // expecting an immediate token.
+  if (platform === 'shopify') {
+    if (!brandName) {
+      return { error: 'Set up a brand with Merlin before connecting your store.' };
+    }
+    if (!openExternalSafe(SHOPIFY_CONNECT_URL)) {
+      return { error: 'Could not open your browser. Visit ' + SHOPIFY_CONNECT_URL + ' manually to install Merlin on your Shopify store.' };
+    }
+    return { success: true, platform: 'shopify', awaiting: 'browser' };
+  }
+
   let binaryPath = getBinaryPath();
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   const isGlobalPlatform = platform === 'discord' || platform === 'slack';
@@ -3902,6 +3937,82 @@ async function runOAuthFlow(platform, brandName, extra) {
 // IPC wrapper — UI tile clicks invoke the standalone function above.
 ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
   return runOAuthFlow(platform, brandName, extra);
+});
+
+// run-shopify-handoff — second half of the App-Store-compliant Shopify
+// install. The merchant completes consent in their browser; the
+// post-install dashboard fires merlin://oauth-complete?handoff=<code>;
+// the renderer's onMerlinDeepLink handler parses the URL and invokes
+// this IPC. We spawn the Go binary with action=shopify-handoff, which
+// swaps the one-time code for the access token via the BFF and emits
+// the standard {shopifyAccessToken, shopifyStore} JSON.
+//
+// REGRESSION GUARD (2026-04-25, App Store review unblock):
+//   - Handoff codes are validated client-side (format) AND server-side
+//     (existence + match). We pass them through unchanged to the binary,
+//     which performs its own validation before the network round-trip.
+//   - The brand name is required so applyExchangeResult routes the
+//     vault write to the active brand. Cold App Store reviewer flow
+//     won't hit this handler — they don't have Merlin Desktop installed,
+//     and the dashboard works standalone (1.1.12).
+//   - DO NOT expose this handler without a brand name guard. Writing
+//     the token to _global by accident binds it to the wrong scope.
+ipcMain.handle('run-shopify-handoff', async (_, handoffCode, brandName) => {
+  if (!handoffCode || typeof handoffCode !== 'string') {
+    return { error: 'Missing handoff code from install link.' };
+  }
+  if (!/^[A-Za-z0-9_-]{22,86}$/.test(handoffCode)) {
+    return { error: 'Install link is malformed. Try reinstalling from Shopify.' };
+  }
+  if (!brandName) {
+    return { error: 'No active brand to bind this Shopify store to. Open Merlin and pick a brand first.' };
+  }
+  let binaryPath = getBinaryPath();
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(binaryPath); } catch {
+    try {
+      if (win && !win.isDestroyed()) win.webContents.send('engine-status', 'Downloading engine...');
+      await ensureBinary();
+      binaryPath = getBinaryPath();
+    } catch (e) {
+      return { error: `Could not download engine: ${e.message}` };
+    }
+  }
+  try { fs.accessSync(configPath); } catch { return { error: 'Config not found. Run preflight first.' }; }
+  await maybeHydrateBinaryLicenseToken('shopify-handoff');
+
+  const { execFile } = require('child_process');
+  const cmd = JSON.stringify({ action: 'shopify-handoff', handoffCode, brand: brandName });
+  return await new Promise((resolve) => {
+    const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
+      timeout: 60000,
+      cwd: appRoot,
+      maxBuffer: 4 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      activeChildProcesses.delete(child);
+      if (err) console.error('[shopify-handoff] err:', err.message);
+      try {
+        const lines = stdout.split('\n');
+        let jsonStart = -1, jsonEnd = -1;
+        for (let i = lines.length - 1; i >= 0; i--) {
+          if (lines[i].trim() === '}' && jsonEnd < 0) jsonEnd = i;
+          if (lines[i].trim() === '{' && jsonEnd >= 0) { jsonStart = i; break; }
+        }
+        const jsonStr = jsonStart >= 0 ? lines.slice(jsonStart, jsonEnd + 1).join('\n') : null;
+        if (!jsonStr) throw new Error('No JSON in output');
+        const parsed = JSON.parse(jsonStr);
+        if (!parsed || !parsed.shopifyAccessToken || !parsed.shopifyStore) {
+          throw new Error('Handoff result missing token or shop');
+        }
+        applyExchangeResult('shopify', brandName, false, parsed);
+        resolve({ success: true, platform: 'shopify', shop: parsed.shopifyStore });
+      } catch (parseErr) {
+        const errText = (stderr && stderr.trim()) || (err && err.message) || parseErr.message;
+        resolve({ error: errText.slice(0, 500) });
+      }
+    });
+    activeChildProcesses.add(child);
+  });
 });
 
 // Manual-override Meta connect: the OAuth path (run-oauth + meta-login) is
