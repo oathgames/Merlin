@@ -97,10 +97,20 @@ class GalleryViewer {
     this._flagBtns = null; // { keep, reject }
     this._qaBadge = null;
 
-    // Pointer / keyboard handlers (bound once).
+    // Pointer / keyboard handlers — bound ONCE per instance and reused
+    // across every open/close cycle. Inline arrow functions here would
+    // leak listeners on every open() (each open re-registers, none of
+    // the previous ones can be removed because the function reference
+    // changes). REGRESSION GUARD (2026-04-26, viewer listener leak):
+    // these references must remain stable for the lifetime of the
+    // viewer instance.
     this._keyHandler = (e) => this._onKey(e);
     this._pointerStart = null;
     this._stripScrollHandler = () => this._renderFilmstrip();
+    this._stagePointerDown = (e) => this._onPointerDown(e);
+    this._stagePointerUp = (e) => this._onPointerUp(e);
+    this._stagePointerCancel = () => { this._pointerStart = null; };
+    this._stageListenersAttached = false;
   }
 
   isOpen() { return this._open; }
@@ -109,6 +119,12 @@ class GalleryViewer {
     if (!opts || !Array.isArray(opts.items) || opts.items.length === 0) {
       throw new Error('gallery-viewer: items required');
     }
+    // REGRESSION GUARD (2026-04-26, viewer reopen-while-open): rapid
+    // clicks during the async flag-fetch in __openArchiveViewerAt could
+    // call open() while a viewer was already up, double-mounting the
+    // keydown listener and making every key (incl. Delete) fire twice.
+    // Tear down cleanly before re-entering.
+    if (this._open) this.close();
     this._items = opts.items.slice();
     const start = Number.isInteger(opts.startIndex) ? opts.startIndex : 0;
     this._index = Math.max(0, Math.min(start, this._items.length - 1));
@@ -450,15 +466,27 @@ class GalleryViewer {
 
   _mountListeners() {
     document.addEventListener('keydown', this._keyHandler, true);
-    if (this._stage) {
-      this._stage.addEventListener('pointerdown', (e) => this._onPointerDown(e));
-      this._stage.addEventListener('pointerup', (e) => this._onPointerUp(e));
-      this._stage.addEventListener('pointercancel', () => { this._pointerStart = null; });
+    // Stage pointer listeners attach ONCE to the persistent stage element
+    // (the stage div outlives open/close cycles — it's only built when
+    // _root is first constructed). Re-attaching on every open would leak
+    // listeners across cycles. The bound references on `this._stage*`
+    // are stable for the instance lifetime so removeEventListener can
+    // pair them if we ever need to.
+    if (this._stage && !this._stageListenersAttached) {
+      this._stage.addEventListener('pointerdown', this._stagePointerDown);
+      this._stage.addEventListener('pointerup', this._stagePointerUp);
+      this._stage.addEventListener('pointercancel', this._stagePointerCancel);
+      this._stageListenersAttached = true;
     }
   }
 
   _unmountListeners() {
     document.removeEventListener('keydown', this._keyHandler, true);
+    // Strip scroll listener IS removed on every close because the strip
+    // element persists between opens too — but the listener was added
+    // in _buildRoot() ONCE, not in _mountListeners. So this remove is
+    // technically a no-op pair on instances that never rebuilt; leaving
+    // it here matches the symmetry of the keydown handler.
     if (this._strip) this._strip.removeEventListener('scroll', this._stripScrollHandler);
   }
 

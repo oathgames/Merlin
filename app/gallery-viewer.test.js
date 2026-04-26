@@ -391,3 +391,31 @@ test('source-scan: trash flow removes item from list and advances', () => {
   // the index clamped to a valid position.
   assert.ok(SOURCE.includes('this._items.splice(this._index, 1)'), 'expected splice on trash');
 });
+
+test('source-scan: open() is idempotent — re-entry closes the prior viewer', () => {
+  // REGRESSION GUARD (2026-04-26, viewer-reopen-while-open). Without
+  // this, rapid clicks during the async getArchiveFlags fetch double-
+  // mounted the keydown handler so every key fired twice. The guard is
+  // a 1-line `if (this._open) this.close();` at the top of open().
+  assert.ok(/open\([^)]*\)\s*\{[\s\S]*?if\s*\(this\._open\)\s*this\.close\(\);/.test(SOURCE),
+    'open() must close any prior viewer before re-entering');
+});
+
+test('source-scan: pointer listeners are stable instance refs (no inline arrows)', () => {
+  // REGRESSION GUARD (2026-04-26, viewer listener leak). Inline arrow
+  // functions inside _mountListeners cannot be removed, so each open()
+  // accumulated three more pointer listeners on the stage. The fix
+  // binds them ONCE in the constructor and re-uses the references.
+  for (const f of ['_stagePointerDown', '_stagePointerUp', '_stagePointerCancel']) {
+    assert.ok(SOURCE.includes(`this.${f} =`), `expected stable instance ref ${f}`);
+  }
+  assert.ok(SOURCE.includes('_stageListenersAttached'),
+    'attach-once flag must guard against re-binding');
+});
+
+test('source-scan: stage pointer listeners only attach once per instance', () => {
+  // The attach must be gated by `_stageListenersAttached` so re-opens
+  // do not re-add the same listeners.
+  assert.ok(/!this\._stageListenersAttached/.test(SOURCE),
+    'pointer listener attach must be guarded by !_stageListenersAttached');
+});

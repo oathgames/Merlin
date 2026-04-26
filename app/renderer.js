@@ -9253,9 +9253,8 @@ async function __openArchiveViewerAt(item, card) {
     const r = await merlin.getArchiveFlags();
     if (r && r.flags) flags = r.flags;
   } catch {}
-  const startKey = (item && item.folder) || (card && card.dataset && card.dataset.folder) || '';
-  let startIndex = items.findIndex(it => it.folder === startKey);
-  if (startIndex < 0) startIndex = 0;
+  const startKey = (item && item.folder) || (item && item.path)
+    || (card && card.dataset && card.dataset.folder) || '';
   const viewerItems = items.map(it => {
     let kind = it.type === 'video' ? 'video' : 'image';
     let src = '';
@@ -9275,6 +9274,14 @@ async function __openArchiveViewerAt(item, card) {
       qa: it.qaPassed === false ? { pass: false, reason: 'QA flagged' } : null,
     };
   }).filter(v => v.src);
+  // REGRESSION GUARD (2026-04-26, viewer-startIndex-misalign): the
+  // startIndex is computed AFTER the .filter() so a card whose item was
+  // dropped (no src) doesn't shift every subsequent item by one. Doing
+  // the findIndex on the pre-filter list and using it on the filtered
+  // list opened the viewer at the wrong card whenever any item ahead
+  // of the click target had no thumbnail.
+  let startIndex = viewerItems.findIndex(v => v.key === startKey);
+  if (startIndex < 0) startIndex = 0;
   const viewer = __getSharedViewer();
   if (!viewer || viewerItems.length === 0) { openArchivePreview(item); return; }
   const inMemFlags = { ...flags };

@@ -1,5 +1,36 @@
 /* ── Reset & Base ─────────────────────────────────────────── */
 *{margin:0;padding:0;box-sizing:border-box}
+
+/* ── Global focus-ring policy ─────────────────────────────────
+   Chromium-Electron paints a chunky orange/yellow outline on click-focus
+   by default, which is jarring against the dark UI (and the lavender
+   light theme). Suppress click-focus rings universally and keep the
+   keyboard-only :focus-visible ring tasteful + on-brand via the accent
+   variable. Individual components can still opt-in to a stronger ring
+   by overriding :focus-visible locally (the gallery stack, the chat
+   input, etc. already do this). */
+button:focus,
+a:focus,
+[role="button"]:focus,
+[tabindex]:focus,
+input:focus,
+textarea:focus,
+select:focus,
+summary:focus{
+  outline:none;
+}
+button:focus-visible,
+a:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible,
+summary:focus-visible{
+  outline:2px solid var(--accent, #a78bfa);
+  outline-offset:2px;
+  border-radius:6px;
+}
 :root{
   --bg:#1a1a1c;
   --bg-deep:#141416;
@@ -2955,29 +2986,58 @@ body.platform-mac .titlebar-drag{
   font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
   margin-top:2px;
 }
-.gv-actions{ display:flex; gap:8px; }
+.gv-actions{
+  display:flex;
+  gap:8px;
+  /* Align so all four square buttons sit on the exact same baseline —
+     parent .gv-toolbar uses align-items:center, but flex items with
+     differing intrinsic heights (emoji glyphs vary) would otherwise
+     stretch. Forcing center here too eliminates the rounding drift. */
+  align-items:center;
+}
 .gv-action{
+  /* Hard-locked 36×36 hit region. Every action button — keep, reject,
+     trash, close — is the SAME bbox regardless of glyph (emoji vs ASCII
+     vs text). Without these constraints emoji metrics (esp. 🗑 on
+     Windows-Segoe-UI-Emoji) make the trash button render ~2px taller
+     than its neighbors and the row looks crooked. */
+  width:36px;
+  height:36px;
+  padding:0;
+  margin:0;
+  flex:0 0 36px;
   background:rgba(255,255,255,.08);
   border:1px solid rgba(255,255,255,.12);
   color:#fff;
   border-radius:8px;
-  padding:6px 12px;
-  font-size:14px;
+  font-size:15px;
+  line-height:1;
   font-family:inherit;
   cursor:pointer;
   transition:background .15s ease, border-color .15s ease, transform .1s ease;
-  min-width:36px;
   display:inline-flex;
   align-items:center;
   justify-content:center;
+  /* Kill the user-agent button text-shift on click that nudges glyphs
+     half a pixel down + adds an asymmetric hit target offset. */
+  -webkit-appearance:none;
+  appearance:none;
+  user-select:none;
+  -webkit-user-select:none;
+  /* Force every glyph (emoji + text) to render at the same advance width
+     so the centerpoint is consistent. */
+  text-align:center;
+  font-variant-emoji:text;
 }
 .gv-action:hover{ background:rgba(255,255,255,.16); border-color:rgba(255,255,255,.2); }
-.gv-action:active{ transform:scale(.96); }
+.gv-action:active{ transform:scale(.94); }
 .gv-action.is-active{ background:rgba(124,92,255,.32); border-color:#7c5cff; color:#fff; }
 .gv-flag-keep.is-active{ background:rgba(52,211,153,.28); border-color:#34d399; }
 .gv-flag-reject.is-active{ background:rgba(239,68,68,.28); border-color:#ef4444; }
 .gv-trash:hover{ background:rgba(239,68,68,.2); border-color:#ef4444; }
-.gv-close{ font-size:22px; line-height:1; padding:2px 12px; }
+/* Close glyph (×) renders small at 15px; bump it to match the visual
+   weight of the other action buttons without changing the bbox. */
+.gv-close{ font-size:22px; }
 
 .gv-stage-wrap{
   position:relative;
@@ -3049,13 +3109,19 @@ body.platform-mac .titlebar-drag{
   position:relative;
   overflow-x:auto;
   overflow-y:hidden;
-  padding:8px 0 6px;
+  padding:8px 0 8px;
   background:rgba(0,0,0,.4);
   border-top:1px solid rgba(255,255,255,.06);
-  scrollbar-width:thin;
+  /* Hide the OS scrollbar — the filmstrip is navigated by click / arrow /
+     swipe / drag. The Chromium-default scrollbar (chunky gray bar with
+     arrow buttons on Windows) breaks the dark viewer aesthetic. */
+  scrollbar-width:none;
+  -ms-overflow-style:none;
 }
-.gv-strip::-webkit-scrollbar{ height:6px; }
-.gv-strip::-webkit-scrollbar-thumb{ background:rgba(255,255,255,.18); border-radius:3px; }
+.gv-strip::-webkit-scrollbar{ height:0; width:0; display:none; }
+.gv-strip::-webkit-scrollbar-track,
+.gv-strip::-webkit-scrollbar-thumb,
+.gv-strip::-webkit-scrollbar-button{ display:none; }
 .gv-strip-inner{
   position:relative;
   height:80px;

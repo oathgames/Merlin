@@ -184,7 +184,12 @@ contextBridge.exposeInMainWorld('merlin', {
   // decides whether to delete a whole run folder or just the loose file(s)).
   deleteFile: (target) => {
     if (Array.isArray(target)) {
-      if (target.length === 0 || target.length > 20) throw new Error('invalid delete batch');
+      // Cap raised from 20 → 500 (2026-04-26, batch-cull-at-scale): the
+      // legacy 20 was sized for the 2-cap selection era; with multi-
+      // select Lightroom-style culling, paying users routinely trash
+      // 100+ at a time. 500 matches the bulk-flags cap and is bounded
+      // by main.js's per-target validation cost.
+      if (target.length === 0 || target.length > 500) throw new Error('invalid delete batch');
       for (const t of target) assertStr(t, 500);
       return ipcRenderer.invoke('delete-file', target);
     }
