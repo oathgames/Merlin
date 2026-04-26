@@ -9,9 +9,11 @@
 //
 // Why this matters — and why "just read the SDK docs" isn't enough:
 // All three knobs are silent-failure-mode. If a future edit drops the
-// `model: 'claude-sonnet-4-6'` line, the SDK inherits the account
-// default (Opus for Max-plan users) and every user's TTFT roughly
-// doubles with no runtime error. If the `autoCompactWindow: 200000`
+// `model: 'claude-opus-4-7'` line, the SDK inherits the account
+// default and the chat thread starts using whatever the user's
+// account points at. We pin Opus 4.7 explicitly so every Merlin
+// session uses the same flagship model regardless of plan. If the
+// `autoCompactWindow: 200000`
 // line vanishes, the SDK silently falls back to its ~160k default and
 // long-lived brand sessions start paying the compact-spike cost weeks
 // sooner than necessary. If `excludeDynamicSections: true` regresses,
@@ -77,21 +79,21 @@ test('main.js keeps the LATENCY TELEMETRY (2026-04-23) block', () => {
 });
 
 // -------------------------------------------------------------------------
-// Knob 1: model pinned to Sonnet 4.6.
+// Knob 1: model pinned to Opus 4.7.
 // -------------------------------------------------------------------------
-test('main.js pins model to claude-sonnet-4-6 in query() options', () => {
+test('main.js pins model to claude-opus-4-7 in query() options', () => {
   // Literal substring. Accepts single or double quotes. If a future edit
   // parameterizes this (env var, config lookup), that's a product change
   // and should update this test to enforce the new invariant — but
   // removing the pin without a replacement fails here.
-  if (!/model:\s*['"]claude-sonnet-4-6['"]/.test(SRC)) {
+  if (!/model:\s*['"]claude-opus-4-7['"]/.test(SRC)) {
     throw new Error(
-      'main.js does not pin `model: \'claude-sonnet-4-6\'` in the query() '
+      'main.js does not pin `model: \'claude-opus-4-7\'` in the query() '
       + 'options object. Without the pin, the SDK inherits the account '
-      + 'default (Opus for Max-plan users) and TTFT roughly doubles on the '
-      + 'interactive chat thread. See the LATENCY TUNING block for history. '
-      + 'If you need a different model for a subagent, set it on that '
-      + 'subagent\'s `model:` — do not change the main thread default.'
+      + 'default — Merlin\'s product decision (2026-04-27) is to run every '
+      + 'session on Opus 4.7 regardless of plan. If you need a different '
+      + 'model for a subagent, set it on that subagent\'s `model:` — do '
+      + 'not change the main thread default.'
     );
   }
 });
@@ -183,7 +185,7 @@ test('main.js computes and logs the cache hit rate percentage', () => {
 // clustered within the same ~200-line window.
 // -------------------------------------------------------------------------
 test('all three latency knobs live on the same query() options block', () => {
-  const modelIdx = SRC.search(/model:\s*['"]claude-sonnet-4-6['"]/);
+  const modelIdx = SRC.search(/model:\s*['"]claude-opus-4-7['"]/);
   const compactIdx = SRC.search(/autoCompactWindow:\s*200000\b/);
   const excludeIdx = SRC.search(/excludeDynamicSections:\s*true\b/);
   if (modelIdx < 0 || compactIdx < 0 || excludeIdx < 0) {
@@ -195,9 +197,14 @@ test('all three latency knobs live on the same query() options block', () => {
   const span = Math.max(modelIdx, compactIdx, excludeIdx)
     - Math.min(modelIdx, compactIdx, excludeIdx);
   // The queryOptions block + its preceding comments fit in well under
-  // 5000 chars. Anything wider means the knobs have drifted apart —
+  // 6500 chars. Anything wider means the knobs have drifted apart —
   // likely onto different query() calls, which defeats the whole point.
-  const MAX_SPAN = 5000;
+  // (Bumped from 5000 on 2026-04-27 when the brand-onboarding-zero-friction
+  // session added a ~1KB permissionMode resolution block above the
+  // queryOptions object — the model pin and the autoCompactWindow are now
+  // separated by that block plus the existing LATENCY TUNING comment, but
+  // they're still all on the same const queryOptions = {…} object.)
+  const MAX_SPAN = 6500;
   if (span > MAX_SPAN) {
     throw new Error(
       `The three latency knobs have drifted apart in main.js — they span `

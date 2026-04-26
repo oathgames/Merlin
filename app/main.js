@@ -2199,7 +2199,9 @@ async function handleToolApproval(toolName, input) {
       // Sanity check: values ≥ $5000/day or >10x the configured cap are almost
       // certainly cents. Refuse the tool call with an explanatory message so
       // Claude retries with the correct dollar value. The user never sees a
-      // shocking "$1000/day" card.
+      // shocking "$1000/day" card. These hard-denies stay in force even when
+      // in-cap auto-approve is on — they're the floor that protects users
+      // from a fat-fingered budget regardless of any UI affordance.
       const HARD_CEILING = 5000;
       const capForComparison = budgetCtx && budgetCtx.dailyCap > 0 ? budgetCtx.dailyCap : 0;
       if (adBudget >= HARD_CEILING) {
@@ -2213,6 +2215,42 @@ async function handleToolApproval(toolName, input) {
           behavior: 'deny',
           message: `dailyBudget=${adBudget} is more than 10x the user's $${capForComparison}/day cap. This looks like cents — pass ${Math.round(adBudget / 100)} for $${Math.round(adBudget / 100)}/day.`,
         };
+      }
+
+      // IN-CAP AUTO-APPROVE (2026-04-27, brand-onboarding-zero-friction):
+      // Push and duplicate calls whose dailyBudget is at or under the user's
+      // configured per-day cap are auto-approved silently — the user already
+      // pre-authorized the cap when they set `dailyAdBudget` in config. The
+      // approval card was firing on every push even when Claude was running
+      // exactly at $5/day on a $20/day cap; that's pure friction with no
+      // safety value. The cents-detector above still hard-denies anomalies,
+      // and `setup` / `setup-retargeting` (zero-spend ops, but they touch
+      // ad-account state) still show a card. `duplicate` carries no
+      // dailyBudget — we only auto-approve it when the cap is configured AND
+      // there's headroom in the daily-spent budget; otherwise still card.
+      // Users can disable this auto-approve by setting
+      // `cfg.requireSpendApproval = true` per-brand or globally — the card
+      // path remains the default for unconfigured installs (cap === 0).
+      let requireSpendApproval = false;
+      try {
+        const brandForCfg = input.brand || (() => {
+          try { return readState().activeBrand || ''; } catch { return ''; }
+        })();
+        const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
+        requireSpendApproval = !!cfg.requireSpendApproval;
+      } catch {}
+      if (!requireSpendApproval && capForComparison > 0 && (action === 'push' || action === 'duplicate')) {
+        const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : capForComparison;
+        // For push: dailyBudget must fit under remaining headroom AND under
+        // the per-day cap. For duplicate: no dailyBudget on the call (Meta
+        // / TikTok inherit the source ad's budget) — only require that
+        // there's any remaining headroom at all.
+        if (action === 'push' && adBudget <= capForComparison && adBudget <= headroom) {
+          return { behavior: 'allow', updatedInput: input };
+        }
+        if (action === 'duplicate' && headroom > 0) {
+          return { behavior: 'allow', updatedInput: input };
+        }
       }
 
       const translations = {
@@ -2302,13 +2340,26 @@ async function handleToolApproval(toolName, input) {
     // genuinely malformed command: regex misses, `activeBrand` is '', we fall
     // back to global config — same path as a brand-less run.
     let postMode = 'auto';
+    let redditRequireApproval = false;
     try {
       const brandMatch = input.command.match(/"brand"\s*:\s*"([^"]+)"/);
       const activeBrand = brandMatch ? brandMatch[1] : '';
       const cfg = activeBrand ? readBrandConfig(activeBrand) : readConfig();
       const raw = (cfg && typeof cfg.redditPostMode === 'string') ? cfg.redditPostMode.trim().toLowerCase() : '';
       if (raw === 'draft-only') postMode = 'draft-only';
+      redditRequireApproval = !!cfg.requireRedditApproval;
     } catch {}
+
+    // DRAFT-ONLY AUTO-APPROVE (2026-04-27, brand-onboarding-zero-friction):
+    // In draft-only mode the binary writes the reply to results/ for the user
+    // to paste manually — there's no Reddit API write, so there's no
+    // outbound action to approve. The card was firing solely so the user
+    // could read the body preview, but they're going to read it again when
+    // they paste it. Auto-approve unless `cfg.requireRedditApproval` is set.
+    // `auto` mode (real Reddit POST) still cards.
+    if (postMode === 'draft-only' && !redditRequireApproval) {
+      return { behavior: 'allow', updatedInput: input };
+    }
 
     // Show approval card. Label + budget line differ by mode so the user sees
     // exactly what's about to happen. cost field reused as a body preview
@@ -2362,6 +2413,26 @@ async function handleToolApproval(toolName, input) {
           behavior: 'deny',
           message: `dailyBudget=${adBudget} is more than 10x the user's $${capForComparison}/day cap. Likely cents — pass ${Math.round(adBudget / 100)}.`,
         };
+      }
+
+      // IN-CAP AUTO-APPROVE for Bash spend path (mirror of MCP path above).
+      // The Bash path is hit by the legacy `.claude/tools/Merlin.exe` invocation
+      // route; same cents-detector floor, same in-cap silent allow above the
+      // floor when the user has a configured cap and there's headroom.
+      let bashRequireSpendApproval = false;
+      try {
+        const brandMatch = input.command.match(/"brand"\s*:\s*"([^"]+)"/);
+        const brandForCfg = brandMatch ? brandMatch[1] : (() => {
+          try { return readState().activeBrand || ''; } catch { return ''; }
+        })();
+        const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
+        bashRequireSpendApproval = !!cfg.requireSpendApproval;
+      } catch {}
+      if (!bashRequireSpendApproval && capForComparison > 0) {
+        const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : capForComparison;
+        if (adBudget <= capForComparison && adBudget <= headroom) {
+          return { behavior: 'allow', updatedInput: input };
+        }
       }
 
       let budgetDetail = null;
@@ -2708,14 +2779,14 @@ async function startSession(brandOverride) {
   // two; removing any single knob re-introduces the specific slow path
   // the other two don't cover. See REGRESSION GUARD block below.
   //
-  //   (a) `model` — pin Sonnet 4.6. Without this, the SDK inherits the
-  //       user's account default, which is Opus for Max-plan users. Opus
-  //       TTFT on Merlin's ~20KB system prompt + MCP tool spec runs ~2×
-  //       Sonnet's. Quality delta on the interactive chat thread (routing,
-  //       analysis, brief authoring) is not perceptible to users; heavy
-  //       turns (tournament synthesizer, copy-quality panel, rubric judge)
-  //       escalate via Task/subagent where per-agent `model:` can request
-  //       Opus for that subagent only.
+  //   (a) `model` — pin Opus 4.7. (2026-04-27 product decision: every
+  //       interactive Merlin turn runs on Opus 4.7 regardless of the user's
+  //       plan default, so the chat thread is never silently downgraded.)
+  //       Pinning explicitly is what makes the autoCompactWindow + cached
+  //       system-prompt prefix below stable across users — a per-account
+  //       model swap would change tokenization and fragment the cache.
+  //       Earlier (2026-04-23) revision pinned Sonnet 4.6 for TTFT; that
+  //       was overridden by the product call to standardize on Opus.
   //
   //   (b) `settings.excludeDynamicSections` — already handled in the
   //       systemPrompt object above. Lives with the system prompt itself
@@ -2734,10 +2805,47 @@ async function startSession(brandOverride) {
   //       default for this product. When compact eventually fires, the
   //       `compact_boundary` system message surfaces in the stream for
   //       telemetry.
+  // PERMISSION MODE — defaults to acceptEdits + canUseTool (the layered
+  // safety floor). Users on Max / Team / Enterprise / API plans can opt
+  // into Anthropic's `auto` mode (March 2026 research preview, requires
+  // @anthropic-ai/claude-agent-sdk shipping with Claude Code v2.1.83+) by
+  // setting `permissionMode: "auto"` in their per-brand or global config.
+  // We do NOT default to auto for two reasons:
+  //   (1) Auto mode REPLACES canUseTool with a server-side classifier —
+  //       the cents-detector hard-deny, the in-cap auto-approve, the
+  //       friendly approval translations, and the budget context cards
+  //       all stop firing. Production users who haven't opted in keep the
+  //       layered safety floor.
+  //   (2) Auto mode is unavailable on the Pro plan, on Bedrock/Vertex/
+  //       Foundry, and on non-supported models. Defaulting to it would
+  //       break sessions for every user on those tiers.
+  // Allowed config values: 'default' | 'acceptEdits' | 'auto' |
+  // 'bypassPermissions' | 'plan' | 'dontAsk'. Anything else falls back
+  // to 'acceptEdits'. The mode is read at session start; switching it
+  // requires a session restart (which the user gets from any brand
+  // switch, app restart, or first-message-after-config-change path).
+  const ALLOWED_MODES = new Set(['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'dontAsk']);
+  let resolvedPermissionMode = 'acceptEdits';
+  try {
+    const cfgForMode = activeBrand ? readBrandConfig(activeBrand) : readConfig();
+    const requested = (cfgForMode && typeof cfgForMode.permissionMode === 'string')
+      ? cfgForMode.permissionMode.trim() : '';
+    if (requested && ALLOWED_MODES.has(requested)) {
+      resolvedPermissionMode = requested;
+      if (requested !== 'acceptEdits') {
+        console.log(`[permission-mode] using "${requested}" from config (default is "acceptEdits")`);
+      }
+    } else if (requested) {
+      console.warn(`[permission-mode] config requested "${requested}" — not in ALLOWED_MODES, falling back to acceptEdits`);
+    }
+  } catch (e) {
+    console.warn('[permission-mode] config read failed, using acceptEdits:', e.message);
+  }
+
   const queryOptions = {
     cwd: appRoot,
-    model: 'claude-sonnet-4-6',
-    permissionMode: 'acceptEdits',
+    model: 'claude-opus-4-7',
+    permissionMode: resolvedPermissionMode,
     includePartialMessages: true,
     settingSources: ['project'],
     canUseTool: handleToolApproval,

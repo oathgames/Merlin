@@ -216,3 +216,95 @@ test('merlin-setup SKILL.md instructs parallel scheduled-task creation (no per-t
   // make sure it doesn't sneak back in via copy-paste.
   assert.doesNotMatch(skill, /After creation tell user:\s*\*"Daily content is set!/);
 });
+
+// ─────────────────────────────────────────────────────────────────
+// Model pin: Opus 4.7. Product decision (2026-04-27) — every Merlin
+// session runs Opus regardless of plan default. The sdk-latency-knobs
+// test owns the negative case (must not be the old Sonnet pin); we
+// pin the positive case here too so a future model bump has TWO
+// failing tests pointing at the change site.
+// ─────────────────────────────────────────────────────────────────
+test('main.js pins the chat-thread model to claude-opus-4-7', () => {
+  // Match against the queryOptions block specifically — anti-slop / probe
+  // queries elsewhere in main.js may use different models legitimately.
+  const queryOptsIdx = SRC_MAIN.indexOf('const queryOptions = {');
+  assert.ok(queryOptsIdx > 0, 'queryOptions block not found — test needs updating if renamed');
+  const slice = SRC_MAIN.slice(queryOptsIdx, queryOptsIdx + 800);
+  assert.match(slice, /model:\s*['"]claude-opus-4-7['"]/);
+});
+
+// ─────────────────────────────────────────────────────────────────
+// In-cap auto-approve: push and duplicate calls under the user's
+// configured cap skip the approval card. Cents-detector still hard-
+// denies anomalies; the layered floor remains intact.
+// ─────────────────────────────────────────────────────────────────
+test('handleToolApproval auto-approves in-cap MCP push without firing the approval card', () => {
+  // Source-scan: the auto-approve clause MUST appear AFTER the cents-
+  // detector hard-deny (so the floor wins on anomalies) and BEFORE the
+  // approval-card emission (so the card path is bypassed on the happy
+  // path). Three anchors — order matters.
+  const anchorMcp = SRC_MAIN.indexOf("const SPEND = new Set(['push', 'duplicate', 'setup', 'setup-retargeting'])");
+  assert.ok(anchorMcp > 0, "MCP SPEND set not found");
+  // Slice ends at the next `if (toolName ===` (next handler block) so we
+  // capture the entire SPEND branch including the approval-card emission.
+  const branchEnd = SRC_MAIN.indexOf("if (toolName === 'AskUserQuestion'", anchorMcp);
+  assert.ok(branchEnd > anchorMcp, 'AskUserQuestion branch (next handler block) not found');
+  const sliceMcp = SRC_MAIN.slice(anchorMcp, branchEnd);
+  // Cents-detector lives first.
+  const centsIdx = sliceMcp.indexOf('looks like cents, not dollars');
+  assert.ok(centsIdx > 0, 'cents-detector message missing from MCP spend branch');
+  // In-cap auto-approve next.
+  const inCapIdx = sliceMcp.indexOf('IN-CAP AUTO-APPROVE');
+  assert.ok(inCapIdx > centsIdx, 'IN-CAP AUTO-APPROVE block must appear AFTER the cents-detector');
+  // Approval card emission last.
+  const cardIdx = sliceMcp.indexOf("'approval-request'");
+  assert.ok(cardIdx > inCapIdx, 'approval-request emission must appear AFTER the in-cap auto-approve clause');
+  // The auto-approve respects the requireSpendApproval opt-out.
+  assert.match(sliceMcp, /requireSpendApproval/);
+});
+
+test('handleToolApproval auto-approves in-cap Bash Merlin push (mirrors MCP path)', () => {
+  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  assert.ok(anchorBash > 0, 'Bash BASH_SPEND set not found');
+  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 4000);
+  const centsIdx = sliceBash.indexOf('looks like cents, not dollars');
+  const inCapIdx = sliceBash.indexOf('IN-CAP AUTO-APPROVE for Bash spend path');
+  const cardIdx = sliceBash.indexOf("'approval-request'");
+  assert.ok(centsIdx > 0 && inCapIdx > centsIdx && cardIdx > inCapIdx,
+    'order must be: cents-detector → in-cap auto-approve → approval-card. '
+    + 'A regression that flips two of these would either re-introduce the '
+    + 'cents card OR reintroduce friction on every push.');
+  assert.match(sliceBash, /bashRequireSpendApproval/);
+});
+
+test('handleToolApproval auto-approves draft-only Reddit posts', () => {
+  // The draft-only auto-approve clause sits between postMode resolution and
+  // the approval-card emission for reddit-prospect-post.
+  const anchorReddit = SRC_MAIN.indexOf("input.command.includes('reddit-prospect-post')");
+  assert.ok(anchorReddit > 0, 'reddit-prospect-post branch not found');
+  const sliceReddit = SRC_MAIN.slice(anchorReddit, anchorReddit + 4000);
+  assert.match(sliceReddit, /DRAFT-ONLY AUTO-APPROVE/);
+  // Opt-out via cfg.requireRedditApproval is honored.
+  assert.match(sliceReddit, /requireRedditApproval/);
+  // The auto-approve fires only when postMode === 'draft-only'.
+  assert.match(sliceReddit, /postMode === 'draft-only' && !redditRequireApproval/);
+});
+
+// ─────────────────────────────────────────────────────────────────
+// Anthropic auto-mode opt-in: permissionMode resolves from cfg.permissionMode
+// with allow-list validation; default stays 'acceptEdits'.
+// ─────────────────────────────────────────────────────────────────
+test('main.js reads permissionMode from config with an allow-list', () => {
+  // The resolution block must:
+  //   (a) declare the ALLOWED_MODES set including 'auto' and 'bypassPermissions'
+  //   (b) default to 'acceptEdits'
+  //   (c) actually feed the resolved value into queryOptions.permissionMode
+  assert.match(SRC_MAIN, /const ALLOWED_MODES = new Set\(\[[^\]]*'auto'[^\]]*'bypassPermissions'/);
+  assert.match(SRC_MAIN, /let resolvedPermissionMode = 'acceptEdits'/);
+  // The queryOptions block must reference the resolved variable, not a
+  // hardcoded literal — that's the wire-up that lets the config flag take
+  // effect at session start.
+  const queryOptsIdx = SRC_MAIN.indexOf('const queryOptions = {');
+  const slice = SRC_MAIN.slice(queryOptsIdx, queryOptsIdx + 800);
+  assert.match(slice, /permissionMode:\s*resolvedPermissionMode/);
+});
