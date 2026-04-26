@@ -234,9 +234,13 @@ test('main.js pins the chat-thread model to claude-opus-4-7', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// In-cap auto-approve: push and duplicate calls under the user's
-// configured cap skip the approval card. Cents-detector still hard-
-// denies anomalies; the layered floor remains intact.
+// In-cap auto-approve (post-Gitar-review tightening, 2026-04-28):
+//   - PUSH ONLY (duplicate intentionally cards because we can't see
+//     its inherited budget).
+//   - Fail closed on config read (default require-approval = true).
+//   - Budget data unknown ⇒ card (headroom must be a finite number).
+//   - bypassPermissions removed from runtime allow-list.
+//   - Bash path action-gated to BASH_PUSH_ONLY for drift resistance.
 // ─────────────────────────────────────────────────────────────────
 test('handleToolApproval auto-approves in-cap MCP push without firing the approval card', () => {
   // Source-scan: the auto-approve clause MUST appear AFTER the cents-
@@ -263,10 +267,49 @@ test('handleToolApproval auto-approves in-cap MCP push without firing the approv
   assert.match(sliceMcp, /requireSpendApproval/);
 });
 
+test('MCP in-cap auto-approve gates on action === push only (duplicate cards)', () => {
+  // Gitar #121 finding 1 + #122 finding 2: duplicate has no visible
+  // dailyBudget on the call, so any auto-approve guard reduces to "any
+  // headroom exists" — which let a duplicate of a $500/day source ad
+  // pass with $1 of remaining cap. Removing duplicate from the auto-
+  // approve set is the only safe fix; the card stays.
+  const anchorMcp = SRC_MAIN.indexOf("const SPEND = new Set(['push', 'duplicate', 'setup', 'setup-retargeting'])");
+  const branchEnd = SRC_MAIN.indexOf("if (toolName === 'AskUserQuestion'", anchorMcp);
+  const sliceMcp = SRC_MAIN.slice(anchorMcp, branchEnd);
+  // The auto-approve gate must filter on push only.
+  assert.match(sliceMcp, /action === 'push'\)\s*\{/);
+  // It must NOT auto-approve duplicate (the regression we're guarding).
+  assert.doesNotMatch(sliceMcp, /action === 'duplicate' && headroom > 0/);
+});
+
+test('MCP in-cap auto-approve fails closed on config read errors', () => {
+  // Gitar #122 finding 1: bare `catch {}` defaulted requireSpendApproval
+  // to false, opening every spend on transient I/O / parse errors. The
+  // fail-closed default is `true`; the catch logs a warning.
+  const anchorMcp = SRC_MAIN.indexOf("const SPEND = new Set(['push', 'duplicate', 'setup', 'setup-retargeting'])");
+  const branchEnd = SRC_MAIN.indexOf("if (toolName === 'AskUserQuestion'", anchorMcp);
+  const sliceMcp = SRC_MAIN.slice(anchorMcp, branchEnd);
+  assert.match(sliceMcp, /let requireSpendApproval = true/);
+  assert.match(sliceMcp, /\[spend-approval\] config read failed/);
+});
+
+test('MCP in-cap auto-approve cards when budget data is unknown (headroom not finite)', () => {
+  // Gitar #121 finding 1 also flagged the fallback path: if
+  // budgetCtx.remaining isn't finite, the previous code defaulted
+  // headroom to capForComparison and silently allowed. The fix uses
+  // null as the unknown sentinel and refuses to auto-approve unless
+  // headroom is finite.
+  const anchorMcp = SRC_MAIN.indexOf("const SPEND = new Set(['push', 'duplicate', 'setup', 'setup-retargeting'])");
+  const branchEnd = SRC_MAIN.indexOf("if (toolName === 'AskUserQuestion'", anchorMcp);
+  const sliceMcp = SRC_MAIN.slice(anchorMcp, branchEnd);
+  assert.match(sliceMcp, /Number\.isFinite\(budgetCtx\.remaining\)\s*\?\s*budgetCtx\.remaining\s*:\s*null/);
+  assert.match(sliceMcp, /headroom !== null/);
+});
+
 test('handleToolApproval auto-approves in-cap Bash Merlin push (mirrors MCP path)', () => {
   const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
   assert.ok(anchorBash > 0, 'Bash BASH_SPEND set not found');
-  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 4000);
+  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
   const centsIdx = sliceBash.indexOf('looks like cents, not dollars');
   const inCapIdx = sliceBash.indexOf('IN-CAP AUTO-APPROVE for Bash spend path');
   const cardIdx = sliceBash.indexOf("'approval-request'");
@@ -275,6 +318,33 @@ test('handleToolApproval auto-approves in-cap Bash Merlin push (mirrors MCP path
     + 'A regression that flips two of these would either re-introduce the '
     + 'cents card OR reintroduce friction on every push.');
   assert.match(sliceBash, /bashRequireSpendApproval/);
+});
+
+test('Bash in-cap auto-approve gates on BASH_PUSH_ONLY action set (drift resistance)', () => {
+  // Gitar #121 finding 3: if a future edit adds setup-equivalent Bash
+  // actions to BASH_SPEND (e.g. `meta-setup`), they would silently
+  // inherit auto-approval. The fix gates on a separate BASH_PUSH_ONLY
+  // set so anything not in it cards even if BASH_SPEND grows.
+  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
+  assert.match(sliceBash, /const BASH_PUSH_ONLY = new Set\(/);
+  assert.match(sliceBash, /BASH_PUSH_ONLY\.has\(bashAction\)/);
+});
+
+test('Bash in-cap auto-approve fails closed on config read errors', () => {
+  // Same Gitar #122 finding 1 fix mirrored on the Bash path.
+  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
+  assert.match(sliceBash, /let bashRequireSpendApproval = true/);
+  assert.match(sliceBash, /\[spend-approval\] bash config read failed/);
+});
+
+test('Bash in-cap auto-approve cards when budget data is unknown', () => {
+  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
+  // Same null-sentinel pattern as the MCP path.
+  assert.match(sliceBash, /Number\.isFinite\(budgetCtx\.remaining\)\s*\?\s*budgetCtx\.remaining\s*:\s*null/);
+  assert.match(sliceBash, /headroom !== null/);
 });
 
 test('handleToolApproval auto-approves draft-only Reddit posts', () => {
@@ -292,14 +362,15 @@ test('handleToolApproval auto-approves draft-only Reddit posts', () => {
 
 // ─────────────────────────────────────────────────────────────────
 // Anthropic auto-mode opt-in: permissionMode resolves from cfg.permissionMode
-// with allow-list validation; default stays 'acceptEdits'.
+// with allow-list validation; default stays 'acceptEdits'. bypassPermissions
+// is intentionally excluded from the runtime allow-list.
 // ─────────────────────────────────────────────────────────────────
 test('main.js reads permissionMode from config with an allow-list', () => {
   // The resolution block must:
-  //   (a) declare the ALLOWED_MODES set including 'auto' and 'bypassPermissions'
+  //   (a) declare the ALLOWED_MODES set including 'auto'
   //   (b) default to 'acceptEdits'
   //   (c) actually feed the resolved value into queryOptions.permissionMode
-  assert.match(SRC_MAIN, /const ALLOWED_MODES = new Set\(\[[^\]]*'auto'[^\]]*'bypassPermissions'/);
+  assert.match(SRC_MAIN, /const ALLOWED_MODES = new Set\(\[[^\]]*'auto'[^\]]*\]\)/);
   assert.match(SRC_MAIN, /let resolvedPermissionMode = 'acceptEdits'/);
   // The queryOptions block must reference the resolved variable, not a
   // hardcoded literal — that's the wire-up that lets the config flag take
@@ -307,4 +378,23 @@ test('main.js reads permissionMode from config with an allow-list', () => {
   const queryOptsIdx = SRC_MAIN.indexOf('const queryOptions = {');
   const slice = SRC_MAIN.slice(queryOptsIdx, queryOptsIdx + 800);
   assert.match(slice, /permissionMode:\s*resolvedPermissionMode/);
+});
+
+test('ALLOWED_MODES does NOT include bypassPermissions (config-write attack surface)', () => {
+  // Gitar #121 finding 2: brand config files can be written by the AI
+  // agent during onboarding, so a runtime-readable allow-list including
+  // bypassPermissions would let a single config write silently strip
+  // every spend guardrail. The mode is a code-level / env-var concern,
+  // not a config-readable one.
+  const anchor = SRC_MAIN.indexOf('const ALLOWED_MODES = new Set');
+  assert.ok(anchor > 0, 'ALLOWED_MODES declaration not found');
+  // Slice the literal set declaration line.
+  const declLine = SRC_MAIN.slice(anchor, SRC_MAIN.indexOf(';', anchor));
+  assert.doesNotMatch(declLine, /bypassPermissions/,
+    'bypassPermissions MUST NOT appear in ALLOWED_MODES — that mode disables '
+    + 'every safety surface (cents-detector, in-cap auto-approve, friendly '
+    + 'translations, canUseTool itself). Brand config can be written by the '
+    + 'agent during onboarding; a single config write would strip all spend '
+    + 'guardrails. If you genuinely need bypassPermissions for a controlled '
+    + 'environment, use an env var or code change — not config.');
 });

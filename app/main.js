@@ -2217,38 +2217,48 @@ async function handleToolApproval(toolName, input) {
         };
       }
 
-      // IN-CAP AUTO-APPROVE (2026-04-27, brand-onboarding-zero-friction):
-      // Push and duplicate calls whose dailyBudget is at or under the user's
-      // configured per-day cap are auto-approved silently — the user already
-      // pre-authorized the cap when they set `dailyAdBudget` in config. The
-      // approval card was firing on every push even when Claude was running
-      // exactly at $5/day on a $20/day cap; that's pure friction with no
-      // safety value. The cents-detector above still hard-denies anomalies,
-      // and `setup` / `setup-retargeting` (zero-spend ops, but they touch
-      // ad-account state) still show a card. `duplicate` carries no
-      // dailyBudget — we only auto-approve it when the cap is configured AND
-      // there's headroom in the daily-spent budget; otherwise still card.
-      // Users can disable this auto-approve by setting
-      // `cfg.requireSpendApproval = true` per-brand or globally — the card
-      // path remains the default for unconfigured installs (cap === 0).
-      let requireSpendApproval = false;
+      // IN-CAP AUTO-APPROVE (2026-04-27, brand-onboarding-zero-friction;
+      // tightened 2026-04-28 per Gitar review of #121 / #122):
+      //
+      // PUSH ONLY. The agent passes an explicit `dailyBudget` on push, so
+      // we can verify it fits under the user's configured per-day cap AND
+      // under the remaining daily headroom before allowing silently. The
+      // user pre-authorized the cap when they set `dailyAdBudget` in
+      // config; firing a card on every $5 push against a $20 cap was pure
+      // friction.
+      //
+      // DUPLICATE intentionally still cards. The duplicate call does NOT
+      // carry `dailyBudget` — Meta / TikTok inherit the source ad's
+      // budget server-side, which we can't see from canUseTool. Gating
+      // only on "any remaining headroom" let a duplicate of a $500/day
+      // source ad auto-approve when there was $1 of cap left. No safe
+      // budget bound exists, so duplicate stays carded.
+      //
+      // SETUP / SETUP-RETARGETING also card — they touch ad-account state.
+      //
+      // FAIL-CLOSED on config read. If readBrandConfig / readConfig
+      // throws (corrupted file, transient I/O, permissions), default to
+      // `requireSpendApproval = true`. The opt-in card was the user's
+      // explicit guardrail; falling open on errors removes it without
+      // their knowledge. The cents-detector hard-deny above is the only
+      // safety surface that remains valid regardless of config state.
+      //
+      // BUDGET-DATA UNKNOWN ⇒ CARD. If `budgetCtx.remaining` isn't a
+      // finite number (telemetry hiccup, missing field), we have no
+      // headroom to gate against — show the card rather than auto-approve.
+      let requireSpendApproval = true;
       try {
         const brandForCfg = input.brand || (() => {
           try { return readState().activeBrand || ''; } catch { return ''; }
         })();
         const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
         requireSpendApproval = !!cfg.requireSpendApproval;
-      } catch {}
-      if (!requireSpendApproval && capForComparison > 0 && (action === 'push' || action === 'duplicate')) {
-        const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : capForComparison;
-        // For push: dailyBudget must fit under remaining headroom AND under
-        // the per-day cap. For duplicate: no dailyBudget on the call (Meta
-        // / TikTok inherit the source ad's budget) — only require that
-        // there's any remaining headroom at all.
-        if (action === 'push' && adBudget <= capForComparison && adBudget <= headroom) {
-          return { behavior: 'allow', updatedInput: input };
-        }
-        if (action === 'duplicate' && headroom > 0) {
+      } catch (e) {
+        console.warn('[spend-approval] config read failed, defaulting to require approval:', e && e.message);
+      }
+      if (!requireSpendApproval && capForComparison > 0 && action === 'push') {
+        const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
+        if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
           return { behavior: 'allow', updatedInput: input };
         }
       }
@@ -2393,6 +2403,15 @@ async function handleToolApproval(toolName, input) {
     const cmdMatch = input.command.match(/"action"\s*:\s*"([^"]+)"/);
     const bashAction = cmdMatch ? cmdMatch[1] : '';
     const BASH_SPEND = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad']);
+    // Push-equivalent actions are the only ones eligible for in-cap auto-
+    // approve. Mirrors the MCP path's `action === 'push'` filter (NOT
+    // `'push' || 'duplicate'`). If a future edit adds a setup-equivalent
+    // Bash action to BASH_SPEND, it will still card by default — which is
+    // what we want, since setup actions touch ad-account state without
+    // necessarily moving budget. Keep this set in sync with BASH_SPEND
+    // additions: anything that creates or scales paid ad spend goes here;
+    // anything that touches account configuration stays out.
+    const BASH_PUSH_ONLY = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad']);
     if (BASH_SPEND.has(bashAction)) {
       const budgetCtx = getBudgetContext();
       const translated = translateTool(toolName, input);
@@ -2415,11 +2434,18 @@ async function handleToolApproval(toolName, input) {
         };
       }
 
-      // IN-CAP AUTO-APPROVE for Bash spend path (mirror of MCP path above).
-      // The Bash path is hit by the legacy `.claude/tools/Merlin.exe` invocation
-      // route; same cents-detector floor, same in-cap silent allow above the
-      // floor when the user has a configured cap and there's headroom.
-      let bashRequireSpendApproval = false;
+      // IN-CAP AUTO-APPROVE for Bash spend path (mirror of MCP path above;
+      // tightened 2026-04-28 per Gitar review of #121 / #122):
+      //
+      // 1. Action gate: only push-equivalent actions (BASH_PUSH_ONLY) are
+      //    eligible — explicit gate so a future BASH_SPEND addition (e.g.
+      //    `meta-setup`) doesn't silently inherit auto-approval.
+      // 2. Fail closed on config read: bare catch was hiding I/O / parse
+      //    errors and falling open on the user's `requireSpendApproval`
+      //    flag. Default to true on any error and log a warning.
+      // 3. Budget-data unknown ⇒ card: `budgetCtx.remaining` must be a
+      //    finite number; missing data ⇒ no auto-approve.
+      let bashRequireSpendApproval = true;
       try {
         const brandMatch = input.command.match(/"brand"\s*:\s*"([^"]+)"/);
         const brandForCfg = brandMatch ? brandMatch[1] : (() => {
@@ -2427,10 +2453,12 @@ async function handleToolApproval(toolName, input) {
         })();
         const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
         bashRequireSpendApproval = !!cfg.requireSpendApproval;
-      } catch {}
-      if (!bashRequireSpendApproval && capForComparison > 0) {
-        const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : capForComparison;
-        if (adBudget <= capForComparison && adBudget <= headroom) {
+      } catch (e) {
+        console.warn('[spend-approval] bash config read failed, defaulting to require approval:', e && e.message);
+      }
+      if (!bashRequireSpendApproval && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction)) {
+        const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
+        if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
           return { behavior: 'allow', updatedInput: input };
         }
       }
@@ -2819,12 +2847,24 @@ async function startSession(brandOverride) {
   //   (2) Auto mode is unavailable on the Pro plan, on Bedrock/Vertex/
   //       Foundry, and on non-supported models. Defaulting to it would
   //       break sessions for every user on those tiers.
-  // Allowed config values: 'default' | 'acceptEdits' | 'auto' |
-  // 'bypassPermissions' | 'plan' | 'dontAsk'. Anything else falls back
-  // to 'acceptEdits'. The mode is read at session start; switching it
-  // requires a session restart (which the user gets from any brand
-  // switch, app restart, or first-message-after-config-change path).
-  const ALLOWED_MODES = new Set(['default', 'acceptEdits', 'auto', 'bypassPermissions', 'plan', 'dontAsk']);
+  // Allowed config values: 'default' | 'acceptEdits' | 'auto' | 'plan' |
+  // 'dontAsk'. Anything else falls back to 'acceptEdits'. The mode is
+  // read at session start; switching it requires a session restart
+  // (which the user gets from any brand switch, app restart, or
+  // first-message-after-config-change path).
+  //
+  // `bypassPermissions` is INTENTIONALLY EXCLUDED from this allow-list
+  // (2026-04-28 per Gitar review of #121). That mode disables every
+  // safety surface: cents-detector hard-deny, in-cap auto-approve,
+  // friendly translations, budget context cards, and `canUseTool` itself.
+  // Brand config files can be written by the AI agent during onboarding,
+  // so a runtime-readable allow-list including `bypassPermissions` would
+  // let a single config write silently strip every spend guardrail. If
+  // you genuinely need bypassPermissions for a controlled environment
+  // (containers, CI, devcontainers), set it via an env var or code
+  // change — not a config edit. Same reasoning the SDK docs flag for the
+  // mode's CLI counterpart `--dangerously-skip-permissions`.
+  const ALLOWED_MODES = new Set(['default', 'acceptEdits', 'auto', 'plan', 'dontAsk']);
   let resolvedPermissionMode = 'acceptEdits';
   try {
     const cfgForMode = activeBrand ? readBrandConfig(activeBrand) : readConfig();
