@@ -60,6 +60,14 @@ jobs:
       # the v1.18.0 auth loop — non-retryable error blindly retried 3x.
       - name: stale-resume graceful fail lockdown
         run: node --test app/main-stale-resume-regex.test.js app/renderer-stale-resume-fail-fast.test.js
+      # Chat-hang fix — the v1.18.7 "3-minute hang after re-auth" incident
+      # canary. Locks down (a) accountInfo() being detached from the
+      # for-await message loop, (b) readCredentials() having a hard total
+      # wall-clock cap, and (c) phase-aware progress wired through preload
+      # + renderer so users always see what's actually happening during
+      # session init (not a generic "Thinking" label).
+      - name: sdk-chat-hang-fix lockdown
+        run: node app/sdk-chat-hang-fix.test.js
       - name: ws-server listen-bind lockdown
         run: node app/ws-server.test.js
       - name: relay-client contract

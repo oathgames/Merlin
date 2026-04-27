@@ -2076,6 +2076,28 @@ merlin.onAskUserQuestion(({ toolUseID, questions }) => {
   scrollToBottom();
 });
 
+// ── Session Phase Progress ──────────────────────────────────
+// Replaces the generic "Thinking" label with phase-aware status while a
+// session is initializing — so users see "Authenticating…", "Resuming
+// session…", "Sending to Claude…" instead of staring at a static spinner
+// for what could be tens of seconds (cold subprocess spawn, slow Keychain,
+// network round-trip on accountInfo, etc.). Live incident 2026-04-27: a
+// paying user re-authed mid-session and waited 3 minutes with only
+// "Thinking" + a ticker. Now they see exactly which step is slow.
+//
+// Once the SDK starts streaming tokens, isStreaming → true and the normal
+// "Weaving a response" / per-tool labels take over (renderer.js:1863).
+if (merlin.onSessionPhase) {
+  merlin.onSessionPhase((data) => {
+    if (!data || typeof data !== 'object') return;
+    const label = typeof data.label === 'string' ? data.label : '';
+    if (!label) return;
+    // Don't override active streaming or active tool status.
+    if (isStreaming) return;
+    setStatusLabel(label);
+  });
+}
+
 // ── Error Handling ──────────────────────────────────────────
 let _restartAttempts = 0;
 const MAX_RESTART_ATTEMPTS = 3;

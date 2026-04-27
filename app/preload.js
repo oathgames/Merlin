@@ -452,6 +452,17 @@ contextBridge.exposeInMainWorld('merlin', {
     const h = (_, data) => cb(data || {}); ipcRenderer.on('auth-required', h);
     return () => ipcRenderer.removeListener('auth-required', h);
   },
+  // Phase-aware session progress (sdk-chat-hang-fix, 2026-04-27). Fires from
+  // startSession() at known checkpoints so the renderer can replace the
+  // generic "Thinking" label with what's actually happening — e.g. "Resuming
+  // session…", "Authenticating…", "Sending to Claude…". Payload shape:
+  //   { phase: 'cred-read' | 'sdk-import' | 'mcp-init' | 'query-start'
+  //          | 'resume' | 'preamble' | 'awaiting-response',
+  //     label: string }
+  onSessionPhase: (cb) => {
+    const h = (_, data) => cb(data || {}); ipcRenderer.on('session-phase', h);
+    return () => ipcRenderer.removeListener('session-phase', h);
+  },
   // Two paths:
   //   - send:   fire-and-forget (legacy, no feedback)
   //   - invoke: returns { ok, reason? } so the dialog can show the user
