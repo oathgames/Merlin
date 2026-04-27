@@ -4665,10 +4665,18 @@ document.addEventListener('click', async (e) => {
         const result = await merlin.saveConfigField(apiDef.key, value.trim(), activeBrand);
         if (result.success) {
           loadConnections();
-        } else {
-          showModal({ title: 'Error', body: result.error || 'Failed to save', confirmLabel: 'OK', onConfirm: () => {} });
-          throw new Error('save-failed');
+          return;
         }
+        // REGRESSION GUARD (2026-04-27, postscript-save-broken incident):
+        // surface the failure INSIDE the still-open input modal via
+        // showModalError. The previous code called showModal({title:'Error'…})
+        // which queued behind the active input modal and never displayed,
+        // so a save rejection (e.g. "Unknown config field" when a key is
+        // missing from CONFIG_FIELD_ALLOWLIST) looked exactly like
+        // "nothing happened" to the user. Match the inline-error pattern
+        // every other tile save uses (Shopify, Meta manual key, etc.).
+        showModalError(result.error || 'Failed to save');
+        throw new Error('save-failed');
       },
     });
     return;

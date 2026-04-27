@@ -49,6 +49,28 @@ const VAULT_SENSITIVE_KEYS = [
   // in CONFIG_FIELD_ALLOWLIST but previously missing here, so every paste
   // landed on disk in plaintext.
   'foreplayApiKey',
+  // Postscript SMS marketing API key (BYOK tile, shipped v1.18.0).
+  // REGRESSION GUARD (2026-04-27, postscript-save-broken incident): the
+  // initial v1.18.0 ship added 'postscript' to renderer.js
+  // API_KEY_PLATFORMS but forgot BOTH this list and CONFIG_FIELD_ALLOWLIST,
+  // so every Save click in the Magic-panel modal hit a silent
+  // "Unknown config field" rejection in main.js's save-config-field
+  // handler. Paid users saw "I clicked Save and nothing happened." The
+  // allowlist cross-check test below was scoped to "every allowlisted
+  // sensitive-shape key is vaulted" — the inverse direction ("every
+  // BYOK tile in API_KEY_PLATFORMS reaches the allowlist") was added
+  // in this same release as a stronger guard so the next BYOK tile
+  // can't ship with the same omission.
+  'postscriptApiKey',
+  // AppLovin reporting keys (BYOK tile, shipped v1.18.0). Two
+  // independent keys — MAX (publisher report) and AppDiscovery
+  // (advertiser report). Same incident class as Postscript above:
+  // the tile was wired in renderer.js but the allowlist + vault lists
+  // were never updated, so saving either key silently failed. The
+  // right-click "Use my API key" override modal collected both keys
+  // in one shot but the per-key save call still hit the rejection.
+  'applovinMaxReportKey',
+  'applovinAdReportKey',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',
@@ -68,6 +90,12 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   'klaviyoAccessToken', 'klaviyoApiKey',
   'pinterestAccessToken', 'pinterestRefreshToken',
   'falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'arcadsApiKey', 'foreplayApiKey',
+  // Postscript + AppLovin BYOK API keys. Shipped in v1.18.0 but the
+  // allowlist update was missed — see VAULT_SENSITIVE_KEYS comment block
+  // above for the full incident writeup. Without these entries the
+  // save-config-field handler returns 'Unknown config field' and the
+  // Magic-panel modal save click silently fails.
+  'postscriptApiKey', 'applovinMaxReportKey', 'applovinAdReportKey',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',

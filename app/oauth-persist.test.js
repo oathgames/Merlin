@@ -211,5 +211,62 @@ test('every sensitive-looking key in CONFIG_FIELD_ALLOWLIST is in VAULT_SENSITIV
     `save-config-field would persist the value as plaintext. Add each key to VAULT_SENSITIVE_KEYS in oauth-persist.js.`);
 });
 
+test('every BYOK tile in renderer.js API_KEY_PLATFORMS reaches CONFIG_FIELD_ALLOWLIST and VAULT_SENSITIVE_KEYS', () => {
+  // REGRESSION GUARD (2026-04-27, postscript-save-broken incident). The
+  // existing "every sensitive-looking allowlist key is vaulted" test
+  // catches drift in ONE direction (allowlist → vault). It does NOT catch
+  // the inverse: a BYOK tile registered in renderer.js but missing from
+  // the allowlist, which makes save-config-field reject the paste with
+  // "Unknown config field" and the user sees nothing happen on Save.
+  //
+  // This test parses renderer.js's API_KEY_PLATFORMS map and asserts that
+  // every `key` it references is BOTH in CONFIG_FIELD_ALLOWLIST AND in
+  // VAULT_SENSITIVE_KEYS. Adding a new BYOK tile in renderer.js without
+  // updating both lists fails CI before the release tags.
+  const fs = require('fs');
+  const path = require('path');
+  const rendererSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
+  // Grab the API_KEY_PLATFORMS object literal — depth-1 brace match from
+  // its declaration so trailing comments/objects don't slip in.
+  const declIdx = rendererSrc.indexOf('const API_KEY_PLATFORMS = {');
+  assert.ok(declIdx >= 0, 'API_KEY_PLATFORMS declaration must exist in renderer.js');
+  const openBrace = rendererSrc.indexOf('{', declIdx);
+  let depth = 0, end = -1;
+  for (let i = openBrace; i < rendererSrc.length; i++) {
+    const c = rendererSrc[i];
+    if (c === '{') depth++;
+    else if (c === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  assert.ok(end > openBrace, 'API_KEY_PLATFORMS must be a balanced object literal');
+  const block = rendererSrc.slice(openBrace, end + 1);
+  // Every entry has `key: 'someApiKey'` — extract them.
+  const keyMatches = Array.from(block.matchAll(/\bkey:\s*'([^']+)'/g));
+  assert.ok(keyMatches.length >= 5,
+    `API_KEY_PLATFORMS should declare at least 5 BYOK tiles, got ${keyMatches.length}`);
+  const missingFromAllowlist = [];
+  const missingFromVault = [];
+  for (const m of keyMatches) {
+    const k = m[1];
+    if (!CONFIG_FIELD_ALLOWLIST.has(k)) missingFromAllowlist.push(k);
+    if (!VAULT_SENSITIVE_KEYS.includes(k)) missingFromVault.push(k);
+  }
+  assert.deepStrictEqual(missingFromAllowlist, [],
+    `API_KEY_PLATFORMS tile key(s) not in CONFIG_FIELD_ALLOWLIST: ${missingFromAllowlist.join(', ')}. ` +
+    `Magic-panel "Save" click will hit "Unknown config field" and silently fail. ` +
+    `Add each key to CONFIG_FIELD_ALLOWLIST in oauth-persist.js.`);
+  assert.deepStrictEqual(missingFromVault, [],
+    `API_KEY_PLATFORMS tile key(s) not in VAULT_SENSITIVE_KEYS: ${missingFromVault.join(', ')}. ` +
+    `Saved value would land in plaintext on disk. Add each key to VAULT_SENSITIVE_KEYS in oauth-persist.js.`);
+});
+
+test('Postscript + AppLovin tile keys are in both allowlist and vault list', () => {
+  // Direct assertion on the specific keys for the v1.18.0 incident, so a
+  // future contributor reading the failing test gets a clear signal.
+  for (const k of ['postscriptApiKey', 'applovinMaxReportKey', 'applovinAdReportKey']) {
+    assert.ok(CONFIG_FIELD_ALLOWLIST.has(k), `${k} must be in CONFIG_FIELD_ALLOWLIST`);
+    assert.ok(VAULT_SENSITIVE_KEYS.includes(k), `${k} must be in VAULT_SENSITIVE_KEYS`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
