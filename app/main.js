@@ -745,7 +745,28 @@ function persistCredentials(raw) {
   }
 }
 
+// REGRESSION GUARD (2026-04-27, sdk-chat-hang-fix):
+// Hard wall-clock cap on the entire credential-resolution chain. Per-source
+// timeouts (Mac Keychain 3s race, Win file fs.readFileSync) are not enough:
+// a network-mounted home directory, a hung antivirus filter driver, or a
+// future credential-source addition can each blow past the per-source cap
+// and leave the whole startSession() blocked. Every async leg of this
+// function MUST resolve within READ_CREDENTIALS_TOTAL_CAP_MS or the caller
+// gets `null` and falls through to requireAuth(). DO NOT raise the cap to
+// "give Keychain more time" — investigate the slow source first.
+const READ_CREDENTIALS_TOTAL_CAP_MS = 7000;
+
 async function readCredentials() {
+  return Promise.race([
+    _readCredentialsImpl(),
+    new Promise((resolve) => setTimeout(() => {
+      console.warn(`[auth] readCredentials timed out after ${READ_CREDENTIALS_TOTAL_CAP_MS}ms — falling back to no-creds`);
+      resolve(null);
+    }, READ_CREDENTIALS_TOTAL_CAP_MS)),
+  ]);
+}
+
+async function _readCredentialsImpl() {
   // 1. File — instant, cross-platform, no ACL issues
   try {
     const raw = fs.readFileSync(CLAUDE_CRED_FILE, 'utf8').trim();
@@ -2565,6 +2586,22 @@ function inferBrandDomain() {
   } catch { return null; }
 }
 
+// emitSessionPhase — broadcast a phase checkpoint to the renderer so the
+// generic "Thinking" label can be replaced with what's actually happening
+// (e.g. "Resuming session…", "Authenticating…", "Sending to Claude…").
+// Best-effort: never throws, never blocks. See preload.js onSessionPhase.
+function emitSessionPhase(phase, label) {
+  try {
+    const payload = { phase, label, ts: Date.now() };
+    if (win && !win.isDestroyed()) {
+      win.webContents.send('session-phase', payload);
+    }
+    if (typeof wsServer !== 'undefined' && wsServer && wsServer.broadcast) {
+      wsServer.broadcast('session-phase', payload);
+    }
+  } catch {}
+}
+
 async function startSession(brandOverride) {
   // Arm the init barrier. Release is called in the finally block wrapping
   // the init phase below — every early-return AND the successful query
@@ -2573,6 +2610,7 @@ async function startSession(brandOverride) {
   // startSession called while this one's still initializing will wait
   // behind us. See app/async-barrier.js.
   const initGate = _sessionInitBarrier.arm();
+  emitSessionPhase('starting', 'Starting session…');
 
   // Clear the auth-recovery flag at the top of every startSession. If we
   // were frozen for auth and we're now starting a new session, either the
@@ -2685,6 +2723,7 @@ async function startSession(brandOverride) {
   // from hitting Keychain ACL issues (Mac) or prompting for re-auth (both platforms).
   // readCredentials() checks: file → env → Keychain (Mac) → Credential Manager (Win)
   if (!sessionEnv.CLAUDE_CODE_OAUTH_TOKEN && !sessionEnv.ANTHROPIC_API_KEY) {
+    emitSessionPhase('cred-read', 'Authenticating…');
     const token = await readCredentials();
     if (token) {
       sessionEnv.CLAUDE_CODE_OAUTH_TOKEN = token;
@@ -2941,6 +2980,9 @@ async function startSession(brandOverride) {
   if (resumeSessionId) {
     queryOptions.resume = resumeSessionId;
     console.log(`[threads] resuming session ${resumeSessionId.slice(0, 8)}… for brand "${activeBrand}"`);
+    emitSessionPhase('resume', 'Resuming session…');
+  } else {
+    emitSessionPhase('query-start', 'Sending to Claude…');
   }
 
   activeQuery = query({
@@ -2961,10 +3003,36 @@ async function startSession(brandOverride) {
   // Early-return paths bailed before creating a query — nothing to run.
   if (!activeQuery) return;
 
-  // Capture user email from Claude account (for telemetry + Stripe pre-fill + domain inference)
-  try {
-    const acctInfo = await activeQuery.accountInfo();
-
+  // REGRESSION GUARD (2026-04-27, sdk-chat-hang-fix):
+  // accountInfo() is fire-and-forget telemetry — it MUST NOT block the
+  // for-await message loop. The previous synchronous `await` here ran
+  // BEFORE the loop drained the pending queue, so any slow path inside
+  // accountInfo (cold subprocess, network round-trip, server slowness)
+  // froze every queued user message. Live incident 2026-04-27: a paying
+  // user re-authed mid-session and waited 3 minutes for a response —
+  // accountInfo was the chokepoint.
+  //
+  // Outputs of accountInfo are all non-critical:
+  //   - cred-file anti-deletion guard (Mac GitHub #10039) — eventually
+  //     consistent, the next session start will recover if missed
+  //   - email capture for telemetry + Stripe pre-fill — re-runs on
+  //     every session, so missing it once is harmless
+  //   - domain inference hint to Claude — only matters on FIRST-RUN
+  //     before any brand exists; if it loses a race here, Claude just
+  //     asks the user for their website explicitly
+  //
+  // Fix: detach the work into a background task with a 5s timeout. The
+  // for-await loop below starts streaming the user's message immediately.
+  // DO NOT re-introduce `await` on this — read the comment above first.
+  const accountInfoTimeoutMs = 5000;
+  const accountInfoPromise = Promise.race([
+    activeQuery.accountInfo().catch((e) => { throw e; }),
+    new Promise((_, reject) => setTimeout(
+      () => reject(new Error(`accountInfo timeout after ${accountInfoTimeoutMs}ms`)),
+      accountInfoTimeoutMs,
+    )),
+  ]);
+  accountInfoPromise.then((acctInfo) => {
     // Anti-deletion guard: the SDK subprocess may delete ~/.claude/.credentials.json
     // on Mac (GitHub #10039). Now that accountInfo() succeeded, we KNOW the session
     // is authenticated — re-persist the token if the file is missing.
@@ -2972,10 +3040,6 @@ async function startSession(brandOverride) {
       try {
         fs.accessSync(CLAUDE_CRED_FILE, fs.constants.F_OK);
       } catch {
-        // File was deleted by the SDK — re-write it.
-        // Omit expiresAt: we don't know the real token lifetime.
-        // extractToken() treats missing expiry as valid; the SDK
-        // validates the token server-side on next launch.
         persistCredentials(JSON.stringify({
           claudeAiOauth: {
             accessToken: sessionEnv.CLAUDE_CODE_OAUTH_TOKEN,
@@ -2991,7 +3055,6 @@ async function startSession(brandOverride) {
       if (isNewEmail) {
         cfg._userEmail = acctInfo.email;
         writeConfig(cfg);
-        // If user opted in to emails, sync updated email to server
         try {
           const state = readState();
           if (state.emailOptIn && acctInfo.email) {
@@ -3013,8 +3076,6 @@ async function startSession(brandOverride) {
             syncReq.end();
           }
         } catch {}
-        // First-time user: if we can infer a brand domain and no brands exist yet,
-        // send a hint so Claude can suggest it mid-conversation
         const domain = acctInfo.email.split('@')[1]?.toLowerCase();
         if (domain && !PERSONAL_EMAIL_DOMAINS.has(domain) && !inferredDomain) {
           const brandsDir = path.join(appRoot, 'assets', 'brands');
@@ -3031,7 +3092,7 @@ async function startSession(brandOverride) {
         }
       }
     }
-  } catch (e) { console.error('[account-info]', e.message); }
+  }).catch((e) => { console.error('[account-info]', e.message); });
 
   // REGRESSION GUARD (2026-04-24, auth-error-graceful):
   // Per-session sentinel for the SDK auth-error interceptor below. Declared
@@ -3042,6 +3103,7 @@ async function startSession(brandOverride) {
   // mid-auth-failure) must not share this state.
   let _authFailureIntercepted = false;
 
+  emitSessionPhase('awaiting-response', 'Sending to Claude…');
   try {
     for await (const msg of activeQuery) {
       // Per-brand session-id capture. The SDK emits one init message per
