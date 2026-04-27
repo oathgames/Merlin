@@ -80,6 +80,14 @@ jobs:
         run: node app/auth-credentials.test.js
       - name: silent token refresh — main wiring lockdown
         run: node app/sdk-token-silent-refresh.test.js
+      # Pre-PR guard: catch test fixtures that use the real Anthropic
+      # token prefixes (sk-ant-oat01-, sk-ant-ort01-, sk-ant-api03-).
+      # Even obviously-fake values like "sk-ant-oat01-abc" are flagged by
+      # GitGuardian / TruffleHog as "Generic High Entropy Secret" the
+      # moment a PR opens. This test fails fast in CI before the scanner
+      # ever sees the diff. Live incident 2026-04-27 was the trigger.
+      - name: no real Anthropic token prefixes in test fixtures
+        run: node app/no-real-token-prefixes.test.js
       - name: ws-server listen-bind lockdown
         run: node app/ws-server.test.js
       - name: relay-client contract

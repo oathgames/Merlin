@@ -62,18 +62,24 @@ test('extractToken returns null when accessToken is missing', () => {
   assert.strictEqual(extractToken(JSON.stringify({ claudeAiOauth: { refreshToken: 'r' } })), null);
 });
 
+// NOTE: test fixtures intentionally use FAKE_* placeholders rather than
+// the real Anthropic prefixes (sk-ant-oat01-, sk-ant-ort01-). Even though
+// these strings have no entropy and are obviously test values, secret-
+// scanners (GitGuardian, TruffleHog) flag any sk-ant- prefix as a
+// generic high-entropy secret on PR submission. Using FAKE_ here keeps
+// the tests semantically equivalent while staying scanner-clean.
 test('extractToken parses the canonical {claudeAiOauth: {...}} format', () => {
   const raw = JSON.stringify({
     claudeAiOauth: {
-      accessToken: 'sk-ant-oat01-abc',
-      refreshToken: 'sk-ant-ort01-xyz',
+      accessToken: 'FAKE_ACCESS_TOKEN_canonical',
+      refreshToken: 'FAKE_REFRESH_TOKEN_canonical',
       expiresAt: 1777324912941,
       scopes: ['user:inference'],
     },
   });
   const out = extractToken(raw);
   assert.ok(out, 'should return a result object');
-  assert.strictEqual(out.token, 'sk-ant-oat01-abc');
+  assert.strictEqual(out.token, 'FAKE_ACCESS_TOKEN_canonical');
   assert.strictEqual(out.raw, raw);
   assert.strictEqual(out.expiresAt, 1777324912941);
   assert.strictEqual(out.refreshable, true);
@@ -81,12 +87,12 @@ test('extractToken parses the canonical {claudeAiOauth: {...}} format', () => {
 
 test('extractToken parses the flat {accessToken: ...} fallback format', () => {
   const raw = JSON.stringify({
-    accessToken: 'sk-ant-oat01-flat',
-    refreshToken: 'sk-ant-ort01-flat',
+    accessToken: 'FAKE_ACCESS_TOKEN_flat',
+    refreshToken: 'FAKE_REFRESH_TOKEN_flat',
     expiresAt: 9000000000000,
   });
   const out = extractToken(raw);
-  assert.strictEqual(out.token, 'sk-ant-oat01-flat');
+  assert.strictEqual(out.token, 'FAKE_ACCESS_TOKEN_flat');
   assert.strictEqual(out.refreshable, true);
 });
 

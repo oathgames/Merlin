@@ -90,6 +90,9 @@
         "!memory.md",
         "!app/preview-harness.html",
         "!app/preview-stub.js",
+        "!app/*.test.js",
+        "!app/*.test.mjs",
+        "!test${/*}",
         "!node_modules/onnxruntime-node/bin/napi-v3/darwin${/*}",
         "!node_modules/onnxruntime-node/bin/napi-v3/linux${/*}"
       ]
@@ -112,6 +115,9 @@
         "!memory.md",
         "!app/preview-harness.html",
         "!app/preview-stub.js",
+        "!app/*.test.js",
+        "!app/*.test.mjs",
+        "!test${/*}",
         "!node_modules/onnxruntime-node/bin/napi-v3/win32${/*}",
         "!node_modules/onnxruntime-node/bin/napi-v3/linux${/*}"
       ],
