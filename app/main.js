@@ -6725,7 +6725,8 @@ function splitOAuthPersistFields(vaultBrand, result) {
 }
 
 // ── Config helpers ──────────────────────────────────────────
-// Brand-specific token field names (used by migratePerBrand)
+// Brand-specific token field names (used by migratePerBrand and by the
+// vault fallback policy — see UNIVERSAL_KEYS below).
 const BRAND_KEYS = [
   'metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaConfigId',
   'tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId',
@@ -6741,7 +6742,28 @@ const BRAND_KEYS = [
   'slackBotToken', 'slackWebhookUrl',
   'applovinMaxReportKey', 'applovinAdReportKey',
   'postscriptApiKey',
+  'linkedinAccessToken', 'linkedinRefreshToken', 'linkedinAdAccountId',
 ];
+
+// Universal credentials — shared across every brand on a single user's
+// machine. The vault stores these under the "_global/" namespace and any
+// brand's config can reference them via @@VAULT:<key>@@ placeholders.
+//
+// REGRESSION GUARD (2026-04-27, cross-brand token leak): this set is the
+// SOURCE OF TRUTH for "may a vault placeholder fall back to _global?".
+// Brand-scoped keys (Meta/TikTok/Google/etc.) MUST NOT fall back — when
+// brand POG has no Meta token, vaultGet('POG', 'metaAccessToken') must
+// return null and the placeholder stays unresolved. Falling back to
+// _global is what caused Magic-panel tiles to show one brand's
+// connections under another brand's tile. Keep this list in sync with
+// `brandScopedKeys` in autocmo-core/vault.go and with GLOBAL_KEYS_SET
+// in disconnect-platform.
+const UNIVERSAL_KEYS = new Set([
+  'falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'arcadsApiKey',
+  'foreplayApiKey', 'googleApiKey',
+  'slackBotToken', 'slackWebhookUrl', 'slackChannel',
+  'discordGuildId', 'discordChannelId', 'discordWebhookUrl',
+]);
 // ALL config is plaintext JSON — the Go binary reads it via --config flag.
 // No encryption. Tokens live alongside settings in the same file.
 // This is a local desktop app on the user's device — encryption added complexity
@@ -6989,7 +7011,13 @@ function assertBrandSafe(brandName) {
 
 function readBrandConfig(brandName) {
   assertBrandSafe(brandName);
-  const cfg = readConfig();
+  // REGRESSION GUARD (2026-04-27, cross-brand cache mutation): readConfig()
+  // returns a CACHED object reference. Object.assign-ing a brand's overlay
+  // onto that reference (the previous behavior) mutated the cache itself,
+  // so a subsequent readBrandConfig('OtherBrand') call started with the
+  // first brand's tokens still merged in. Clone before mutating — every
+  // call must begin with a clean global base.
+  const cfg = { ...readConfig() };
   if (!brandName) return cfg;
 
   // Read brand-specific config (plaintext)
@@ -7028,11 +7056,30 @@ function readBrandConfig(brandName) {
   // After vault migration, brand configs have placeholders instead of
   // plaintext tokens. This transparently resolves them so callers see
   // a fully populated config object.
+  //
+  // REGRESSION GUARD (2026-04-27, cross-brand vault leak): brand-scoped
+  // keys (anything in BRAND_KEYS that is NOT in UNIVERSAL_KEYS) MUST NOT
+  // fall back to the "_global" vault namespace. If the brand has no
+  // value, the placeholder is stripped — callers see the key as
+  // unset, which correctly renders as "not connected for this brand".
+  // Universal keys (fal/elevenlabs/heygen/foreplay/slack/etc.) keep
+  // the _global fallback so a single key works across every brand.
   for (const [k, v] of Object.entries(cfg)) {
     if (typeof v === 'string' && v.startsWith('@@VAULT:') && v.endsWith('@@')) {
       const vKey = v.slice('@@VAULT:'.length, -2);
-      const real = vaultGet(brandName, vKey) || vaultGet('_global', vKey);
-      if (real) cfg[k] = real;
+      const isBrandScoped = BRAND_KEYS.includes(k) && !UNIVERSAL_KEYS.has(k);
+      let real = vaultGet(brandName, vKey);
+      if (!real && !isBrandScoped) {
+        real = vaultGet('_global', vKey);
+      }
+      if (real) {
+        cfg[k] = real;
+      } else if (isBrandScoped) {
+        // Strip unresolved brand-scoped placeholders so the Go binary
+        // never sees a literal "@@VAULT:metaAccessToken@@" string and
+        // tries to authenticate with it.
+        delete cfg[k];
+      }
     }
   }
 
@@ -7469,34 +7516,48 @@ ipcMain.handle('get-stats-cache', () => {
   } catch { return null; }
 });
 
-// Check which platforms are connected by reading the config
-// Platform connections (Meta, Shopify, Google, etc.) are per-brand — only show if the brand has them
-// Global tools (fal, ElevenLabs, HeyGen, Slack) are shared across all brands
+// Check which platforms are connected by reading the config.
+// Platform connections (Meta, Shopify, Google, etc.) are per-brand — only show if the brand has them.
+// Global tools (fal, ElevenLabs, HeyGen, Slack) are shared across all brands.
 // Extracted as standalone function so the MCP connection_status tool can call it too.
+//
+// REGRESSION GUARD (2026-04-27, cross-brand connection leak): when a
+// brand is named, we use buildStrictBrandConfig — which strips every
+// BRAND_KEYS value out of the global base BEFORE overlaying the brand's
+// own credentials. The previous code called readBrandConfig, which
+// returned global ⊕ brand merged; if the global config had Ivory Ella's
+// metaAccessToken (from the legacy single-brand era or a stale
+// migration), POG's readBrandConfig saw it too and the Magic panel
+// rendered POG as connected to Meta. Strict isolation prevents that.
+// Brand-scoped checks below ONLY read brandCfg; they never fall back
+// to globalCfg for credentials. Universal tools (fal/elevenlabs/etc.)
+// continue to read from globalCfg because those are shared by design.
 function getConnections(brandName) {
   try {
     const globalCfg = readConfig();
     let brandCfg = {};
     if (brandName) {
-      // Use readBrandConfig which resolves vault placeholders
-      brandCfg = readBrandConfig(brandName);
+      // Strict per-brand creds: BRAND_KEYS stripped from global, brand
+      // overlay applied, no _global vault fallback for brand-scoped keys.
+      brandCfg = buildStrictBrandConfig(brandName);
     }
     const connected = [];
     const tokenAge = { ...(globalCfg._tokenTimestamps || {}), ...(brandCfg._tokenTimestamps || {}) };
     const now = Date.now();
     const EXPIRE_MS = 55 * 24 * 60 * 60 * 1000;
+    // Brand-scoped credential check. When brandName is set, we ONLY look
+    // at brandCfg — never fall back to globalCfg for the credential, and
+    // never fall back to the _global vault namespace either. Without a
+    // brand, we look at globalCfg (legacy single-brand setups).
     function checkBrand(key, platform) {
-      const token = brandCfg[key] || (!brandName ? globalCfg[key] : null);
-      if (!token || (typeof token === 'string' && token.startsWith('@@VAULT:'))) {
-        // Also check vault directly — placeholder means token IS stored
-        if (typeof token === 'string' && token.startsWith('@@VAULT:')) {
-          const vaultVal = vaultGet(brandName || '_global', key);
-          if (vaultVal) {
-            connected.push({ platform, status: 'connected' });
-            return;
-          }
-        }
-        return;
+      const token = brandName ? brandCfg[key] : globalCfg[key];
+      if (!token) return;
+      // Unresolved placeholder means the brand DOES have a vault entry
+      // pointing to a real token — buildStrictBrandConfig already
+      // resolves these via readBrandOnlyBrandCreds, but defense in depth.
+      if (typeof token === 'string' && token.startsWith('@@VAULT:')) {
+        const vaultVal = vaultGet(brandName || '_global', key);
+        if (!vaultVal) return;
       }
       const ts = tokenAge[platform];
       if (ts && (now - ts) > EXPIRE_MS) {
@@ -7512,16 +7573,22 @@ function getConnections(brandName) {
     checkBrand('etsyAccessToken', 'etsy');
     checkBrand('redditAccessToken', 'reddit');
     checkBrand('stripeAccessToken', 'stripe');
-    // Shopify needs both token + store
-    const shopToken = brandCfg.shopifyAccessToken || (!brandName ? globalCfg.shopifyAccessToken : null);
-    const shopStore = brandCfg.shopifyStore || (!brandName ? globalCfg.shopifyStore : null);
-    if ((shopToken && shopStore) || (typeof shopToken === 'string' && shopToken.startsWith('@@VAULT:'))) {
+    checkBrand('linkedinAccessToken', 'linkedin');
+    checkBrand('pinterestAccessToken', 'pinterest');
+    // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
+    const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
+    const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
+    if (shopToken && shopStore) {
       const hasVaultToken = typeof shopToken === 'string' && shopToken.startsWith('@@VAULT:')
         ? !!vaultGet(brandName || '_global', 'shopifyAccessToken')
         : !!shopToken;
-      if (hasVaultToken && shopStore) connected.push({ platform: 'shopify', status: 'connected' });
+      if (hasVaultToken) connected.push({ platform: 'shopify', status: 'connected' });
     }
-    if (brandCfg.klaviyoApiKey || brandCfg.klaviyoAccessToken || (!brandName && (globalCfg.klaviyoApiKey || globalCfg.klaviyoAccessToken))) {
+    // Klaviyo — brand-scoped.
+    const klaviyoKey = brandName
+      ? (brandCfg.klaviyoApiKey || brandCfg.klaviyoAccessToken)
+      : (globalCfg.klaviyoApiKey || globalCfg.klaviyoAccessToken);
+    if (klaviyoKey) {
       connected.push({ platform: 'klaviyo', status: 'connected' });
     }
     if (globalCfg.falApiKey || vaultGet('_global', 'falApiKey')) connected.push({ platform: 'fal', status: 'connected' });

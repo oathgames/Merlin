@@ -4338,7 +4338,16 @@ function isStubbedTile(tile) {
 
 function loadConnections() {
   const brand = getActiveBrandSelection();
+  // REGRESSION GUARD (2026-04-27, brand-switch race): rapidly switching
+  // brand A → B → C could let the (slower) brand-A response resolve last
+  // and paint over brand C's tiles with brand A's connection state.
+  // Mirrors the archive-grid race guard pattern. Every call bumps a
+  // sequence token; async resolves bail if the token has moved on or
+  // if the brand selector has changed by the time the IPC returns.
+  const mySeq = (window._connLoadSeq = (window._connLoadSeq || 0) + 1);
   merlin.getConnectedPlatforms(brand).then((connected) => {
+    if (window._connLoadSeq !== mySeq) return;
+    if (getActiveBrandSelection() !== brand) return;
     const allTiles = document.querySelectorAll('#universal-tiles .magic-tile, #brand-tiles .magic-tile');
 
     // Reset every tile to its default state first. Stubbed platforms get
