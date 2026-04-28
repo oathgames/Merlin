@@ -1518,6 +1518,38 @@ body.platform-mac .titlebar-drag{
   display:none;
 }
 
+/* ── Bulk-upload drag-drop overlay ────────────────────────── */
+/* The overlay covers the magic panel while a drag is in progress so the
+   drop target is visually obvious. Pointer-events stay on the overlay
+   while it's `.active`; it's display:none otherwise so the renderer's
+   click/hover behavior on tiles is unaffected. */
+.bulk-upload-overlay{
+  position:fixed; inset:0; z-index:600;
+  background:rgba(8, 6, 22, .82);
+  display:none;
+  align-items:center; justify-content:center;
+  pointer-events:none;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.bulk-upload-overlay.active{
+  display:flex;
+  pointer-events:auto;
+}
+.bulk-upload-card{
+  background:var(--surface);
+  border:2px dashed var(--accent-border);
+  border-radius:14px;
+  padding:32px 48px;
+  text-align:center;
+  color:var(--text);
+  box-shadow:0 12px 40px rgba(0,0,0,.5);
+  max-width:80%;
+}
+.bulk-upload-icon{color:var(--accent);margin-bottom:12px;display:flex;justify-content:center}
+.bulk-upload-title{font-size:18px;font-weight:600;margin-bottom:6px}
+.bulk-upload-sub{font-size:13px;color:var(--text-dim)}
+
 /* ── Share Merlin (Referrals) ────────────────────────────── */
 .referral-card{display:flex;flex-direction:column;gap:6px}
 .referral-sublabel{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--text-dim);opacity:.75;margin-bottom:-2px}

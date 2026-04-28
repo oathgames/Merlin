@@ -4621,6 +4621,16 @@ document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
   if (isStubbedTile(tile)) return;
+  // Bulk-upload tile is data-action driven (no data-platform). Hand it off
+  // to the file picker; everything else flows through the platform path
+  // below. Branching here keeps OAUTH_PLATFORMS / API_KEY_PLATFORMS
+  // pure — adding the upload tile to those sets would have leaked it into
+  // the connection-state UI (green dots, expired badges, etc.).
+  if (tile.dataset.action === 'bulk-upload') {
+    e.preventDefault();
+    triggerBulkUploadPicker();
+    return;
+  }
   const platform = tile.dataset.platform;
   const activeBrand = getActiveBrandSelection();
   const displayName = platformDisplayName(platform);
@@ -4703,6 +4713,235 @@ document.addEventListener('click', async (e) => {
     });
     return;
   }
+});
+
+// ── Bulk asset upload (drag-drop + multi-select) ───────────────────
+//
+// The user can:
+//   - Click the "Bulk upload" tile → multi-file OS picker.
+//   - Right-click the tile → folder picker (webkitdirectory).
+//   - Drag-drop files anywhere over the magic panel → drop overlay → upload.
+//
+// Files go to assets/brands/<active>/inbox/ via the bulk-upload-assets IPC.
+// The Go matcher decides which auto-move into products/<slug>/references/
+// vs which surface as approval cards. Errors pass through friendlyError().
+//
+// We use a dragenter/dragleave counter (rather than a single boolean) because
+// the drop overlay's child elements fire leave events as the cursor crosses
+// each one — without the counter, the overlay flickers on every transition.
+
+const BULK_UPLOAD_MAX_BYTES_PER_FILE = 500 * 1024 * 1024;
+
+let _bulkDragCounter = 0;
+
+function getBulkUploadOverlay() {
+  return document.getElementById('bulk-upload-overlay');
+}
+
+function showBulkUploadOverlay() {
+  const el = getBulkUploadOverlay();
+  if (el) el.classList.add('active');
+}
+
+function hideBulkUploadOverlay() {
+  const el = getBulkUploadOverlay();
+  if (el) el.classList.remove('active');
+  _bulkDragCounter = 0;
+}
+
+function triggerBulkUploadPicker() {
+  // Default tile click → multi-file picker. The folder picker is bound to
+  // the right-click contextmenu handler below.
+  const input = document.getElementById('bulk-upload-input');
+  if (!input) return;
+  // Clear value so re-picking the same files re-fires `change` (browsers
+  // dedupe identical selections by default).
+  input.value = '';
+  input.click();
+}
+
+function triggerBulkUploadFolderPicker() {
+  const input = document.getElementById('bulk-upload-folder-input');
+  if (!input) return;
+  input.value = '';
+  input.click();
+}
+
+// extractFileList — convert a DataTransferItemList / FileList into a uniform
+// [{ name, path, size }] array. Electron's renderer extends File with `path`
+// (the real filesystem path); we rely on that. Falling back to `webkitRelativePath`
+// keeps the folder-picker path semantics intact.
+function extractFileList(filesArray) {
+  const out = [];
+  for (const f of filesArray) {
+    if (!f) continue;
+    const filepath = f.path || f.webkitRelativePath || '';
+    if (!filepath) continue;
+    out.push({ name: f.name || '', path: filepath, size: typeof f.size === 'number' ? f.size : 0 });
+  }
+  return out;
+}
+
+async function performBulkUpload(rawFiles) {
+  const brand = getActiveBrandSelection();
+  if (!brand) {
+    showModal({
+      title: 'Pick a brand first',
+      body: 'Bulk upload drops files into the active brand\'s inbox. Switch to (or create) a brand and try again.',
+      confirmLabel: 'OK',
+      onConfirm: () => {},
+    });
+    return;
+  }
+  const files = extractFileList(rawFiles);
+  if (files.length === 0) return;
+  // Cap per-file size on the renderer for fast feedback. main.js re-checks.
+  const tooBig = files.filter((f) => f.size > BULK_UPLOAD_MAX_BYTES_PER_FILE);
+  const usable = files.filter((f) => f.size <= BULK_UPLOAD_MAX_BYTES_PER_FILE);
+  if (tooBig.length > 0 && usable.length === 0) {
+    showModalError(`File too large (max ${(BULK_UPLOAD_MAX_BYTES_PER_FILE / (1024 * 1024)).toFixed(0)} MB).`);
+    return;
+  }
+  let result;
+  try {
+    result = await merlin.bulkUploadAssets({ brand, files: usable });
+  } catch (err) {
+    showModal({
+      title: 'Upload failed',
+      body: friendlyError(err && err.message ? err.message : String(err), 'bulk upload'),
+      confirmLabel: 'OK',
+      onConfirm: () => {},
+    });
+    return;
+  }
+  if (result && result.error) {
+    showModal({
+      title: 'Upload failed',
+      body: friendlyError(result.error, 'bulk upload'),
+      confirmLabel: 'OK',
+      onConfirm: () => {},
+    });
+    return;
+  }
+  renderBulkUploadSummary(result, tooBig.length);
+}
+
+// renderBulkUploadSummary — non-blocking inline summary so a user dropping 12
+// photos sees "Moved 7 of 12 to product folders, 3 in inbox awaiting review,
+// 2 duplicates skipped" without a modal interrupting their workflow.
+function renderBulkUploadSummary(result, sizeRejectCount) {
+  const added = (result.added || []).length;
+  const skipped = (result.skippedDup || []).length;
+  const auto = (result.autoAssociated || []).length;
+  const review = (result.needsReview || []).length;
+  const rejected = (result.rejected || []).length + (sizeRejectCount || 0);
+  const failedMoves = (result.failedMoves || []).length;
+  const parts = [];
+  if (auto > 0) {
+    // Build a per-product breakdown for the chat — "Moved 4 to cloud-zip-up-hoodie, 3 to butter-yellow-mockneck"
+    const byProduct = {};
+    for (const m of result.autoAssociated) {
+      byProduct[m.product] = (byProduct[m.product] || 0) + 1;
+    }
+    const fragments = Object.entries(byProduct).map(([p, n]) => `${n} to ${p}`);
+    parts.push(`Moved ${auto} of ${added + skipped + rejected} files (${fragments.join(', ')})`);
+  } else if (added > 0) {
+    parts.push(`${added} file${added === 1 ? '' : 's'} added to inbox`);
+  }
+  if (review > 0) parts.push(`${review} awaiting review`);
+  if (skipped > 0) parts.push(`${skipped} duplicate${skipped === 1 ? '' : 's'} skipped`);
+  if (rejected > 0) parts.push(`${rejected} rejected`);
+  if (failedMoves > 0) parts.push(`${failedMoves} move failure${failedMoves === 1 ? '' : 's'}`);
+  if (result.warning) parts.push(result.warning);
+  const msg = parts.length > 0 ? parts.join(' · ') : 'Nothing to upload';
+
+  // Surface as approval cards for the needsReview list. Each card asks the
+  // user "is this the right product for this file?" — same UX as every
+  // other Merlin approval: short, one tap to accept, one tap to skip.
+  // The renderer's existing toast/inline-message paths vary by view; using
+  // a non-blocking modal-less notification keeps the tile click cheap.
+  if (typeof showInlineToast === 'function') {
+    showInlineToast(msg);
+  } else {
+    // Fallback — if there's no toast helper available in this build, use the
+    // existing modal path to surface the result. Confirm-only, no input.
+    showModal({
+      title: 'Bulk upload',
+      body: msg,
+      confirmLabel: 'OK',
+      onConfirm: () => {},
+    });
+  }
+  // Surface review items as approval cards if the helper exists.
+  if (review > 0 && typeof appendApprovalCard === 'function') {
+    for (const item of result.needsReview.slice(0, 5)) {
+      const top = item.product || item.matched || 'unsure';
+      const second = item.secondSlug ? ` or ${item.secondSlug}` : '';
+      appendApprovalCard({
+        title: `Where does ${item.file} go?`,
+        body: `Closest match: ${top}${second} (${(Number(item.score || 0) * 100).toFixed(0)}% confidence). Leave it in inbox/ for now?`,
+        approveLabel: 'Leave in inbox',
+        denyLabel: 'Pick a product',
+        onApprove: () => {},
+        onDeny: () => {},
+      });
+    }
+  }
+}
+
+// File-input change handlers (multi-select & folder).
+document.addEventListener('change', (e) => {
+  const t = e.target;
+  if (!t || !t.id) return;
+  if (t.id !== 'bulk-upload-input' && t.id !== 'bulk-upload-folder-input') return;
+  const files = Array.from(t.files || []);
+  if (files.length === 0) return;
+  performBulkUpload(files);
+});
+
+// Right-click on the tile → folder picker. Mirrors the AppLovin/Shopify
+// "Use my API key" right-click pattern but routes to a different action.
+document.addEventListener('contextmenu', (e) => {
+  const tile = e.target.closest('.magic-tile');
+  if (!tile) return;
+  if (tile.dataset.action !== 'bulk-upload') return;
+  e.preventDefault();
+  // Close any other tile context menu that's open.
+  if (typeof closeTileContextMenu === 'function') closeTileContextMenu();
+  triggerBulkUploadFolderPicker();
+});
+
+// Drag-drop overlay. We listen on document so a drag from anywhere inside
+// the window triggers the overlay. Counter pattern handles child-leave noise.
+document.addEventListener('dragenter', (e) => {
+  if (!e.dataTransfer) return;
+  // Only react to actual file drags — text-drag / link-drag stays inert.
+  const types = Array.from(e.dataTransfer.types || []);
+  if (!types.includes('Files')) return;
+  _bulkDragCounter += 1;
+  if (_bulkDragCounter === 1) showBulkUploadOverlay();
+});
+document.addEventListener('dragleave', (e) => {
+  if (!e.dataTransfer) return;
+  _bulkDragCounter = Math.max(0, _bulkDragCounter - 1);
+  if (_bulkDragCounter === 0) hideBulkUploadOverlay();
+});
+document.addEventListener('dragover', (e) => {
+  if (!e.dataTransfer) return;
+  const types = Array.from(e.dataTransfer.types || []);
+  if (!types.includes('Files')) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'copy';
+});
+document.addEventListener('drop', (e) => {
+  if (!e.dataTransfer) return;
+  const types = Array.from(e.dataTransfer.types || []);
+  if (!types.includes('Files')) return;
+  e.preventDefault();
+  hideBulkUploadOverlay();
+  const files = Array.from(e.dataTransfer.files || []);
+  if (files.length === 0) return;
+  performBulkUpload(files);
 });
 
 // Manual API key modal for Meta — escape hatch for users with a long-lived

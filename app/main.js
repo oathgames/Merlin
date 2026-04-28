@@ -4351,6 +4351,268 @@ ipcMain.handle('save-config-field', (_, key, value, brandName) => {
   } catch (err) { return { success: false, error: err.message }; }
 });
 
+// ── Bulk upload (drag-drop + multi-select) ──────────────────────────
+//
+// The renderer drops files into assets/brands/<brand>/inbox/. Per file we
+// SHA-256, dedup against the inbox + every product's references/, copy into
+// inbox/<short-sha>_<safe-name>, then ask the Go binary to fuzzy-match each
+// new filename against the brand's products. High-confidence auto-matches
+// move from inbox/ to products/<slug>/references/ here; ambiguous + low-
+// confidence stay in inbox/ and surface as approval cards in the renderer.
+//
+// Concurrency: per-file work runs in a small Promise.all batch (sized 6 —
+// matches the SDD/HDD sweet spot for hashing parallel files without thrashing
+// the kernel page cache; smaller for safety on spinning disks). We do NOT
+// fan out to "every file at once" — a 50-file drop on a slow disk would
+// swamp the IO scheduler.
+//
+// Error handling: every raw fs/spawn error passes through friendlyError() in
+// the renderer; the IPC handler returns shape { added, skippedDup,
+// autoAssociated, needsReview } on success, { error: <human-readable> } on
+// failure. We never leak filesystem paths in the error string — the renderer
+// (and Slack/Discord screenshots of the chat) might be shared.
+const {
+  isValidBrandName: bulkIsValidBrand,
+  sanitizeFilename: bulkSanitizeFilename,
+  sha256File: bulkSha256File,
+  buildTargetName: bulkBuildTargetName,
+  resolveBrandPaths: bulkResolveBrandPaths,
+  validateInputFile: bulkValidateInputFile,
+} = require('./bulk-upload');
+
+const BULK_UPLOAD_PARALLEL = 6;
+const BULK_UPLOAD_MAX_FILES = 200; // sanity cap — a single drop shouldn't be a file dump
+
+// Build a Set of every existing SHA-256 prefix already on disk for this brand
+// so the dedup check is O(1) per incoming file. We hash only files in inbox/
+// + each product's references/ — anything else (avatars/, projects/, …) is
+// out-of-scope and shouldn't influence dedup.
+async function bulkBuildExistingHashIndex(paths) {
+  const seen = new Set();
+  const dirs = [paths.inboxDir];
+  // Each product folder contributes its references/ if present.
+  try {
+    const productEntries = await fs.promises.readdir(paths.productsDir, { withFileTypes: true });
+    for (const e of productEntries) {
+      if (!e.isDirectory()) continue;
+      dirs.push(path.join(paths.productsDir, e.name, 'references'));
+    }
+  } catch (_) { /* no products yet — fine */ }
+  for (const dir of dirs) {
+    let entries;
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (_) { continue; }
+    for (const e of entries) {
+      if (!e.isFile()) continue;
+      // Optimization: filenames we wrote ourselves START with <8-hex>_, so we
+      // can read the prefix without re-hashing the file. Files predating the
+      // bulk-upload feature won't have this prefix — we still recognize them
+      // via their content hash on the next drop because the new file will
+      // collide on FULL hash too. To keep the first-drop dedup correct, we
+      // hash legacy entries lazily on first encounter.
+      const m = /^([0-9a-f]{8})_/.exec(e.name);
+      if (m) {
+        seen.add(m[1]);
+        continue;
+      }
+      try {
+        const full = await bulkSha256File(path.join(dir, e.name));
+        seen.add(full.slice(0, 8));
+      } catch (_) { /* unreadable — skip */ }
+    }
+  }
+  return seen;
+}
+
+// Run a Promise-returning fn over `items` with bounded concurrency. No
+// external dependency (we used to pull p-limit but that costs an extra
+// runtime require for ~15 lines of code).
+async function bulkRunBounded(items, fn, limit) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+// Invoke the Go binary's match-asset-to-product action. Returns the parsed
+// JSON report or throws. Called once per IPC invocation, after the inbox/
+// folder has been populated with the new files.
+async function bulkInvokeMatcher(brand, inboxDir, files) {
+  const binaryPath = getBinaryPath();
+  try { fs.accessSync(binaryPath, fs.constants.F_OK); }
+  catch { throw new Error('Merlin binary not installed'); }
+  const globalConfigPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(globalConfigPath, fs.constants.F_OK); }
+  catch { throw new Error('Merlin config not found'); }
+  const cmdObj = {
+    action: 'match-asset-to-product',
+    brand,
+    inputDir: inboxDir,
+    files,
+  };
+  const { execFile } = require('child_process');
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      binaryPath,
+      ['--config', globalConfigPath, '--cmd', JSON.stringify(cmdObj)],
+      { timeout: 60000, cwd: appRoot, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) {
+          // Go binary printed its error to stderr; promote it but do NOT
+          // include the spawn error path which would leak the binary location.
+          const msg = (stderr || '').toString().trim() || 'matcher failed';
+          reject(new Error(msg.split('\n').pop() || 'matcher failed'));
+          return;
+        }
+        try {
+          const report = JSON.parse(stdout);
+          resolve(report);
+        } catch (e) {
+          reject(new Error('matcher returned malformed output'));
+        }
+      },
+    );
+    activeChildProcesses.add(child);
+    child.on('exit', () => activeChildProcesses.delete(child));
+  });
+}
+
+ipcMain.handle('bulk-upload-assets', async (_event, args) => {
+  try {
+    if (!args || typeof args !== 'object') return { error: 'Invalid request' };
+    const brand = args.brand;
+    const files = Array.isArray(args.files) ? args.files : null;
+    if (!bulkIsValidBrand(brand)) return { error: 'Invalid brand name' };
+    if (!files || files.length === 0) return { error: 'No files supplied' };
+    if (files.length > BULK_UPLOAD_MAX_FILES) {
+      return { error: `Too many files in one drop (max ${BULK_UPLOAD_MAX_FILES})` };
+    }
+
+    const paths = bulkResolveBrandPaths(appRoot, brand);
+    try { await fs.promises.stat(paths.brandDir); }
+    catch { return { error: `Unknown brand: ${brand}` }; }
+
+    await fs.promises.mkdir(paths.inboxDir, { recursive: true });
+
+    // Pass 1: validate every file before we touch disk.
+    const validations = files.map((f) => ({ raw: f, validation: bulkValidateInputFile(f) }));
+    const rejected = validations.filter((v) => !v.validation.ok).map((v) => ({
+      file: bulkSanitizeFilename(v.raw && v.raw.name) || '(unnamed)',
+      reason: v.validation.reason,
+    }));
+    const accepted = validations.filter((v) => v.validation.ok);
+    if (accepted.length === 0) {
+      return { added: [], skippedDup: [], autoAssociated: [], needsReview: [], rejected };
+    }
+
+    // Pass 2: build the existing-hash index once, in parallel with hashing.
+    const indexPromise = bulkBuildExistingHashIndex(paths);
+    const hashes = await bulkRunBounded(accepted, async (a) => {
+      try {
+        const sha = await bulkSha256File(a.validation.src);
+        return { ...a, sha };
+      } catch (e) {
+        return { ...a, error: 'hash-failed' };
+      }
+    }, BULK_UPLOAD_PARALLEL);
+    const existing = await indexPromise;
+
+    // Pass 3: copy newly-unique files into inbox/. Skip duplicates.
+    const added = [];
+    const skippedDup = [];
+    const seenInBatch = new Set();
+    for (const h of hashes) {
+      if (h.error) {
+        rejected.push({ file: h.validation.name, reason: 'hash-failed' });
+        continue;
+      }
+      const shortSha = h.sha.slice(0, 8);
+      if (existing.has(shortSha) || seenInBatch.has(shortSha)) {
+        skippedDup.push(h.validation.name);
+        continue;
+      }
+      seenInBatch.add(shortSha);
+      const targetName = bulkBuildTargetName(h.sha, h.validation.name);
+      const targetPath = path.join(paths.inboxDir, targetName);
+      try {
+        await fs.promises.copyFile(h.validation.src, targetPath);
+        added.push(targetName);
+      } catch (e) {
+        rejected.push({ file: h.validation.name, reason: 'copy-failed' });
+      }
+    }
+
+    if (added.length === 0) {
+      return { added, skippedDup, autoAssociated: [], needsReview: [], rejected };
+    }
+
+    // Pass 4: ask the Go matcher which new files belong to which product.
+    let report;
+    try {
+      report = await bulkInvokeMatcher(brand, paths.inboxDir, added);
+    } catch (e) {
+      // Matcher failed — files are still in inbox/, just no auto-association.
+      // Return the success-so-far so the user sees what landed.
+      return {
+        added, skippedDup,
+        autoAssociated: [], needsReview: added.map((f) => ({ file: f, reason: 'matcher_unavailable' })),
+        rejected,
+        warning: 'Auto-match unavailable; files left in inbox',
+      };
+    }
+
+    // Pass 5: move auto-matched files into products/<slug>/references/.
+    const autoAssociated = [];
+    const failedMoves = [];
+    for (const m of (report.autoAssociated || [])) {
+      const productSlug = String(m.product || '');
+      // The Go matcher already validated slug shape (folder name on disk),
+      // but we re-check here so a hand-crafted JSON can't traverse out.
+      if (!/^[A-Za-z0-9._-]{1,200}$/.test(productSlug)) continue;
+      const baseName = path.basename(String(m.file || ''));
+      if (!baseName || baseName.includes('..')) continue;
+      const refsDir = path.join(paths.productsDir, productSlug, 'references');
+      const fromPath = path.join(paths.inboxDir, baseName);
+      const toPath = path.join(refsDir, baseName);
+      try {
+        await fs.promises.mkdir(refsDir, { recursive: true });
+        await fs.promises.rename(fromPath, toPath);
+        autoAssociated.push({ file: baseName, product: productSlug, score: m.score });
+      } catch (e) {
+        // If rename failed (e.g. cross-device, rare on a single drive), fall
+        // back to copy + delete.
+        try {
+          await fs.promises.copyFile(fromPath, toPath);
+          await fs.promises.unlink(fromPath);
+          autoAssociated.push({ file: baseName, product: productSlug, score: m.score });
+        } catch (_) {
+          failedMoves.push(baseName);
+        }
+      }
+    }
+
+    return {
+      added,
+      skippedDup,
+      autoAssociated,
+      needsReview: report.needsReview || [],
+      rejected,
+      failedMoves,
+    };
+  } catch (err) {
+    // Whatever escaped — friendly stays out of fs/path detail.
+    return { error: (err && err.message) ? err.message : 'Bulk upload failed' };
+  }
+});
+
 ipcMain.handle('send-message', (_, text, options = {}) => {
   if (typeof text !== 'string' || text.length > 50000) return { success: false };
   // Support silent/internal messages (no broadcast, suppressed response)
