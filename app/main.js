@@ -2833,6 +2833,13 @@ async function startSession(brandOverride) {
       // append to the new brand's thread (see appendBubble call sites that
       // read activeBrand from state). The renderer refreshes its dropdown +
       // peripherals via the brand-activated event without repainting chat.
+      // bulkUploadAssets — exposes the same pipeline the renderer's drag-drop /
+      // paste flow uses, so the new MCP `bulk_upload` tool (v1.19.2) can route
+      // 5+ files into product references/ on demand. Reuses runBulkUploadAssets
+      // (declared later in this file but hoisted as a function declaration).
+      // Single source of truth for SHA dedup, validation, matcher dispatch,
+      // and rename — see the long comment block on runBulkUploadAssets.
+      bulkUploadAssets: (args) => runBulkUploadAssets(args),
       activateBrand: (brand) => {
         if (typeof brand !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(brand)) {
           return { ok: false, code: 'VALIDATION', message: 'invalid brand format' };
@@ -4491,7 +4498,13 @@ async function bulkInvokeMatcher(brand, inboxDir, files) {
   });
 }
 
-ipcMain.handle('bulk-upload-assets', async (_event, args) => {
+// runBulkUploadAssets — pure async function that materializes a bulk-upload
+// pipeline pass for a brand. Extracted from the ipcMain.handle('bulk-upload-
+// assets') body so the new `bulk_upload` MCP tool (v1.19.2) can call the
+// SAME code path the renderer's IPC uses. Single-source-of-truth for file
+// validation + dedup + matcher dispatch + rename. Caller passes the same
+// arg shape both flows produce: { brand, files: [{ name, path, size }] }.
+async function runBulkUploadAssets(args) {
   try {
     if (!args || typeof args !== 'object') return { error: 'Invalid request' };
     const brand = args.brand;
@@ -4622,6 +4635,92 @@ ipcMain.handle('bulk-upload-assets', async (_event, args) => {
   } catch (err) {
     // Whatever escaped — friendly stays out of fs/path detail.
     return { error: (err && err.message) ? err.message : 'Bulk upload failed' };
+  }
+}
+
+// IPC bridge for the renderer drag-drop / paste flow (kept for compatibility
+// with anything still calling merlin.bulkUploadAssets). The MCP `bulk_upload`
+// tool reaches runBulkUploadAssets through the mcpCtx wiring (see
+// `bulkUploadAssets` field on the mcpCtx object earlier in this file).
+ipcMain.handle('bulk-upload-assets', async (_event, args) => runBulkUploadAssets(args));
+
+// materialize-pasted-blob: write a clipboard-pasted image to the active
+// brand's inbox/ as a SHA-prefixed file. Used by the renderer's window-level
+// paste handler (v1.19.2) to convert in-memory clipboard bytes into a real
+// file path that can ride along as an attachment chip on the user's next
+// message. Path: assets/brands/<brand>/inbox/<16hex-sha>_pasted_<unix>.<ext>.
+//
+// Three layers of validation, mirroring the bulk-upload handler:
+//   1. Brand validated via bulkIsValidBrand (regex + on-disk existence).
+//   2. MIME allowlist (image/png|jpeg|webp). Other MIMEs hard-rejected.
+//   3. Size cap: 25 MB after decode. Clipboard is RAM — anything larger is
+//      almost certainly a screenshot of a giant render or a paste accident.
+//
+// The on-disk filename uses ONLY the SHA prefix + literal `_pasted_<ts>.<ext>`
+// — no user-controlled bytes flow into the filename, eliminating injection.
+const MATERIALIZE_PASTED_BLOB_MAX_BYTES = 25 * 1024 * 1024;
+const MATERIALIZE_MIME_ALLOWLIST = {
+  'image/png':  'png',
+  'image/jpeg': 'jpg',
+  'image/jpg':  'jpg',  // some clipboards report this non-canonical MIME; accept it
+  'image/webp': 'webp',
+};
+ipcMain.handle('materialize-pasted-blob', async (_event, args) => {
+  try {
+    if (!args || typeof args !== 'object') return { error: 'Invalid request' };
+    const brand = args.brand;
+    const mimeType = typeof args.mimeType === 'string' ? args.mimeType.toLowerCase() : '';
+    const base64Data = args.base64Data;
+    if (!bulkIsValidBrand(brand)) return { error: 'Invalid brand name' };
+    const ext = MATERIALIZE_MIME_ALLOWLIST[mimeType];
+    if (!ext) return { error: 'Pasted image format not supported' };
+    if (typeof base64Data !== 'string' || base64Data.length === 0) {
+      return { error: 'Empty paste payload' };
+    }
+    // Base64 expands ~4:3, so a 33 MB-ish base64 string decodes to ~25 MB.
+    // Guard against the absurd before we even allocate the buffer.
+    if (base64Data.length > 40 * 1024 * 1024) {
+      return { error: `Pasted image is too large (max ${(MATERIALIZE_PASTED_BLOB_MAX_BYTES / (1024 * 1024)).toFixed(0)} MB)` };
+    }
+    let buf;
+    try { buf = Buffer.from(base64Data, 'base64'); }
+    catch { return { error: 'Could not decode pasted image' }; }
+    if (buf.length === 0) return { error: 'Empty paste payload' };
+    if (buf.length > MATERIALIZE_PASTED_BLOB_MAX_BYTES) {
+      return { error: `Pasted image is too large (max ${(MATERIALIZE_PASTED_BLOB_MAX_BYTES / (1024 * 1024)).toFixed(0)} MB)` };
+    }
+
+    const paths = bulkResolveBrandPaths(appRoot, brand);
+    try { await fs.promises.stat(paths.brandDir); }
+    catch { return { error: `Unknown brand: ${brand}` }; }
+    await fs.promises.mkdir(paths.inboxDir, { recursive: true });
+
+    // Filename construction is locked-down: no user input flows into the
+    // basename. SHA prefix uses the same constants the bulk-upload handler
+    // uses (REGRESSION GUARD 2026-04-28, Gitar PR #139 — keeping the prefix
+    // length consistent across writers means the inbox dedup index treats
+    // pasted blobs and dragged files the same way).
+    const sha = require('crypto').createHash('sha256').update(buf).digest('hex');
+    const shaPrefix = sha.slice(0, BULK_SHA_PREFIX_LEN);
+    const ts = Date.now();
+    const targetName = `${shaPrefix}_pasted_${ts}.${ext}`;
+    const targetPath = path.join(paths.inboxDir, targetName);
+    // Defense-in-depth: the constructed targetPath MUST live under inboxDir.
+    // Nothing in the construction can escape (constants only), but a future
+    // refactor that splices user data in would slip past — so re-check.
+    if (!targetPath.startsWith(paths.inboxDir + path.sep) && targetPath !== paths.inboxDir) {
+      return { error: 'Path validation failed' };
+    }
+    await fs.promises.writeFile(targetPath, buf);
+
+    return {
+      ok: true,
+      path: targetPath,
+      name: `pasted_${ts}.${ext}`,
+      size: buf.length,
+    };
+  } catch (err) {
+    return { error: (err && err.message) ? err.message : 'Paste failed' };
   }
 });
 

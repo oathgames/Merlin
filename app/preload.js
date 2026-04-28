@@ -281,6 +281,15 @@ contextBridge.exposeInMainWorld('merlin', {
   // that future additions (e.g. dryRun, productHint) flow through without
   // touching the bridge.
   bulkUploadAssets: (args) => ipcRenderer.invoke('bulk-upload-assets', assertObj(args)),
+  // Materialize a clipboard image blob to disk under
+  // assets/brands/<brand>/inbox/<sha-prefix>_pasted_<unix-ts>.<ext>.
+  // Args: { brand: <slug>, mimeType: <image/png|image/jpeg|image/webp>,
+  //         base64Data: <raw base64 string, NO data:URL prefix> }.
+  // Returns: { ok, path, name, size } | { error }.
+  // The base64 length cap (40 MB worth — 30 MB binary after decode) gives a
+  // generous ceiling; the main-process handler clamps to PASTED_BLOB_MAX_BYTES
+  // (25 MB after decode) for the user-visible cap.
+  materializePastedBlob: (args) => ipcRenderer.invoke('materialize-pasted-blob', assertObj(args)),
   sendMessage: (text, options) => ipcRenderer.invoke('send-message', assertStr(text, MAX_TEXT), assertObj(options)),
   sendSilent: (text) => ipcRenderer.invoke('send-message', assertStr(text, MAX_TEXT), { silent: true }),
   createSpell: (taskId, cron, desc, prompt, brand) => ipcRenderer.invoke('create-spell', assertStr(taskId, 100), assertCron(cron), assertStr(desc, 500), assertStr(prompt, MAX_STR), assertBrand(brand)),
