@@ -16,6 +16,8 @@ Before writing ANY image prompt:
 2. **Describe ONLY what you see** — not what `brand.md` says, not what you imagine.
 3. The app validates your description against reference images and rejects mismatches.
 
+**Brand inbox folder.** Brands have an `assets/brands/<brand>/inbox/` folder for un-associated bulk-uploaded assets — files the user dropped in the desktop app that didn't fuzzy-match a product confidently enough to auto-move into a `products/<slug>/references/` folder. When the user references *"photos I just uploaded"*, *"recent images"*, *"the videos in my inbox"*, or asks why a creative isn't using files they just added, list `assets/brands/<brand>/inbox/` first, then ask which product each file belongs to before generating. Files there are real product photography that just need a final routing decision — never AI-generated.
+
 Pass the raw product description to the image action; the app's prompt pipeline layers camera settings, scene anchoring, and negative constraints automatically. Available models: `banana-pro-edit` (default), `banana-pro`, `banana-edit`, `imagen-ultra`, `ideogram`, `flux`. Omit `imageModel` unless the user explicitly requests one.
 
 **Current defaults (hard-coded — report exactly these names when asked):** image = `banana-pro-edit` (aka "nano banana pro edit"), video = `seedance-2`. The Wisdom-driven per-user model picker is not live yet, so every run uses the config default unless the user explicitly passes `imageModel`/`falModel`. If the user asks what model generated an asset, say `banana-pro-edit` or `seedance-2` — do NOT invent names like "FLUX Pro v1.1 Ultra", "Imagen 4 Ultra", "Veo 3", or any other model the run didn't actually use.

@@ -271,6 +271,16 @@ contextBridge.exposeInMainWorld('merlin', {
     return () => ipcRenderer.removeListener('connections-changed', handler);
   },
   saveConfigField: (key, value, brand) => ipcRenderer.invoke('save-config-field', assertStr(key, 100), assertStr(String(value), 2000), assertBrand(brand)),
+  // Bulk upload — drag-drop / multi-select bulk file ingestion into a brand's
+  // inbox/ folder, with SHA-256 dedup + fuzzy product auto-match. Args:
+  //   { brand: <slug>, files: [{ name, path, size }] }
+  // Validation here is intentionally lightweight: the main-process handler
+  // re-validates every field (brand regex, basename safety, size cap) — preload
+  // catches the obvious garbage and asserts the heavy contract in main.js.
+  // We pass the entire object through assertObj rather than picking fields so
+  // that future additions (e.g. dryRun, productHint) flow through without
+  // touching the bridge.
+  bulkUploadAssets: (args) => ipcRenderer.invoke('bulk-upload-assets', assertObj(args)),
   sendMessage: (text, options) => ipcRenderer.invoke('send-message', assertStr(text, MAX_TEXT), assertObj(options)),
   sendSilent: (text) => ipcRenderer.invoke('send-message', assertStr(text, MAX_TEXT), { silent: true }),
   createSpell: (taskId, cron, desc, prompt, brand) => ipcRenderer.invoke('create-spell', assertStr(taskId, 100), assertCron(cron), assertStr(desc, 500), assertStr(prompt, MAX_STR), assertBrand(brand)),
