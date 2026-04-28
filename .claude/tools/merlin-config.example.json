@@ -49,9 +49,22 @@
   "linkedinRefreshToken": "",
   "linkedinAdAccountId": "",
 
-  "_oauthLinkedIn": {
-    "clientID": "86p3wa6kt80r7z"
-  },
+  "_oauth_comment": "Each `_oauthFoo` block is INJECTED BY THE BFF (Cloudflare Worker) and persisted to the vault on every OAuth exchange — not user-editable. The Cloudflare secret <FOO>_CLIENT_ID is the source of truth; if you set a value here it will be overwritten the next time you run /merlin and connect the platform. Hardcoded fallback values are baked into the binary so first-launch (before the BFF has responded) still works.",
+
+  "_oauthMeta":      { "clientID": "" },
+  "_oauthTiktok":    { "clientID": "" },
+  "_oauthGoogle":    { "clientID": "" },
+  "_oauthShopify":   { "clientID": "" },
+  "_oauthReddit":    { "clientID": "" },
+  "_oauthEtsy":      { "clientID": "" },
+  "_oauthAmazon":    { "clientID": "" },
+  "_oauthSlack":     { "clientID": "" },
+  "_oauthKlaviyo":   { "clientID": "" },
+  "_oauthLinkedIn":  { "clientID": "86p3wa6kt80r7z" },
+  "_oauthStripe":    { "clientID": "" },
+  "_oauthPinterest": { "clientID": "" },
+  "_oauthSnapchat":  { "clientID": "" },
+  "_oauthTwitter":   { "clientID": "" },
 
   "redditAccessToken": "",
   "redditRefreshToken": "",
