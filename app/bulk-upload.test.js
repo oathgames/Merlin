@@ -185,7 +185,12 @@ function test(name, fn) {
     assert.equal(isValidProductSlug('foo/bar'), false);
     assert.equal(isValidProductSlug('foo\\bar'), false);
     assert.equal(isValidProductSlug('foo bar'), false);
-    assert.equal(isValidProductSlug('foo bar'), false);
+    // Control chars (NUL, tab) and non-ASCII (smart quote) — all outside the
+    // char-class regex. Use explicit JS escapes so the source is readable;
+    // a literal NUL byte embedded in the string source looks identical to
+    // a space and confuses code review (was an incident on this same PR).
+    assert.equal(isValidProductSlug('foo\tbar'), false);
+    assert.equal(isValidProductSlug('foo’bar'), false);
     assert.equal(isValidProductSlug(''), false);
     assert.equal(isValidProductSlug('a'.repeat(201)), false);
   });
