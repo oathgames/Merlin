@@ -11288,19 +11288,17 @@ if (app.isPackaged) {
 // back to a system `node` — Claude Desktop will only succeed if `node`
 // is on the user's PATH, which is the same constraint as any dev MCP
 // server.
-async function maybePromptClaudeDesktopAutoconfig() {
-  if (!app.isPackaged) return; // Dev: don't pollute the user's real Claude Desktop config from a session worktree.
 
+// Single source of truth for sidecar path resolution. Used by the
+// autoprompt + the two IPC handlers below. Gitar PR #150 follow-up
+// (2026-04-29): previously this block was copy-pasted across three
+// call sites; if the asar layout ever changes, all three would have
+// needed updating in lockstep — exactly the kind of drift Hard-Won
+// Security Rule N+1 (DRY) prevents.
+function resolveSidecarPaths() {
   let cdcMod;
   try { cdcMod = require('./claude-desktop-config'); }
-  catch (e) { console.warn('[mcp-autoconfig] module load failed:', e && e.message); return; }
-
-  // Resolve the shim path. Inside a packaged app, app/merlin-mcp-shim.js
-  // sits in resources/app/merlin-mcp-shim.js (asar-unpacked sibling),
-  // OR — because we'll add it to extraResources — at
-  // resources/app/merlin-mcp-shim.js or appInstall/.claude/tools/...
-  // The cleanest approach: ship it as extraResources so Claude Desktop
-  // can spawn it directly without traversing the asar archive.
+  catch { return null; }
   // The shim ships unpacked from asar (see asarUnpack in package.json).
   // Packaged: <appInstall>/app.asar.unpacked/app/merlin-mcp-shim.js
   // Dev:      <repo>/app/merlin-mcp-shim.js
@@ -11308,9 +11306,17 @@ async function maybePromptClaudeDesktopAutoconfig() {
     ? path.join(appInstall, 'app.asar.unpacked', 'app', 'merlin-mcp-shim.js')
     : path.join(__dirname, 'merlin-mcp-shim.js');
   const nodePath = getBundledNodePath() || 'node';
-
   const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
   const configPath = cdcMod.claudeDesktopConfigPath();
+  return { cdcMod, shimPath, nodePath, merlinEntry, configPath };
+}
+
+async function maybePromptClaudeDesktopAutoconfig() {
+  if (!app.isPackaged) return; // Dev: don't pollute the user's real Claude Desktop config from a session worktree.
+
+  const paths = resolveSidecarPaths();
+  if (!paths) { console.warn('[mcp-autoconfig] module load failed'); return; }
+  const { cdcMod, merlinEntry, configPath } = paths;
 
   // Compute the major version from package.json. If unparseable, skip.
   let currentMajor = 0;
@@ -11370,18 +11376,9 @@ ipcMain.handle('mcp-autoconfig-add', async () => {
   if (!app.isPackaged) {
     return { ok: false, error: 'Sidecar autoconfig is only available in packaged builds.' };
   }
-  let cdcMod;
-  try { cdcMod = require('./claude-desktop-config'); }
-  catch (e) { return { ok: false, error: 'autoconfig module not available' }; }
-  // The shim ships unpacked from asar (see asarUnpack in package.json).
-  // Packaged: <appInstall>/app.asar.unpacked/app/merlin-mcp-shim.js
-  // Dev:      <repo>/app/merlin-mcp-shim.js
-  const shimPath = app.isPackaged
-    ? path.join(appInstall, 'app.asar.unpacked', 'app', 'merlin-mcp-shim.js')
-    : path.join(__dirname, 'merlin-mcp-shim.js');
-  const nodePath = getBundledNodePath() || 'node';
-  const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
-  const configPath = cdcMod.claudeDesktopConfigPath();
+  const paths = resolveSidecarPaths();
+  if (!paths) return { ok: false, error: 'autoconfig module not available' };
+  const { cdcMod, merlinEntry, configPath } = paths;
   const out = cdcMod.applyRegistration({ stateDir, configPath, merlinEntry });
   out.registered = cdcMod.isRegistered({ configPath, merlinEntry });
   return out;
@@ -11389,18 +11386,9 @@ ipcMain.handle('mcp-autoconfig-add', async () => {
 
 // IPC: renderer query — is the sidecar wired up?
 ipcMain.handle('mcp-autoconfig-status', async () => {
-  let cdcMod;
-  try { cdcMod = require('./claude-desktop-config'); }
-  catch { return { registered: false, socketAlive: false }; }
-  // The shim ships unpacked from asar (see asarUnpack in package.json).
-  // Packaged: <appInstall>/app.asar.unpacked/app/merlin-mcp-shim.js
-  // Dev:      <repo>/app/merlin-mcp-shim.js
-  const shimPath = app.isPackaged
-    ? path.join(appInstall, 'app.asar.unpacked', 'app', 'merlin-mcp-shim.js')
-    : path.join(__dirname, 'merlin-mcp-shim.js');
-  const nodePath = getBundledNodePath() || 'node';
-  const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
-  const configPath = cdcMod.claudeDesktopConfigPath();
+  const paths = resolveSidecarPaths();
+  if (!paths) return { registered: false, socketAlive: false };
+  const { cdcMod, shimPath, merlinEntry, configPath } = paths;
   const registered = cdcMod.isRegistered({ configPath, merlinEntry });
   const socketAlive = !!(_mcpIpcEndpoint && _mcpIpcEndpoint.server && _mcpIpcEndpoint.server.listening);
   return { registered, socketAlive, configPath, shimPath };

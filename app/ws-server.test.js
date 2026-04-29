@@ -209,24 +209,24 @@ test('no app/*.js file uses a bare numeric .listen(port) without a host', () => 
         else buf += ch;
       }
       if (buf.trim()) parts.push(buf.trim());
+      // Unix domain socket / Windows named pipe paths are inherently
+      // single-host (no TCP, no network namespace) — .listen(path) and
+      // .listen(path, callback) are the correct forms for those. We
+      // accept the call when the FIRST argument is named like a path
+      // (`socketPath`, `pipePath`, anything ending in `Path`/`Pipe`/
+      // `Socket`) OR the argument is a string literal that obviously
+      // looks like a socket/pipe path (`/...`, `\\\\.\\pipe\\...`).
+      // All other forms with a port-shaped first arg remain a hard
+      // fail — those default to wildcard TCP bind. See
+      // app/mcp-ipc-endpoint.js for the canonical safe pattern.
+      const firstArg = parts[0];
+      const looksLikeSocketPath = /Path$|Pipe$|Socket$|sockPath|pipePath|socketPath/i.test(firstArg)
+        || /^['"](?:\\\\\\\\\.\\\\pipe\\\\|\/|\.\/|[A-Z]:[\\/])/.test(firstArg);
+      if (looksLikeSocketPath) continue; // Safe: domain socket / named pipe (any arity).
       if (parts.length === 0) continue; // `.listen()` with no args — not useful but not unsafe either
       if (parts.length === 1) {
-        // Unix domain socket / Windows named pipe paths are inherently
-        // single-host (no TCP, no network namespace) — single-arg
-        // .listen(path) is the correct form for those. We accept the
-        // call when the argument is named like a path (`socketPath`,
-        // `pipePath`, anything ending in `Path`/`Pipe`/`Socket`) OR the
-        // argument is a string literal that obviously looks like a
-        // socket/pipe path (`/...`, `\\\\.\\pipe\\...`). All other
-        // single-arg forms (port, PORT, 0, etc.) remain a hard fail —
-        // those default to wildcard TCP bind. See app/mcp-ipc-endpoint.js
-        // (Unix socket / named pipe) for the canonical safe pattern.
-        const arg = parts[0];
-        const looksLikeSocketPath = /Path$|Pipe$|Socket$|sockPath|pipePath|socketPath/i.test(arg)
-          || /^['"](?:\\\\\\\\\.\\\\pipe\\\\|\/|\.\/|[A-Z]:[\\/])/.test(arg);
-        if (looksLikeSocketPath) continue; // Safe: domain socket / named pipe.
         // .listen(port) — all-interfaces default. Fail.
-        violations.push(`${path.basename(f)}: single-arg .listen(${arg}) binds all interfaces by default`);
+        violations.push(`${path.basename(f)}: single-arg .listen(${firstArg}) binds all interfaces by default`);
         continue;
       }
       // 2+ args: second arg must be a host literal '127.0.0.1' / 'localhost',

@@ -355,6 +355,13 @@ test('start/stop: token + socket created, socket accepts a tools/list call, stop
   try {
     const { tools } = fakeTools();
     const ep = ipc.start({ stateDir: d, tools, ctx: { appRoot: d } });
+    // Token write happens inside the server's `listening` callback now
+    // (Gitar PR #150 follow-up — was a TOCTOU race against the shim).
+    // Wait for the event before asserting on the file.
+    await new Promise((resolve) => {
+      if (ep.server.listening) return resolve();
+      ep.server.once('listening', resolve);
+    });
     // Token file written.
     const tokenPath = path.join(d, 'mcp-shim-token');
     assert.ok(fs.existsSync(tokenPath));

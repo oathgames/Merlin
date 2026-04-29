@@ -51,8 +51,17 @@ function readDecision(stateDir) {
   return null;
 }
 
-function writeDecision(stateDir, decision) {
-  const payload = JSON.stringify({ decision, at: Date.now(), schema: 1 }, null, 2);
+// Atomic write of a decision sentinel. `extra` is an optional object of
+// additional fields to merge into the payload alongside `{decision, at,
+// schema}` — used by the 'skipped' path to record the major version.
+// Tmp + rename ensures crash-safety; mode 0o600 keeps the file
+// owner-only on POSIX.
+function writeDecision(stateDir, decision, extra) {
+  const payload = JSON.stringify(
+    Object.assign({ decision, at: Date.now(), schema: 1 }, extra || {}),
+    null,
+    2,
+  );
   const target = decisionFile(stateDir);
   const tmp = target + '.tmp';
   try {
@@ -229,23 +238,25 @@ function applyRegistration({ stateDir, configPath, merlinEntry }) {
   return { ok: true, changed: true };
 }
 
-// Record a Skip / Don't-ask-again outcome.
+// Record a Skip / Don't-ask-again outcome via writeDecision's atomic
+// tmp+rename path. The `skipped` branch stamps the current major
+// version so shouldPrompt() can re-ask on the next major bump; the
+// `never` branch records no major (decision='never' is permanent).
+//
+// Gitar PR #150 follow-up (2026-04-29): the original implementation
+// double-wrote the sentinel — first via writeDecision (atomic), then
+// via a direct fs.writeFileSync (non-atomic). Both writes contained
+// IDENTICAL content, the second was redundant, AND the second write
+// dropped the atomic-write discipline used everywhere else. Now both
+// branches use the same atomic helper with an optional extra-fields
+// object, eliminating the redundant write and keeping crash-safety
+// uniform.
 function recordSkip(stateDir, currentMajor, never) {
   if (never) {
     writeDecision(stateDir, 'never');
-    // Override base writeDecision to also store the major version.
-    try {
-      const target = decisionFile(stateDir);
-      fs.writeFileSync(target, JSON.stringify({ decision: 'never', at: Date.now(), schema: 1 }, null, 2), { mode: 0o600 });
-    } catch {}
     return;
   }
-  // Same as writeDecision('skipped') but with a major-version stamp so
-  // shouldPrompt can re-ask on the next major bump.
-  try {
-    const target = decisionFile(stateDir);
-    fs.writeFileSync(target, JSON.stringify({ decision: 'skipped', major: currentMajor, at: Date.now(), schema: 1 }, null, 2), { mode: 0o600 });
-  } catch {}
+  writeDecision(stateDir, 'skipped', { major: currentMajor });
 }
 
 module.exports = {

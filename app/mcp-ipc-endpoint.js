@@ -411,15 +411,17 @@ function start(opts) {
     console.error('[mcp-ipc] server error:', err && err.message);
   });
 
-  // Bind. listen() with a single arg (path or pipe) is a Unix-socket /
-  // named-pipe bind. Hard-Won Security Rule 11 spirit applies: never
-  // accept a host argument here — always Unix domain socket / Windows
-  // named pipe, never TCP.
-  server.listen(socketPath);
-
   // Persist token + socket path for the shim to pick up. Combined into
   // a single JSON file so the shim can read both atomically. Mode 0o600
   // — owner-only on Unix, default ACL (current-user-only) on Windows.
+  //
+  // Gitar PR #150 follow-up (2026-04-29): the token file is now written
+  // INSIDE the server's `listening` callback so the shim can never
+  // observe a token + socket path before the server has actually begun
+  // accepting connections. The shim's 3×200ms retry loop already
+  // mitigated the race in practice, but writing inside `listening`
+  // eliminates the failure mode entirely — no first-attempt connect
+  // error possible. onTokenRotate fires after the file is on disk.
   const tokenPayload = JSON.stringify({
     token,
     socketPath,
@@ -427,11 +429,18 @@ function start(opts) {
     createdAt: Date.now(),
     schema: 1,
   }, null, 2);
-  atomicWrite(tokenPath, tokenPayload, 0o600);
 
-  if (typeof onTokenRotate === 'function') {
-    try { onTokenRotate(token); } catch (_) {}
-  }
+  // Bind. listen() with a single arg (path or pipe) is a Unix-socket /
+  // named-pipe bind. Hard-Won Security Rule 11 spirit applies: never
+  // accept a host argument here — always Unix domain socket / Windows
+  // named pipe, never TCP.
+  server.listen(socketPath, () => {
+    try { atomicWrite(tokenPath, tokenPayload, 0o600); }
+    catch (e) { console.error('[mcp-ipc] token write failed:', e && e.message); }
+    if (typeof onTokenRotate === 'function') {
+      try { onTokenRotate(token); } catch (_) {}
+    }
+  });
 
   function stop() {
     try { server.close(); } catch {}
