@@ -736,6 +736,17 @@ function buildTools(tool, z, ctx) {
     // shipped as destructive:false alongside the read-only performance/
     // lists/campaigns actions; corrected here.
     destructive: true,
+    // preview:false matches every other ad-platform tool (meta_ads,
+    // tiktok_ads, google_ads, amazon_ads — all destructive:true,
+    // preview:false). Klaviyo template ops have the same risk profile
+    // as ad pushes: external write, no reversibility for delete, but
+    // the user explicitly invoked the tool with their own data. Setting
+    // preview:true here would force a two-step confirm flow on every
+    // bulk-upload-of-51-templates call — friction with no upside since
+    // the user already provided the directory path. The validate-mcp-
+    // annotations test requires this field to be explicit when
+    // destructive:true (Gitar PR #153 CI finding).
+    preview: false,
     idempotent: true,
     costImpact: 'api',
     brandRequired: false,
