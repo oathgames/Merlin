@@ -1320,10 +1320,33 @@ function renderMarkdown(text) {
     return `%%ARTIFACT_${artifacts.length - 1}%%`;
   });
 
-  // Parse markdown with marked, then sanitize to prevent XSS
-  let html = typeof DOMPurify !== 'undefined'
-    ? DOMPurify.sanitize(marked.parse(text), { ADD_TAGS: ['video'], ADD_ATTR: ['data-path', 'data-file', 'loading', 'controls', 'playsinline', 'preload'], ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|merlin|data):)/i })
-    : marked.parse(text);
+  // Parse markdown with marked, then sanitize to prevent XSS.
+  //
+  // REGRESSION GUARD (2026-04-29, codex enterprise review fix #5):
+  // FAIL CLOSED if DOMPurify is missing. The previous fallback was
+  // `marked.parse(text)` raw, which renders attacker-supplied markdown
+  // (model output, MCP tool output, file contents echoed back) as live
+  // HTML — `<img onerror=...>`, `<a href="javascript:...">`, `<iframe>`,
+  // etc. all execute in the renderer. DOMPurify is loaded via
+  // <script src="purify.min.js"> in index.html and is part of the asar;
+  // the only realistic way it goes missing is a packaging regression
+  // (purify.min.js dropped from build.files) or a renderer-context bug
+  // that fires this code before <script> tags resolve. Both are bugs to
+  // surface loudly, never to render around. The fallback now escapes
+  // every HTML special character so the user sees raw markdown text
+  // instead of a working XSS surface.
+  let html;
+  if (typeof DOMPurify !== 'undefined') {
+    html = DOMPurify.sanitize(marked.parse(text), { ADD_TAGS: ['video'], ADD_ATTR: ['data-path', 'data-file', 'loading', 'controls', 'playsinline', 'preload'], ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|merlin|data):)/i });
+  } else {
+    console.error('[renderer] DOMPurify is not loaded — falling back to escaped text. This is a packaging bug; check that purify.min.js is included in app/.');
+    html = String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
 
   // Normalize Windows backslash paths to forward slashes
   html = html.replace(/([a-zA-Z0-9_\-\.]+)\\([a-zA-Z0-9_\-\.\\]+\.(?:jpg|jpeg|png|gif|webp|mp4|webm|mov))/gi, (m, a, b) => `${a}/${b.replace(/\\/g, '/')}`);

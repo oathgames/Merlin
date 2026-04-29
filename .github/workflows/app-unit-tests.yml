@@ -142,3 +142,29 @@ jobs:
       # bypass shipped silently.
       - name: MCP annotation validator
         run: node test/validate-mcp-annotations.js
+      # REGRESSION GUARD (2026-04-29, codex enterprise review fix #7):
+      # Sweep every app/*.test.js the named steps above don't already
+      # cover. The named steps stay because each is an incident canary
+      # whose CI label is meaningful at-a-glance — but the count of
+      # tests in app/ has historically drifted ahead of the named list
+      # (74 on disk vs. 30 named at fix time), so any newly-added test
+      # without a named entry above silently went un-run. The sweep
+      # uses node:test's built-in runner, which works for both
+      # `--test`-style and legacy `node file.js`-style tests (legacy
+      # tests run as plain scripts; failures throw and the runner
+      # records them). Re-running already-named tests here is cheap
+      # and keeps the sweep stateless. If you add a long-running test
+      # that should NOT be in the default CI sweep, gate it explicitly
+      # (e.g. filename suffix `.slow.test.js`) and update this glob.
+      - name: Sweep — run every app/*.test.js
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(app/*.test.js)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::no app/*.test.js files found — sweep cannot run"
+            exit 1
+          fi
+          echo "Sweep covering ${#files[@]} test files"
+          node --test "${files[@]}"

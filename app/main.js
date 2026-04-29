@@ -7133,8 +7133,48 @@ function writeState(data) {
   }
 }
 
+// REGRESSION GUARD (2026-04-29, codex enterprise review fix #11):
+// save-state is one of the few IPC handlers that PERSISTS renderer-supplied
+// data to disk (.merlin-state.json), so the renderer must be on a strict
+// key allowlist + per-key type check. Previously the handler did
+// `writeState(data)` directly — a compromised renderer (XSS via the
+// markdown sanitization fail-open that landed in the same review) could
+// merge arbitrary keys and shapes into the file, escalating from "render
+// arbitrary HTML" to "rewrite app state on disk." The keys below are the
+// EXACT set the renderer sets today (grep `merlin.saveState\(` in
+// renderer.js — currently `activeBrand` at line 618 and
+// `progressDismissed` at line 10368). Internal main.js writeState() calls
+// bypass IPC and remain flexible. To add a new renderer-settable key,
+// extend SAVE_STATE_RENDERER_SCHEMA below — never widen the handler to
+// accept arbitrary objects.
+const SAVE_STATE_RENDERER_SCHEMA = {
+  activeBrand: (v) => v === null || (typeof v === 'string' && v.length <= 200),
+  progressDismissed: (v) => typeof v === 'boolean',
+};
+function validateRendererState(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { ok: false, reason: 'not an object' };
+  }
+  const keys = Object.keys(data);
+  if (keys.length === 0) return { ok: false, reason: 'empty payload' };
+  if (keys.length > 8) return { ok: false, reason: 'too many keys' };
+  const out = {};
+  for (const k of keys) {
+    const validator = SAVE_STATE_RENDERER_SCHEMA[k];
+    if (!validator) return { ok: false, reason: `unknown key: ${k}` };
+    if (!validator(data[k])) return { ok: false, reason: `invalid value for ${k}` };
+    out[k] = data[k];
+  }
+  return { ok: true, sanitized: out };
+}
+
 ipcMain.handle('save-state', (_, data) => {
-  return { success: writeState(data) };
+  const v = validateRendererState(data);
+  if (!v.ok) {
+    console.warn('[save-state] rejected:', v.reason);
+    return { success: false, error: v.reason };
+  }
+  return { success: writeState(v.sanitized) };
 });
 
 ipcMain.handle('load-state', () => readState());
@@ -11235,14 +11275,46 @@ async function downloadAndApplyUpdate() {
 // (macOS: open-url can fire before app.whenReady; Windows: second-instance
 // may fire while the first instance is still bootstrapping). Buffer them
 // and flush once the window is available.
+//
+// REGRESSION GUARD (2026-04-29, codex enterprise review fix #10):
+// Validate the URL with WHATWG URL parsing before forwarding. The previous
+// regex check `/^merlin:\/\//i.test(url)` was a prefix-only sanity check —
+// it accepted `merlin://anything-here-including-newlines-and-quotes`. The
+// renderer was given the raw string, and the only thing keeping that safe
+// was the renderer not yet implementing any deep-link actions (preload.js
+// `onMerlinDeepLink` comment: "URL schema TBD"). That dormant state is the
+// risky kind: a future renderer feature lands, and the input it acts on
+// has no guarantees about shape. Now we hard-fail anything that doesn't
+// parse as a URL with `merlin:` scheme; cap the total length so a 100 MB
+// IPC string can't be sent as a "deep link"; drop URLs with embedded
+// newlines or control chars; and only forward the canonical `url.href`
+// (which the URL parser has already normalized) instead of the raw input.
+const DEEP_LINK_MAX_LEN = 4096;
+function deepLinkIsSafe(url) {
+  if (typeof url !== 'string') return null;
+  if (url.length === 0 || url.length > DEEP_LINK_MAX_LEN) return null;
+  for (let i = 0; i < url.length; i++) {
+    const c = url.charCodeAt(i);
+    if (c < 0x20 || c === 0x7F) return null;
+  }
+  // Node's URL parser trims leading whitespace before validating the
+  // scheme, so `new URL(' merlin://x')` would silently pass. Hard-reject
+  // any input that doesn't begin with the literal scheme.
+  if (!/^merlin:\/\//i.test(url)) return null;
+  let parsed;
+  try { parsed = new URL(url); } catch { return null; }
+  if (parsed.protocol !== 'merlin:') return null;
+  return parsed.href;
+}
 let _pendingDeepLink = null;
 function deliverDeepLink(url) {
-  if (!url || typeof url !== 'string' || !/^merlin:\/\//i.test(url)) return;
+  const safe = deepLinkIsSafe(url);
+  if (!safe) return;
   if (win && !win.isDestroyed() && win.webContents && !win.webContents.isLoading()) {
-    try { win.webContents.send('merlin-deep-link', url); } catch {}
+    try { win.webContents.send('merlin-deep-link', safe); } catch {}
     return;
   }
-  _pendingDeepLink = url;
+  _pendingDeepLink = safe;
 }
 function flushPendingDeepLink() {
   if (!_pendingDeepLink) return;
