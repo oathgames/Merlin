@@ -11369,11 +11369,18 @@ if (app.isPackaged) {
 // server.
 
 // Single source of truth for sidecar path resolution. Used by the
-// autoprompt + the two IPC handlers below. Gitar PR #150 follow-up
+// autoprompt + the IPC handlers below. Gitar PR #150 follow-up
 // (2026-04-29): previously this block was copy-pasted across three
 // call sites; if the asar layout ever changes, all three would have
 // needed updating in lockstep — exactly the kind of drift Hard-Won
 // Security Rule N+1 (DRY) prevents.
+//
+// v1.20.4 (2026-04-29): extended to expose Claude Code's two-file
+// model (~/.claude.json + <project>/.mcp.json) alongside Claude
+// Desktop's single config. Both clients share the SAME merlin entry
+// shape (command + args targeting the bundled Node + the same shim);
+// they differ only in WHERE that entry gets written and whether a
+// per-project allowlist gates loading.
 function resolveSidecarPaths() {
   let cdcMod;
   try { cdcMod = require('./claude-desktop-config'); }
@@ -11387,11 +11394,75 @@ function resolveSidecarPaths() {
   const nodePath = getBundledNodePath() || 'node';
   const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
   const configPath = cdcMod.claudeDesktopConfigPath();
-  return { cdcMod, shimPath, nodePath, merlinEntry, configPath };
+  const claudeJsonPath = cdcMod.claudeCodeConfigPath();
+  return { cdcMod, shimPath, nodePath, merlinEntry, configPath, claudeJsonPath };
+}
+
+// Show a directory picker for the Claude Code project the user wants
+// to enable Merlin in. Returns the chosen absolute path, or null if
+// the user cancelled / picker errored. Defaults to the
+// most-recently-registered project, then ~/Documents, then homedir.
+async function pickClaudeCodeProjectDir(cdcMod) {
+  const { dialog } = require('electron');
+  let defaultPath;
+  try {
+    const remembered = cdcMod.readClaudeCodeProjects(stateDir);
+    if (remembered.length) defaultPath = remembered[remembered.length - 1];
+  } catch {}
+  if (!defaultPath) {
+    const docs = path.join(os.homedir(), 'Documents');
+    try { if (fs.statSync(docs).isDirectory()) defaultPath = docs; } catch {}
+  }
+  if (!defaultPath) defaultPath = os.homedir();
+
+  let result;
+  try {
+    result = await dialog.showOpenDialog(win || null, {
+      title: 'Pick the project folder to enable Merlin in',
+      defaultPath,
+      properties: ['openDirectory', 'createDirectory'],
+      buttonLabel: 'Enable Merlin here',
+    });
+  } catch (err) {
+    console.warn('[mcp-autoconfig] dir picker failed:', err && err.message);
+    return null;
+  }
+  if (!result || result.canceled || !Array.isArray(result.filePaths) || !result.filePaths.length) {
+    return null;
+  }
+  return result.filePaths[0];
+}
+
+// Run the Claude Code registration flow: pick a project dir, write
+// .mcp.json + ~/.claude.json atomically, surface any error to the
+// user. Used by the autoprompt and the IPC handler below.
+async function applyClaudeCodeFlow(cdcMod, paths) {
+  const { dialog } = require('electron');
+  const projectRoot = await pickClaudeCodeProjectDir(cdcMod);
+  if (!projectRoot) return { ok: false, error: 'cancelled' };
+
+  const out = cdcMod.applyRegistrationClaudeCode({
+    stateDir,
+    claudeJsonPath: paths.claudeJsonPath,
+    projectRoot,
+    merlinEntry: paths.merlinEntry,
+  });
+  if (!out.ok) {
+    try {
+      await dialog.showMessageBox(win || null, {
+        type: 'warning',
+        title: 'Could not update Claude Code config',
+        message: 'Merlin was unable to register itself with Claude Code.',
+        detail: out.error || 'Unknown error.',
+        buttons: ['OK'],
+      });
+    } catch {}
+  }
+  return out;
 }
 
 async function maybePromptClaudeDesktopAutoconfig() {
-  if (!app.isPackaged) return; // Dev: don't pollute the user's real Claude Desktop config from a session worktree.
+  if (!app.isPackaged) return; // Dev: don't pollute the user's real Claude config from a session worktree.
 
   const paths = resolveSidecarPaths();
   if (!paths) { console.warn('[mcp-autoconfig] module load failed'); return; }
@@ -11401,25 +11472,50 @@ async function maybePromptClaudeDesktopAutoconfig() {
   let currentMajor = 0;
   try { currentMajor = parseInt(String(getCurrentVersion() || '').split('.')[0], 10) || 0; } catch {}
 
+  // Decision precedence: shouldPrompt's existing rules cover the global
+  // sentinel + Claude Desktop matching state. If shouldPrompt says
+  // "fire", we still need to detect which client(s) are installed and
+  // tailor the dialog accordingly.
   const decision = cdcMod.shouldPrompt({ stateDir, configPath, merlinEntry, currentMajor });
   if (!decision.fire) return;
 
-  // Show the dialog. dialog.showMessageBox returns when the user clicks
-  // a button — we tag with cancelId/defaultId so Esc maps to Skip and
-  // Enter maps to Add.
+  const installed = cdcMod.detectInstalledClients();
+  // If neither client is detected, suppress — no point prompting a user
+  // who has neither host. The Desktop branch's "no config dir" check
+  // already short-circuits in shouldPrompt; this catches Code-only
+  // gaps too.
+  if (!installed.desktop && !installed.code) return;
+
   const { dialog } = require('electron');
+
+  // Build the dialog buttons dynamically based on which clients are
+  // installed. Order: Desktop, Code, Both, Skip, Don't ask again.
+  // `actions` is parallel to `buttons` and tells the response handler
+  // which apply-flow to invoke.
+  const buttons = [];
+  const actions = [];
+  if (installed.desktop) { buttons.push('Add to Claude Desktop'); actions.push('desktop'); }
+  if (installed.code)    { buttons.push('Add to Claude Code');    actions.push('code'); }
+  if (installed.desktop && installed.code) { buttons.push('Add to Both');         actions.push('both'); }
+  buttons.push('Skip');             actions.push('skip');
+  buttons.push("Don't ask again");  actions.push('never');
+
   let response;
   try {
+    const messageDetail = installed.desktop && installed.code
+      ? 'Merlin can register itself as a tool in Claude Desktop AND/OR Claude Code.\n\nClaude Desktop is one click. Claude Code asks you to pick the project folder to enable Merlin in (its security model requires per-project opt-in).'
+      : (installed.desktop
+          ? 'Merlin can register itself as a tool in Claude Desktop.\n\nAfter this, you can ask Claude Desktop things like "create a Meta ad" or "show me my Stripe revenue" and Claude will call Merlin\'s tools directly.'
+          : 'Merlin can register itself as a tool in Claude Code.\n\nClaude Code requires per-project opt-in for security, so we\'ll ask you to pick the project folder to enable Merlin in.\n\nAfter this, Claude Code can call Merlin\'s tools directly from that project.');
+
     const result = await dialog.showMessageBox(win || null, {
       type: 'question',
-      title: 'Use Merlin from Claude Desktop?',
-      message: 'Merlin can register itself as a tool in Claude Desktop.',
-      detail:
-        'After this, you can ask Claude Desktop things like "create a Meta ad" or "show me my Stripe revenue" and Claude will call Merlin\'s tools directly.\n\n' +
-        'Your API keys never leave Merlin\'s encrypted vault — Claude Desktop only sees tool inputs and outputs, the same boundary as the in-app chat.',
-      buttons: ['Add to Claude Desktop', 'Skip', "Don't ask again"],
+      title: 'Use Merlin from Claude?',
+      message: 'Connect Merlin to your Claude client.',
+      detail: messageDetail + '\n\nYour API keys never leave Merlin\'s encrypted vault — Claude only sees tool inputs and outputs, the same boundary as the in-app chat.',
+      buttons,
       defaultId: 0,
-      cancelId: 1,
+      cancelId: actions.indexOf('skip'),
       noLink: true,
     });
     response = result && result.response;
@@ -11428,7 +11524,9 @@ async function maybePromptClaudeDesktopAutoconfig() {
     return;
   }
 
-  if (response === 0) {
+  const action = actions[response];
+
+  if (action === 'desktop' || action === 'both') {
     const out = cdcMod.applyRegistration({ stateDir, configPath, merlinEntry });
     if (!out.ok) {
       try {
@@ -11441,9 +11539,15 @@ async function maybePromptClaudeDesktopAutoconfig() {
         });
       } catch {}
     }
-  } else if (response === 1) {
+  }
+
+  if (action === 'code' || action === 'both') {
+    await applyClaudeCodeFlow(cdcMod, paths);
+  }
+
+  if (action === 'skip') {
     cdcMod.recordSkip(stateDir, currentMajor, false);
-  } else if (response === 2) {
+  } else if (action === 'never') {
     cdcMod.recordSkip(stateDir, currentMajor, true);
   }
 }
@@ -11463,14 +11567,64 @@ ipcMain.handle('mcp-autoconfig-add', async () => {
   return out;
 });
 
-// IPC: renderer query — is the sidecar wired up?
+// IPC: renderer-driven "Add to Claude Code" button. Opens the
+// directory picker so the user picks which project folder to enable
+// Merlin in, then writes BOTH .mcp.json AND ~/.claude.json atomically.
+// Returns { ok, changed?, mcpJsonPath?, claudeJsonPath?, projectKey?, error? }.
+ipcMain.handle('mcp-autoconfig-add-claude-code', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, error: 'Sidecar autoconfig is only available in packaged builds.' };
+  }
+  const paths = resolveSidecarPaths();
+  if (!paths) return { ok: false, error: 'autoconfig module not available' };
+  return await applyClaudeCodeFlow(paths.cdcMod, paths);
+});
+
+// IPC: renderer query — what's the sidecar status across BOTH clients?
+//
+// Return shape (v1.20.4 — extended for Claude Code):
+//   {
+//     desktop: { configured: bool, configPath: string },
+//     code:    { configured: bool, claudeJsonPath: string,
+//                projects: [{ path: string, enabled: bool }, ...] },
+//     socketAlive: bool,
+//     shimPath:    string,
+//     // Backward compat with v1.20.0 callers (a v1.20.0 renderer still
+//     // looks for `registered`):
+//     registered:  bool,   // alias for desktop.configured
+//     configPath:  string, // alias for desktop.configPath
+//   }
 ipcMain.handle('mcp-autoconfig-status', async () => {
   const paths = resolveSidecarPaths();
-  if (!paths) return { registered: false, socketAlive: false };
-  const { cdcMod, shimPath, merlinEntry, configPath } = paths;
-  const registered = cdcMod.isRegistered({ configPath, merlinEntry });
+  if (!paths) {
+    return {
+      desktop: { configured: false, configPath: '' },
+      code: { configured: false, claudeJsonPath: '', projects: [] },
+      socketAlive: false,
+      shimPath: '',
+      registered: false,
+      configPath: '',
+    };
+  }
+  const { cdcMod, shimPath, merlinEntry, configPath, claudeJsonPath } = paths;
+  const desktopRegistered = cdcMod.isRegistered({ configPath, merlinEntry });
+  let codeProjects = [];
+  try {
+    codeProjects = cdcMod.listClaudeCodeProjectsStatus({ stateDir, claudeJsonPath, merlinEntry });
+  } catch (err) {
+    console.warn('[mcp-autoconfig] listClaudeCodeProjectsStatus failed:', err && err.message);
+  }
+  const codeConfigured = codeProjects.some((p) => p.enabled);
   const socketAlive = !!(_mcpIpcEndpoint && _mcpIpcEndpoint.server && _mcpIpcEndpoint.server.listening);
-  return { registered, socketAlive, configPath, shimPath };
+  return {
+    desktop: { configured: desktopRegistered, configPath },
+    code: { configured: codeConfigured, claudeJsonPath, projects: codeProjects },
+    socketAlive,
+    shimPath,
+    // Backward-compat aliases for v1.20.0 callers.
+    registered: desktopRegistered,
+    configPath,
+  };
 });
 
 // Single instance lock — prevent multiple windows

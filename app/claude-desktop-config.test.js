@@ -17,6 +17,34 @@
 //  13. shouldPrompt: matching merlin entry already present → fire=false
 //  14. isRegistered: detects matching entry
 //  15. applyRegistration: writes config + decision
+//
+// Claude Code (two-file model) — added 2026-04-29 after live incident
+// where v1.20.0 wrote .mcp.json correctly but never enabled merlin in
+// ~/.claude.json's enabledMcpjsonServers, so Claude Code refused to
+// load it (security model: per-project trust required).
+//  16. claudeCodeConfigPath: ~/.claude.json on every OS
+//  17. claudeCodeProjectMcpPath: <project>/.mcp.json
+//  18. resolveProjectKey: missing path → error
+//  19. resolveProjectKey: file (not dir) → error
+//  20. resolveProjectKey: real dir → ok + absolute path
+//  21. mergeMcpJsonMerlinEntry: empty → adds mcpServers + merlin
+//  22. mergeMcpJsonMerlinEntry: preserves other servers
+//  23. mergeMcpJsonMerlinEntry: same entry → no-op
+//  24. mergeClaudeJsonEnable: no projects map → creates it
+//  25. mergeClaudeJsonEnable: project entry exists, no enabled list → adds list with merlin
+//  26. mergeClaudeJsonEnable: appends merlin without removing other entries
+//  27. mergeClaudeJsonEnable: idempotent — merlin already enabled → no-op
+//  28. mergeClaudeJsonEnable: removes merlin from disabledMcpjsonServers
+//  29. mergeClaudeJsonEnable: preserves all other top-level fields
+//  30. mergeClaudeJsonEnable: preserves other projects untouched
+//  31. applyRegistrationClaudeCode: writes both files + remembers project
+//  32. applyRegistrationClaudeCode: refuses corrupt .mcp.json
+//  33. applyRegistrationClaudeCode: refuses corrupt ~/.claude.json
+//  34. applyRegistrationClaudeCode: idempotent — re-run on registered project → changed=false
+//  35. isRegisteredClaudeCode: only true when BOTH files match
+//  36. listClaudeCodeProjectsStatus: enumerates remembered + live state
+//  37. rememberClaudeCodeProject: dedups + atomic
+//  38. detectInstalledClients: returns shape {desktop, code}
 
 'use strict';
 
@@ -286,6 +314,399 @@ test('applyRegistration: corrupt config → ok=false, refuse to clobber', () => 
     // Original corrupt file untouched.
     assert.strictEqual(fs.readFileSync(cfgPath, 'utf8'), '{not-json');
   } finally { rmTmp(d); rmTmp(ccDir); }
+});
+
+// ── Claude Code: path helpers ────────────────────────────────
+
+test('claudeCodeConfigPath: ~/.claude.json on every OS', () => {
+  const p = cdc.claudeCodeConfigPath();
+  assert.ok(p.endsWith('.claude.json'));
+  assert.ok(p.includes(os.homedir()));
+});
+
+test('claudeCodeProjectMcpPath: <project>/.mcp.json', () => {
+  const p = cdc.claudeCodeProjectMcpPath('/some/project');
+  assert.strictEqual(p, path.join('/some/project', '.mcp.json'));
+});
+
+// ── Claude Code: project-key resolution ──────────────────────
+
+test('resolveProjectKey: missing path → error', () => {
+  const r = cdc.resolveProjectKey('/path/that/does/not/exist/abc-xyz-' + Date.now());
+  assert.strictEqual(r.ok, false);
+  assert.ok(/does not exist/i.test(r.error));
+});
+
+test('resolveProjectKey: file (not dir) → error', () => {
+  const d = tmpDir();
+  try {
+    const f = path.join(d, 'file.txt');
+    fs.writeFileSync(f, 'hi');
+    const r = cdc.resolveProjectKey(f);
+    assert.strictEqual(r.ok, false);
+    assert.ok(/not a directory/i.test(r.error));
+  } finally { rmTmp(d); }
+});
+
+test('resolveProjectKey: real dir → ok + absolute path', () => {
+  const d = tmpDir();
+  try {
+    const r = cdc.resolveProjectKey(d);
+    assert.strictEqual(r.ok, true);
+    assert.ok(path.isAbsolute(r.key));
+    // realpath collapses to canonical form; key should round-trip via fs.statSync.
+    assert.ok(fs.statSync(r.key).isDirectory());
+  } finally { rmTmp(d); }
+});
+
+test('resolveProjectKey: empty string → error', () => {
+  const r = cdc.resolveProjectKey('');
+  assert.strictEqual(r.ok, false);
+  assert.ok(/empty/i.test(r.error));
+});
+
+// ── Claude Code: .mcp.json merge ─────────────────────────────
+
+test('mergeMcpJsonMerlinEntry: empty → adds mcpServers + merlin', () => {
+  const out = cdc.mergeMcpJsonMerlinEntry({}, merlinEntry);
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.config.mcpServers.merlin, merlinEntry);
+});
+
+test('mergeMcpJsonMerlinEntry: preserves other servers', () => {
+  const existing = {
+    mcpServers: {
+      'other-mcp': { command: 'other', args: ['x'] },
+    },
+    extraField: 'preserved',
+  };
+  const out = cdc.mergeMcpJsonMerlinEntry(existing, merlinEntry);
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.config.mcpServers['other-mcp'], { command: 'other', args: ['x'] });
+  assert.deepStrictEqual(out.config.mcpServers.merlin, merlinEntry);
+  assert.strictEqual(out.config.extraField, 'preserved');
+  // Caller's input must not be mutated.
+  assert.strictEqual(existing.mcpServers.merlin, undefined);
+});
+
+test('mergeMcpJsonMerlinEntry: same entry → no-op', () => {
+  const existing = { mcpServers: { merlin: merlinEntry } };
+  const out = cdc.mergeMcpJsonMerlinEntry(existing, merlinEntry);
+  assert.strictEqual(out.changed, false);
+});
+
+// ── Claude Code: ~/.claude.json merge ────────────────────────
+
+test('mergeClaudeJsonEnable: no projects map → creates it', () => {
+  const existing = { numStartups: 7, theme: 'dark' };
+  const out = cdc.mergeClaudeJsonEnable(existing, 'C:\\proj');
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.config.projects['C:\\proj'].enabledMcpjsonServers, ['merlin']);
+  assert.strictEqual(out.config.numStartups, 7);
+  assert.strictEqual(out.config.theme, 'dark');
+});
+
+test('mergeClaudeJsonEnable: project entry exists, no enabled list → adds list with merlin', () => {
+  const existing = {
+    projects: {
+      '/proj': { allowedTools: ['x'], hasTrustDialogAccepted: true },
+    },
+  };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj');
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.config.projects['/proj'].enabledMcpjsonServers, ['merlin']);
+  assert.deepStrictEqual(out.config.projects['/proj'].allowedTools, ['x']);
+  assert.strictEqual(out.config.projects['/proj'].hasTrustDialogAccepted, true);
+});
+
+test('mergeClaudeJsonEnable: appends merlin without removing other entries', () => {
+  const existing = {
+    projects: {
+      '/proj': { enabledMcpjsonServers: ['other-mcp', 'foo'] },
+    },
+  };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj');
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.config.projects['/proj'].enabledMcpjsonServers, ['other-mcp', 'foo', 'merlin']);
+});
+
+test('mergeClaudeJsonEnable: idempotent — merlin already enabled → no-op', () => {
+  const existing = {
+    projects: {
+      '/proj': { enabledMcpjsonServers: ['merlin', 'other'] },
+    },
+  };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj');
+  assert.strictEqual(out.changed, false);
+  // Order preserved.
+  assert.deepStrictEqual(existing.projects['/proj'].enabledMcpjsonServers, ['merlin', 'other']);
+});
+
+test('mergeClaudeJsonEnable: removes merlin from disabledMcpjsonServers when re-enabling', () => {
+  const existing = {
+    projects: {
+      '/proj': {
+        enabledMcpjsonServers: [],
+        disabledMcpjsonServers: ['merlin', 'other'],
+      },
+    },
+  };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj');
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.config.projects['/proj'].enabledMcpjsonServers, ['merlin']);
+  assert.deepStrictEqual(out.config.projects['/proj'].disabledMcpjsonServers, ['other']);
+});
+
+test('mergeClaudeJsonEnable: preserves all other top-level fields', () => {
+  const existing = {
+    numStartups: 42,
+    installMethod: 'npm',
+    autoUpdates: true,
+    cachedDynamicConfigs: { foo: 'bar' },
+    projects: {
+      '/proj': { enabledMcpjsonServers: [] },
+    },
+  };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj');
+  assert.strictEqual(out.changed, true);
+  assert.strictEqual(out.config.numStartups, 42);
+  assert.strictEqual(out.config.installMethod, 'npm');
+  assert.strictEqual(out.config.autoUpdates, true);
+  assert.deepStrictEqual(out.config.cachedDynamicConfigs, { foo: 'bar' });
+});
+
+test('mergeClaudeJsonEnable: preserves other projects untouched', () => {
+  const existing = {
+    projects: {
+      '/proj-a': { enabledMcpjsonServers: ['only-a'], hasTrustDialogAccepted: true },
+      '/proj-b': { enabledMcpjsonServers: [] },
+    },
+  };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj-b');
+  assert.strictEqual(out.changed, true);
+  // proj-a untouched.
+  assert.deepStrictEqual(out.config.projects['/proj-a'].enabledMcpjsonServers, ['only-a']);
+  assert.strictEqual(out.config.projects['/proj-a'].hasTrustDialogAccepted, true);
+  // proj-b updated.
+  assert.deepStrictEqual(out.config.projects['/proj-b'].enabledMcpjsonServers, ['merlin']);
+});
+
+test('mergeClaudeJsonEnable: does NOT invent disabledMcpjsonServers field if absent', () => {
+  // If Claude Code never wrote disabledMcpjsonServers for this project,
+  // we MUST NOT add it during enablement — we only add the enable list.
+  const existing = { projects: { '/proj': { allowedTools: [] } } };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj');
+  assert.strictEqual(out.changed, true);
+  assert.deepStrictEqual(out.config.projects['/proj'].enabledMcpjsonServers, ['merlin']);
+  assert.strictEqual(out.config.projects['/proj'].disabledMcpjsonServers, undefined);
+});
+
+// ── Claude Code: applyRegistrationClaudeCode (integration) ───
+
+test('applyRegistrationClaudeCode: writes both files + remembers project', () => {
+  const stateDir = tmpDir();
+  const projDir = tmpDir();
+  const homeDir = tmpDir();
+  const claudeJsonPath = path.join(homeDir, '.claude.json');
+  try {
+    // Pre-existing ~/.claude.json with another project so we verify
+    // preservation across the merge.
+    fs.writeFileSync(claudeJsonPath, JSON.stringify({
+      numStartups: 5,
+      projects: { '/some/other': { enabledMcpjsonServers: ['only-other'] } },
+    }, null, 2));
+
+    const out = cdc.applyRegistrationClaudeCode({
+      stateDir,
+      claudeJsonPath,
+      projectRoot: projDir,
+      merlinEntry,
+    });
+    assert.strictEqual(out.ok, true, 'expected ok=true, got: ' + JSON.stringify(out));
+    assert.strictEqual(out.changed, true);
+
+    // .mcp.json written with merlin entry.
+    const mcpJson = JSON.parse(fs.readFileSync(out.mcpJsonPath, 'utf8'));
+    assert.deepStrictEqual(mcpJson.mcpServers.merlin, merlinEntry);
+
+    // ~/.claude.json updated with merlin enabled at the project key.
+    const claudeJson = JSON.parse(fs.readFileSync(claudeJsonPath, 'utf8'));
+    assert.deepStrictEqual(claudeJson.projects[out.projectKey].enabledMcpjsonServers, ['merlin']);
+    // Other project untouched.
+    assert.deepStrictEqual(claudeJson.projects['/some/other'].enabledMcpjsonServers, ['only-other']);
+    // Other top-level field untouched.
+    assert.strictEqual(claudeJson.numStartups, 5);
+
+    // Remembered.
+    const remembered = cdc.readClaudeCodeProjects(stateDir);
+    assert.ok(remembered.includes(out.projectKey));
+  } finally { rmTmp(stateDir); rmTmp(projDir); rmTmp(homeDir); }
+});
+
+test('applyRegistrationClaudeCode: refuses corrupt .mcp.json', () => {
+  const stateDir = tmpDir();
+  const projDir = tmpDir();
+  const homeDir = tmpDir();
+  try {
+    fs.writeFileSync(path.join(projDir, '.mcp.json'), '{not-json');
+    const out = cdc.applyRegistrationClaudeCode({
+      stateDir,
+      claudeJsonPath: path.join(homeDir, '.claude.json'),
+      projectRoot: projDir,
+      merlinEntry,
+    });
+    assert.strictEqual(out.ok, false);
+    assert.ok(/unparseable/i.test(out.error));
+    // Original corrupt file untouched.
+    assert.strictEqual(fs.readFileSync(path.join(projDir, '.mcp.json'), 'utf8'), '{not-json');
+  } finally { rmTmp(stateDir); rmTmp(projDir); rmTmp(homeDir); }
+});
+
+test('applyRegistrationClaudeCode: refuses corrupt ~/.claude.json (after .mcp.json write)', () => {
+  const stateDir = tmpDir();
+  const projDir = tmpDir();
+  const homeDir = tmpDir();
+  const claudeJsonPath = path.join(homeDir, '.claude.json');
+  try {
+    fs.writeFileSync(claudeJsonPath, '{garbage');
+    const out = cdc.applyRegistrationClaudeCode({
+      stateDir,
+      claudeJsonPath,
+      projectRoot: projDir,
+      merlinEntry,
+    });
+    assert.strictEqual(out.ok, false);
+    assert.ok(/unparseable/i.test(out.error));
+    // ~/.claude.json untouched.
+    assert.strictEqual(fs.readFileSync(claudeJsonPath, 'utf8'), '{garbage');
+  } finally { rmTmp(stateDir); rmTmp(projDir); rmTmp(homeDir); }
+});
+
+test('applyRegistrationClaudeCode: idempotent — re-run on registered project → changed=false', () => {
+  const stateDir = tmpDir();
+  const projDir = tmpDir();
+  const homeDir = tmpDir();
+  const claudeJsonPath = path.join(homeDir, '.claude.json');
+  try {
+    const first = cdc.applyRegistrationClaudeCode({
+      stateDir, claudeJsonPath, projectRoot: projDir, merlinEntry,
+    });
+    assert.strictEqual(first.ok, true);
+    assert.strictEqual(first.changed, true);
+
+    const second = cdc.applyRegistrationClaudeCode({
+      stateDir, claudeJsonPath, projectRoot: projDir, merlinEntry,
+    });
+    assert.strictEqual(second.ok, true);
+    assert.strictEqual(second.changed, false, 'expected idempotent re-run, got: ' + JSON.stringify(second));
+  } finally { rmTmp(stateDir); rmTmp(projDir); rmTmp(homeDir); }
+});
+
+test('applyRegistrationClaudeCode: missing project root → ok=false (validated path)', () => {
+  const stateDir = tmpDir();
+  const homeDir = tmpDir();
+  try {
+    const out = cdc.applyRegistrationClaudeCode({
+      stateDir,
+      claudeJsonPath: path.join(homeDir, '.claude.json'),
+      projectRoot: '/path/does/not/exist/abc-' + Date.now(),
+      merlinEntry,
+    });
+    assert.strictEqual(out.ok, false);
+    assert.ok(/does not exist/i.test(out.error));
+  } finally { rmTmp(stateDir); rmTmp(homeDir); }
+});
+
+// ── Claude Code: status / detection ──────────────────────────
+
+test('isRegisteredClaudeCode: only true when BOTH files match', () => {
+  const stateDir = tmpDir();
+  const projDir = tmpDir();
+  const homeDir = tmpDir();
+  const claudeJsonPath = path.join(homeDir, '.claude.json');
+  try {
+    // Initially: nothing.
+    assert.strictEqual(cdc.isRegisteredClaudeCode({
+      projectRoot: projDir, projectKey: projDir, claudeJsonPath, merlinEntry,
+    }), false);
+
+    // Only .mcp.json written → still false.
+    fs.writeFileSync(path.join(projDir, '.mcp.json'),
+      JSON.stringify({ mcpServers: { merlin: merlinEntry } }));
+    assert.strictEqual(cdc.isRegisteredClaudeCode({
+      projectRoot: projDir, projectKey: projDir, claudeJsonPath, merlinEntry,
+    }), false);
+
+    // Only ~/.claude.json written → still false.
+    fs.unlinkSync(path.join(projDir, '.mcp.json'));
+    fs.writeFileSync(claudeJsonPath, JSON.stringify({
+      projects: { [projDir]: { enabledMcpjsonServers: ['merlin'] } },
+    }));
+    assert.strictEqual(cdc.isRegisteredClaudeCode({
+      projectRoot: projDir, projectKey: projDir, claudeJsonPath, merlinEntry,
+    }), false);
+
+    // Both written, matching merlin entry → TRUE.
+    fs.writeFileSync(path.join(projDir, '.mcp.json'),
+      JSON.stringify({ mcpServers: { merlin: merlinEntry } }));
+    assert.strictEqual(cdc.isRegisteredClaudeCode({
+      projectRoot: projDir, projectKey: projDir, claudeJsonPath, merlinEntry,
+    }), true);
+
+    // .mcp.json has the wrong shim path → false (overwrite wanted).
+    fs.writeFileSync(path.join(projDir, '.mcp.json'),
+      JSON.stringify({ mcpServers: { merlin: { command: 'old', args: ['old.js'] } } }));
+    assert.strictEqual(cdc.isRegisteredClaudeCode({
+      projectRoot: projDir, projectKey: projDir, claudeJsonPath, merlinEntry,
+    }), false);
+  } finally { rmTmp(stateDir); rmTmp(projDir); rmTmp(homeDir); }
+});
+
+test('listClaudeCodeProjectsStatus: enumerates remembered + live state', () => {
+  const stateDir = tmpDir();
+  const projA = tmpDir();
+  const projB = tmpDir();
+  const homeDir = tmpDir();
+  const claudeJsonPath = path.join(homeDir, '.claude.json');
+  try {
+    cdc.rememberClaudeCodeProject(stateDir, projA);
+    cdc.rememberClaudeCodeProject(stateDir, projB);
+
+    // projA fully wired.
+    fs.writeFileSync(path.join(projA, '.mcp.json'),
+      JSON.stringify({ mcpServers: { merlin: merlinEntry } }));
+    fs.writeFileSync(claudeJsonPath, JSON.stringify({
+      projects: { [projA]: { enabledMcpjsonServers: ['merlin'] } },
+    }));
+
+    const status = cdc.listClaudeCodeProjectsStatus({ stateDir, claudeJsonPath, merlinEntry });
+    assert.strictEqual(status.length, 2);
+    const a = status.find((s) => s.path === projA);
+    const b = status.find((s) => s.path === projB);
+    assert.ok(a && a.enabled === true, 'projA should be enabled');
+    assert.ok(b && b.enabled === false, 'projB should NOT be enabled');
+  } finally { rmTmp(stateDir); rmTmp(projA); rmTmp(projB); rmTmp(homeDir); }
+});
+
+test('rememberClaudeCodeProject: dedups + atomic', () => {
+  const stateDir = tmpDir();
+  try {
+    assert.strictEqual(cdc.rememberClaudeCodeProject(stateDir, '/a'), true);
+    assert.strictEqual(cdc.rememberClaudeCodeProject(stateDir, '/b'), true);
+    assert.strictEqual(cdc.rememberClaudeCodeProject(stateDir, '/a'), true); // dup
+    const list = cdc.readClaudeCodeProjects(stateDir);
+    assert.deepStrictEqual(list, ['/a', '/b']); // sorted, deduped
+    // No tmp leftover.
+    const leftovers = fs.readdirSync(stateDir).filter((n) => n.endsWith('.tmp'));
+    assert.strictEqual(leftovers.length, 0);
+  } finally { rmTmp(stateDir); }
+});
+
+test('detectInstalledClients: returns shape {desktop, code}', () => {
+  const out = cdc.detectInstalledClients();
+  assert.strictEqual(typeof out, 'object');
+  assert.strictEqual(typeof out.desktop, 'boolean');
+  assert.strictEqual(typeof out.code, 'boolean');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

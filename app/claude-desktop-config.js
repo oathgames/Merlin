@@ -1,14 +1,35 @@
-// Claude Desktop / MCP-client autoconfig.
+// Claude Desktop / Claude Code MCP-client autoconfig.
 //
-// Detects Claude Desktop's config file, prompts the user once whether to
-// register Merlin as an MCP server in it, and atomically merges the
-// merlin entry while preserving any other mcpServers the user has
-// configured (Cline, Cursor, etc. all share the same file shape).
+// Two clients, two distinct file shapes — both atomic-merge-safe here.
+//
+// Claude Desktop:
+//   * One file: claude_desktop_config.json (per-OS path).
+//   * Single mcpServers map; entries auto-load on launch.
+//   * No per-project trust model.
+//
+// Claude Code (the CLI / VS Code extension Ryan develops with):
+//   * Two files involved per registration:
+//       (a) ~/.claude.json — user-level, has a `projects` map keyed by
+//           absolute project path. Each project entry carries
+//           `enabledMcpjsonServers: string[]` (allowlist) and
+//           `disabledMcpjsonServers: string[]` (denylist).
+//       (b) <project>/.mcp.json — per-project, carries the actual
+//           `mcpServers` map.
+//   * Servers in <project>/.mcp.json are REGISTERED but not LOADED unless
+//     their name appears in the project's `enabledMcpjsonServers` array.
+//     This is the security model: a teammate checking in .mcp.json
+//     cannot silently inject a server into your Claude Code session.
+//   * Live incident anchor (2026-04-29): v1.20.0 wrote .mcp.json
+//     correctly but never touched .claude.json — Ryan approved the
+//     prompt, the entry registered, Claude Code refused to load it
+//     because pog-shopify's enabledMcpjsonServers was [].
 //
 // All filesystem I/O is wrapped: a missing config dir, a corrupt JSON
 // file, or an unwritable disk all degrade gracefully — never crash the
-// host app. The user's choice is persisted to <stateDir>/.mcp-claude-desktop-prompt
-// so we don't pester them on every launch.
+// host app. Atomic writes (tmp + rename) on every persistence path so
+// a crash mid-write cannot corrupt either client's config. The user's
+// choice is persisted to <stateDir>/.mcp-claude-desktop-prompt so we
+// don't pester them on every launch.
 
 'use strict';
 
@@ -31,6 +52,142 @@ function claudeDesktopConfigPath(platform) {
     return path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json');
   }
   return path.join(os.homedir(), '.config', 'Claude', 'claude_desktop_config.json');
+}
+
+// Resolve Claude Code's user-level config file. The CLI / VS Code
+// extension stores its global state at ~/.claude.json on every OS —
+// ANTHROPIC's source-of-truth path is platform-agnostic, unlike
+// Claude Desktop which deliberately uses Application Support / APPDATA.
+function claudeCodeConfigPath() {
+  return path.join(os.homedir(), '.claude.json');
+}
+
+// Resolve a project's per-project Claude Code config (.mcp.json at the
+// project root). The path passed in is the project root the user
+// picked; this just normalises the trailing component.
+function claudeCodeProjectMcpPath(projectRoot) {
+  return path.join(projectRoot, '.mcp.json');
+}
+
+// Detect which MCP-host clients appear to be installed on this machine.
+// Used by the autoprompt to choose between the Desktop-only / Code-only
+// / both flows. We never try to connect to either client — we just
+// check for the existence of their canonical config (Desktop) or
+// presence of ~/.claude.json (Code). Detection is cheap and tolerant of
+// missing files / permissions errors.
+//
+// Returns { desktop: bool, code: bool }.
+function detectInstalledClients() {
+  const out = { desktop: false, code: false };
+  try {
+    const desktopPath = claudeDesktopConfigPath();
+    // Existence of the per-OS Claude config DIRECTORY (not the file)
+    // signals Claude Desktop is installed even if the file hasn't been
+    // written yet. claudeDesktopConfigPath()'s parent is that dir.
+    out.desktop = fs.statSync(path.dirname(desktopPath)).isDirectory();
+  } catch { /* not installed */ }
+  try {
+    // Claude Code installs/reuses ~/.claude.json on first launch. If
+    // the file exists and is parseable JSON, the user has run it.
+    const ccPath = claudeCodeConfigPath();
+    const raw = fs.readFileSync(ccPath, 'utf8');
+    if (raw && raw.trim()) {
+      JSON.parse(raw); // validate; throws on corrupt
+      out.code = true;
+    }
+  } catch { /* not installed or unparseable */ }
+  return out;
+}
+
+// Resolve a user-supplied project root to the canonical key used in
+// ~/.claude.json's `projects` map. We:
+//   1. Reject non-strings, missing-directory, and not-a-directory cases.
+//   2. fs.realpathSync to resolve symlinks — prevents double-registering
+//      the same project under two key names if the user picks the link
+//      one time and the real path another.
+//   3. path.resolve to normalise (collapse `.`/`..`, ensure absolute).
+// Returns { ok: true, key } or { ok: false, error }.
+function resolveProjectKey(projectRoot) {
+  if (typeof projectRoot !== 'string' || !projectRoot.trim()) {
+    return { ok: false, error: 'Project path is empty.' };
+  }
+  let st;
+  try {
+    st = fs.statSync(projectRoot);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') {
+      return { ok: false, error: 'Project path does not exist: ' + projectRoot };
+    }
+    return { ok: false, error: 'Cannot access project path: ' + (e && e.message) };
+  }
+  if (!st.isDirectory()) {
+    return { ok: false, error: 'Project path is not a directory: ' + projectRoot };
+  }
+  let real;
+  try {
+    real = fs.realpathSync(projectRoot);
+  } catch (e) {
+    // Best-effort fallback if realpath fails (Windows symlink quirks etc.)
+    real = path.resolve(projectRoot);
+  }
+  return { ok: true, key: path.resolve(real) };
+}
+
+// Sentinel file listing every project the user has ever registered for
+// Claude Code. Purely informational — used to populate the sidecar
+// status panel and to default the directory picker to the
+// most-recently-used project on subsequent launches. The actual
+// allowlist enforcement lives in ~/.claude.json's
+// projects[<key>].enabledMcpjsonServers, which we always write
+// authoritatively; this sentinel is a read-side cache, never trusted
+// as the source of truth.
+function claudeCodeProjectsFile(stateDir) {
+  return path.join(stateDir, '.mcp-claude-code-projects.json');
+}
+
+function readClaudeCodeProjects(stateDir) {
+  try {
+    const raw = fs.readFileSync(claudeCodeProjectsFile(stateDir), 'utf8');
+    const obj = JSON.parse(raw);
+    if (obj && Array.isArray(obj.projects)) {
+      // Filter to strings only — defensive against a corrupted sentinel.
+      return obj.projects.filter((p) => typeof p === 'string' && p.length > 0);
+    }
+  } catch {}
+  return [];
+}
+
+function writeClaudeCodeProjects(stateDir, projects) {
+  const target = claudeCodeProjectsFile(stateDir);
+  // Dedup + sort for stable on-disk shape.
+  const seen = new Set();
+  const cleaned = [];
+  for (const p of projects) {
+    if (typeof p !== 'string' || !p.length) continue;
+    if (seen.has(p)) continue;
+    seen.add(p);
+    cleaned.push(p);
+  }
+  cleaned.sort();
+  const payload = JSON.stringify({ schema: 1, projects: cleaned }, null, 2);
+  const tmp = target + '.tmp';
+  try {
+    fs.writeFileSync(tmp, payload, { mode: 0o600 });
+    if (process.platform !== 'win32') {
+      try { fs.chmodSync(tmp, 0o600); } catch {}
+    }
+    fs.renameSync(tmp, target);
+    return true;
+  } catch {
+    try { fs.unlinkSync(tmp); } catch {}
+    return false;
+  }
+}
+
+function rememberClaudeCodeProject(stateDir, projectKey) {
+  const list = readClaudeCodeProjects(stateDir);
+  if (!list.includes(projectKey)) list.push(projectKey);
+  return writeClaudeCodeProjects(stateDir, list);
 }
 
 // Sentinel file recording the user's decision. Schema:
@@ -157,6 +314,100 @@ function mergeMerlinEntry(existing, merlinEntry) {
   return { changed: true, config: cfg };
 }
 
+// Merge the merlin entry into a .mcp.json (per-project Claude Code
+// config). Same shape as Claude Desktop's mcpServers block, just at
+// the file's top level. Pure function — no I/O.
+//
+// Behavior mirrors mergeMerlinEntry above:
+//   * If `mcpServers` is missing, create it.
+//   * Same merlin entry → no-op.
+//   * Different merlin entry → overwrite (latest install path wins).
+//   * Other servers (other-mcp, etc.) preserved untouched.
+function mergeMcpJsonMerlinEntry(existing, merlinEntry) {
+  const cfg = (existing && typeof existing === 'object') ? Object.assign({}, existing) : {};
+  const mcpServers = (cfg.mcpServers && typeof cfg.mcpServers === 'object')
+    ? Object.assign({}, cfg.mcpServers)
+    : {};
+  const current = mcpServers.merlin;
+  const same = current
+    && typeof current === 'object'
+    && current.command === merlinEntry.command
+    && Array.isArray(current.args)
+    && Array.isArray(merlinEntry.args)
+    && current.args.length === merlinEntry.args.length
+    && current.args.every((v, i) => v === merlinEntry.args[i]);
+  if (same) {
+    return { changed: false, config: cfg };
+  }
+  mcpServers.merlin = merlinEntry;
+  cfg.mcpServers = mcpServers;
+  return { changed: true, config: cfg };
+}
+
+// Merge the merlin enablement into ~/.claude.json. Pure function — no I/O.
+//
+// Touches EXACTLY ONE FIELD: projects[<projectKey>].enabledMcpjsonServers.
+// Every other field at every level is preserved verbatim — Claude Code's
+// ~/.claude.json carries the user's settings, theme, history pointers,
+// onboarding state, dozens of other fields. A clobbered ~/.claude.json
+// would wipe the user's Claude Code state. The function:
+//
+//   1. Defensive-copies the top-level object.
+//   2. Defensive-copies the projects map (creating it if missing).
+//   3. Defensive-copies the per-project entry (creating it if missing).
+//   4. Reads enabledMcpjsonServers as an array (defaulting to []).
+//   5. Adds 'merlin' if absent (idempotent — present already → no-op).
+//   6. Also REMOVES 'merlin' from disabledMcpjsonServers if present
+//      there — Claude Code's denylist takes precedence over the
+//      allowlist, so an unfinished prior session that Disabled merlin
+//      must be cleared when the user explicitly re-enables.
+//
+// Returns { changed: bool, config: <updated-top-level> }. `changed` is
+// false only when neither the enable-list nor the disable-list needed
+// touching — caller skips the disk write in that case.
+function mergeClaudeJsonEnable(existing, projectKey) {
+  const cfg = (existing && typeof existing === 'object') ? Object.assign({}, existing) : {};
+  const projects = (cfg.projects && typeof cfg.projects === 'object')
+    ? Object.assign({}, cfg.projects)
+    : {};
+  const entry = (projects[projectKey] && typeof projects[projectKey] === 'object')
+    ? Object.assign({}, projects[projectKey])
+    : {};
+
+  const enabled = Array.isArray(entry.enabledMcpjsonServers)
+    ? entry.enabledMcpjsonServers.slice()
+    : [];
+  const disabled = Array.isArray(entry.disabledMcpjsonServers)
+    ? entry.disabledMcpjsonServers.slice()
+    : [];
+
+  let changed = false;
+  if (!enabled.includes('merlin')) {
+    enabled.push('merlin');
+    changed = true;
+  }
+  const wasDisabled = disabled.indexOf('merlin');
+  if (wasDisabled !== -1) {
+    disabled.splice(wasDisabled, 1);
+    changed = true;
+  }
+  if (!changed) {
+    return { changed: false, config: cfg };
+  }
+
+  entry.enabledMcpjsonServers = enabled;
+  // Only write the disabled array back if it existed before OR we just
+  // pruned it — never invent the field if Claude Code never wrote it.
+  if (Array.isArray(existing && existing.projects && existing.projects[projectKey]
+                    && existing.projects[projectKey].disabledMcpjsonServers)
+      || wasDisabled !== -1) {
+    entry.disabledMcpjsonServers = disabled;
+  }
+  projects[projectKey] = entry;
+  cfg.projects = projects;
+  return { changed: true, config: cfg };
+}
+
 // Whether the prompt should fire. Decision rules:
 //   1. If the user previously chose 'never' → don't ask.
 //   2. If Claude Desktop's config dir doesn't exist → don't ask
@@ -218,6 +469,133 @@ function isRegistered({ configPath, merlinEntry }) {
   return e.args.every((v, i) => v === merlinEntry.args[i]);
 }
 
+// Per-project Claude Code "is merlin loaded?" check. Returns true iff
+// BOTH conditions hold:
+//   1. <projectRoot>/.mcp.json has a matching merlin entry under mcpServers.
+//   2. ~/.claude.json's projects[<projectKey>].enabledMcpjsonServers
+//      includes "merlin".
+// Failing either check → returns false. Identical to the Desktop
+// isRegistered() in spirit but spans the two-file model.
+function isRegisteredClaudeCode({ projectRoot, projectKey, claudeJsonPath, merlinEntry }) {
+  const mcpJsonPath = claudeCodeProjectMcpPath(projectRoot);
+  const projectCfg = readExistingConfig(mcpJsonPath);
+  if (!projectCfg || typeof projectCfg !== 'object') return false;
+  const e = projectCfg.mcpServers && projectCfg.mcpServers.merlin;
+  if (!e || typeof e !== 'object') return false;
+  if (e.command !== merlinEntry.command) return false;
+  if (!Array.isArray(e.args) || e.args.length !== merlinEntry.args.length) return false;
+  if (!e.args.every((v, i) => v === merlinEntry.args[i])) return false;
+
+  const userCfg = readExistingConfig(claudeJsonPath);
+  if (!userCfg || typeof userCfg !== 'object') return false;
+  const proj = userCfg.projects && userCfg.projects[projectKey];
+  if (!proj || typeof proj !== 'object') return false;
+  return Array.isArray(proj.enabledMcpjsonServers)
+    && proj.enabledMcpjsonServers.includes('merlin');
+}
+
+// Sidecar status: enumerate every project the user has registered with
+// Claude Code (read from <stateDir>/.mcp-claude-code-projects.json) and
+// verify each one's live state. Used by the IPC status handler so the
+// renderer can show a per-project row with a live/stale dot.
+//
+// The "live" check re-runs isRegisteredClaudeCode for each project —
+// catches the case where a teammate edited <project>/.mcp.json by hand
+// and removed merlin, or where ~/.claude.json was reset.
+function listClaudeCodeProjectsStatus({ stateDir, claudeJsonPath, merlinEntry }) {
+  const out = [];
+  const remembered = readClaudeCodeProjects(stateDir);
+  for (const projectKey of remembered) {
+    let enabled = false;
+    try {
+      enabled = isRegisteredClaudeCode({
+        projectRoot: projectKey,
+        projectKey,
+        claudeJsonPath,
+        merlinEntry,
+      });
+    } catch { enabled = false; }
+    out.push({ path: projectKey, enabled });
+  }
+  return out;
+}
+
+// Apply the Claude Code registration to ONE project. Two atomic writes:
+//   1. Merge merlin entry into <projectRoot>/.mcp.json (creating if missing).
+//   2. Add 'merlin' to ~/.claude.json's
+//      projects[<projectKey>].enabledMcpjsonServers (creating projects
+//      map / project entry / array as needed).
+// Both writes are tmp+rename atomic. If either source file is corrupt,
+// we refuse to touch it (clear error) — never clobber.
+//
+// Returns { ok, changed?, mcpJsonPath?, claudeJsonPath?, projectKey?, error? }.
+//
+// `changed` = true iff at least one of the two files actually got
+// rewritten. A re-run on an already-registered project returns
+// { ok: true, changed: false } and rewrites nothing.
+function applyRegistrationClaudeCode({ stateDir, claudeJsonPath, projectRoot, merlinEntry }) {
+  const resolved = resolveProjectKey(projectRoot);
+  if (!resolved.ok) {
+    return { ok: false, error: resolved.error };
+  }
+  const projectKey = resolved.key;
+  const mcpJsonPath = claudeCodeProjectMcpPath(projectKey);
+
+  // Step 1: per-project .mcp.json
+  const existingProject = readExistingConfig(mcpJsonPath);
+  if (existingProject === null) {
+    return { ok: false, error: '.mcp.json at ' + projectKey + ' is unparseable; refusing to overwrite. Remove or fix it manually.' };
+  }
+  const projMerge = mergeMcpJsonMerlinEntry(existingProject || {}, merlinEntry);
+  let mcpJsonChanged = false;
+  if (projMerge.changed) {
+    const wrote = writeMergedConfig(mcpJsonPath, projMerge.config);
+    if (!wrote) {
+      return { ok: false, error: 'Failed to write ' + mcpJsonPath + ' (permissions or disk error).' };
+    }
+    mcpJsonChanged = true;
+  }
+
+  // Step 2: user-level ~/.claude.json
+  const existingUser = readExistingConfig(claudeJsonPath);
+  if (existingUser === null) {
+    // We've already written .mcp.json successfully above — don't roll
+    // back, just surface the clean error so the user can fix the
+    // ~/.claude.json corruption and re-run. Idempotent on re-run.
+    return {
+      ok: false,
+      error: claudeJsonPath + ' is unparseable; refusing to overwrite. Repair the JSON manually, then re-run.',
+      mcpJsonPath,
+      mcpJsonChanged,
+    };
+  }
+  const userMerge = mergeClaudeJsonEnable(existingUser || {}, projectKey);
+  let claudeJsonChanged = false;
+  if (userMerge.changed) {
+    const wrote = writeMergedConfig(claudeJsonPath, userMerge.config);
+    if (!wrote) {
+      return {
+        ok: false,
+        error: 'Failed to write ' + claudeJsonPath + ' (permissions or disk error).',
+        mcpJsonPath,
+        mcpJsonChanged,
+      };
+    }
+    claudeJsonChanged = true;
+  }
+
+  // Step 3: remember this project so future status panels can list it.
+  rememberClaudeCodeProject(stateDir, projectKey);
+
+  return {
+    ok: true,
+    changed: mcpJsonChanged || claudeJsonChanged,
+    mcpJsonPath,
+    claudeJsonPath,
+    projectKey,
+  };
+}
+
 // Apply the registration: merge + atomic write + decision persist.
 // Caller has already obtained user consent. Returns { ok, changed, error? }.
 function applyRegistration({ stateDir, configPath, merlinEntry }) {
@@ -260,6 +638,7 @@ function recordSkip(stateDir, currentMajor, never) {
 }
 
 module.exports = {
+  // Claude Desktop (single-file model).
   claudeDesktopConfigPath,
   decisionFile,
   readDecision,
@@ -272,4 +651,18 @@ module.exports = {
   isRegistered,
   applyRegistration,
   recordSkip,
+  // Claude Code (two-file model).
+  claudeCodeConfigPath,
+  claudeCodeProjectMcpPath,
+  claudeCodeProjectsFile,
+  readClaudeCodeProjects,
+  writeClaudeCodeProjects,
+  rememberClaudeCodeProject,
+  detectInstalledClients,
+  resolveProjectKey,
+  mergeMcpJsonMerlinEntry,
+  mergeClaudeJsonEnable,
+  isRegisteredClaudeCode,
+  listClaudeCodeProjectsStatus,
+  applyRegistrationClaudeCode,
 };
