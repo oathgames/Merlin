@@ -667,28 +667,44 @@ test('klaviyo tool input schema accepts every template field', () => {
   assert.ok(typeof entry.handler === 'function');
 });
 
-test('klaviyo handler dispatches templates-bulk-upload with correct binary action', async () => {
+test('klaviyo handler dispatches templates-list without crashing on engine-missing', async () => {
   // Stub runBinary by intercepting at ctx.getBinaryPath — when the
   // binary path is null, runBinary short-circuits with the friendly
-  // "engine not found" message but importantly logs the action it WOULD
-  // have called via the early-fail path. The brand-required guard runs
-  // first; templates-bulk-upload requires brand, so without one we
-  // expect a refusal — pin THAT shape so the tool is correctly classified.
+  // "engine not found" message. We assert that templates-list (the
+  // brand-OPTIONAL action) makes it past the runBinary guards and
+  // returns a clean envelope, not a thrown exception.
   const { tool, registry } = makeFakeTool();
   const ctx = makeCtx({ getBinaryPath: () => null });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'klaviyo');
-  // No brand → klaviyo template-* actions must still proceed past the
-  // brand guard for non-bulk actions (templates-list/get are brand-
-  // optional). The brand check is per-action and lives in the runBinary
-  // BRAND_OPTIONAL_ACTIONS allowlist; assert the engine-not-found
-  // message bubbles up cleanly without crashing.
   const out = await entry.handler({ action: 'templates-list' });
-  // We should reach the engine-not-found branch (or pass-through), not
-  // throw or return undefined.
   assert.ok(out, 'handler must return a result');
   assert.ok(Array.isArray(out.content) || typeof out.text === 'string',
     'result must be an MCP content envelope or text');
+});
+
+test('klaviyo handler dispatches templates-bulk-upload with brand argument', async () => {
+  // templates-bulk-upload IS brand-required (the dir must be inside
+  // assets/brands/<brand>/). With a brand passed but no engine, we
+  // expect to reach the engine-not-found branch — proving the brand
+  // guard does NOT short-circuit this action with a "no brand"
+  // refusal (which would mean we mis-classified it as brand-optional).
+  const { tool, registry } = makeFakeTool();
+  const ctx = makeCtx({ getBinaryPath: () => null });
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'klaviyo');
+  const out = await entry.handler({
+    action: 'templates-bulk-upload',
+    brand: 'demo',
+    dir: '/some/dir',
+    nameTemplate: 'demo / {basename}',
+  });
+  assert.ok(out, 'handler must return a result');
+  // The body should NOT contain the "no brand specified" refusal — we
+  // passed brand=demo, so we want the engine-not-found pass-through.
+  const text = (out.content && out.content[0] && out.content[0].text) || out.text || '';
+  assert.ok(!text.includes('no brand specified'),
+    'brand=demo must reach the engine layer, not the brand-guard refusal');
 });
 
 test('klaviyo template-create handler returns a structured envelope', async () => {
