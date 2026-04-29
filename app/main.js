@@ -1300,6 +1300,12 @@ const activeChildProcesses = new Set(); // track spawned Merlin.exe for cleanup
 // createMerlinMcpServer. Cleared on shutdown. Re-set on brand switch /
 // session restart.
 let _lastMcpCtx = null;
+// Local MCP IPC endpoint (Unix socket / Windows named pipe) for the
+// Claude Desktop sidecar shim. Single instance for the lifetime of the
+// app process — created on the first successful startSession and
+// refreshed (setTools) on subsequent sessions. Stopped on before-quit.
+// See app/mcp-ipc-endpoint.js for the full security boundary comment.
+let _mcpIpcEndpoint = null;
 let pendingMessageQueue = []; // Queue messages sent before SDK is ready
 let pendingApprovals = new Map();
 let activeQuery = null;
@@ -2869,6 +2875,46 @@ async function startSession(brandOverride) {
     const merlinMcp = await createMerlinMcpServer(mcpCtx);
     _lastMcpCtx = mcpCtx;
     mcpConfig = { merlin: merlinMcp };
+
+    // ── Sidecar IPC endpoint (Claude Desktop / Codex / Cline / Cursor) ──
+    //
+    // Bring the local MCP IPC endpoint up (or refresh its tool registry
+    // if it's already running). Claude Desktop spawns
+    // app/merlin-mcp-shim.js, which reads <stateDir>/mcp-shim-token and
+    // connects to the Unix domain socket / Windows named pipe this
+    // endpoint listens on. The same wrapped tool array is passed to both
+    // consumers — credentials never cross the IPC boundary, only tool
+    // inputs and redacted outputs (Hard-Won Security Rule 2 spirit).
+    //
+    // Lifecycle:
+    //   * First successful startSession → endpoint comes up, token + socket
+    //     path written to <stateDir>/mcp-shim-token (mode 0o600).
+    //   * Subsequent startSession (e.g. brand switch) → setTools refreshes
+    //     the registry without rotating the token (the shim's open
+    //     connections stay valid).
+    //   * before-quit → stop() closes the socket, removes the file.
+    //
+    // Failure to bring the endpoint up MUST NOT block in-app chat; the
+    // catch below logs and continues.
+    try {
+      const allTools = (merlinMcp && merlinMcp._merlinTools) || [];
+      if (_mcpIpcEndpoint && typeof _mcpIpcEndpoint.setTools === 'function') {
+        _mcpIpcEndpoint.setTools(allTools);
+      } else if (allTools.length) {
+        const { start: startMcpIpc } = require('./mcp-ipc-endpoint');
+        _mcpIpcEndpoint = startMcpIpc({
+          stateDir,
+          tools: allTools,
+          ctx: mcpCtx,
+          getCtx: () => _lastMcpCtx,
+        });
+        console.log(`[mcp-ipc] sidecar endpoint listening (${_mcpIpcEndpoint.socketPath})`);
+      }
+    } catch (ipcErr) {
+      // Endpoint failure is non-fatal — sidecar mode just won't work
+      // until the next session restart. In-app chat still functions.
+      console.error('[mcp-ipc] Failed to start IPC sidecar endpoint:', ipcErr && ipcErr.message);
+    }
   } catch (err) {
     console.error('[mcp] Failed to create Merlin MCP server:', err.message);
   }
@@ -11168,6 +11214,143 @@ if (app.isPackaged) {
   try { app.setAsDefaultProtocolClient('merlin', process.execPath, [path.resolve(process.argv[1])]); } catch {}
 }
 
+// ── Claude Desktop autoconfig prompt (sidecar mode) ──────────────
+//
+// On first launch (or after a major version bump), offer the user a
+// one-click way to register Merlin as an MCP server in Claude Desktop's
+// claude_desktop_config.json. The dialog has three options:
+//   * Add now      — atomically merges the merlin entry and persists 'added'
+//   * Skip         — persists 'skipped' for this major version (re-asks on next major)
+//   * Don't ask    — persists 'never'; suppressed forever
+//
+// All filesystem I/O is wrapped — a missing config dir, corrupt JSON, or
+// unwritable disk all degrade gracefully without crashing the app. The
+// claude-desktop-config.js module owns the merge logic + atomic write;
+// this function is just the wiring + Electron dialog UX.
+//
+// The shim is launched via the bundled Node binary (the same one
+// getBundledNodePath returns for the in-app SDK). In dev mode we fall
+// back to a system `node` — Claude Desktop will only succeed if `node`
+// is on the user's PATH, which is the same constraint as any dev MCP
+// server.
+async function maybePromptClaudeDesktopAutoconfig() {
+  if (!app.isPackaged) return; // Dev: don't pollute the user's real Claude Desktop config from a session worktree.
+
+  let cdcMod;
+  try { cdcMod = require('./claude-desktop-config'); }
+  catch (e) { console.warn('[mcp-autoconfig] module load failed:', e && e.message); return; }
+
+  // Resolve the shim path. Inside a packaged app, app/merlin-mcp-shim.js
+  // sits in resources/app/merlin-mcp-shim.js (asar-unpacked sibling),
+  // OR — because we'll add it to extraResources — at
+  // resources/app/merlin-mcp-shim.js or appInstall/.claude/tools/...
+  // The cleanest approach: ship it as extraResources so Claude Desktop
+  // can spawn it directly without traversing the asar archive.
+  // The shim ships unpacked from asar (see asarUnpack in package.json).
+  // Packaged: <appInstall>/app.asar.unpacked/app/merlin-mcp-shim.js
+  // Dev:      <repo>/app/merlin-mcp-shim.js
+  const shimPath = app.isPackaged
+    ? path.join(appInstall, 'app.asar.unpacked', 'app', 'merlin-mcp-shim.js')
+    : path.join(__dirname, 'merlin-mcp-shim.js');
+  const nodePath = getBundledNodePath() || 'node';
+
+  const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
+  const configPath = cdcMod.claudeDesktopConfigPath();
+
+  // Compute the major version from package.json. If unparseable, skip.
+  let currentMajor = 0;
+  try { currentMajor = parseInt(String(getCurrentVersion() || '').split('.')[0], 10) || 0; } catch {}
+
+  const decision = cdcMod.shouldPrompt({ stateDir, configPath, merlinEntry, currentMajor });
+  if (!decision.fire) return;
+
+  // Show the dialog. dialog.showMessageBox returns when the user clicks
+  // a button — we tag with cancelId/defaultId so Esc maps to Skip and
+  // Enter maps to Add.
+  const { dialog } = require('electron');
+  let response;
+  try {
+    const result = await dialog.showMessageBox(win || null, {
+      type: 'question',
+      title: 'Use Merlin from Claude Desktop?',
+      message: 'Merlin can register itself as a tool in Claude Desktop.',
+      detail:
+        'After this, you can ask Claude Desktop things like "create a Meta ad" or "show me my Stripe revenue" and Claude will call Merlin\'s tools directly.\n\n' +
+        'Your API keys never leave Merlin\'s encrypted vault — Claude Desktop only sees tool inputs and outputs, the same boundary as the in-app chat.',
+      buttons: ['Add to Claude Desktop', 'Skip', "Don't ask again"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    });
+    response = result && result.response;
+  } catch (err) {
+    console.warn('[mcp-autoconfig] dialog failed:', err && err.message);
+    return;
+  }
+
+  if (response === 0) {
+    const out = cdcMod.applyRegistration({ stateDir, configPath, merlinEntry });
+    if (!out.ok) {
+      try {
+        await dialog.showMessageBox(win || null, {
+          type: 'warning',
+          title: 'Could not update Claude Desktop config',
+          message: 'Merlin was unable to register itself with Claude Desktop.',
+          detail: out.error || 'Unknown error.',
+          buttons: ['OK'],
+        });
+      } catch {}
+    }
+  } else if (response === 1) {
+    cdcMod.recordSkip(stateDir, currentMajor, false);
+  } else if (response === 2) {
+    cdcMod.recordSkip(stateDir, currentMajor, true);
+  }
+}
+
+// IPC: renderer-driven "Add to Claude Desktop" button (Sidecar status
+// panel in the magic tab). Same merge logic as the autoprompt; never
+// asks for consent again. Returns { ok, changed?, error?, registered }.
+ipcMain.handle('mcp-autoconfig-add', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, error: 'Sidecar autoconfig is only available in packaged builds.' };
+  }
+  let cdcMod;
+  try { cdcMod = require('./claude-desktop-config'); }
+  catch (e) { return { ok: false, error: 'autoconfig module not available' }; }
+  // The shim ships unpacked from asar (see asarUnpack in package.json).
+  // Packaged: <appInstall>/app.asar.unpacked/app/merlin-mcp-shim.js
+  // Dev:      <repo>/app/merlin-mcp-shim.js
+  const shimPath = app.isPackaged
+    ? path.join(appInstall, 'app.asar.unpacked', 'app', 'merlin-mcp-shim.js')
+    : path.join(__dirname, 'merlin-mcp-shim.js');
+  const nodePath = getBundledNodePath() || 'node';
+  const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
+  const configPath = cdcMod.claudeDesktopConfigPath();
+  const out = cdcMod.applyRegistration({ stateDir, configPath, merlinEntry });
+  out.registered = cdcMod.isRegistered({ configPath, merlinEntry });
+  return out;
+});
+
+// IPC: renderer query — is the sidecar wired up?
+ipcMain.handle('mcp-autoconfig-status', async () => {
+  let cdcMod;
+  try { cdcMod = require('./claude-desktop-config'); }
+  catch { return { registered: false, socketAlive: false }; }
+  // The shim ships unpacked from asar (see asarUnpack in package.json).
+  // Packaged: <appInstall>/app.asar.unpacked/app/merlin-mcp-shim.js
+  // Dev:      <repo>/app/merlin-mcp-shim.js
+  const shimPath = app.isPackaged
+    ? path.join(appInstall, 'app.asar.unpacked', 'app', 'merlin-mcp-shim.js')
+    : path.join(__dirname, 'merlin-mcp-shim.js');
+  const nodePath = getBundledNodePath() || 'node';
+  const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
+  const configPath = cdcMod.claudeDesktopConfigPath();
+  const registered = cdcMod.isRegistered({ configPath, merlinEntry });
+  const socketAlive = !!(_mcpIpcEndpoint && _mcpIpcEndpoint.server && _mcpIpcEndpoint.server.listening);
+  return { registered, socketAlive, configPath, shimPath };
+});
+
 // Single instance lock — prevent multiple windows
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.exit(0); } // exit(0) is synchronous — quit() is async and flashes a taskbar icon before closing
@@ -11346,6 +11529,17 @@ app.whenReady().then(async () => {
     appendErrorLog(`${new Date().toISOString()} [briefing-notifier] startup failed: ${err.message}\n`);
   }
 
+  // Claude Desktop / MCP-client autoconfig prompt. Fires once per
+  // major version (or "never" if the user opted out). Delayed 4s so
+  // the chat UI has finished its first paint before a modal grabs
+  // focus. Dialog runs on the renderer's win, but degrades gracefully
+  // if win is gone.
+  setTimeout(() => {
+    maybePromptClaudeDesktopAutoconfig().catch((err) => {
+      console.warn('[mcp-autoconfig] prompt failed (non-fatal):', err && err.message);
+    });
+  }, 4000);
+
   // Chain filler-cache prewarm onto the TTS-ready promise kicked off at the
   // top of app.whenReady(). ensureTtsReady() is idempotent — this call
   // converges on the same worker without double-spawning the utility
@@ -11385,6 +11579,18 @@ app.whenReady().then(async () => {
     } catch (e) {
       console.error('[before-quit] jobStore.shutdown failed:', e && e.message);
     }
+    // Tear down the sidecar IPC endpoint (closes socket, removes the
+    // socket file on Unix, deletes the token file). Stale tokens from
+    // a crashed previous run are also cleaned up by start() on the next
+    // launch — this is just the clean-shutdown path.
+    try {
+      if (_mcpIpcEndpoint && typeof _mcpIpcEndpoint.stop === 'function') {
+        _mcpIpcEndpoint.stop();
+      }
+    } catch (e) {
+      console.error('[before-quit] mcp-ipc stop failed:', e && e.message);
+    }
+    _mcpIpcEndpoint = null;
     _lastMcpCtx = null;
   });
 

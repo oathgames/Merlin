@@ -1,6 +1,6 @@
 {
   "name": "Merlin",
-  "version": "1.19.4",
+  "version": "1.20.0",
   "description": "Merlin — Your AI CMO",
   "main": "app/main.js",
   "scripts": {
@@ -38,7 +38,8 @@
       "node_modules/onnxruntime-common/**/*",
       "node_modules/kokoro-js/**/*",
       "node_modules/@huggingface/transformers/**/*",
-      "node_modules/phonemizer/**/*"
+      "node_modules/phonemizer/**/*",
+      "app/merlin-mcp-shim.js"
     ],
     "afterSign": "build/notarize.js",
     "extraResources": [
