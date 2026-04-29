@@ -10387,20 +10387,48 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
 // the UX regression and orphans the goal-picker step.
 (async function checkToS() {
   const accepted = await merlin.checkTosAccepted();
-  if (accepted) {
-    document.getElementById('tos-overlay').classList.add('hidden');
-    init();
-  } else {
-    document.getElementById('tos-overlay').classList.remove('hidden');
-    const cb = document.getElementById('tos-checkbox');
-    const btn = document.getElementById('tos-accept-btn');
-    cb.addEventListener('change', () => { btn.disabled = !cb.checked; });
+  // REGRESSION GUARD (2026-04-29, Codex audit finding #7): the first-run
+  // overlay flow used to key solely on `tosAccepted`, so a user who
+  // accepted ToS and then closed the app before reaching referral or goal
+  // resumed straight at init() — silently skipping both later screens. Now
+  // we read the onboarding checkpoint's `setup_step` and route to the
+  // matching overlay so a mid-flow exit resumes where it left off:
+  //   absent / 'tos'      → ToS overlay (also covers !accepted fall-through)
+  //   'referral'          → ToS hidden, referral overlay
+  //   'goal'              → ToS + referral hidden, goal overlay
+  //   'done' / anything → → init() (already onboarded)
+  // Each transition handler writes the NEXT step before showing the next
+  // overlay, so a crash mid-flow always lands on the right resume target.
+  // Do NOT collapse this back to a single `if (accepted) init()` — that
+  // re-introduces the silent-skip bug. See main.js:7634 for the schema.
+  // Shared helpers used by both cold-start and resume paths. Fade-out one
+  // overlay → show the next; goal chip click → init(). Each transition
+  // also writes the NEXT setup_step to the onboarding checkpoint BEFORE
+  // showing the next overlay, so a crash mid-flow always lands on the
+  // right resume target on next launch.
+  function _fadeHideOverlay(overlay, onDone) {
+    if (!overlay) { if (onDone) onDone(); return; }
+    overlay.style.animation = 'fadeOut .3s ease forwards';
+    setTimeout(() => {
+      overlay.classList.add('hidden');
+      overlay.style.animation = '';
+      if (onDone) onDone();
+    }, 300);
+  }
+  function _showOverlay(id) {
+    const ov = document.getElementById(id);
+    if (ov) ov.classList.remove('hidden');
+  }
 
-    // Referral DOM now lives in `#referral-capture-overlay` (Cluster-O).
-    // IDs preserved so the refCheckbox/refInput/refStatus references below
-    // still resolve — only the TRIGGER (ToS accept vs. continue-button)
-    // moved. Wire the input handlers once at mount time; the actual
-    // referral-apply fires on `#referral-capture-continue` click below.
+  // Wire the referral + goal overlay handlers. Idempotent across cold-start
+  // and resume callers because each handler writes to the checkpoint and
+  // re-reads the DOM by ID. ToS-specific wiring stays in the cold-start
+  // branch since the resume path skips ToS by definition.
+  let _onboardingHandlersWired = false;
+  function _wireOnboardingOverlayHandlers() {
+    if (_onboardingHandlersWired) return;
+    _onboardingHandlersWired = true;
+
     const refCheckbox = document.getElementById('tos-has-referral');
     const refWrap = document.getElementById('tos-referral-wrap');
     const refInput = document.getElementById('tos-referral-input');
@@ -10416,38 +10444,15 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
       });
     }
 
-    // Shared helpers for the overlay transitions. Fade-out ToS → show
-    // referral overlay; fade-out referral → show goal overlay; goal
-    // chip click → hide + init(). Each transition uses the same .3s
-    // fadeOut style the original ToS flow used so motion stays coherent.
-    function _fadeHideOverlay(overlay, onDone) {
-      if (!overlay) { if (onDone) onDone(); return; }
-      overlay.style.animation = 'fadeOut .3s ease forwards';
-      setTimeout(() => {
-        overlay.classList.add('hidden');
-        overlay.style.animation = '';
-        if (onDone) onDone();
-      }, 300);
-    }
-    function _showOverlay(id) {
-      const ov = document.getElementById(id);
-      if (ov) ov.classList.remove('hidden');
-    }
-
-    // Goal chip click → persist + init(). Shared handler used by both
-    // `.goal-chip[data-goal]` clicks and the referral-continue path.
     async function _finishOnboardingWithGoal(goal) {
-      // Fire-and-forget the checkpoint write — we never want a failed
+      // Fire-and-forget the checkpoint writes — we never want a failed
       // IPC to block the user from starting their session.
-      if (typeof goal === 'string' && goal) {
-        try { _writeOnboardingCheckpointSafe({ goal }); } catch {}
-      }
+      const partial = { setup_step: 'done' };
+      if (typeof goal === 'string' && goal) partial.goal = goal;
+      try { _writeOnboardingCheckpointSafe(partial); } catch {}
       _fadeHideOverlay(document.getElementById('goal-overlay'), () => init());
     }
 
-    // Referral-apply logic — lifted VERBATIM from the old tos-accept-btn
-    // handler. Only the surrounding trigger changed; the IDs + branch
-    // structure + copy are unchanged so existing behavior holds.
     async function _applyReferralIfProvided() {
       if (!(refCheckbox && refCheckbox.checked && refInput)) return;
       const code = (refInput.value || '').trim().toLowerCase();
@@ -10475,37 +10480,27 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
       }
     }
 
-    // ToS accept → save + open referral overlay (NOT init()).
-    btn.addEventListener('click', async () => {
-      const emailOptIn = document.getElementById('email-optin-checkbox').checked;
-      await merlin.acceptTos({ emailOptIn });
-      _fadeHideOverlay(document.getElementById('tos-overlay'), () => {
-        _showOverlay('referral-capture-overlay');
-      });
-    });
-
-    // Referral continue → apply referral → open goal overlay.
     const refContinueBtn = document.getElementById('referral-capture-continue');
     if (refContinueBtn) {
       refContinueBtn.addEventListener('click', async () => {
         await _applyReferralIfProvided();
+        try { _writeOnboardingCheckpointSafe({ setup_step: 'goal' }); } catch {}
         _fadeHideOverlay(document.getElementById('referral-capture-overlay'), () => {
           _showOverlay('goal-overlay');
         });
       });
     }
 
-    // Referral skip → skip referral apply → open goal overlay.
     const refSkipBtn = document.getElementById('referral-capture-skip');
     if (refSkipBtn) {
       refSkipBtn.addEventListener('click', () => {
+        try { _writeOnboardingCheckpointSafe({ setup_step: 'goal' }); } catch {}
         _fadeHideOverlay(document.getElementById('referral-capture-overlay'), () => {
           _showOverlay('goal-overlay');
         });
       });
     }
 
-    // Goal chip click → persist goal → init().
     document.querySelectorAll('.goal-chip[data-goal]').forEach((chip) => {
       chip.addEventListener('click', () => {
         const goal = chip.getAttribute('data-goal') || '';
@@ -10513,12 +10508,42 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
       });
     });
 
-    // Goal skip → no goal persisted → init().
     const goalSkipBtn = document.getElementById('goal-skip');
     if (goalSkipBtn) {
       goalSkipBtn.addEventListener('click', () => {
         _finishOnboardingWithGoal('');
       });
     }
+  }
+
+  if (accepted) {
+    const ck = await _readOnboardingCheckpointSafe();
+    const step = (ck && typeof ck.setup_step === 'string') ? ck.setup_step : '';
+    if (step === 'referral' || step === 'goal') {
+      document.getElementById('tos-overlay').classList.add('hidden');
+      _wireOnboardingOverlayHandlers();
+      if (step === 'referral') _showOverlay('referral-capture-overlay');
+      else _showOverlay('goal-overlay');
+      return;
+    }
+    document.getElementById('tos-overlay').classList.add('hidden');
+    init();
+  } else {
+    document.getElementById('tos-overlay').classList.remove('hidden');
+    const cb = document.getElementById('tos-checkbox');
+    const btn = document.getElementById('tos-accept-btn');
+    cb.addEventListener('change', () => { btn.disabled = !cb.checked; });
+
+    _wireOnboardingOverlayHandlers();
+
+    // ToS accept → mark next-step + open referral overlay (NOT init()).
+    btn.addEventListener('click', async () => {
+      const emailOptIn = document.getElementById('email-optin-checkbox').checked;
+      await merlin.acceptTos({ emailOptIn });
+      try { _writeOnboardingCheckpointSafe({ setup_step: 'referral' }); } catch {}
+      _fadeHideOverlay(document.getElementById('tos-overlay'), () => {
+        _showOverlay('referral-capture-overlay');
+      });
+    });
   }
 })();

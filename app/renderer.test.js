@@ -102,6 +102,59 @@ test('§3.13 — three-screen onboarding flow (ToS → referral → goal) wired'
     'goal chip class wired');
 });
 
+test('§3.13 — onboarding flow persists setup_step on each transition (Codex audit #7)', () => {
+  // REGRESSION GUARD: a user who accepts ToS and exits before the
+  // referral or goal screens must resume mid-flow on next launch.
+  // Before this fix, checkToS() keyed solely on tosAccepted and
+  // dropped the user straight into init() — silently skipping the
+  // remaining two onboarding screens. The fix is two-part:
+  //   (a) every transition writes the NEXT setup_step to the checkpoint
+  //   (b) checkToS() reads that step on relaunch and routes to the
+  //       matching overlay
+  // Both halves MUST be present — without (a) the resume path has no
+  // signal to route on; without (b) the writes are dead weight.
+
+  // Part (a): three writes, one per transition.
+  assert.ok(
+    /_writeOnboardingCheckpointSafe\(\{\s*setup_step:\s*'referral'\s*\}\)/.test(RENDERER_JS),
+    'ToS accept writes setup_step: referral',
+  );
+  // The two referral exits (continue + skip) both bump to 'goal'.
+  const goalWrites = (RENDERER_JS.match(/_writeOnboardingCheckpointSafe\(\{\s*setup_step:\s*'goal'\s*\}\)/g) || []).length;
+  assert.ok(goalWrites >= 2,
+    `referral continue + skip must each write setup_step: goal (found ${goalWrites})`);
+  // Goal completion writes 'done', folded into the same partial as the
+  // user's chosen goal so a single fire-and-forget IPC carries both.
+  assert.ok(
+    /partial\s*=\s*\{\s*setup_step:\s*'done'\s*\}/.test(RENDERER_JS),
+    'goal-finish writes setup_step: done',
+  );
+
+  // Part (b): the resume router. checkToS() must read setup_step and
+  // route 'referral' / 'goal' to their respective overlays without
+  // touching init() or the ToS overlay show.
+  // The function is an IIFE: `(async function checkToS() { ... })();`
+  const checkToSStart = RENDERER_JS.indexOf('(async function checkToS()');
+  assert.ok(checkToSStart > 0, 'checkToS IIFE defined');
+  // Bound the slice generously — the resume routing must live inside
+  // the if(accepted) branch above the cold-start else.
+  const checkToSBody = RENDERER_JS.slice(checkToSStart, checkToSStart + 7000);
+  assert.ok(
+    /step\s*===\s*'referral'\s*\|\|\s*step\s*===\s*'goal'/.test(checkToSBody),
+    'resume branch tests setup_step against the two mid-flow values',
+  );
+  assert.ok(
+    checkToSBody.includes("_showOverlay('referral-capture-overlay')") ||
+      checkToSBody.includes("'referral-capture-overlay').classList.remove('hidden')"),
+    'resume branch surfaces referral overlay on step==referral',
+  );
+  assert.ok(
+    checkToSBody.includes("_showOverlay('goal-overlay')") ||
+      checkToSBody.includes("'goal-overlay').classList.remove('hidden')"),
+    'resume branch surfaces goal overlay on step==goal',
+  );
+});
+
 test('§3.14 — progress bar has goal step between products and sales', () => {
   // Find the steps array in updateProgressBar.
   const barStart = RENDERER_JS.indexOf('async function updateProgressBar');

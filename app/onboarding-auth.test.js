@@ -156,11 +156,14 @@ test('3.10 — writeOnboardingCheckpoint whitelists setup_step values', () => {
   // skills bump to. An invalid value MUST be rejected, not silently
   // persisted (otherwise a future renderer bug could overwrite a real
   // step with `"null"` / `"undefined"` strings).
+  // 'referral' was added 2026-04-29 (Codex audit finding #7) — see the
+  // renderer regression guard at renderer.js: REGRESSION GUARD
+  // (2026-04-29). Removing 'referral' breaks mid-flow resume.
   const wlIdx = MAIN_JS.indexOf('const ONBOARDING_ALLOWED_STEPS = new Set([');
   assert.ok(wlIdx > 0, 'whitelist defined');
   const end = MAIN_JS.indexOf(']);', wlIdx);
   const body = MAIN_JS.slice(wlIdx, end);
-  for (const step of ['goal', 'brand', 'products', 'connect', 'tos', 'autopilot', 'done']) {
+  for (const step of ['goal', 'brand', 'products', 'connect', 'tos', 'referral', 'autopilot', 'done']) {
     assert.ok(body.includes(`'${step}'`), `${step} is a recognised step`);
   }
   // And the writer MUST drop unrecognised values.

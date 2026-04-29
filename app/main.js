@@ -7631,7 +7631,14 @@ function writeConfig(cfg) {
 // schema doesn't lose data when an older binary round-trips the file.
 const ONBOARDING_CHECKPOINT_FILE = '.merlin-onboarding.json';
 const ONBOARDING_SCHEMA_VERSION = 1;
-const ONBOARDING_ALLOWED_STEPS = new Set(['goal', 'brand', 'products', 'connect', 'tos', 'autopilot', 'done']);
+// 'referral' added 2026-04-29 (Codex audit finding #7) so a user who exits
+// after accepting ToS but before the referral or goal screens resumes mid-
+// flow on next launch instead of skipping both. Renderer's checkToS() reads
+// setup_step and routes to the matching overlay; the renderer writes the
+// step on each transition (tos accept -> 'referral', referral continue ->
+// 'goal', goal pick -> 'done'). Removing one of these values silently
+// breaks resume — they MUST stay aligned with the renderer routing block.
+const ONBOARDING_ALLOWED_STEPS = new Set(['goal', 'brand', 'products', 'connect', 'tos', 'referral', 'autopilot', 'done']);
 
 function onboardingCheckpointPath() {
   // Lives under the StateDir resolved by Cluster-B's contract (RSI §1.3).
