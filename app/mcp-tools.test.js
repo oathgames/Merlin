@@ -637,48 +637,20 @@ test('postscript tool description references TCPA gate (the safety contract)', (
 });
 
 test('postscript tool prefixes the action and dispatches to postscript-<action>', async () => {
-  // Strengthened from the trivial smoke version (Gitar PR-review WARN
-  // 2026-04-29): the original test only checked text.length > 0, which a
-  // typo in the action template ("postscrpit-" + action) would not catch.
-  // Stub runBinary's binary-spawn step to capture the exact action string
-  // the handler sends to the binary.
-  const captured = { action: null, args: null };
+  // Uses the brand-guard refusal text as a routing oracle: a brand-LESS
+  // call to a postscript action that's NOT in BRAND_OPTIONAL_ACTIONS
+  // trips the guard with the FULL action string in the error message. A
+  // typo'd action ("postscrpit-..." or a dropped prefix) would surface as
+  // a failed regex match — caught before merge.
+  // Strengthened from the trivial smoke version (Gitar PR #154); dead
+  // `captured` scaffold removed (Gitar PR #154 follow-up).
   const { tool, registry } = makeFakeTool();
-  const ctx = makeCtx({
-    // Force a synchronous fast-path through runBinary so we observe the
-    // action argument without spawning a real subprocess. We do this by
-    // making the binary-not-found branch fire (returns immediately) — but
-    // FIRST we need to intercept the action string. Cleanest path: wrap
-    // execFile via the module loader. Simpler path: register a custom
-    // handler shim by replacing buildTools' use of runBinary at the seam.
-    //
-    // Here we lean on the brand-guard being a plain string comparison: a
-    // typo'd action "postscrpit-automation-create" would NOT be in the
-    // BRAND_OPTIONAL_ACTIONS allowlist, so a brand-less call would trip
-    // the brand-missing refusal with the EXACT typo'd action string in
-    // the error message — which is what we assert against.
-    getBinaryPath: () => null,
-  });
-  // Patch the internal BRAND_OPTIONAL_ACTIONS check by sending a brand —
-  // that bypasses the brand guard regardless of action spelling, so we get
-  // the "binary not found" branch and can confirm the call reached
-  // runBinary at all (i.e. the handler didn't crash).
+  const ctx = makeCtx({ getBinaryPath: () => null });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'postscript');
 
-  // Now the routing assertion: a brand-LESS call to a postscript action
-  // that's NOT in BRAND_OPTIONAL_ACTIONS will trip the guard with the
-  // FULL action string in the refusal text. We use this to verify the
-  // 'postscript-' prefix is correctly applied and not dropped, mistyped,
-  // or normalised.
   const outBrandless = await entry.handler({ action: 'automation-create' });
   const textBrandless = outBrandless.content && outBrandless.content[0] ? outBrandless.content[0].text : '';
-  // Either the action is in BRAND_OPTIONAL_ACTIONS (Refusing message
-  // absent — engine-not-found message present), OR the action is not in
-  // the allowlist and the guard trips with our exact prefix. Both paths
-  // must contain "postscript-automation-create" somewhere if routing is
-  // wired correctly. If the prefix is dropped (just "automation-create")
-  // or typo'd ("postscrpit-automation-create"), this fails.
   if (textBrandless.includes('Refusing')) {
     assert.match(textBrandless, /postscript-automation-create/,
       `brand-guard refusal must include the full prefixed action; routing typo would surface here. Got: ${textBrandless}`);
@@ -687,9 +659,6 @@ test('postscript tool prefixes the action and dispatches to postscript-<action>'
     // facing text, but the handler must not crash.
     assert.ok(textBrandless.length > 0, 'postscript handler returned empty text');
   }
-
-  // Sanity: noop placate the unused variable lint.
-  void captured;
 });
 
 test('postscript tool description mentions bulk-import-flow (the morning-setup verb)', () => {

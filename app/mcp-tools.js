@@ -807,8 +807,22 @@ function buildTools(tool, z, ctx) {
   tools.push(defineTool({
     name: 'postscript',
     description: 'Postscript SMS — subscribers, campaigns, keywords, automations (list + create + activate + bulk-import-flow with TCPA gate, token swap, dashboard-URL surfacing).',
-    destructive: false,
+    // Gitar PR #154 finding: the postscript tool's enum mixes read-only
+    // and destructive actions (automation-create / -delete / -activate /
+    // -deactivate / step-create / step-delete / bulk-import-flow are
+    // genuinely state-mutating). MCP clients (Claude Desktop, Codex, etc.)
+    // read these annotations to decide whether to gate a call behind a
+    // confirmation modal. The tool-level annotation is necessarily the
+    // conservative ceiling since one tool object spans all actions.
+    // Marking destructive write paths as non-destructive lets a
+    // misrouted call fire without user review — the same pattern Klaviyo
+    // (which also added templates-bulk-upload alongside read actions)
+    // got right at line 745 with a comment block. preview:false matches
+    // klaviyo's pragmatic UX choice for bulk-flow imports where the
+    // user already provided the manifest path.
+    destructive: true,
     idempotent: true,
+    preview: false,
     costImpact: 'api',
     brandRequired: false,
     concurrency: { platform: 'postscript' },
