@@ -6197,11 +6197,46 @@ let _statusDebounce = null;
 let _currentStatusLabel = '';
 
 let _stuckTimer = null;
+let _cancelBtnTimer = null;
+// CANCEL_BTN_DELAY_MS — when a single tool-use status persists this long
+// without changing, fade in a Cancel button next to the spinner. 30s is
+// short enough to escape a hung WebFetch / brand-scrape / external API
+// call before the user gets frustrated, long enough to avoid noise on
+// legitimately-long tools (HeyGen renders, large image batches).
+//
+// REGRESSION GUARD (2026-04-29, trypog.co WebFetch 5-minute hang):
+// Before this affordance, a hung tool call left the user staring at
+// "Summoning knowledge — taking a while..." with no escape — only force-
+// quitting Merlin would reclaim the chat. The Cancel button calls
+// merlin.abortActiveQuery() which interrupts the SDK turn and unwinds
+// the for-await loop. Pairs with the brand_scrape routing rule in
+// commands/merlin.md (prevents the most-common cause) + the abort-active-
+// query IPC handler in main.js (the actual escape hatch).
+const CANCEL_BTN_DELAY_MS = 30000;
+
+function _onCancelButtonClick() {
+  // Optimistic UI — disable the button so the user can't double-click,
+  // show "Cancelling…" so they know the click registered. The IPC reply
+  // is fire-and-forget; the real state reset arrives via the
+  // 'query-aborted' event broadcast from main.js, which the existing
+  // session-event listener already handles (clears the spinner + status
+  // row when the for-await loop unwinds).
+  const btn = document.querySelector('.chat-status-cancel');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Cancelling…';
+  }
+  if (window.merlin && typeof window.merlin.abortActiveQuery === 'function') {
+    window.merlin.abortActiveQuery().catch(() => {});
+  }
+}
+
 function setStatusLabel(label) {
   if (label === _currentStatusLabel) return; // no-op if same
   _currentStatusLabel = label;
   if (_statusDebounce) clearTimeout(_statusDebounce);
   if (_stuckTimer) clearTimeout(_stuckTimer);
+  if (_cancelBtnTimer) clearTimeout(_cancelBtnTimer);
   // Short debounce (50ms) to batch rapid status changes without creating a visible dead zone.
   // Previous 300ms delay combined with the 2s scheduleTypingIndicator delay left users
   // with no feedback for up to 2.3 seconds between responses.
@@ -6210,6 +6245,10 @@ function setStatusLabel(label) {
     const existing = status.querySelector('.chat-status-label');
     if (existing) {
       existing.textContent = label;
+      // Remove a stale Cancel button from the prior status — fresh status
+      // means whatever was hanging just resolved.
+      const staleBtn = status.querySelector('.chat-status-cancel');
+      if (staleBtn) staleBtn.remove();
     } else {
       status.innerHTML = `<div class="chat-status-row"><span class="status-spinner">✦</span> <span class="chat-status-label">${escapeHtml(label)}</span></div>`;
     }
@@ -6224,6 +6263,32 @@ function setStatusLabel(label) {
       labelEl.textContent = label + ' — taking a while...';
     }
   }, 45000);
+
+  // Cancel-button fade-in — at CANCEL_BTN_DELAY_MS, append a Cancel
+  // button next to the spinner so the user can break out of a hung tool.
+  _cancelBtnTimer = setTimeout(() => {
+    const statusEl = document.getElementById('chat-status');
+    const row = statusEl?.querySelector('.chat-status-row');
+    const labelEl = statusEl?.querySelector('.chat-status-label');
+    if (!row || !labelEl) return;
+    // Only show if the label still hasn't moved — same-label-still-here
+    // signals the underlying tool call hasn't progressed.
+    if (!labelEl.textContent.startsWith(label)) return;
+    if (row.querySelector('.chat-status-cancel')) return; // already there
+    const btn = document.createElement('button');
+    btn.className = 'chat-status-cancel';
+    btn.type = 'button';
+    btn.textContent = 'Cancel';
+    btn.title = 'Stop the current tool call (use this if Merlin is hung on a slow website fetch).';
+    // Inline style — keeps the addition self-contained (no style.css edit
+    // needed in the same release; aesthetic mirrors the Cancel button on
+    // the manual-key modals).
+    btn.style.cssText = 'margin-left:10px;padding:2px 10px;font-size:12px;background:transparent;color:var(--text-secondary,#a1a1aa);border:1px solid var(--border,#3a3a40);border-radius:4px;cursor:pointer;font-family:inherit;';
+    btn.onmouseenter = () => { btn.style.background = 'var(--accent-bg,#2a2a30)'; btn.style.color = 'var(--text,#e4e4e7)'; };
+    btn.onmouseleave = () => { btn.style.background = 'transparent'; btn.style.color = 'var(--text-secondary,#a1a1aa)'; };
+    btn.onclick = _onCancelButtonClick;
+    row.appendChild(btn);
+  }, CANCEL_BTN_DELAY_MS);
 }
 
 // Reusable context menu
@@ -6271,8 +6336,23 @@ function closeAgencyOverlay() {
 function clearStatusLabel() {
   if (_statusDebounce) { clearTimeout(_statusDebounce); _statusDebounce = null; }
   if (_stuckTimer) { clearTimeout(_stuckTimer); _stuckTimer = null; }
+  if (_cancelBtnTimer) { clearTimeout(_cancelBtnTimer); _cancelBtnTimer = null; }
   _currentStatusLabel = '';
   document.getElementById('chat-status').innerHTML = '';
+}
+
+// query-aborted — fired by main.js's abort-active-query IPC handler
+// when the user clicks the Cancel button. Clear the status row + show a
+// brief "Cancelled" toast so the user sees their click took effect even
+// if the SDK takes a beat to fully unwind. The for-await loop's natural
+// finally block will also reset state, so this is a UX-immediacy hook.
+if (merlin && typeof merlin.onQueryAborted === 'function') {
+  merlin.onQueryAborted(() => {
+    clearStatusLabel();
+    if (typeof showToast === 'function') {
+      showToast('Cancelled. Send a new message when you\'re ready.');
+    }
+  });
 }
 
 // ── Typing Indicator ────────────────────────────────────────

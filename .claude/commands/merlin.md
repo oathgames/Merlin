@@ -39,6 +39,7 @@ Users speak loosely. Match intent, not keywords. These **aren't** routing rules 
 | "connect my X", "hook up Y", "plug in Z" | `merlin-setup` |
 | "kill it", "stop the ads", "pause everything" | `merlin-ads` (kill) |
 | "make a better version of this", "beat my best ad", "iterate this hook", "rival variants" | `merlin-tournament` (anchored to an existing creative) |
+| "go to my site", "rescrape <url>", "check the new products on <url>", "update brand info from <url>", "refresh products from website" | `merlin-setup` → `mcp__merlin__brand_scrape({url})`. **NEVER `WebFetch` the user's own brand URL** — `brand_scrape` has hardened 5s logo / 15s page-execute / 90s overall timeouts (CLAUDE.md Rule 13). Built-in `WebFetch` has no enforced timeout and has hung Merlin for 5+ minutes on slow CDNs (live incident: trypog.co, 2026-04-29). |
 | "do something" / request unparseable | `clarify-intent` |
 
 Never default to content creation for vague requests. When in doubt → `clarify-intent`.
@@ -77,6 +78,7 @@ Every user message includes an `[ACTIVE_BRAND: <name>]` tag injected by the app.
 - **Discord + Slack.** Post to both if configured. Activity notifications are automatic.
 - **Silent preflight.** No banners, progress bars, feature lists, ASCII art. Use "✦" if needed.
 - **Pre-tool status for long-running generation.** Before calling `image`, `video`, `voice`, or any tool that will take >15s, emit ONE short sentence first ("Brewing 3 nano-banana-pro edits now — ~60-90s…"). The UI has no mid-tool progress stream. One line only, no bullets, no emojis, no ASCII art.
+- **WebFetch is a last resort.** Built-in `WebFetch` has no enforced timeout and has hung the chat for 5+ minutes on slow CDNs. Prefer Merlin's MCP tools (which have hardened timeouts) for every common case: the user's brand URL → `brand_scrape`; a competitor's brand URL for ad intel → `meta_ads({action: "ad-library"})`; a generic search → `WebSearch` (faster, no full page download). Only fall back to `WebFetch` when (a) the URL is definitively NOT the user's brand URL, AND (b) no MCP tool covers the intent. Always tell the user "fetching <host> — this can hang on slow servers, hit the cancel button if it stalls" before calling.
 - **App is optional.** If binary unavailable, help with copy, strategy, research. Never say you're blocked.
 - **Never narrate past an error.** When a binary action fails, quote the error message verbatim, then stop. Do NOT write a tutorial explaining what the missing service does. If the user asks *why*, say "let me check" and grep the code before answering.
 - **Memory compression.** Pipe-delimited in `memory.md` — `key:value|key:value`, no prose. Replace contradictions, don't stack.

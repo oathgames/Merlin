@@ -3897,6 +3897,48 @@ ipcMain.handle('stop-generation', () => {
 
 // Per-brand thread swap. Aborts any in-flight SDK turn, persists the new
 // active brand, and starts a fresh session resumed from the target brand's
+// abort-active-query — user-initiated cancel of the current SDK turn.
+// Wired to the chat-status row's Cancel button (renderer.js), which fades
+// in once a single tool-use status has persisted past the watchdog
+// threshold. Re-uses the same activeQuery.interrupt() machinery as the
+// switch-brand handler — interrupt() unwinds the for-await loop so the
+// generator's finally block resets activeQuery = null. We clear the
+// pending message queue too so a stuck WebFetch doesn't get followed by
+// queued user messages from before the abort.
+//
+// REGRESSION GUARD (2026-04-29, trypog.co WebFetch 5-minute hang):
+// Live incident — agent invoked built-in WebFetch on the user's brand
+// URL instead of the hardened mcp__merlin__brand_scrape tool, hit a slow
+// CDN, and the chat sat on "Summoning knowledge — taking a while..." for
+// 5+ minutes with no abort affordance. Two fixes landed together:
+// (a) routing rule in commands/merlin.md hard-pushes brand-URL intents
+// to brand_scrape (which has 5/15/90s timeouts per CLAUDE.md Rule 13),
+// (b) THIS handler gives the user an escape hatch when any tool hangs.
+ipcMain.handle('abort-active-query', async () => {
+  if (!activeQuery) return { success: false, error: 'no active query' };
+  try {
+    if (typeof activeQuery.interrupt === 'function') {
+      await activeQuery.interrupt();
+    }
+  } catch (e) { console.warn('[abort] interrupt failed:', e.message); }
+  // Drain queued messages — if the user typed follow-ups while the prior
+  // turn was hung, they were destined for the now-aborted state and
+  // should be re-evaluated against the next session, not silently
+  // delivered into the next turn's startSession.
+  if (resolveNextMessage) {
+    try { resolveNextMessage(null); } catch {}
+  }
+  pendingMessageQueue = [];
+  // Clear pending tool approvals so the user isn't asked to approve a
+  // tool from the aborted turn.
+  for (const [id, entry] of pendingApprovals) {
+    try { clearTimeout(entry.timer); entry.fn(false); } catch {}
+  }
+  pendingApprovals.clear();
+  if (win && !win.isDestroyed()) win.webContents.send('query-aborted');
+  return { success: true };
+});
+
 // SDK session UUID (if it exists). Returns the target brand's bubble log
 // so the renderer can rehydrate the chat synchronously before the session
 // fully reboots.

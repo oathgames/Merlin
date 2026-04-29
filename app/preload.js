@@ -147,6 +147,10 @@ contextBridge.exposeInMainWorld('merlin', {
   // switchBrand aborts the current turn and resumes the target brand's thread.
   switchBrand: (brand) => ipcRenderer.invoke('switch-brand', assertBrand(brand)),
   getBrandThread: (brand) => ipcRenderer.invoke('get-brand-thread', assertBrand(brand)),
+  // abortActiveQuery — user-initiated cancel from the chat-status row's
+  // Cancel button. See main.js:abort-active-query for the full incident
+  // motivation (2026-04-29 trypog.co WebFetch hang).
+  abortActiveQuery: () => ipcRenderer.invoke('abort-active-query').catch(() => ({ success: false })),
 
   // State persistence
   saveState: (data) => ipcRenderer.invoke('save-state', assertObj(data)),
@@ -486,6 +490,14 @@ contextBridge.exposeInMainWorld('merlin', {
   onSessionPhase: (cb) => {
     const h = (_, data) => cb(data || {}); ipcRenderer.on('session-phase', h);
     return () => ipcRenderer.removeListener('session-phase', h);
+  },
+  // onQueryAborted — fired by main.js after the abort-active-query IPC
+  // handler unwinds the active SDK turn. Lets the renderer clear the
+  // chat-status row + show a "Cancelled" toast immediately rather than
+  // waiting for the for-await loop's natural finally block.
+  onQueryAborted: (cb) => {
+    const h = () => cb(); ipcRenderer.on('query-aborted', h);
+    return () => ipcRenderer.removeListener('query-aborted', h);
   },
   // Two paths:
   //   - send:   fire-and-forget (legacy, no feedback)
