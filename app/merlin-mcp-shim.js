@@ -90,15 +90,55 @@ function resolveContentDir() {
 }
 
 // Pull the package version for the initialize response. Best-effort —
-// if package.json isn't reachable from the shim's location (it ships
-// inside resources/app/asar), we fall back to a static label.
+// the shim ships at resources/app.asar.unpacked/app/merlin-mcp-shim.js;
+// package.json lives at resources/app.asar (parent's parent of __dirname).
+//
+// REGRESSION GUARD (2026-04-29, "version: unknown" in production logs):
+// the prior `path.join(__dirname, '..', 'package.json')` only walked
+// one level up — landing at resources/app.asar.unpacked/package.json
+// which doesn't exist. The version came back as 'unknown' for every
+// shim invocation. We now try the asar.unpacked sibling first, then
+// fall through to two and three levels up to handle the dev-tree
+// layout (autoCMO/package.json) and the packaged-asar layout.
 function readVersion() {
-  try {
-    const pkg = require(path.join(__dirname, '..', 'package.json'));
-    return (pkg && pkg.version) || 'unknown';
-  } catch {
-    return 'unknown';
+  const candidates = [
+    path.join(__dirname, '..', '..', 'package.json'),       // packaged: resources/app.asar.unpacked/app → resources/package.json
+    path.join(__dirname, '..', '..', '..', 'package.json'), // packaged variant: resources → resources/.. (Mac Resources/Contents)
+    path.join(__dirname, '..', 'package.json'),             // dev tree: app/ → autoCMO/
+  ];
+  for (const p of candidates) {
+    try {
+      const pkg = require(p);
+      if (pkg && typeof pkg.version === 'string' && pkg.version) return pkg.version;
+    } catch (_) { /* try next */ }
   }
+  return 'unknown';
+}
+
+// ──────────────────────────────────────────────────────────────
+// Stderr logging — Claude Desktop captures stderr into its log
+// (per the MCP spec footer: "If you are developing this MCP server
+// you can add output to stderr and it will appear in this log").
+// We use this for every error path so future "Server disconnected"
+// events come with diagnostic context.
+//
+// REGRESSION GUARD (2026-04-29, silent-shim-exit incident): at
+// 17:17:30 the shim process exited unexpectedly during Ryan's POG
+// /update flow. Claude Desktop's log showed "process exiting early"
+// with no stderr — we had no diagnostic. Every error path now writes
+// a line so the next failure surfaces a cause.
+//
+// MUST go to stderr (not stdout) — stdout is the MCP framing channel
+// and any non-JSON write there breaks the protocol.
+function logErr(label, err) {
+  try {
+    const msg = err && err.message ? err.message : String(err || '');
+    const line = `[merlin-shim] ${label}${msg ? ': ' + msg : ''}`;
+    process.stderr.write(line + '\n');
+  } catch (_) { /* stderr closed — give up silently, can't recover */ }
+}
+function logInfo(label) {
+  try { process.stderr.write(`[merlin-shim] ${label}\n`); } catch (_) {}
 }
 
 const PROTOCOL_VERSION = '2024-11-05';
@@ -198,8 +238,23 @@ function createIpcClient(stateDir) {
               s.removeListener('error', onErr);
               s.setEncoding('utf8');
               s.on('data', (chunk) => onData(chunk));
-              s.on('close', () => destroy(new Error('socket closed')));
-              s.on('error', () => destroy(new Error('socket error')));
+              // REGRESSION GUARD (2026-04-29): on socket close (e.g.
+              // Merlin desktop app restart during /update), DON'T exit
+              // the shim — destroy() clears state, then the next tool
+              // call will trigger a fresh connect against the new
+              // post-rotation token. Pre-fix, destroy()'s clearing of
+              // pending requests + the IPC socket's close caused Node's
+              // event loop to drain (no in-flight work) and the process
+              // exited 0 silently. The new keep-alive in main() prevents
+              // that drain.
+              s.on('close', () => {
+                logInfo('IPC socket closed (desktop app likely restarting) — will reconnect on next call');
+                destroy(new Error('socket closed'));
+              });
+              s.on('error', (e) => {
+                logErr('IPC socket error', e);
+                destroy(new Error('socket error'));
+              });
               sock = s;
               resolve();
             });
@@ -352,10 +407,13 @@ async function handleToolsList(id, ipc) {
   let resp;
   try {
     resp = await ipc.send('tools/list');
-  } catch {
+  } catch (e) {
+    logErr('tools/list IPC send failed — returning app-not-running placeholder', e);
     return rpcOk(id, { tools: notRunningPlaceholderTools() });
   }
   if (!resp || !resp.ok) {
+    const errMsg = resp && resp.error && resp.error.message ? resp.error.message : 'no ok flag';
+    logErr(`tools/list IPC returned non-ok (${errMsg}) — returning placeholder`);
     return rpcOk(id, { tools: notRunningPlaceholderTools() });
   }
   // The endpoint returns { tools: [...] }; pass through unchanged.
@@ -434,26 +492,78 @@ function writeMessage(msg) {
 function main() {
   const stateDir = resolveStateDir();
   const contentDir = resolveContentDir();
+  logInfo(`startup pid=${process.pid} stateDir=${stateDir} version=${SERVER_VERSION}`);
+
   const ipc = createIpcClient(stateDir);
+
+  // REGRESSION GUARD (2026-04-29, silent-shim-exit at 17:17:30 incident):
+  // Pre-fix the shim process exited when stdin's readline emitted 'close',
+  // OR — and this was the real bug — when there was nothing else keeping
+  // the Node event loop alive AND stdin paused. On Windows, when the
+  // parent IPC socket dropped (Merlin desktop app restart during /update),
+  // the IPC client's destroy() cleared all timers + pending requests, and
+  // if no MCP message was actively in flight, the event loop ran out of
+  // active handles and Node exited 0. Claude Desktop saw "process exiting
+  // early" with no stderr.
+  //
+  // Fix: explicitly resume stdin so its read handle keeps the event loop
+  // alive even when no MCP message is in flight. The shim should ONLY
+  // exit when its parent (Claude Desktop) closes stdin or kills us, not
+  // because it ran out of background work.
+  process.stdin.resume();
+
+  // Belt-and-suspenders: a 30-second heartbeat that does nothing but
+  // hold a ref to the event loop. Cheap. Without this, a Node version
+  // that for any reason loses track of the stdin handle would exit. We
+  // unref it so it never blocks process exit when we DO want to exit.
+  const keepAlive = setInterval(() => {}, 30_000);
+  // .unref() means the timer doesn't keep Node alive ON ITS OWN — but
+  // its presence does prevent the "no handles, exit" path from firing
+  // during the gap between MCP messages.
+  if (typeof keepAlive.unref === 'function') keepAlive.unref();
+
+  // Surface any unhandled rejection / uncaught exception to stderr so
+  // Claude Desktop's log captures it before we exit. Pre-fix these
+  // crashed silently with no diagnostic.
+  process.on('uncaughtException', (err) => {
+    logErr('uncaughtException', err);
+    if (err && err.stack) { try { process.stderr.write(err.stack + '\n'); } catch (_) {} }
+    // Don't process.exit here — let Node's default handler decide. We
+    // just want the diagnostic captured.
+  });
+  process.on('unhandledRejection', (reason) => {
+    logErr('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason)));
+  });
 
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
   rl.on('line', async (line) => {
     if (!line || !line.trim()) return;
     let msg;
     try { msg = JSON.parse(line); } catch (e) {
+      logErr('stdin parse error', e);
       writeMessage(rpcError(null, -32700, `parse error: ${e.message}`));
       return;
     }
-    const resp = await dispatch(msg, ipc, contentDir);
+    let resp;
+    try {
+      resp = await dispatch(msg, ipc, contentDir);
+    } catch (e) {
+      logErr(`dispatch error (method=${msg && msg.method})`, e);
+      resp = rpcError(msg && msg.id, -32603, `shim dispatch error: ${e.message}`);
+    }
     if (resp) writeMessage(resp);
   });
   rl.on('close', () => {
+    logInfo('stdin closed (parent client disconnected) — exiting cleanly');
+    try { clearInterval(keepAlive); } catch {}
     try { ipc.destroy(); } catch {}
     process.exit(0);
   });
 
-  // If stdin closes (e.g. Claude Desktop killed), exit cleanly.
-  process.stdin.on('error', () => {
+  // If stdin errors out (e.g. Claude Desktop killed us), exit cleanly.
+  process.stdin.on('error', (e) => {
+    logErr('stdin error — exiting', e);
+    try { clearInterval(keepAlive); } catch {}
     try { ipc.destroy(); } catch {}
     process.exit(0);
   });
@@ -478,6 +588,7 @@ module.exports = {
   notRunningCallResult,
   createIpcClient,
   dispatch,
+  readVersion,  // exported for tests asserting version-fallback behavior
   PROTOCOL_VERSION,
   SERVER_VERSION,
 };

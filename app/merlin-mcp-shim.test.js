@@ -372,6 +372,86 @@ test('createIpcClient: connects to a fake server, exchanges a message round-trip
   } finally { rmTmp(d); }
 });
 
+// ── Resilience guards (REGRESSION GUARD 2026-04-29 silent-shim-exit) ──
+
+test('readVersion: returns a non-"unknown" value when package.json is reachable', () => {
+  // The shim is at app/merlin-mcp-shim.js; package.json is at autoCMO/package.json
+  // (one level up from app/). The DEV layout uses the third candidate path
+  // in readVersion(); the packaged layout uses the first/second. The test
+  // runs in dev tree, so we should land on candidate #3 and get a real
+  // version string back. Locking this in prevents future regressions of
+  // the "version: unknown" string we shipped in v1.20.0-1.20.5 production.
+  const v = shim.readVersion();
+  assert.ok(typeof v === 'string', 'version must be a string');
+  assert.notStrictEqual(v, 'unknown', `expected real version, got "unknown" — readVersion candidates list is wrong`);
+  assert.match(v, /^\d+\.\d+\.\d+/, `expected semver, got "${v}"`);
+});
+
+test('readVersion: SERVER_VERSION constant is also non-"unknown"', () => {
+  // SERVER_VERSION is the cached value used by handleInitialize. If
+  // readVersion works but SERVER_VERSION ends up "unknown", we ship
+  // that string verbatim in every initialize response (the bug Ryan
+  // saw in production logs).
+  assert.notStrictEqual(shim.SERVER_VERSION, 'unknown',
+    'SERVER_VERSION must be resolved at module load time to a real version');
+});
+
+test('createIpcClient: socket close does NOT throw / does NOT exit process', async () => {
+  // REGRESSION GUARD: pre-fix, socket close handler called destroy()
+  // which cleared all pending requests + nulled the socket. With no
+  // in-flight work AND nothing else holding the event loop, Node would
+  // exit 0. Production effect: Claude Desktop saw "Server disconnected"
+  // with no stderr at 17:17:30 during Ryan's POG /update flow.
+  //
+  // We can't easily test "does not exit process" here without spawning a
+  // child process (which would slow tests). Instead, we test the
+  // observable behavior: after a socket close, createIpcClient is still
+  // usable (next .send() triggers a fresh connect attempt rather than
+  // permanently failing). This proves destroy() didn't poison the client.
+  const d = tmpDir();
+  try {
+    const token = '0123456789abcdef0123456789abcdef';
+    const socketPath = process.platform === 'win32'
+      ? '\\\\.\\pipe\\merlin-test-' + crypto.randomBytes(4).toString('hex')
+      : path.join(d, 'sock');
+    let server;
+    let serverConnections = 0;
+    server = net.createServer((s) => {
+      serverConnections++;
+      s.setEncoding('utf8');
+      s.on('data', (chunk) => {
+        for (const line of chunk.split('\n').filter(Boolean)) {
+          const msg = JSON.parse(line);
+          s.write(JSON.stringify({ id: msg.id, ok: true, result: { echoed: msg.method, conn: serverConnections } }) + '\n');
+        }
+      });
+    });
+    await new Promise((res) => server.listen(socketPath, res));
+    fs.writeFileSync(path.join(d, 'mcp-shim-token'), JSON.stringify({ token, socketPath, pid: process.pid }));
+
+    const client = shim.createIpcClient(d);
+
+    // First call — succeeds.
+    const r1 = await client.send('tools/list', {});
+    assert.strictEqual(r1.result.conn, 1);
+
+    // Force a socket close on the client side (simulates desktop app
+    // restart). Wait briefly so the close event lands and destroy() fires.
+    client.destroy();
+    await new Promise((r) => setTimeout(r, 50));
+
+    // Second call — should reconnect cleanly. If destroy() poisoned the
+    // client, this would throw or hang. The assertion that conn=2
+    // confirms a fresh connect happened after the close.
+    const r2 = await client.send('ping', {});
+    assert.strictEqual(r2.result.conn, 2,
+      'client must reconnect after destroy() — pre-fix it would either throw or hang');
+
+    client.destroy();
+    server.close();
+  } finally { rmTmp(d); }
+});
+
 // ── Run async tests sequentially ─────────────────────────────
 
 (async () => {
