@@ -670,9 +670,14 @@ test('klaviyo tool input schema accepts every template field', () => {
 test('klaviyo handler dispatches templates-list without crashing on engine-missing', async () => {
   // Stub runBinary by intercepting at ctx.getBinaryPath — when the
   // binary path is null, runBinary short-circuits with the friendly
-  // "engine not found" message. We assert that templates-list (the
-  // brand-OPTIONAL action) makes it past the runBinary guards and
-  // returns a clean envelope, not a thrown exception.
+  // "engine not found" message. templates-list is brand-REQUIRED
+  // (not in BRAND_OPTIONAL_ACTIONS — only klaviyo-login is). Without
+  // a brand, runBinary's brand guard at line ~298 returns the
+  // 'no brand specified' refusal BEFORE reaching the engine-not-found
+  // check. We assert the handler still returns a clean envelope (no
+  // thrown exception) regardless of which guard fires.
+  // (Comment corrected per Gitar PR #151 finding — the prior version
+  // labeled templates-list as brand-OPTIONAL which was wrong.)
   const { tool, registry } = makeFakeTool();
   const ctx = makeCtx({ getBinaryPath: () => null });
   buildTools(tool, makeFakeZ(), ctx);

@@ -728,7 +728,14 @@ function buildTools(tool, z, ctx) {
   tools.push(defineTool({
     name: 'klaviyo',
     description: 'Klaviyo email marketing — performance, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files (with optional generic-placeholder → Klaviyo Django tag translation). Note: Klaviyo Flows themselves are UI-only — the public API does not expose flow construction.',
-    destructive: false,
+    // REGRESSION GUARD (2026-04-29, Gitar PR #151 finding): klaviyo
+    // tool's expanded action surface includes template-create / -update /
+    // -delete and bulk-template-upload (51+ writes per call). Every other
+    // write-capable tool in this file uses destructive:true so the
+    // mcp-define-tool preview/confirm token flow gates risky calls. Was
+    // shipped as destructive:false alongside the read-only performance/
+    // lists/campaigns actions; corrected here.
+    destructive: true,
     idempotent: true,
     costImpact: 'api',
     brandRequired: false,
