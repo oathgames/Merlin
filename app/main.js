@@ -11525,9 +11525,13 @@ async function maybePromptClaudeDesktopAutoconfig() {
   }
 
   const action = actions[response];
+  let didAnyApply = false;
 
   if (action === 'desktop' || action === 'both') {
+    // applyRegistration writes the 'added' decision sentinel internally
+    // on success — we don't need to also call writeDecision below.
     const out = cdcMod.applyRegistration({ stateDir, configPath, merlinEntry });
+    if (out.ok) didAnyApply = true;
     if (!out.ok) {
       try {
         await dialog.showMessageBox(win || null, {
@@ -11542,7 +11546,21 @@ async function maybePromptClaudeDesktopAutoconfig() {
   }
 
   if (action === 'code' || action === 'both') {
-    await applyClaudeCodeFlow(cdcMod, paths);
+    const ccOut = await applyClaudeCodeFlow(cdcMod, paths);
+    if (ccOut && ccOut.ok) didAnyApply = true;
+  }
+
+  // Gitar PR #163 follow-up (2026-04-29): if the user picked ONLY 'code'
+  // and the registration succeeded, persist an 'added' decision (with
+  // the current major stamp) so the autoprompt doesn't re-fire on
+  // every subsequent launch within this major (Desktop is installed
+  // but unregistered → shouldPrompt would fire every launch otherwise).
+  // applyRegistration already writes 'added' on its own success path,
+  // so the 'code'-only branch is the gap we need to close. The new
+  // 'already-added-this-major' suppression rule in shouldPrompt
+  // honors this stamp.
+  if (action === 'code' && didAnyApply) {
+    try { cdcMod.writeDecision(stateDir, 'added', { major: currentMajor }); } catch {}
   }
 
   if (action === 'skip') {

@@ -366,12 +366,26 @@ function mergeMcpJsonMerlinEntry(existing, merlinEntry) {
 // false only when neither the enable-list nor the disable-list needed
 // touching — caller skips the disk write in that case.
 function mergeClaudeJsonEnable(existing, projectKey) {
-  const cfg = (existing && typeof existing === 'object') ? Object.assign({}, existing) : {};
-  const projects = (cfg.projects && typeof cfg.projects === 'object')
-    ? Object.assign({}, cfg.projects)
+  // Defensive DEEP copy of the entire input. JSON round-trip is the
+  // simplest way to honor the "pure function — no I/O, never mutates
+  // caller's input" contract at every level: top-level fields,
+  // projects map, OTHER projects' entries (Gitar PR #163 review:
+  // pre-fix shallow Object.assign on cfg.projects left other-project
+  // entries as shared references with `existing`; not a live bug
+  // because every caller serializes the result to JSON immediately,
+  // but it weakened the docstring contract). ~/.claude.json is bounded
+  // (single-user config, never holds binary or cyclic data) so the
+  // round-trip cost is acceptable; Claude Code config files are
+  // typically <50 KB.
+  const cfg = (existing && typeof existing === 'object')
+    ? JSON.parse(JSON.stringify(existing))
     : {};
+  const projects = (cfg.projects && typeof cfg.projects === 'object')
+    ? cfg.projects
+    : {};
+  cfg.projects = projects; // Ensure cfg.projects is set even if existing.projects was missing.
   const entry = (projects[projectKey] && typeof projects[projectKey] === 'object')
-    ? Object.assign({}, projects[projectKey])
+    ? projects[projectKey]
     : {};
 
   const enabled = Array.isArray(entry.enabledMcpjsonServers)
@@ -410,42 +424,72 @@ function mergeClaudeJsonEnable(existing, projectKey) {
 
 // Whether the prompt should fire. Decision rules:
 //   1. If the user previously chose 'never' → don't ask.
-//   2. If Claude Desktop's config dir doesn't exist → don't ask
-//      (Claude Desktop probably isn't installed; an unsolicited
-//      "Add Merlin to Claude Desktop?" prompt would confuse non-users).
-//   3. If 'merlin' is already registered and matches the current command
-//      + shim path → don't ask (already done; future versions can re-prompt
-//      after a major bump if we ever want to).
-//   4. If the user previously chose 'skipped' → re-ask only on a major
-//      version bump. Caller passes the current major version; if the
-//      stored decision was made on the same major, suppress.
+//   2. If NEITHER Claude Desktop NOR Claude Code is installed → don't
+//      ask (no point prompting a user who has neither host; an
+//      unsolicited "Add Merlin to Claude?" would confuse non-users).
+//      Caller passes `installedClients` (typically from
+//      `detectInstalledClients()`); if absent, the function falls
+//      back to the v1.20.0 Desktop-only behavior for backward
+//      compatibility with the original single-client signature.
+//   3. If 'merlin' is already registered + matching in EVERY installed
+//      client → don't ask (already done across the board). For
+//      Desktop, "registered" means the desktop config has the matching
+//      merlin entry; for Code we don't enumerate per-project state
+//      from this call site — Code's per-project nature means the
+//      autoprompt firing on a major bump is the correct UX for
+//      offering NEW project enablement. So the suppress-when-already-
+//      registered rule applies only to Desktop.
+//   4. If the user previously chose 'skipped' → re-ask only on a
+//      major version bump.
 //   5. Otherwise → fire the prompt.
 //
-// `currentMajor` is just the integer major (e.g. 1 for v1.20.0).
-function shouldPrompt({ stateDir, configPath, merlinEntry, currentMajor }) {
+// Gitar PR #163 follow-up (2026-04-29): pre-fix this function bailed
+// on `claude-desktop-not-installed` before the caller had any chance
+// to check Claude Code. A user with ONLY Claude Code installed never
+// saw the autoprompt because the Desktop-config-dir gate blocked it.
+// Now `installedClients` flows in: if Code is installed, the
+// Desktop-only gate is bypassed.
+function shouldPrompt({ stateDir, configPath, merlinEntry, currentMajor, installedClients }) {
   const decision = readDecision(stateDir);
   if (decision && decision.decision === 'never') return { fire: false, reason: 'user-chose-never' };
 
-  // No config dir → Claude Desktop probably isn't installed.
-  const configDir = path.dirname(configPath);
-  let configDirExists = false;
-  try { configDirExists = fs.statSync(configDir).isDirectory(); } catch { configDirExists = false; }
-  if (!configDirExists) return { fire: false, reason: 'claude-desktop-not-installed' };
+  // Compute installed clients defensively if caller didn't pass them.
+  // Backward compat: callers that pre-date Claude Code support get the
+  // historical Desktop-only behavior.
+  const installed = (installedClients && typeof installedClients === 'object')
+    ? installedClients
+    : detectInstalledClients();
+  if (!installed.desktop && !installed.code) {
+    return { fire: false, reason: 'no-claude-host-installed' };
+  }
 
-  // Already registered & matching?
-  const existing = readExistingConfig(configPath);
-  if (existing && typeof existing === 'object') {
-    const existingMerlin = existing.mcpServers && existing.mcpServers.merlin;
-    if (existingMerlin
-        && existingMerlin.command === merlinEntry.command
-        && Array.isArray(existingMerlin.args)
-        && existingMerlin.args.length === merlinEntry.args.length
-        && existingMerlin.args.every((v, i) => v === merlinEntry.args[i])) {
-      return { fire: false, reason: 'already-registered' };
+  // Already registered & matching IN DESKTOP (Code's per-project model
+  // means an autoprompt re-fire on major bump is the correct UX for
+  // offering enablement on a new project the user has since adopted).
+  let desktopAlreadyRegistered = false;
+  if (installed.desktop) {
+    const existing = readExistingConfig(configPath);
+    if (existing && typeof existing === 'object') {
+      const existingMerlin = existing.mcpServers && existing.mcpServers.merlin;
+      if (existingMerlin
+          && existingMerlin.command === merlinEntry.command
+          && Array.isArray(existingMerlin.args)
+          && existingMerlin.args.length === merlinEntry.args.length
+          && existingMerlin.args.every((v, i) => v === merlinEntry.args[i])) {
+        desktopAlreadyRegistered = true;
+      }
+    } else if (existing === null) {
+      // Corrupt config — don't touch it without explicit user opt-in.
+      return { fire: false, reason: 'config-unparseable' };
     }
-  } else if (existing === null) {
-    // Corrupt config — don't touch it without explicit user opt-in.
-    return { fire: false, reason: 'config-unparseable' };
+  }
+
+  // Suppression rule: if Desktop is the ONLY installed client AND
+  // merlin is already registered there, nothing to ask. (If Code is
+  // also installed, we still want to prompt — the user may want to
+  // enable Code in a project.)
+  if (installed.desktop && !installed.code && desktopAlreadyRegistered) {
+    return { fire: false, reason: 'already-registered' };
   }
 
   // Previously skipped on this major version?
@@ -453,6 +497,27 @@ function shouldPrompt({ stateDir, configPath, merlinEntry, currentMajor }) {
       && Number.isFinite(decision.major) && decision.major === currentMajor) {
     return { fire: false, reason: 'skipped-this-major' };
   }
+
+  // Previously added → don't re-prompt on subsequent launches within
+  // the same major. (A major version bump re-fires the prompt — that's
+  // intentional, lets new features in a major be re-offered to users
+  // who skipped the original prompt.) Added in v1.20.5 (Gitar PR #163
+  // follow-up): without this rule, a user with Code-only registration
+  // sees the prompt every launch because the per-Code already-
+  // registered check intentionally fires on major bumps to offer
+  // enablement on newly-adopted projects. With this rule, the user
+  // gets one prompt per major and decides in-product (via the
+  // sidecar status panel) when to add additional projects.
+  if (decision && decision.decision === 'added') {
+    // Stamp the major if not already stamped (older 'added' sentinels
+    // didn't include a major field — treat them as suppress-forever
+    // within the current major so we don't re-prompt at all).
+    const decisionMajor = Number.isFinite(decision.major) ? decision.major : currentMajor;
+    if (decisionMajor === currentMajor) {
+      return { fire: false, reason: 'already-added-this-major' };
+    }
+  }
+
   return { fire: true, reason: 'prompt-needed' };
 }
 

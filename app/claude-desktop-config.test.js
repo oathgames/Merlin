@@ -238,7 +238,7 @@ test('shouldPrompt: skipped on older major → fire=true on bump', () => {
   } finally { rmTmp(d); rmTmp(ccDir); }
 });
 
-test('shouldPrompt: missing config dir → fire=false (claude desktop not installed)', () => {
+test('shouldPrompt: neither client installed → fire=false', () => {
   const d = tmpDir();
   try {
     const out = cdc.shouldPrompt({
@@ -246,13 +246,32 @@ test('shouldPrompt: missing config dir → fire=false (claude desktop not instal
       configPath: '/path/that/definitely/does/not/exist/claude_desktop_config.json',
       merlinEntry,
       currentMajor: 1,
+      installedClients: { desktop: false, code: false },
     });
     assert.strictEqual(out.fire, false);
-    assert.strictEqual(out.reason, 'claude-desktop-not-installed');
+    assert.strictEqual(out.reason, 'no-claude-host-installed');
   } finally { rmTmp(d); }
 });
 
-test('shouldPrompt: matching merlin entry already present → fire=false', () => {
+test('shouldPrompt: only Claude Code installed (no Desktop config dir) → fire=true', () => {
+  // Gitar PR #163 regression guard: pre-fix a Claude-Code-only user
+  // never saw the autoprompt because shouldPrompt bailed on
+  // claude-desktop-not-installed before any Code-side check.
+  const d = tmpDir();
+  try {
+    const out = cdc.shouldPrompt({
+      stateDir: d,
+      configPath: '/path/that/definitely/does/not/exist/claude_desktop_config.json',
+      merlinEntry,
+      currentMajor: 1,
+      installedClients: { desktop: false, code: true },
+    });
+    assert.strictEqual(out.fire, true);
+    assert.strictEqual(out.reason, 'prompt-needed');
+  } finally { rmTmp(d); }
+});
+
+test('shouldPrompt: Desktop-only + matching merlin entry already present → fire=false', () => {
   const d = tmpDir();
   const ccDir = tmpDir();
   try {
@@ -263,10 +282,108 @@ test('shouldPrompt: matching merlin entry already present → fire=false', () =>
       configPath: cfgPath,
       merlinEntry,
       currentMajor: 1,
+      installedClients: { desktop: true, code: false },
     });
     assert.strictEqual(out.fire, false);
     assert.strictEqual(out.reason, 'already-registered');
   } finally { rmTmp(d); rmTmp(ccDir); }
+});
+
+test('shouldPrompt: BOTH installed + Desktop already-registered → STILL fires (Code-side enablement may be needed)', () => {
+  // Gitar PR #163 regression guard: with Code installed, even a
+  // matching Desktop registration must not suppress the prompt —
+  // the user may want to enable a new project for Code.
+  const d = tmpDir();
+  const ccDir = tmpDir();
+  try {
+    const cfgPath = path.join(ccDir, 'claude_desktop_config.json');
+    fs.writeFileSync(cfgPath, JSON.stringify({ mcpServers: { merlin: merlinEntry } }));
+    const out = cdc.shouldPrompt({
+      stateDir: d,
+      configPath: cfgPath,
+      merlinEntry,
+      currentMajor: 1,
+      installedClients: { desktop: true, code: true },
+    });
+    assert.strictEqual(out.fire, true);
+    assert.strictEqual(out.reason, 'prompt-needed');
+  } finally { rmTmp(d); rmTmp(ccDir); }
+});
+
+test('shouldPrompt: decision=added (with major stamp) → fire=false on same major (Gitar PR #163)', () => {
+  const d = tmpDir();
+  try {
+    fs.writeFileSync(path.join(d, '.mcp-claude-desktop-prompt'),
+      JSON.stringify({ decision: 'added', major: 1 }));
+    const out = cdc.shouldPrompt({
+      stateDir: d,
+      configPath: '/never',
+      merlinEntry,
+      currentMajor: 1,
+      installedClients: { desktop: true, code: true },
+    });
+    assert.strictEqual(out.fire, false);
+    assert.strictEqual(out.reason, 'already-added-this-major');
+  } finally { rmTmp(d); }
+});
+
+test('shouldPrompt: decision=added (with major stamp) → fire=true on major bump', () => {
+  const d = tmpDir();
+  try {
+    fs.writeFileSync(path.join(d, '.mcp-claude-desktop-prompt'),
+      JSON.stringify({ decision: 'added', major: 1 }));
+    const out = cdc.shouldPrompt({
+      stateDir: d,
+      configPath: '/never',
+      merlinEntry,
+      currentMajor: 2,
+      installedClients: { desktop: true, code: true },
+    });
+    assert.strictEqual(out.fire, true);
+  } finally { rmTmp(d); }
+});
+
+test('shouldPrompt: legacy decision=added (no major field, v1.20.0 sentinel) → fire=false (treat as current major)', () => {
+  const d = tmpDir();
+  try {
+    // v1.20.0 wrote 'added' without a major field. We must remain
+    // compatible with those sentinels — treat as if stamped with the
+    // current major so existing users don't get re-prompted.
+    fs.writeFileSync(path.join(d, '.mcp-claude-desktop-prompt'),
+      JSON.stringify({ decision: 'added', at: 1234567890 })); // no major field
+    const out = cdc.shouldPrompt({
+      stateDir: d,
+      configPath: '/never',
+      merlinEntry,
+      currentMajor: 1,
+      installedClients: { desktop: true, code: true },
+    });
+    assert.strictEqual(out.fire, false);
+    assert.strictEqual(out.reason, 'already-added-this-major');
+  } finally { rmTmp(d); }
+});
+
+test('shouldPrompt: backward compat — no installedClients param → falls back to detection', () => {
+  // Older callers (before v1.20.5) called shouldPrompt without
+  // installedClients. The function MUST still work, falling back to
+  // detectInstalledClients(). We exercise this path by passing a
+  // never-existent configPath and asserting we don't crash; the actual
+  // fire/no-fire depends on the test machine's installed clients,
+  // which is not what we're asserting — we're asserting the function
+  // returns a valid {fire, reason} envelope without throwing.
+  const d = tmpDir();
+  try {
+    const out = cdc.shouldPrompt({
+      stateDir: d,
+      configPath: '/never-exists-' + Date.now(),
+      merlinEntry,
+      currentMajor: 1,
+      // installedClients deliberately omitted
+    });
+    assert.strictEqual(typeof out, 'object');
+    assert.strictEqual(typeof out.fire, 'boolean');
+    assert.strictEqual(typeof out.reason, 'string');
+  } finally { rmTmp(d); }
 });
 
 test('isRegistered: detects matching entry', () => {
@@ -489,6 +606,25 @@ test('mergeClaudeJsonEnable: preserves other projects untouched', () => {
   assert.strictEqual(out.config.projects['/proj-a'].hasTrustDialogAccepted, true);
   // proj-b updated.
   assert.deepStrictEqual(out.config.projects['/proj-b'].enabledMcpjsonServers, ['merlin']);
+});
+
+test('mergeClaudeJsonEnable: deep-clones — caller mutating output other-project entry does NOT mutate input (Gitar PR #163)', () => {
+  // Pre-fix Object.assign({}, cfg.projects) shallow-copied the projects
+  // map but left other-project entry refs shared with `existing`.
+  // Post-fix uses JSON deep-clone on the entire input.
+  const existing = {
+    projects: {
+      '/proj-target': { enabledMcpjsonServers: [] },
+      '/proj-other': { enabledMcpjsonServers: ['only-other'], hasTrustDialogAccepted: true },
+    },
+  };
+  const out = cdc.mergeClaudeJsonEnable(existing, '/proj-target');
+  // Mutate the OTHER project in the returned config aggressively.
+  out.config.projects['/proj-other'].enabledMcpjsonServers.push('mutation-test');
+  out.config.projects['/proj-other'].hasTrustDialogAccepted = false;
+  // Caller's input must remain pristine.
+  assert.deepStrictEqual(existing.projects['/proj-other'].enabledMcpjsonServers, ['only-other']);
+  assert.strictEqual(existing.projects['/proj-other'].hasTrustDialogAccepted, true);
 });
 
 test('mergeClaudeJsonEnable: does NOT invent disabledMcpjsonServers field if absent', () => {
