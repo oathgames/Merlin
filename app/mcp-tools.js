@@ -251,6 +251,7 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   'meta-login', 'tiktok-login', 'google-login', 'amazon-login',
   'shopify-login', 'klaviyo-login', 'etsy-login', 'reddit-login',
   'linkedin-login', 'pinterest-login', 'snapchat-login', 'twitter-login',
+  'stripe-login',
   // AppLovin + Postscript are API-key connectors (no OAuth). The *-login
   // actions in the binary just verify the key and persist it — no brand
   // context needed for the global-scoped case.
@@ -1279,7 +1280,7 @@ function buildTools(tool, z, ctx) {
     costImpact: 'none',
     brandRequired: false,
     input: {
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'stripe', 'linkedin', 'pinterest', 'snapchat', 'twitter']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -1292,7 +1293,14 @@ function buildTools(tool, z, ctx) {
           instructions: 'Ask the user to click the Meta tile in the Connections panel and paste their token from developers.facebook.com/tools/explorer. Then use connection_status to verify.',
         };
       }
-      const comingSoon = ['klaviyo'];
+      // Coming-soon providers — defined in oauth-provider-config.js PROVIDERS
+      // but not yet in ACTIVE_PLATFORMS because the BFF doesn't ship app
+      // credentials for them. Surface a clean message instead of letting the
+      // binary fatal with "<X> integration coming soon — app credentials
+      // not yet configured" (oauth.go runPinterestLogin / runSnapchatLogin
+      // / runTwitterLogin). Klaviyo stays on this list while its OAuth flow
+      // is being finished — users connect via API key on the tile today.
+      const comingSoon = ['klaviyo', 'pinterest', 'snapchat', 'twitter'];
       if (comingSoon.includes(args.platform)) {
         return {
           summary: `${args.platform} integration is coming soon`,

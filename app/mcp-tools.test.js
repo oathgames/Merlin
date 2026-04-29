@@ -339,6 +339,48 @@ test('platform_login gates coming-soon providers with a clear message', async ()
   assert.match(out.content[0].text, /coming soon/);
 });
 
+// Pinterest / Snapchat / Twitter all have <provider>-login binary handlers in
+// oauth.go that fatal with "<X> integration coming soon — app credentials not
+// yet configured" when no client ID is present. They're listed in PROVIDERS
+// but absent from ACTIVE_PLATFORMS, so the JS layer routes them to the
+// coming-soon branch BEFORE spawning the binary — otherwise the user sees a
+// raw fatal log line in the chat. Locking that surface in.
+test('platform_login routes pinterest / snapchat / twitter to coming-soon (no binary fatal)', async () => {
+  const { tool, registry } = makeFakeTool();
+  let oauthInvoked = false;
+  const ctx = makeCtx({
+    runOAuthFlow: async () => { oauthInvoked = true; return { success: true }; },
+  });
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'platform_login');
+  for (const platform of ['pinterest', 'snapchat', 'twitter']) {
+    oauthInvoked = false;
+    const out = await entry.handler({ platform, brand: 'madchill' });
+    assert.match(out.content[0].text, /coming soon/, `${platform} should be gated`);
+    assert.equal(oauthInvoked, false, `${platform} must not invoke OAuth while still TODO`);
+  }
+});
+
+// Stripe and LinkedIn ARE production-ready (in ACTIVE_PLATFORMS). The MCP
+// enum used to omit them, which forced agents through manual UI clicks.
+// This test asserts they reach runOAuthFlow normally.
+test('platform_login dispatches stripe + linkedin through runOAuthFlow', async () => {
+  const { tool, registry } = makeFakeTool();
+  const seen = [];
+  const ctx = makeCtx({
+    runOAuthFlow: async (platform) => { seen.push(platform); return { success: true }; },
+  });
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'platform_login');
+  for (const platform of ['stripe', 'linkedin']) {
+    const out = await entry.handler({ platform, brand: 'madchill' });
+    const env = envelope.parse(out);
+    assert.ok(env && env.ok, `${platform} should produce an OK envelope`);
+    assert.equal(env.data.platform, platform);
+  }
+  assert.deepStrictEqual(seen, ['stripe', 'linkedin']);
+});
+
 test('platform_login returns success without leaking tokens', async () => {
   const { tool, registry } = makeFakeTool();
   const ctx = makeCtx({
