@@ -4621,20 +4621,18 @@ document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
   if (isStubbedTile(tile)) return;
-  // Bulk-upload tile is data-action driven (no data-platform). Hand it off
-  // to the file picker; everything else flows through the platform path
-  // below. Branching here keeps OAUTH_PLATFORMS / API_KEY_PLATFORMS
-  // pure — adding the upload tile to those sets would have leaked it into
-  // the connection-state UI (green dots, expired badges, etc.).
-  if (tile.dataset.action === 'bulk-upload') {
-    e.preventDefault();
-    triggerBulkUploadPicker();
-    return;
-  }
   const platform = tile.dataset.platform;
   const activeBrand = getActiveBrandSelection();
   const displayName = platformDisplayName(platform);
 
+  if (!platform) {
+    // Tile had no data-platform and no other special-case action above.
+    // The bulk-upload tile (v1.19.1) used to live here; v1.19.2 replaces it
+    // with window-level paste/drop into the chat composer (see "Window-level
+    // paste / drag-drop" section below). Drop the click silently rather than
+    // letting `_oauthInFlight.add(`${undefined}:${brand}`)` poison the guard.
+    return;
+  }
   if (tile.classList.contains('needs-brand')) {
     promptBrandSetupBeforeConnect(platform);
     return;
@@ -4715,233 +4713,364 @@ document.addEventListener('click', async (e) => {
   }
 });
 
-// ── Bulk asset upload (drag-drop + multi-select) ───────────────────
+// ── Window-level paste / drag-drop → chat-input attachment chips ───
 //
-// The user can:
-//   - Click the "Bulk upload" tile → multi-file OS picker.
-//   - Right-click the tile → folder picker (webkitdirectory).
-//   - Drag-drop files anywhere over the magic panel → drop overlay → upload.
+// v1.19.2 retired the dedicated "Bulk upload" tile. Modern apps (Linear,
+// Slack, ChatGPT desktop, Claude.ai, Cursor) all handle file input as
+// window-level paste/drop into the composer — the LLM sees the attachments
+// alongside the user's typed context and decides routing (file with a
+// product, QA-review, embed in an ad brief, etc.).
 //
-// Files go to assets/brands/<active>/inbox/ via the bulk-upload-assets IPC.
-// The Go matcher decides which auto-move into products/<slug>/references/
-// vs which surface as approval cards. Errors pass through friendlyError().
+// What this section does:
+//   1. window-level paste handler — image clipboard items materialize to
+//      assets/brands/<active>/inbox/ via the new `materialize-pasted-blob`
+//      IPC. File items in clipboardData.files (Finder/Explorer copy) skip
+//      the materialize step and use the OS path directly.
+//   2. window-level drag-drop overlay — full-window dim with a centered
+//      "Drop files to attach to chat" card. Counter pattern prevents the
+//      flicker that single-boolean impls produce when the cursor crosses
+//      child elements.
+//   3. attachment chips — one chip per attached file above the textarea,
+//      thumbnail + filename + size + remove (×). When the user sends a
+//      message, paths get appended to the outgoing text as a structured
+//      "Attached files:" block so Claude can Read each file as multimodal
+//      context.
 //
-// We use a dragenter/dragleave counter (rather than a single boolean) because
-// the drop overlay's child elements fire leave events as the cursor crosses
-// each one — without the counter, the overlay flickers on every transition.
+// IPC backend (`bulk-upload-assets`) is unchanged — the LLM can still call
+// it explicitly via the new `bulk_upload` MCP tool when batch product
+// routing is the right move (5+ files + clear "file these" intent).
 
-const BULK_UPLOAD_MAX_BYTES_PER_FILE = 500 * 1024 * 1024;
+const ATTACHMENT_MAX_BYTES_PER_FILE = 500 * 1024 * 1024; // mirrors bulk-upload BULK_UPLOAD_MAX_BYTES_PER_FILE
+const PASTED_BLOB_MAX_BYTES = 25 * 1024 * 1024;          // 25 MB cap for clipboard images — RAM, not disk
+const MEDIA_EXT_RE = /\.(png|jpe?g|gif|webp|heic|heif|mp4|mov|webm|m4v|avi)$/i;
 
-let _bulkDragCounter = 0;
+let _attachmentDragCounter = 0;
+// _attachments — ordered list of { id, name, path, size, mimeType } for the
+// chips currently shown above the composer. Cleared after send.
+const _attachments = [];
+let _nextAttachmentId = 1;
 
-function getBulkUploadOverlay() {
-  return document.getElementById('bulk-upload-overlay');
+function getChatDropOverlay() {
+  return document.getElementById('chat-drop-overlay');
 }
 
-function showBulkUploadOverlay() {
-  const el = getBulkUploadOverlay();
+function showChatDropOverlay() {
+  const el = getChatDropOverlay();
   if (el) el.classList.add('active');
 }
 
-function hideBulkUploadOverlay() {
-  const el = getBulkUploadOverlay();
+function hideChatDropOverlay() {
+  const el = getChatDropOverlay();
   if (el) el.classList.remove('active');
-  _bulkDragCounter = 0;
+  _attachmentDragCounter = 0;
 }
 
-function triggerBulkUploadPicker() {
-  // Default tile click → multi-file picker. The folder picker is bound to
-  // the right-click contextmenu handler below.
-  const input = document.getElementById('bulk-upload-input');
-  if (!input) return;
-  // Clear value so re-picking the same files re-fires `change` (browsers
-  // dedupe identical selections by default).
-  input.value = '';
-  input.click();
+function getAttachmentRow() {
+  return document.getElementById('attachment-row');
 }
 
-function triggerBulkUploadFolderPicker() {
-  const input = document.getElementById('bulk-upload-folder-input');
-  if (!input) return;
-  input.value = '';
-  input.click();
+// formatBytes — human-readable file size for the chip (e.g. "1.2 MB", "340 KB").
+// Rounds to 1 decimal for MB/GB, integer for KB to keep the chip compact.
+function formatBytes(n) {
+  if (typeof n !== 'number' || !isFinite(n) || n < 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
-// extractFileList — convert a DataTransferItemList / FileList into a uniform
-// [{ name, path, size }] array. Electron's renderer extends File with `path`
-// (the real filesystem path); we rely on that. Falling back to `webkitRelativePath`
-// keeps the folder-picker path semantics intact.
-function extractFileList(filesArray) {
-  const out = [];
-  for (const f of filesArray) {
-    if (!f) continue;
-    const filepath = f.path || f.webkitRelativePath || '';
-    if (!filepath) continue;
-    out.push({ name: f.name || '', path: filepath, size: typeof f.size === 'number' ? f.size : 0 });
+// truncateName — clip the visible name to 24 chars, preserving the extension
+// so a 60-char "campaign_overview_final_v3.png" still reads as "...final_v3.png".
+function truncateName(name, max = 24) {
+  if (typeof name !== 'string') return '';
+  if (name.length <= max) return name;
+  const dot = name.lastIndexOf('.');
+  if (dot > 0 && dot > name.length - 8) {
+    const ext = name.slice(dot);
+    const stemBudget = Math.max(1, max - ext.length - 1);
+    return name.slice(0, stemBudget) + '…' + ext;
   }
-  return out;
+  return name.slice(0, max - 1) + '…';
 }
 
-async function performBulkUpload(rawFiles) {
+// hasMediaExt — front-line filter for paths the user dragged in. We mirror
+// the bulk-upload allowlist so a chip never accepts a file the IPC backend
+// will later reject. MIME from `File.type` is OS-derived and unreliable —
+// extension is what we trust.
+function hasMediaExt(name) {
+  return typeof name === 'string' && MEDIA_EXT_RE.test(name);
+}
+
+// renderAttachments — re-paint the chip row from _attachments. Cheap to
+// re-render fully (chip count is bounded by sanity caps elsewhere) and
+// avoids the partial-update bug class.
+function renderAttachments() {
+  const row = getAttachmentRow();
+  if (!row) return;
+  row.replaceChildren();
+  if (_attachments.length === 0) {
+    row.classList.add('hidden');
+    return;
+  }
+  row.classList.remove('hidden');
+  for (const att of _attachments) {
+    const chip = document.createElement('div');
+    chip.className = 'attachment-chip';
+    chip.dataset.attachmentId = String(att.id);
+
+    const thumb = document.createElement('div');
+    thumb.className = 'attachment-chip-thumb';
+    const lower = (att.name || '').toLowerCase();
+    const isImage = /\.(png|jpe?g|gif|webp)$/i.test(lower);
+    const isVideo = /\.(mp4|mov|webm|m4v|avi)$/i.test(lower);
+    if (isImage && att.path) {
+      const img = document.createElement('img');
+      // Electron renderer with webSecurity:true allows file:// for local files
+      // referenced by the user's own action (paste/drop). The img is not
+      // loaded cross-origin and has no scripting affordance — same pattern
+      // the existing chat-paste flow uses (savePastedMedia → reader.result).
+      img.src = 'file://' + att.path.replace(/\\/g, '/');
+      img.alt = att.name || '';
+      thumb.appendChild(img);
+    } else if (isVideo) {
+      // Generic film-strip glyph — browsers cannot reliably render an inline
+      // video preview without playback overhead, so a static icon is both
+      // faster and clearer about "this is a video clip you attached".
+      thumb.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M10 10l5 2-5 2z" fill="currentColor"/></svg>';
+    } else {
+      // HEIC/HEIF and other non-previewable image formats fall here. Use a
+      // generic image icon so the user still gets a visual confirmation that
+      // their file landed in the chip set.
+      thumb.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>';
+    }
+    chip.appendChild(thumb);
+
+    const meta = document.createElement('div');
+    meta.className = 'attachment-chip-meta';
+    const nameEl = document.createElement('span');
+    nameEl.className = 'attachment-chip-name';
+    nameEl.title = att.name || '';
+    nameEl.textContent = truncateName(att.name || '');
+    const sizeEl = document.createElement('span');
+    sizeEl.className = 'attachment-chip-size';
+    sizeEl.textContent = formatBytes(att.size);
+    meta.appendChild(nameEl);
+    meta.appendChild(sizeEl);
+    chip.appendChild(meta);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'attachment-chip-remove';
+    close.setAttribute('aria-label', `Remove ${att.name || 'attachment'}`);
+    close.textContent = '×';
+    close.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      removeAttachment(att.id);
+    });
+    chip.appendChild(close);
+
+    row.appendChild(chip);
+  }
+}
+
+function addAttachment(att) {
+  if (!att || typeof att.path !== 'string' || !att.path) return;
+  // Dedup — same path attached twice in one composition is almost never
+  // intentional and makes the LLM see the file twice in the prompt.
+  if (_attachments.some((a) => a.path === att.path)) return;
+  _attachments.push({
+    id: _nextAttachmentId++,
+    name: att.name || 'file',
+    path: att.path,
+    size: typeof att.size === 'number' ? att.size : 0,
+    mimeType: att.mimeType || '',
+  });
+  renderAttachments();
+}
+
+function removeAttachment(id) {
+  const idx = _attachments.findIndex((a) => a.id === id);
+  if (idx === -1) return;
+  _attachments.splice(idx, 1);
+  renderAttachments();
+}
+
+function clearAttachments() {
+  if (_attachments.length === 0) return;
+  _attachments.length = 0;
+  renderAttachments();
+}
+
+// _getAttachmentsForSend — exposed for sendMessage() to drain the chip set
+// when the user hits Enter. Returns a SHALLOW COPY so a caller iterating
+// the list while we splice it (we don't, but defensively) wouldn't break.
+function _getAttachmentsForSend() {
+  return _attachments.slice();
+}
+
+// formatAttachmentsForMessage — append "Attached files:" block to the user
+// text so Claude sees the file paths and can Read each one. We use absolute
+// paths so the agent never has to resolve relative-to-cwd. Intentionally
+// plain text rather than markdown image embeds — Claude's Read tool prefers
+// raw paths and the SDK has no multimodal slot in our send-message IPC.
+function formatAttachmentsForMessage(text, attachments) {
+  if (!attachments || attachments.length === 0) return text;
+  const lines = attachments.map((a) => `- ${a.path}`);
+  const header = attachments.length === 1 ? 'Attached file:' : 'Attached files:';
+  const body = `${header}\n${lines.join('\n')}`;
+  if (!text || !text.trim()) return body;
+  return `${text}\n\n${body}`;
+}
+
+// materializePastedBlob — turn a clipboard image File (no `.path`, just
+// in-memory bytes) into an on-disk file at assets/brands/<brand>/inbox/.
+// Returns the new attachment record on success, null on failure (with a
+// friendly modal already shown).
+async function materializePastedBlob(file, brand) {
+  if (!file) return null;
+  if (typeof file.size === 'number' && file.size > PASTED_BLOB_MAX_BYTES) {
+    showModalError(`Pasted image is too large (max ${(PASTED_BLOB_MAX_BYTES / (1024 * 1024)).toFixed(0)} MB).`);
+    return null;
+  }
+  // FileReader → base64 round-trip. We strip the `data:<mime>;base64,` prefix
+  // before sending so the IPC payload is just the encoded bytes; the main-
+  // process handler re-derives the MIME from a separate field rather than
+  // re-parsing the data URL (smaller, easier to validate).
+  const reader = new FileReader();
+  const base64Data = await new Promise((resolve, reject) => {
+    reader.onload = () => {
+      const result = String(reader.result || '');
+      const idx = result.indexOf(';base64,');
+      if (idx === -1) { reject(new Error('paste-decode-failed')); return; }
+      resolve(result.slice(idx + ';base64,'.length));
+    };
+    reader.onerror = () => reject(new Error('paste-read-failed'));
+    reader.readAsDataURL(file);
+  }).catch((err) => {
+    showModalError(friendlyError(err && err.message ? err.message : 'Could not read pasted image.', 'paste'));
+    return null;
+  });
+  if (!base64Data) return null;
+  let result;
+  try {
+    result = await merlin.materializePastedBlob({
+      brand,
+      mimeType: file.type || '',
+      base64Data,
+    });
+  } catch (err) {
+    showModalError(friendlyError(err && err.message ? err.message : String(err), 'paste'));
+    return null;
+  }
+  if (!result || result.error) {
+    showModalError(friendlyError((result && result.error) || 'Paste failed', 'paste'));
+    return null;
+  }
+  return { name: result.name, path: result.path, size: result.size, mimeType: file.type || '' };
+}
+
+// attachOsFile — for files that already have an OS path (drag-drop from
+// Finder/Explorer, or clipboard items copied as files). No materialize step
+// needed — we just validate the extension + push a chip.
+function attachOsFile(file) {
+  if (!file) return false;
+  const filepath = file.path || '';
+  if (!filepath) return false;
+  const name = file.name || '';
+  if (!hasMediaExt(name) && !hasMediaExt(filepath)) return false;
+  const size = typeof file.size === 'number' ? file.size : 0;
+  if (size > ATTACHMENT_MAX_BYTES_PER_FILE) {
+    showModalError(`File too large (max ${(ATTACHMENT_MAX_BYTES_PER_FILE / (1024 * 1024)).toFixed(0)} MB).`);
+    return false;
+  }
+  addAttachment({ name, path: filepath, size, mimeType: file.type || '' });
+  return true;
+}
+
+// Window-level PASTE handler. Image clipboard items materialize, file items
+// in clipboardData.files use OS path directly. Plain text falls through to
+// default textarea-paste behavior.
+window.addEventListener('paste', async (e) => {
+  if (!e.clipboardData) return;
+  const items = e.clipboardData.items ? Array.from(e.clipboardData.items) : [];
+  const files = e.clipboardData.files ? Array.from(e.clipboardData.files) : [];
+
+  // Path 1: clipboardData.files (user copied a file from Finder/Explorer).
+  // These have `.path` so we can chip them without materializing.
+  if (files.length > 0) {
+    let attached = false;
+    for (const f of files) {
+      if (attachOsFile(f)) attached = true;
+    }
+    if (attached) {
+      e.preventDefault();
+      return;
+    }
+  }
+
+  // Path 2: image items in clipboardData.items (screenshot / "copy image").
+  // No `.path`; we materialize via IPC into the brand's inbox/.
+  const imageItems = items.filter((it) => it && it.type && it.type.startsWith('image/'));
+  if (imageItems.length === 0) return; // text-only paste — let textarea handle it
+  e.preventDefault();
   const brand = getActiveBrandSelection();
   if (!brand) {
     showModal({
       title: 'Pick a brand first',
-      body: 'Bulk upload drops files into the active brand\'s inbox. Switch to (or create) a brand and try again.',
+      body: 'Pasted images get saved to the active brand\'s inbox so Merlin can reuse them later. Switch to (or create) a brand and paste again.',
       confirmLabel: 'OK',
       onConfirm: () => {},
     });
     return;
   }
-  const files = extractFileList(rawFiles);
-  if (files.length === 0) return;
-  // Cap per-file size on the renderer for fast feedback. main.js re-checks.
-  const tooBig = files.filter((f) => f.size > BULK_UPLOAD_MAX_BYTES_PER_FILE);
-  const usable = files.filter((f) => f.size <= BULK_UPLOAD_MAX_BYTES_PER_FILE);
-  if (tooBig.length > 0 && usable.length === 0) {
-    showModalError(`File too large (max ${(BULK_UPLOAD_MAX_BYTES_PER_FILE / (1024 * 1024)).toFixed(0)} MB).`);
-    return;
+  for (const it of imageItems) {
+    const file = it.getAsFile && it.getAsFile();
+    if (!file) continue;
+    const att = await materializePastedBlob(file, brand);
+    if (att) addAttachment(att);
   }
-  let result;
-  try {
-    result = await merlin.bulkUploadAssets({ brand, files: usable });
-  } catch (err) {
-    showModal({
-      title: 'Upload failed',
-      body: friendlyError(err && err.message ? err.message : String(err), 'bulk upload'),
-      confirmLabel: 'OK',
-      onConfirm: () => {},
-    });
-    return;
-  }
-  if (result && result.error) {
-    showModal({
-      title: 'Upload failed',
-      body: friendlyError(result.error, 'bulk upload'),
-      confirmLabel: 'OK',
-      onConfirm: () => {},
-    });
-    return;
-  }
-  renderBulkUploadSummary(result, tooBig.length);
-}
-
-// renderBulkUploadSummary — non-blocking inline summary so a user dropping 12
-// photos sees "Moved 7 of 12 to product folders, 3 in inbox awaiting review,
-// 2 duplicates skipped" without a modal interrupting their workflow.
-function renderBulkUploadSummary(result, sizeRejectCount) {
-  const added = (result.added || []).length;
-  const skipped = (result.skippedDup || []).length;
-  const auto = (result.autoAssociated || []).length;
-  const review = (result.needsReview || []).length;
-  const rejected = (result.rejected || []).length + (sizeRejectCount || 0);
-  const failedMoves = (result.failedMoves || []).length;
-  const parts = [];
-  if (auto > 0) {
-    // Build a per-product breakdown for the chat — "Moved 4 to cloud-zip-up-hoodie, 3 to butter-yellow-mockneck"
-    const byProduct = {};
-    for (const m of result.autoAssociated) {
-      byProduct[m.product] = (byProduct[m.product] || 0) + 1;
-    }
-    const fragments = Object.entries(byProduct).map(([p, n]) => `${n} to ${p}`);
-    parts.push(`Moved ${auto} of ${added + skipped + rejected} files (${fragments.join(', ')})`);
-  } else if (added > 0) {
-    parts.push(`${added} file${added === 1 ? '' : 's'} added to inbox`);
-  }
-  if (review > 0) parts.push(`${review} awaiting review`);
-  if (skipped > 0) parts.push(`${skipped} duplicate${skipped === 1 ? '' : 's'} skipped`);
-  if (rejected > 0) parts.push(`${rejected} rejected`);
-  if (failedMoves > 0) parts.push(`${failedMoves} move failure${failedMoves === 1 ? '' : 's'}`);
-  if (result.warning) parts.push(result.warning);
-  const msg = parts.length > 0 ? parts.join(' · ') : 'Nothing to upload';
-
-  // Surface as approval cards for the needsReview list. Each card asks the
-  // user "is this the right product for this file?" — same UX as every
-  // other Merlin approval: short, one tap to accept, one tap to skip.
-  // The renderer's existing toast/inline-message paths vary by view; using
-  // a non-blocking modal-less notification keeps the tile click cheap.
-  if (typeof showInlineToast === 'function') {
-    showInlineToast(msg);
-  } else {
-    // Fallback — if there's no toast helper available in this build, use the
-    // existing modal path to surface the result. Confirm-only, no input.
-    showModal({
-      title: 'Bulk upload',
-      body: msg,
-      confirmLabel: 'OK',
-      onConfirm: () => {},
-    });
-  }
-  // Surface review items as approval cards if the helper exists.
-  if (review > 0 && typeof appendApprovalCard === 'function') {
-    for (const item of result.needsReview.slice(0, 5)) {
-      const top = item.product || item.matched || 'unsure';
-      const second = item.secondSlug ? ` or ${item.secondSlug}` : '';
-      appendApprovalCard({
-        title: `Where does ${item.file} go?`,
-        body: `Closest match: ${top}${second} (${(Number(item.score || 0) * 100).toFixed(0)}% confidence). Leave it in inbox/ for now?`,
-        approveLabel: 'Leave in inbox',
-        denyLabel: 'Pick a product',
-        onApprove: () => {},
-        onDeny: () => {},
-      });
-    }
-  }
-}
-
-// File-input change handlers (multi-select & folder).
-document.addEventListener('change', (e) => {
-  const t = e.target;
-  if (!t || !t.id) return;
-  if (t.id !== 'bulk-upload-input' && t.id !== 'bulk-upload-folder-input') return;
-  const files = Array.from(t.files || []);
-  if (files.length === 0) return;
-  performBulkUpload(files);
 });
 
-// Right-click on the tile → folder picker. Mirrors the AppLovin/Shopify
-// "Use my API key" right-click pattern but routes to a different action.
-document.addEventListener('contextmenu', (e) => {
-  const tile = e.target.closest('.magic-tile');
-  if (!tile) return;
-  if (tile.dataset.action !== 'bulk-upload') return;
-  e.preventDefault();
-  // Close any other tile context menu that's open.
-  if (typeof closeTileContextMenu === 'function') closeTileContextMenu();
-  triggerBulkUploadFolderPicker();
-});
-
-// Drag-drop overlay. We listen on document so a drag from anywhere inside
-// the window triggers the overlay. Counter pattern handles child-leave noise.
-document.addEventListener('dragenter', (e) => {
+// Window-level DRAG/DROP handlers. Counter pattern (not boolean) avoids
+// flicker as the cursor crosses child elements — every child transition
+// fires dragleave on the parent.
+window.addEventListener('dragenter', (e) => {
   if (!e.dataTransfer) return;
-  // Only react to actual file drags — text-drag / link-drag stays inert.
   const types = Array.from(e.dataTransfer.types || []);
   if (!types.includes('Files')) return;
-  _bulkDragCounter += 1;
-  if (_bulkDragCounter === 1) showBulkUploadOverlay();
+  _attachmentDragCounter += 1;
+  if (_attachmentDragCounter === 1) showChatDropOverlay();
 });
-document.addEventListener('dragleave', (e) => {
+window.addEventListener('dragleave', (e) => {
   if (!e.dataTransfer) return;
-  _bulkDragCounter = Math.max(0, _bulkDragCounter - 1);
-  if (_bulkDragCounter === 0) hideBulkUploadOverlay();
+  _attachmentDragCounter = Math.max(0, _attachmentDragCounter - 1);
+  if (_attachmentDragCounter === 0) hideChatDropOverlay();
 });
-document.addEventListener('dragover', (e) => {
+window.addEventListener('dragover', (e) => {
   if (!e.dataTransfer) return;
   const types = Array.from(e.dataTransfer.types || []);
   if (!types.includes('Files')) return;
   e.preventDefault();
   e.dataTransfer.dropEffect = 'copy';
 });
-document.addEventListener('drop', (e) => {
+window.addEventListener('drop', (e) => {
   if (!e.dataTransfer) return;
   const types = Array.from(e.dataTransfer.types || []);
   if (!types.includes('Files')) return;
   e.preventDefault();
-  hideBulkUploadOverlay();
+  hideChatDropOverlay();
   const files = Array.from(e.dataTransfer.files || []);
   if (files.length === 0) return;
-  performBulkUpload(files);
+
+  let attached = 0;
+  let rejected = 0;
+  for (const f of files) {
+    if (attachOsFile(f)) attached++;
+    else rejected++;
+  }
+  if (attached === 0 && rejected > 0) {
+    showModalError('Drop only images or videos (PNG, JPG, GIF, WebP, HEIC, MP4, MOV, WebM, M4V, AVI).');
+  }
 });
 
 // Manual API key modal for Meta — escape hatch for users with a long-lived
@@ -6149,8 +6278,16 @@ function removeTypingIndicator() {
 }
 
 function sendMessage() {
-  const text = input.value.trim();
-  if (!text) return;
+  const rawText = input.value.trim();
+  const attachments = (typeof _getAttachmentsForSend === 'function') ? _getAttachmentsForSend() : [];
+  // Allow sending with attachments-only (no typed text) — common pattern when
+  // the user drops a screenshot and wants Merlin to "look at this" with no
+  // accompanying instruction. The agent's content SKILL routes the implicit
+  // "what do I do with these?" intent.
+  if (!rawText && attachments.length === 0) return;
+  const text = (typeof formatAttachmentsForMessage === 'function')
+    ? formatAttachmentsForMessage(rawText, attachments)
+    : rawText;
 
   // Offline gate — prevent sending when disconnected
   if (!navigator.onLine) {
@@ -6222,6 +6359,11 @@ function sendMessage() {
   merlin.sendMessage(text);
   input.value = '';
   autoResize();
+  // Clear chips after the message is committed to the queue. Removing earlier
+  // would race with a renderer-side error path (e.g. trial-expired modal)
+  // that returns from sendMessage without actually sending — the user would
+  // lose their attachments without seeing them go anywhere.
+  if (typeof clearAttachments === 'function') clearAttachments();
 }
 
 let _lastUserMessage = '';
@@ -7078,63 +7220,17 @@ input.addEventListener('input', () => {
   if (input.classList.contains('voice-interim')) input.classList.remove('voice-interim');
 });
 
-// ── Image/Video Paste + Drag-Drop ───────────────────────────
-function savePastedMedia(file) {
-  if (!file) return;
-  const isImage = file.type.startsWith('image/');
-  const isVideo = file.type.startsWith('video/');
-  if (!isImage && !isVideo) return;
-
-  const reader = new FileReader();
-  reader.onload = () => {
-    const ext = file.type.split('/')[1] === 'jpeg' ? 'jpg' : (file.type.split('/')[1] || 'png');
-    const filename = `pasted_${Date.now()}.${ext}`;
-    merlin.savePastedMedia(reader.result, filename).then((savedPath) => {
-      // Show preview inline
-      addUserBubble(`📎 ${file.name || filename}`);
-      const mediaDiv = document.createElement('div');
-      mediaDiv.className = 'msg msg-user';
-      if (isImage) {
-        mediaDiv.innerHTML = `<img src="${reader.result}" alt="Pasted" style="max-width:100%;border-radius:10px">`;
-      } else {
-        mediaDiv.innerHTML = `<video src="${reader.result}" controls playsinline style="max-width:100%;border-radius:10px"></video>`;
-      }
-      messages.appendChild(mediaDiv);
-      scrollToBottom();
-      // Tell Claude
-      showTypingIndicator();
-      turnStartTime = Date.now();
-      turnTokens = 0;
-      sessionActive = true;
-      startTickingTimer();
-      const type = isImage ? 'image' : 'video';
-      merlin.sendMessage(`I just pasted a ${type} — saved at ${savedPath}. Take a look.`);
-    });
-  };
-  reader.readAsDataURL(file);
-}
-
-input.addEventListener('paste', (e) => {
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  for (const item of items) {
-    if (item.type.startsWith('image/') || item.type.startsWith('video/')) {
-      e.preventDefault();
-      savePastedMedia(item.getAsFile());
-      return;
-    }
-  }
-});
-
-const chatEl = document.getElementById('chat');
-chatEl.addEventListener('dragover', (e) => { e.preventDefault(); chatEl.classList.add('drag-over'); });
-chatEl.addEventListener('dragleave', () => { chatEl.classList.remove('drag-over'); });
-chatEl.addEventListener('drop', (e) => {
-  e.preventDefault();
-  chatEl.classList.remove('drag-over');
-  const file = e.dataTransfer?.files?.[0];
-  if (file && (file.type.startsWith('image/') || file.type.startsWith('video/'))) savePastedMedia(file);
-});
+// ── Image/Video Paste + Drag-Drop (RETIRED v1.19.2) ──────────
+// The old input-scoped paste handler + chat-element drag-drop fire-and-forget
+// flow ("I just pasted a video — saved at <path>. Take a look.") was retired
+// in v1.19.2. Paste/drop is now window-level and lands in the chat composer
+// as attachment chips so the LLM sees the file alongside whatever context the
+// user types. See the "Window-level paste / drag-drop → chat-input attachment
+// chips" section earlier in this file. The `save-pasted-media` IPC + the
+// pasted-media.js validator stay shipped — they're still wired in main.js
+// for any future caller, and removing them mid-release would break the
+// regression-guard test surface (REGRESSION GUARD 2026-04-23 in
+// pasted-media.js maps 1:1 to the codex audit on save-pasted-media).
 
 // ── Help Nudge (frustration detection) ──────────────────────
 // Cooldown: once dismissed or shown, don't show again for 7 days

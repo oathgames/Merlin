@@ -1518,13 +1518,13 @@ body.platform-mac .titlebar-drag{
   display:none;
 }
 
-/* ── Bulk-upload drag-drop overlay ────────────────────────── */
-/* The overlay covers the magic panel while a drag is in progress so the
-   drop target is visually obvious. Pointer-events stay on the overlay
-   while it's `.active`; it's display:none otherwise so the renderer's
-   click/hover behavior on tiles is unaffected. */
-.bulk-upload-overlay{
-  position:fixed; inset:0; z-index:600;
+/* ── Window-level drop overlay (paste/drop chat injection) ────
+   Covers the entire window while a file drag is in flight so the drop
+   target is unmissable. Match the modal-overlay aesthetic (dim backdrop
+   + dashed-border card with the accent color). Pointer-events stay on
+   only while .active so resting clicks pass through. */
+.chat-drop-overlay{
+  position:fixed; inset:0; z-index:700;
   background:rgba(8, 6, 22, .82);
   display:none;
   align-items:center; justify-content:center;
@@ -1532,11 +1532,11 @@ body.platform-mac .titlebar-drag{
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
 }
-.bulk-upload-overlay.active{
+.chat-drop-overlay.active{
   display:flex;
   pointer-events:auto;
 }
-.bulk-upload-card{
+.chat-drop-card{
   background:var(--surface);
   border:2px dashed var(--accent-border);
   border-radius:14px;
@@ -1546,9 +1546,72 @@ body.platform-mac .titlebar-drag{
   box-shadow:0 12px 40px rgba(0,0,0,.5);
   max-width:80%;
 }
-.bulk-upload-icon{color:var(--accent);margin-bottom:12px;display:flex;justify-content:center}
-.bulk-upload-title{font-size:18px;font-weight:600;margin-bottom:6px}
-.bulk-upload-sub{font-size:13px;color:var(--text-dim)}
+.chat-drop-icon{color:var(--accent);margin-bottom:12px;display:flex;justify-content:center}
+.chat-drop-title{font-size:18px;font-weight:600;margin-bottom:6px}
+.chat-drop-sub{font-size:13px;color:var(--text-dim)}
+
+/* ── Attachment chips (composer) ─────────────────────────────
+   Files dropped/pasted anywhere in the window land here as chips above
+   the input. User reviews + optionally types context, then send appends
+   the file paths to the outgoing message. Hidden until first chip. */
+.attachment-row{
+  flex-shrink:0;
+  display:flex;
+  flex-wrap:wrap;
+  gap:8px;
+  padding:8px 16px 0;
+  max-width:752px;
+  margin:0 auto;
+  width:100%;
+  box-sizing:border-box;
+}
+.attachment-row.hidden{display:none}
+.attachment-chip{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:6px 8px 6px 6px;
+  max-width:280px;
+  font-size:12px;
+  color:var(--text);
+}
+.attachment-chip-thumb{
+  flex-shrink:0;
+  width:40px;height:40px;
+  border-radius:6px;
+  object-fit:cover;
+  background:var(--bg-deep);
+  display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);
+}
+.attachment-chip-thumb img{
+  width:40px;height:40px;border-radius:6px;object-fit:cover;display:block;
+}
+.attachment-chip-meta{
+  display:flex;flex-direction:column;
+  min-width:0;
+  flex:1;
+}
+.attachment-chip-name{
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  font-size:12px;color:var(--text);
+}
+.attachment-chip-size{
+  font-size:10px;color:var(--text-dim);
+}
+.attachment-chip-remove{
+  flex-shrink:0;
+  background:transparent;border:none;
+  color:var(--text-dim);cursor:pointer;
+  font-size:16px;line-height:1;
+  padding:2px 6px;border-radius:4px;
+  transition:color .15s, background .15s;
+}
+.attachment-chip-remove:hover{color:var(--text);background:var(--hover-10)}
+.attachment-chip-remove:focus{outline:1px solid var(--accent-border);outline-offset:1px}
 
 /* ── Share Merlin (Referrals) ────────────────────────────── */
 .referral-card{display:flex;flex-direction:column;gap:6px}
@@ -2048,13 +2111,6 @@ body.platform-mac .titlebar-drag{
 .autopilot-row{cursor:pointer;padding:6px 8px;border-radius:8px;transition:background .2s}
 .autopilot-row:hover{background:var(--surface)}
 .autopilot-last:empty{display:none}
-
-/* ── Drag-Drop ───────────────────────────────────────────── */
-#chat.drag-over{
-  outline:2px dashed var(--accent);
-  outline-offset:-4px;
-  border-radius:8px;
-}
 
 /* ── Typing Indicator ────────────────────────────────────── */
 .typing-indicator{animation:fadeIn .3s ease}

@@ -168,25 +168,6 @@
       <button class="magic-tile" data-platform="pinterest" data-scope="brand" data-stubbed="true" data-tip="Coming soon — OAuth pending" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#E60023" d="M12 0C5.37 0 0 5.37 0 12c0 5.08 3.15 9.42 7.6 11.18-.1-.95-.2-2.42.04-3.46.22-.95 1.4-5.94 1.4-5.94s-.36-.72-.36-1.78c0-1.66.97-2.91 2.17-2.91 1.02 0 1.52.77 1.52 1.69 0 1.03-.65 2.57-.99 3.99-.28 1.19.6 2.16 1.77 2.16 2.13 0 3.77-2.25 3.77-5.49 0-2.87-2.06-4.87-5.01-4.87-3.41 0-5.42 2.56-5.42 5.2 0 1.03.4 2.13.89 2.73a.36.36 0 01.08.34c-.09.38-.29 1.19-.33 1.36-.05.22-.18.27-.41.16-1.55-.72-2.52-2.99-2.52-4.81 0-3.92 2.85-7.52 8.21-7.52 4.31 0 7.66 3.07 7.66 7.17 0 4.28-2.7 7.72-6.44 7.72-1.26 0-2.44-.65-2.84-1.42l-.77 2.95c-.28 1.08-1.04 2.43-1.55 3.26C9.58 23.81 10.77 24 12 24c6.63 0 12-5.37 12-12S18.63 0 12 0z"/></svg></div><div class="tile-name">Pinterest</div></button>
       <button class="magic-tile" data-platform="snapchat" data-scope="brand" data-stubbed="true" data-tip="Coming soon — OAuth pending" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#FFFC00"/><path fill="#000" d="M12 4c-2.8 0-4.3 1.8-4.5 4.4 0 .5-.1 1.4-.4 1.7-.3.2-1 .4-1.4.5-.3.1-.4.3-.3.5.1.3.5.4.9.5.6.1 1 .3 1.1.7.1.4-.2 1.2-.5 1.8-.6 1.3-2 2.3-2.8 2.6-.3.1-.4.4-.3.6.2.4.8.6 1.8.4.2 0 .4 0 .5.2.1.3.2.7.4.9.1.2.4.2.7.2.5 0 1.1-.2 2-.2 1.5 0 2.3.9 3 .9s1.5-.9 3-.9c.9 0 1.5.2 2 .2.3 0 .5 0 .7-.2.2-.2.3-.6.4-.9.1-.2.3-.2.5-.2 1 .2 1.6 0 1.8-.4.1-.2 0-.5-.3-.6-.8-.3-2.2-1.3-2.8-2.6-.3-.6-.6-1.4-.5-1.8.1-.4.5-.6 1.1-.7.4-.1.8-.2.9-.5.1-.2 0-.4-.3-.5-.4-.1-1.1-.3-1.4-.5-.3-.3-.4-1.2-.4-1.7C16.3 5.8 14.8 4 12 4z"/></svg></div><div class="tile-name">Snapchat</div></button>
       <button class="magic-tile" data-platform="twitter" data-scope="brand" data-stubbed="true" data-tip="Coming soon — OAuth pending" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#000"/><path fill="#fff" d="M13.9 10.5L19.3 4h-1.3l-4.7 5.6L9.5 4H4.2l5.7 8.4L4.2 19.2h1.3l5-5.9 4 5.9h5.3l-5.9-8.7zm-1.8 2.1l-.6-.8L6 5h2l3.7 5.4.6.8 4.8 7h-2l-3.9-5.7z"/></svg></div><div class="tile-name">X</div></button>
-      <!-- Bulk upload (assets/brands/<brand>/inbox/) — drag-drop or multi-select
-           file picker. Right-click opens the folder picker (webkitdirectory).
-           Auto-fuzzy-matches filenames against products via the Go binary's
-           match-asset-to-product action; high-confidence matches move to
-           products/<product>/references/, ambiguous land in inbox/ with an
-           approval card. Not an OAuth platform — handled by the
-           bulk-upload-tile branch in the click handler in renderer.js. -->
-      <button id="bulk-upload-tile" class="magic-tile" data-action="bulk-upload" data-scope="brand" data-tip="Bulk upload photos / videos (drag-drop or click). Right-click for a folder." data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#7C5CFF"/><path fill="#fff" d="M12 6.5l-4.2 4.2 1.4 1.4L11 10.3V16h2v-5.7l1.8 1.8 1.4-1.4L12 6.5zM6 18h12v1.5H6z"/></svg></div><div class="tile-name">Bulk upload</div></button>
-    </div>
-    <input type="file" id="bulk-upload-input" multiple accept="image/*,video/*" style="display:none">
-    <input type="file" id="bulk-upload-folder-input" webkitdirectory directory style="display:none">
-    <div id="bulk-upload-overlay" class="bulk-upload-overlay" aria-hidden="true">
-      <div class="bulk-upload-card">
-        <div class="bulk-upload-icon" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12 4l-7 7h4v7h6v-7h4l-7-7zm-7 14h14v2H5v-2z"/></svg>
-        </div>
-        <div class="bulk-upload-title">Drop assets here</div>
-        <div class="bulk-upload-sub">Photos &amp; videos go to your active brand's inbox</div>
-      </div>
     </div>
     <div id="request-platform" class="request-platform">
       <button id="request-toggle" class="request-toggle">Request a platform</button>
@@ -269,6 +250,28 @@
 <button id="scroll-bottom-btn" class="scroll-bottom-btn hidden" aria-label="Scroll to bottom">
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
 </button>
+
+<!-- Attachment chips (rendered above input-bar). Hidden when empty.
+     Files arrive via window-level paste / drag-drop (see renderer.js
+     "Window-level paste/drop" section). User reviews, optionally types
+     accompanying context, hits Enter — chip paths get appended to the
+     outgoing user message so Claude can Read each file as multimodal
+     context and decide what to do (file with a product, QA-review, etc.). -->
+<div id="attachment-row" class="attachment-row hidden" aria-live="polite"></div>
+
+<!-- Window-level drag-drop overlay. Activated by the renderer's window
+     dragenter handler when the dataTransfer contains files; covers the
+     full window so the drop target is unmissable. Match the modal-overlay
+     aesthetic (dim backdrop + dashed-border card). -->
+<div id="chat-drop-overlay" class="chat-drop-overlay" aria-hidden="true">
+  <div class="chat-drop-card">
+    <div class="chat-drop-icon" aria-hidden="true">
+      <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12 4l-7 7h4v7h6v-7h4l-7-7zm-7 14h14v2H5v-2z"/></svg>
+    </div>
+    <div class="chat-drop-title">Drop files to attach to chat</div>
+    <div class="chat-drop-sub">Images and videos attach to your next message</div>
+  </div>
+</div>
 
 <!-- Input bar -->
 <div id="input-bar">

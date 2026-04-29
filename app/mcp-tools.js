@@ -1446,6 +1446,105 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── bulk_upload ──────────────────────────────────────────
+  //
+  // File a batch of media files (already on disk — typically dropped or
+  // pasted by the user as chat attachments) into the brand's product
+  // references/ folders via the Go Jaro-Winkler matcher. Use ONLY when:
+  //   1. The user has attached 5+ files in one message AND
+  //   2. The intent is clearly "file these with products" (e.g. "for the
+  //      POG launch — sort these", "associate these to products").
+  //
+  // For 1-4 attachments OR ambiguous intent, treat each file as direct
+  // content (Read for images, decide downstream). The matcher is a hammer
+  // — calling it implicitly on every drop strips the LLM's ability to
+  // QA-review or repurpose attachments before filing.
+  //
+  // Returns the same shape the renderer drag-drop IPC returns:
+  // { added, skippedDup, autoAssociated, needsReview, rejected, failedMoves }.
+  tools.push(defineTool({
+    name: 'bulk_upload',
+    description: 'File 5+ media attachments into product references/ folders via the Jaro-Winkler matcher. Use ONLY when the user explicitly asks to "file/sort/associate these to products" with a multi-file batch. For 1-4 attachments OR ambiguous intent, treat files as direct content (Read images, etc.) instead.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: true,
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand whose inbox / products receive the files'),
+      // The renderer-side and IPC backend already enforce the 1-200 cap
+      // (BULK_UPLOAD_MAX_FILES in main.js). zod's .min/.max chaining isn't
+      // available on the SDK's z mock used in tests, so the runtime length
+      // check below in the handler is the authoritative gate.
+      files: z.array(z.string()).describe('Absolute file paths (1-200, already on disk). Allowed extensions: png, jpg, jpeg, gif, webp, heic, heif, mp4, mov, webm, m4v, avi.'),
+    },
+    handler: async ({ brand, files }) => {
+      if (typeof ctx.bulkUploadAssets !== 'function') {
+        return envelope.fail(errors.makeError('INTERNAL_ERROR', {
+          message: 'bulk_upload pipeline not wired in this build',
+        }));
+      }
+      if (!Array.isArray(files) || files.length === 0) {
+        return validationEnvelope('files must be a non-empty array of absolute paths');
+      }
+      if (files.length > 200) {
+        return validationEnvelope('Too many files in one call (max 200)');
+      }
+      // The IPC handler expects { name, path, size } per file. We have only
+      // paths here; derive the rest via fs.statSync. Files that don't exist
+      // or aren't regular files get reported back as `rejected` by the
+      // pipeline's per-file validator (validateInputFile in bulk-upload.js).
+      const fileObjs = [];
+      const preRejected = [];
+      for (const p of files) {
+        if (typeof p !== 'string' || !p) {
+          preRejected.push({ file: '(empty)', reason: 'bad-input' });
+          continue;
+        }
+        let st;
+        try { st = fs.statSync(p); }
+        catch { preRejected.push({ file: path.basename(p), reason: 'not-found' }); continue; }
+        if (!st.isFile()) {
+          preRejected.push({ file: path.basename(p), reason: 'not-a-file' });
+          continue;
+        }
+        fileObjs.push({ name: path.basename(p), path: p, size: st.size });
+      }
+      if (fileObjs.length === 0) {
+        return envelope.ok({
+          data: {
+            summary: `No usable files (${preRejected.length} rejected)`,
+            added: [],
+            skippedDup: [],
+            autoAssociated: [],
+            needsReview: [],
+            rejected: preRejected,
+          },
+        });
+      }
+      const result = await ctx.bulkUploadAssets({ brand, files: fileObjs });
+      if (result && result.error) {
+        return envelope.fail(errors.makeError('INTERNAL_ERROR', { message: result.error }));
+      }
+      const added = (result.added || []).length;
+      const auto = (result.autoAssociated || []).length;
+      const review = (result.needsReview || []).length;
+      const skipped = (result.skippedDup || []).length;
+      const rejectedAll = (result.rejected || []).concat(preRejected);
+      return envelope.ok({
+        data: {
+          summary: `Uploaded ${added} (${auto} auto-filed, ${review} need review, ${skipped} duplicates, ${rejectedAll.length} rejected)`,
+          added: result.added || [],
+          skippedDup: result.skippedDup || [],
+          autoAssociated: result.autoAssociated || [],
+          needsReview: result.needsReview || [],
+          rejected: rejectedAll,
+          failedMoves: result.failedMoves || [],
+        },
+      });
+    },
+  }, tool, z, ctx));
+
   // ── brand_guide ──────────────────────────────────────────
   //
   // Validate, write, or read the brand-guide.json for a brand.

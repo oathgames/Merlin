@@ -256,6 +256,14 @@ Returns `{ outputPath, wordCount, durationMs }` on success. Errors map to `INVAL
 
 This is for **existing** videos. For NEW videos with captions baked in from the start, use `mcp__merlin__video({ action: 'generate' })` — the regular pipeline already produces a `captioned.mp4` variant.
 
+## User-attached files (paste / drag-drop)
+
+Users can paste images from the clipboard or drag-drop files anywhere in the window — these flow as attachments on the user's NEXT message, with absolute paths appended in an `Attached file:` / `Attached files:` block. **Treat each attachment as direct content first** — `Read` the image to look at it, decide what the user wants based on the message text + the image, then act.
+
+When the user attaches **5+ files in one message** AND the intent is clearly to file them with products (e.g. "for the POG launch — sort these", "associate these to products", "match these to my catalog"), route the batch through `mcp__merlin__bulk_upload({ brand, files })` — this invokes the Go Jaro-Winkler matcher, which auto-files high-confidence filename↔product matches into `products/<slug>/references/` and surfaces the borderline ones for review.
+
+**Do NOT call `bulk_upload` implicitly.** For 1–4 files, ambiguous intent, or any "look at this" / "what do you think of this" request, just `Read` each image and respond. The matcher is a hammer — use it when the user explicitly asks for batch routing, not on every drop.
+
 ## Voice (`mcp__merlin__voice`)
 
 `clone` (`voiceSampleDir`, `voiceName`) · `list` · `delete` (`voiceId`) · `list-avatars` (HeyGen).
