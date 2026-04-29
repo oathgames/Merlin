@@ -10445,11 +10445,18 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
     }
 
     async function _finishOnboardingWithGoal(goal) {
-      // Fire-and-forget the checkpoint writes — we never want a failed
-      // IPC to block the user from starting their session.
+      // Await the checkpoint write so a force-quit during the 300ms
+      // fadeOut can't drop the user back at the goal step on relaunch.
+      // _writeOnboardingCheckpointSafe is internally try/catch-wrapped
+      // (renderer.js:770) so the await cannot throw — failures resolve
+      // to false, never reject. Gitar review on PR #160 caught the
+      // earlier fire-and-forget shape: comment promised "BEFORE showing
+      // the next overlay" but the code returned a pending promise and
+      // raced the IPC against a quit. Do NOT revert this to fire-and-
+      // forget without also rewriting the regression-guard comment.
       const partial = { setup_step: 'done' };
       if (typeof goal === 'string' && goal) partial.goal = goal;
-      try { _writeOnboardingCheckpointSafe(partial); } catch {}
+      await _writeOnboardingCheckpointSafe(partial);
       _fadeHideOverlay(document.getElementById('goal-overlay'), () => init());
     }
 
@@ -10484,7 +10491,8 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
     if (refContinueBtn) {
       refContinueBtn.addEventListener('click', async () => {
         await _applyReferralIfProvided();
-        try { _writeOnboardingCheckpointSafe({ setup_step: 'goal' }); } catch {}
+        // Awaited — see _finishOnboardingWithGoal for the rationale.
+        await _writeOnboardingCheckpointSafe({ setup_step: 'goal' });
         _fadeHideOverlay(document.getElementById('referral-capture-overlay'), () => {
           _showOverlay('goal-overlay');
         });
@@ -10493,8 +10501,9 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
 
     const refSkipBtn = document.getElementById('referral-capture-skip');
     if (refSkipBtn) {
-      refSkipBtn.addEventListener('click', () => {
-        try { _writeOnboardingCheckpointSafe({ setup_step: 'goal' }); } catch {}
+      refSkipBtn.addEventListener('click', async () => {
+        // Awaited — see _finishOnboardingWithGoal for the rationale.
+        await _writeOnboardingCheckpointSafe({ setup_step: 'goal' });
         _fadeHideOverlay(document.getElementById('referral-capture-overlay'), () => {
           _showOverlay('goal-overlay');
         });
@@ -10540,7 +10549,8 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
     btn.addEventListener('click', async () => {
       const emailOptIn = document.getElementById('email-optin-checkbox').checked;
       await merlin.acceptTos({ emailOptIn });
-      try { _writeOnboardingCheckpointSafe({ setup_step: 'referral' }); } catch {}
+      // Awaited — see _finishOnboardingWithGoal for the rationale.
+      await _writeOnboardingCheckpointSafe({ setup_step: 'referral' });
       _fadeHideOverlay(document.getElementById('tos-overlay'), () => {
         _showOverlay('referral-capture-overlay');
       });

@@ -114,20 +114,35 @@ test('§3.13 — onboarding flow persists setup_step on each transition (Codex a
   // Both halves MUST be present — without (a) the resume path has no
   // signal to route on; without (b) the writes are dead weight.
 
-  // Part (a): three writes, one per transition.
+  // Part (a): three writes, one per transition. Each MUST be awaited
+  // — Gitar review on PR #160 caught the original fire-and-forget
+  // shape: comment promised "BEFORE showing the next overlay" but the
+  // code raced the IPC against a 300ms fadeOut, so a force-quit during
+  // the fade dropped the user back at the previous step. The matchers
+  // below all anchor on `await ` so a future revert to the unawaited
+  // form fails the source-scan.
   assert.ok(
-    /_writeOnboardingCheckpointSafe\(\{\s*setup_step:\s*'referral'\s*\}\)/.test(RENDERER_JS),
-    'ToS accept writes setup_step: referral',
+    /await\s+_writeOnboardingCheckpointSafe\(\{\s*setup_step:\s*'referral'\s*\}\)/.test(RENDERER_JS),
+    'ToS accept awaits setup_step: referral write',
   );
   // The two referral exits (continue + skip) both bump to 'goal'.
-  const goalWrites = (RENDERER_JS.match(/_writeOnboardingCheckpointSafe\(\{\s*setup_step:\s*'goal'\s*\}\)/g) || []).length;
+  const goalWrites = (RENDERER_JS.match(/await\s+_writeOnboardingCheckpointSafe\(\{\s*setup_step:\s*'goal'\s*\}\)/g) || []).length;
   assert.ok(goalWrites >= 2,
-    `referral continue + skip must each write setup_step: goal (found ${goalWrites})`);
+    `referral continue + skip must each AWAIT setup_step: goal (found ${goalWrites})`);
   // Goal completion writes 'done', folded into the same partial as the
-  // user's chosen goal so a single fire-and-forget IPC carries both.
+  // user's chosen goal so a single awaited IPC carries both.
   assert.ok(
     /partial\s*=\s*\{\s*setup_step:\s*'done'\s*\}/.test(RENDERER_JS),
     'goal-finish writes setup_step: done',
+  );
+  assert.ok(
+    /await\s+_writeOnboardingCheckpointSafe\(partial\)/.test(RENDERER_JS),
+    'goal-finish awaits the partial write',
+  );
+  // No fire-and-forget shape allowed at any of the four transition sites.
+  assert.ok(
+    !/try\s*\{\s*_writeOnboardingCheckpointSafe\(/.test(RENDERER_JS),
+    'no fire-and-forget try { _writeOnboardingCheckpointSafe(...) } pattern (Gitar PR #160 finding)',
   );
 
   // Part (b): the resume router. checkToS() must read setup_step and
@@ -136,9 +151,11 @@ test('§3.13 — onboarding flow persists setup_step on each transition (Codex a
   // The function is an IIFE: `(async function checkToS() { ... })();`
   const checkToSStart = RENDERER_JS.indexOf('(async function checkToS()');
   assert.ok(checkToSStart > 0, 'checkToS IIFE defined');
-  // Bound the slice generously — the resume routing must live inside
-  // the if(accepted) branch above the cold-start else.
-  const checkToSBody = RENDERER_JS.slice(checkToSStart, checkToSStart + 7000);
+  // Bound the slice generously — the resume routing lives inside the
+  // if(accepted) branch which sits AFTER the shared helper functions
+  // (_fadeHideOverlay, _showOverlay, _wireOnboardingOverlayHandlers).
+  // 12000 covers helpers + resume + start of cold-start with comfort.
+  const checkToSBody = RENDERER_JS.slice(checkToSStart, checkToSStart + 12000);
   assert.ok(
     /step\s*===\s*'referral'\s*\|\|\s*step\s*===\s*'goal'/.test(checkToSBody),
     'resume branch tests setup_step against the two mid-flow values',

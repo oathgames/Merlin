@@ -70,7 +70,17 @@ const MAX_BASENAME_LEN = 200;
 //     (REGRESSION GUARD 2026-04-28, Gitar finding on PR #139).
 function sanitizeFilename(raw) {
   if (typeof raw !== 'string' || raw.length === 0) return '';
-  const base = path.basename(raw);
+  // Strip directory components from BOTH POSIX and Windows-style paths.
+  // path.basename on POSIX (Linux CI) leaves backslashes intact, so a
+  // user-supplied "C:\Users\me\IMG_0001.JPG" survives as the whole
+  // string and gets mangled into "C__Users__me__IMG_0001.JPG" by the
+  // alnum-replace below — which then fails the extension allowlist
+  // and breaks legitimate Windows uploads under WSL / Docker Desktop /
+  // Linux test runners. Run BOTH basenames so the result is OS-
+  // agnostic; path.win32.basename treats `\` and `/` as separators on
+  // every platform, and path.posix.basename catches `/` first so a
+  // path containing both styles ("C:\dir/IMG.jpg") still resolves.
+  const base = path.win32.basename(path.posix.basename(raw));
   if (!base || base === '.' || base === '..') return '';
   // Drop leading dots so ".gitignore" → "gitignore"; this also collapses
   // the macOS "._foo" resource-fork artefacts to "foo".
