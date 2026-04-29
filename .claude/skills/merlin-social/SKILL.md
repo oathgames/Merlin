@@ -2,7 +2,7 @@
 name: merlin-social
 description: Use when the user wants Discord notifications, Slack posts, email marketing (Klaviyo audit, campaign creation, cold outbound, flows, deliverability, RFM segmentation), SMS marketing (Postscript/Attentive/Klaviyo SMS, TCPA compliance, A2P 10DLC, flows, campaign cadence), Reddit organic prospecting/drafting/posting, Threads posts, competitor ad intelligence via Meta Ad Library, or any non-paid social/community channel. Covers the 6 essential DTC email flows with revenue-mix benchmarks, post-Apple-MPP engagement benchmarks (click rate as real signal), RFM segmentation, deliverability basics (SPF/DKIM/DMARC, Google/Yahoo 2024 requirements), subject + preheader rules, SMS compliance (TCPA quiet hours, 10DLC, STOP keywords) + essential SMS flows + campaign cadence, first-touch/linear/time-decay attribution models, Reddit's 7-layer compliance preflight, and the weekly competitor ad scan with hook extraction.
 owner: ryan
-bytes_justification: 16KB — owned channels (email + SMS + Reddit organic + competitor intel) share attribution models, compliance requirements, and deliverability/cadence reasoning. Splitting email and SMS into separate skills would duplicate the RFM segmentation, attribution, and benchmark tables; SMS flows mirror email flows by design so they belong side-by-side. Hard-capped at 20KB.
+bytes_justification: 19KB — owned channels (email + SMS + Reddit organic + competitor intel) share attribution models, compliance requirements, and deliverability/cadence reasoning. Splitting email and SMS into separate skills would duplicate the RFM segmentation, attribution, and benchmark tables; SMS flows mirror email flows by design so they belong side-by-side. The Klaviyo template-bulk-upload routing block lives here (not in merlin-content) because it's about pushing prepared HTMLs into the email backend, not authoring creative — pairing it with email flows + RFM benchmarks keeps the agent on a single mental model. Hard-capped at 25KB.
 ---
 
 # Owned & Earned Channels
@@ -144,9 +144,23 @@ SMS drives 10–20% of revenue for DTC brands with SMS live (Postscript / Attent
 
 ## Klaviyo (`mcp__merlin__klaviyo`)
 
-`performance` · `lists` · `campaigns`
+`performance` · `lists` · `campaigns` · `templates-list` · `template-get` · `template-create` · `template-update` · `template-delete` · `templates-bulk-upload`
 
 **Review solicitation pattern** (daily scheduled task): find fulfilled orders 5–7 days old (via `shopify-orders`), draft a Klaviyo campaign per order (max 3/day to avoid spam): product photo + "How are you liking your {product}?" + review link. Publish as draft — user or `merlin-optimize` approves.
+
+### Template bulk upload
+
+When the user says any of: *"upload my email templates"*, *"import these HTMLs to Klaviyo"*, *"bulk upload my welcome flow"*, *"push these emails to Klaviyo"*, *"I have N email HTMLs to upload"* → call `klaviyo({action: "templates-bulk-upload", brand: "<brand>", dir: "<path>", nameTemplate: "<brand> / <flow> / {basename}", applyTokens: true})`.
+
+**Always confirm the directory and the count** before running. The directory MUST be inside `assets/brands/<brand>/` — paths outside are rejected by the binary. `nameTemplate` substitutes `{basename}` with each file's stem; if omitted, the bare basename is used. `applyTokens` defaults to `true` and translates generic placeholders (`{{UNSUB_URL}}` → `{{ unsubscribe }}`, `{{ FIRST_NAME }}` → `{{ first_name|default:'there' }}`, `{{ EMAIL }}` → `{{ person.email }}`, `{{COMPANY_NAME}}` / `{{COMPANY_ADDRESS}}` from `brand.md`); set `applyTokens: false` if the HTML was already authored against Klaviyo's Django syntax.
+
+The response is a structured envelope `{total, succeeded, failed, perFile: [{filename, name, templateId | error}]}`. Report exact counts to the user — *"uploaded 49 of 51, failed: welcome-3.html (422), abandoned-7.html (422)"* — never paraphrase. Do NOT confabulate template IDs that the binary did not return.
+
+**Flow construction is UI-only.** After a successful bulk upload, surface this manual step verbatim:
+
+> "Your N templates uploaded. Klaviyo Flows themselves still need to be wired in Klaviyo's UI — flow construction (trigger, branches, time delays, message slot wiring) isn't in the public API. Open Klaviyo → Flows → New Flow → pick the trigger → Use Existing Templates and select from the names you just uploaded."
+
+Do NOT tell the user "I created your flows" — the API does not expose flow construction as of revision 2024-10-15. Flow read + status toggle is supported (already in `klaviyoActivateFlow`); flow create + branch wiring is not.
 
 ## Reddit Organic
 
@@ -281,6 +295,7 @@ Post to both Slack + Discord if both configured. Activity notifications (ad publ
 
 - "connect discord" / "set up discord" / "discord channel" → `platform_login({platform: "discord"})`
 - "email flows" / "klaviyo" / "welcome series" / "abandoned cart" → `email({action: "audit"})`
+- "upload my email templates" / "import these HTMLs to klaviyo" / "bulk upload emails" → `klaviyo({action: "templates-bulk-upload", brand, dir, nameTemplate})` (confirm dir + count first; surface the "Flows are UI-only" note after success)
 - "scan competitors" / "what are competitors running" → `competitor-scan` + Ad Library process
 - "reply on reddit" / "post to reddit organically" → Reddit organic pipeline
 - "post to slack" / "share to team" → Slack 3-step upload or `chat.postMessage`

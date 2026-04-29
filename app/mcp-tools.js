@@ -695,18 +695,59 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── klaviyo ──────────────────────────────────────────────
+  // Action surface:
+  //   performance | lists | campaigns                    → reporting (read-only)
+  //   templates-list | template-get | template-create    → email template CRUD
+  //   template-update | template-delete
+  //   templates-bulk-upload                              → folder of HTML → many
+  //                                                        templates in one call
+  //
+  // FLOW CAVEAT (live 2026-04-29 incident, Ryan / POG): Klaviyo Flows
+  // themselves are NOT API-creatable. The public API exposes flow read +
+  // status toggle, but flow construction (trigger, branches, time delays,
+  // message slot wiring) is UI-only as of revision 2024-10-15. After
+  // bulk-upload, the user wires Flows in the Klaviyo UI and selects from
+  // the templates we just uploaded by name. The merlin-social SKILL.md
+  // surfaces this manual step explicitly so the LLM never tells the user
+  // "I created your flows" — that would be confabulation.
+  //
+  // Action-specific argument requirements (validated server-side in the
+  // binary; the zod schema here is the broader surface — Zod doesn't
+  // express "field required when action=X" cleanly, so we keep all
+  // template fields optional and let the binary fail loudly with the
+  // exact missing-field message):
+  //   templates-list           — no extra args
+  //   template-get             — templateId
+  //   template-create          — templateName, htmlContent
+  //   template-update          — templateId, plus templateName and/or htmlContent
+  //   template-delete          — templateId
+  //   templates-bulk-upload    — brand (REQUIRED — directory must be inside
+  //                              assets/brands/<brand>/), dir, optional
+  //                              nameTemplate ("POG / 01-welcome / {basename}"),
+  //                              optional applyTokens (default true)
   tools.push(defineTool({
     name: 'klaviyo',
-    description: 'Klaviyo email marketing — performance, lists, campaigns.',
+    description: 'Klaviyo email marketing — performance, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files (with optional generic-placeholder → Klaviyo Django tag translation). Note: Klaviyo Flows themselves are UI-only — the public API does not expose flow construction.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
     brandRequired: false,
     concurrency: { platform: 'klaviyo' },
     input: {
-      action: z.enum(['performance', 'lists', 'campaigns']).describe('Operation'),
+      action: z.enum([
+        'performance', 'lists', 'campaigns',
+        'templates-list', 'template-get', 'template-create',
+        'template-update', 'template-delete', 'templates-bulk-upload',
+      ]).describe('Operation'),
       brand: brandSchema.optional(),
-      batchCount: z.number().optional().describe('Days of data'),
+      batchCount: z.number().optional().describe('Days of data (performance/campaigns)'),
+      // Template fields (used by template-* + bulk-upload actions)
+      templateId: z.string().optional().describe('Klaviyo template ID (get/update/delete)'),
+      templateName: z.string().optional().describe('Display name for the template (create/update)'),
+      htmlContent: z.string().optional().describe('Raw email HTML body (create/update). Max 5 MB.'),
+      dir: z.string().optional().describe('Directory of .html files for bulk-upload (must be inside assets/brands/<brand>/)'),
+      nameTemplate: z.string().optional().describe('Format string for bulk-upload, e.g. "POG / 01-welcome / {basename}". {basename} = filename without extension.'),
+      applyTokens: z.boolean().optional().describe('Translate generic placeholders ({{UNSUB_URL}}, {{ FIRST_NAME }}, {{COMPANY_NAME}}, …) into Klaviyo Django tags. Default true for bulk-upload, false for single template-create/update.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'klaviyo-' + args.action, args)),
   }, tool, z, ctx));
