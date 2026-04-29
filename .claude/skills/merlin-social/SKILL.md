@@ -2,7 +2,7 @@
 name: merlin-social
 description: Use when the user wants Discord notifications, Slack posts, email marketing (Klaviyo audit, campaign creation, cold outbound, flows, deliverability, RFM segmentation), SMS marketing (Postscript/Attentive/Klaviyo SMS, TCPA compliance, A2P 10DLC, flows, campaign cadence), Reddit organic prospecting/drafting/posting, Threads posts, competitor ad intelligence via Meta Ad Library, or any non-paid social/community channel. Covers the 6 essential DTC email flows with revenue-mix benchmarks, post-Apple-MPP engagement benchmarks (click rate as real signal), RFM segmentation, deliverability basics (SPF/DKIM/DMARC, Google/Yahoo 2024 requirements), subject + preheader rules, SMS compliance (TCPA quiet hours, 10DLC, STOP keywords) + essential SMS flows + campaign cadence, first-touch/linear/time-decay attribution models, Reddit's 7-layer compliance preflight, and the weekly competitor ad scan with hook extraction.
 owner: ryan
-bytes_justification: 16KB — owned channels (email + SMS + Reddit organic + competitor intel) share attribution models, compliance requirements, and deliverability/cadence reasoning. Splitting email and SMS into separate skills would duplicate the RFM segmentation, attribution, and benchmark tables; SMS flows mirror email flows by design so they belong side-by-side. Hard-capped at 20KB.
+bytes_justification: 22KB — owned channels (email + SMS + Reddit organic + competitor intel) share attribution models, compliance requirements, and deliverability/cadence reasoning. Splitting email and SMS into separate skills would duplicate the RFM segmentation, attribution, and benchmark tables; SMS flows mirror email flows by design so they belong side-by-side. Postscript automation API (added 2026-04-29) shipped the bulk-import-flow surface with full token-swap + TCPA gate documentation in this same skill rather than a sibling so the LLM routes "upload my SMS flows" to one place. Hard-capped at 30KB before splitting.
 ---
 
 # Owned & Earned Channels
@@ -141,6 +141,78 @@ SMS drives 10–20% of revenue for DTC brands with SMS live (Postscript / Attent
 - **Unsubscribe per send:** <2% healthy; >3% = message is off (segment, offer, or frequency).
 - **Revenue per recipient:** $0.50–$2.00 per send for DTC.
 - **Click-to-conversion** should beat email — if it doesn't, the landing page isn't mobile-ready (see `merlin-analytics`).
+
+### Postscript SMS — full automation API (`mcp__merlin__postscript`)
+
+Postscript exposes Automations (their flow analog) as a fully-scriptable API — unlike Klaviyo Flows, which are dashboard-only. This lets Merlin import a complete SMS flow setup from a JSON manifest in one tool call.
+
+| Action | Purpose | Key params |
+|---|---|---|
+| `status` | Connection + shop metadata | — |
+| `subscribers` | List subscribers | `limit` |
+| `campaigns` | List campaigns w/ stats | `limit` |
+| `keywords` | List opt-in keywords | — |
+| `automations` | List configured flows | — |
+| `automation-get` | Full body of one flow | `automationId` |
+| `automation-create` | Create one flow inline | `automationFlow`, `activate` |
+| `automation-update` | Patch flow metadata | `automationId`, `patchBody` |
+| `automation-delete` | Delete one flow | `automationId` |
+| `automation-activate` / `deactivate` | Toggle status | `automationId` |
+| `automation-steps` | List steps in a flow | `automationId` |
+| `automation-step-create` | Add a step | `automationId`, `automationStep` |
+| `automation-step-update` | Edit a step | `automationId`, `stepId`, `patchBody` |
+| `automation-step-delete` | Remove a step | `automationId`, `stepId` |
+| `bulk-import-flow` | Manifest → flows | `manifestPath`, `brand`, `activate?`, `forceReimport?` |
+
+#### `bulk-import-flow` — the morning SMS-setup verb
+
+Manifest path MUST live under `assets/brands/<brand>/` (the binary refuses arbitrary filesystem reads). Manifest shape:
+
+```json
+{
+  "flows": [
+    {
+      "name": "POG / Welcome Series",
+      "trigger": {"type": "subscriber_added_to_list", "list_id": "..."},
+      "steps": [
+        {"type": "delay", "duration_seconds": 0},
+        {"type": "send_message", "body": "Welcome to POG! Use POG10 for 10% off: {{COUPON_URL}} — {{UNSUB_REPLY}}"},
+        {"type": "delay", "duration_seconds": 86400},
+        {"type": "send_message", "body": "Hi {{FIRST_NAME}}, your POG10 code expires tonight."}
+      ]
+    }
+  ]
+}
+```
+
+**Token swap (auto-rendered before send):**
+
+| Generic | Postscript-native |
+|---|---|
+| `{{FIRST_NAME}}` | `{{first_name}}` |
+| `{{LAST_NAME}}` | `{{last_name}}` |
+| `{{COUPON_CODE}}` | `{{coupon_code}}` |
+| `{{COUPON_URL}}` | `{{coupon_url}}` |
+| `{{SHOP_URL}}` | `{{shop_url}}` |
+| `{{UNSUB_REPLY}}` | `Reply STOP to unsubscribe` (literal string) |
+
+**TCPA gate (refuses, never auto-fixes):** every flow runs through `CheckFlowTCPA` BEFORE any HTTP call. Failures HALT the import for that flow:
+
+1. **First send_message must contain STOP opt-out language** (literal "Reply STOP" / "Text STOP" / "STOP to unsubscribe", or use `{{UNSUB_REPLY}}` which renders to the same).
+2. **Trigger must be on the opt-in allowlist** (`subscriber_added_to_list`, `keyword`, `checkout`, `checkout_completed`, `product_purchased`, `cart_abandoned`, `browse_abandoned`, `back_in_stock`). Manual-segment triggers are refused — they carry no consent guarantee.
+3. **Brand must have `postscriptTenDLCID` configured** (US 10DLC campaign id).
+4. **Flow must have at least one `send_message` step.**
+
+Failures surface in the report with the specific rule + message — Ryan needs to see exactly what blocked. Auto-stripping STOP language and shipping anyway is the literal worst outcome ($500–$1,500/msg statutory damages).
+
+#### Routing hints (postscript-specific)
+
+- "upload my SMS flows" / "import these Postscript automations" / "bulk import flows" → `postscript({action: "bulk-import-flow", manifestPath: "assets/brands/<brand>/sms/flows.json", brand: "<brand>"})`. Always preview the manifest count + first flow's name before running. Confirm with the user.
+- "create a welcome SMS flow" / "make a cart-abandonment automation" → `postscript({action: "automation-create", automationFlow: {...}, activate: false})`. Default `activate: false` — let the user review in the Postscript dashboard before going live.
+- "pause my POG SMS welcome" / "deactivate the back-in-stock flow" → `postscript({action: "automation-deactivate", automationId: "..."})`.
+- After a `bulk-import-flow` succeeds, list the per-flow `dashboard_url` values from the report so the user can spot-check each new automation in Postscript's UI.
+
+The bulk-import report is structured: `{imported, blocked, failed, total, results: [{name, automation_id, status, issues, dashboard_url, ...}]}`. Summarize as: *"Imported 7 of 8 flows. Blocked: 'Browse Abandonment' (TCPA: first message missing STOP opt-out). Created flows are drafts — review in Postscript dashboard, then activate or pass `activate: true` on next import."*
 
 ## Klaviyo (`mcp__merlin__klaviyo`)
 

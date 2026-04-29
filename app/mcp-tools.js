@@ -738,18 +738,44 @@ function buildTools(tool, z, ctx) {
   // Postscript SMS. send-campaign and send-message go through preflightTCPA
   // (quiet hours, consent, 10DLC) before hitting the wire. List endpoints are
   // read-only reporting. Login is an API-key verify flow.
+  //
+  // FULL automations API surface added 2026-04-29 (postscript-full-coverage):
+  // Postscript exposes Automations as fully-scriptable (unlike Klaviyo Flows
+  // which are dashboard-only). bulk-import-flow runs CheckFlowTCPA on every
+  // flow before any HTTP call — TCPA failures REFUSE the import (no auto-fix).
+  // Token swap maps {{FIRST_NAME}} / {{COUPON_URL}} / {{UNSUB_REPLY}} to
+  // Postscript-native merge tokens before send.
   tools.push(defineTool({
     name: 'postscript',
-    description: 'Postscript SMS — subscribers, campaigns, keywords, automations (list + send with TCPA preflight).',
+    description: 'Postscript SMS — subscribers, campaigns, keywords, automations (list + create + activate + bulk-import-flow with TCPA gate, token swap, dashboard-URL surfacing).',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
     brandRequired: false,
     concurrency: { platform: 'postscript' },
     input: {
-      action: z.enum(['status', 'subscribers', 'campaigns', 'keywords', 'automations']).describe('Operation'),
+      action: z.enum([
+        // Read-only
+        'status', 'subscribers', 'campaigns', 'keywords', 'automations',
+        // Automation CRUD
+        'automation-get', 'automation-create', 'automation-update',
+        'automation-delete', 'automation-activate', 'automation-deactivate',
+        // Step CRUD
+        'automation-steps', 'automation-step-create',
+        'automation-step-update', 'automation-step-delete',
+        // Bulk
+        'bulk-import-flow',
+      ]).describe('Operation'),
       brand: brandSchema.optional(),
       limit: z.number().optional().describe('Max rows returned'),
+      automationId: z.string().optional().describe('Automation (flow) ID for get/update/delete/activate/deactivate'),
+      stepId: z.string().optional().describe('Step ID inside an automation (for step update/delete)'),
+      automationFlow: z.any().optional().describe('Full automation body for automation-create. Shape: {name, trigger:{type, list_id?, keyword?}, steps:[{type, ...}]}. The binary runs CheckFlowTCPA before any HTTP call — first send_message must contain "Reply STOP" or {{UNSUB_REPLY}}, trigger.type must be on the opt-in allowlist (subscriber_added_to_list, keyword, checkout, product_purchased, cart_abandoned, browse_abandoned, back_in_stock), and brand must have postscriptTenDLCID set.'),
+      automationStep: z.any().optional().describe('Single step body for automation-step-create. Shape: {type: "delay"|"send_message"|"wait_until"|"branch", duration_seconds?, body?, media_url?, template?, time_of_day?, timezone?, condition?}'),
+      patchBody: z.any().optional().describe('JSON patch object for automation-update / automation-step-update. Postscript refuses unknown fields — only send fields you intend to change.'),
+      manifestPath: z.string().optional().describe('Filesystem path to a flow manifest JSON for bulk-import-flow. MUST live under assets/brands/<brand>/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {flows: [{name, trigger, steps}, ...]}.'),
+      activate: z.boolean().optional().describe('When true on automation-create or bulk-import-flow, flip the new automation from draft → active immediately. Default false (drafts only — safer; user reviews in Postscript dashboard before going live).'),
+      forceReimport: z.boolean().optional().describe('When true, bulk-import-flow bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'postscript-' + args.action, args)),
   }, tool, z, ctx));
