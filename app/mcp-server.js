@@ -132,6 +132,15 @@ async function createMerlinMcpServer(ctx) {
   });
 
   console.log(`[mcp] Merlin server registered with ${allTools.length} tools (schema v${MCP_TOOL_SCHEMA_VERSION})`);
+  // Stash the wrapped tools array on the server config so the IPC
+  // sidecar endpoint (mcp-ipc-endpoint.js, used by Claude Desktop via
+  // merlin-mcp-shim.js) can dispatch against the SAME registry the
+  // in-app SDK uses. We keep a single tool array; both consumers
+  // call the same handlers; redaction + concurrency + idempotency
+  // pipelines apply uniformly. The field name is namespaced so the
+  // SDK never collides with it (the SDK only reads `name`, `version`,
+  // `instance`, `tools`, `type`).
+  server._merlinTools = allTools;
   return server;
 }
 

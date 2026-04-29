@@ -6387,15 +6387,29 @@ const _queueBadgeReducer = (typeof window !== 'undefined' && window.MerlinSdkPar
   ? window.MerlinSdkParity.queueBadgeReducer
   : null;
 
+// _queueBadgeLabel — cached badge string returned by the reducer. Single
+// source of truth for the visible label so renderer + reducer can never
+// drift on format/cap/null-when-zero. Set in the IPC event handlers when
+// the reducer runs; read by _renderQueueBadge.
+//
+// REGRESSION GUARD (2026-04-29, Gitar PR #148 finding): an earlier
+// version recomputed the label inline as
+//   const label = `queued (${_queueBadgeState.depth})`;
+// duplicating the formatting that the reducer at sdk-parity.js:81-84
+// already encapsulated (50-cap, null-when-zero). Currently the two
+// implementations agreed, but a future change to the badge format
+// (localization, different cap, different copy) would only update one
+// site. Use the reducer's `badge` field directly.
+let _queueBadgeLabel = null;
+
 function _renderQueueBadge() {
   const status = document.getElementById('chat-status');
   if (!status) return;
   let badge = status.querySelector('.chat-status-queued');
-  if (!_queueBadgeState || _queueBadgeState.depth <= 0) {
+  if (!_queueBadgeLabel) {
     if (badge) badge.remove();
     return;
   }
-  const label = `queued (${_queueBadgeState.depth})`;
   // If the chat-status-row hasn't been rendered yet (typing indicator
   // hasn't fired), inject a minimal row so the user still sees feedback.
   let row = status.querySelector('.chat-status-row');
@@ -6410,7 +6424,7 @@ function _renderQueueBadge() {
     badge.title = "You typed while Merlin was busy. We'll handle these as soon as the current step finishes.";
     row.appendChild(badge);
   }
-  badge.textContent = label;
+  badge.textContent = _queueBadgeLabel;
   // Subtle pulse on update so the user notices the count tick.
   badge.style.animation = 'none';
   // Force a reflow so the next animation reapplies (DOM trick).
@@ -6430,15 +6444,17 @@ function _renderQueueBadge() {
 
 if (merlin && typeof merlin.onMessageQueued === 'function' && _queueBadgeReducer) {
   merlin.onMessageQueued((payload) => {
-    const { state } = _queueBadgeReducer(_queueBadgeState, { type: 'queued', depth: payload && payload.depth });
+    const { state, badge } = _queueBadgeReducer(_queueBadgeState, { type: 'queued', depth: payload && payload.depth });
     _queueBadgeState = state;
+    _queueBadgeLabel = badge;
     _renderQueueBadge();
   });
 }
 if (merlin && typeof merlin.onMessageQueueDrained === 'function' && _queueBadgeReducer) {
   merlin.onMessageQueueDrained((payload) => {
-    const { state } = _queueBadgeReducer(_queueBadgeState, { type: 'drained', depth: payload && payload.depth });
+    const { state, badge } = _queueBadgeReducer(_queueBadgeState, { type: 'drained', depth: payload && payload.depth });
     _queueBadgeState = state;
+    _queueBadgeLabel = badge;
     _renderQueueBadge();
   });
 }
