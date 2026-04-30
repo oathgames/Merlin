@@ -158,6 +158,29 @@ Leave `trigger` blank only for user-initiated pauses from the UI. A blank trigge
 | `setup-retargeting` | (creates retargeting audiences) |
 | `catalog` | (lists Facebook product catalog) |
 
+### Meta Audit (`mcp__merlin__meta_audit`) — read-only inspection
+
+Inspection layer for Meta assets. Every action is a GET against the Graph
+API — no writes, no spend, safe to call freely. Use these instead of
+sending the user to Ads Manager when they ask "what audiences do I have",
+"is my pixel healthy", "audit my retargeting", etc.
+
+| Action | Key params | What it returns |
+|---|---|---|
+| `list-audiences` | `brand`, optional `limit` | Every custom audience: id, name, subtype, approximate count, retention days, operation/delivery status. Sorted newest-first. |
+| `audit-audience-rule` | `brand`, `adId` (audience id) | The full targeting rule for one audience (raw rule blob preserved). Use when you need to know exactly *how* an audience is defined. |
+| `audit-retargeting-cascade` | `brand`, optional `status` | Walks active ad sets and cross-references `custom_audiences` ∩ `excluded_custom_audiences`. Flags the classic "include site visitors, forget to exclude purchasers" leak — the #1 cause of paying to retarget your own buyers. |
+| `list-conversions` | `brand`, optional `limit` | Every custom conversion: id, name, custom_event_type, last fired time, archived flag, default conversion value. |
+| `audit-pixel` | `brand`, optional `adId` (override pixel id) | Pixel diagnostics: match_rate_approx, server_events_match_rate, last fired time, automatic-matching state, top events over the last 7 days, plus per-pixel findings (low match rate, no recent fires, missing Purchase events, automatic matching off). |
+| `audit-frequency-caps` | `brand`, optional `status` | Every active ad set's `frequency_control_specs`. Flags ad sets with no cap configured (fatigue risk). |
+| `audit-catalog` | `brand`, `catalogId`, optional `limit` | Catalog product status counts (review_status, availability), top disapproval reasons, sample of disapproved products. Find catalogId via `meta_ads({action: "catalog"})`. |
+
+**When to use audit before optimize:** before `merlin-optimize` ships a kill verdict on a retargeting ad set, run `audit-retargeting-cascade` — sometimes the "low ROAS" is the ad set retargeting buyers because the exclusion was never wired up. Fixing the exclusion lifts the ad set's ROAS without killing it.
+
+**When to use audit before push:** before scaling a winner with DPA, run `audit-catalog` — if 30% of products are disapproved, scaling DPA spend just amplifies the disapproval-driven impression waste.
+
+**Pixel match-rate guidance:** Meta needs user-identifying parameters (em, ph, fbp, fbc) to match pixel events to user accounts. A match rate <40% means most events aren't connecting to a user → Smart Bidding is partially blind. CAPI typically lifts this to 70%+.
+
 ### TikTok Ads (`mcp__merlin__tiktok_ads`)
 
 `push` (`adVideoPath`, `adHeadline`, `adBody`, `dailyBudget`) · `insights` · `kill` (`adId`) · `duplicate` (`adId`, `campaignId`) · `setup` · `lookalike` (`adId`)
@@ -244,6 +267,13 @@ Foreplay indexes 100M+ Meta/TikTok/LinkedIn ads worldwide. **Covers the US and a
 - "kill" / "pause" / "stop" → platform's `kill`
 - "scale" / "duplicate winner" → platform's `duplicate` or `lookalike`
 - "catalog" / "products on facebook" → `meta_ads({action: "catalog"})`
+- "audit my retargeting" / "am I retargeting buyers" / "do I exclude purchasers" → `meta_audit({action: "audit-retargeting-cascade"})`
+- "list my custom audiences" / "what audiences do I have" / "how big is X audience" → `meta_audit({action: "list-audiences"})`
+- "what's the rule for X audience" / "how is X audience defined" → `meta_audit({action: "audit-audience-rule", adId: "<audience-id>"})`
+- "list my custom conversions" / "what custom conversions are wired up" → `meta_audit({action: "list-conversions"})`
+- "is my pixel healthy" / "what's my pixel match quality" / "pixel diagnostics" / "match rate" → `meta_audit({action: "audit-pixel"})`
+- "are my ad sets capped" / "frequency caps" / "fatigue check" → `meta_audit({action: "audit-frequency-caps"})`
+- "is my catalog healthy" / "any disapproved products" / "audit my facebook catalog" → `meta_audit({action: "audit-catalog", catalogId: "<id>"})` (find id via `meta_ads({action: "catalog"})`)
 - "insights" / "performance" on a specific platform → platform's `insights` (prefer `dashboard` for aggregate — see `merlin-analytics`)
 - "set up" + platform → platform's `setup` action after OAuth
 - "spy on" / "what ads is X running" / "competitor ads" / "download their ad" / "swipe file" → `competitor_spy` with the global-discovery flow (brands-by-domain → ads-by-brand → download-ad). NEVER suggest subscribing to brands in Foreplay Spyder — the agent does not use Spyder.

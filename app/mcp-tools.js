@@ -589,6 +589,77 @@ function buildTools(tool, z, ctx) {
     tools.push(t);
   }
 
+  // ── meta_audit (read-only inspection) ───────────────────────
+  //
+  // Inspection layer for Meta assets — gives Merlin (and the user via natural
+  // language) the ability to interrogate audiences, conversions, pixels,
+  // retargeting cascades, frequency caps, and catalogs WITHOUT a trip to Ads
+  // Manager. Every action is a GET on the Graph API; no writes by
+  // construction (see autocmo-core/meta_audit.go file header).
+  //
+  // Action surface:
+  //   list-audiences          — every custom audience on the ad account, sorted
+  //                              newest-first, with operation/delivery status
+  //                              and approximate count.
+  //   audit-audience-rule     — full targeting rule for one audience (raw JSON
+  //                              preserved). Pass the audience id via adId.
+  //   audit-retargeting-cascade — walks active ad sets, cross-references
+  //                              custom_audiences ∪ excluded_custom_audiences,
+  //                              flags the classic "include site visitors,
+  //                              forget to exclude purchasers" leak.
+  //   list-conversions        — every custom conversion + when each last fired.
+  //   audit-pixel             — match-rate-approx + server-events match rate
+  //                              + 7d top events; flags low match rate, no
+  //                              recent fires, automatic-matching disabled.
+  //   audit-frequency-caps    — every active ad set's frequency_control_specs;
+  //                              flags ad sets with no cap (fatigue risk).
+  //   audit-catalog           — review status counts + top disapproval reasons
+  //                              + sample of disapproved products. Pass the
+  //                              catalog id via catalogId.
+  //
+  // No budget validation needed (read-only, no spend impact). preview is
+  // false because it's safe-by-construction — the agent can call any action
+  // without a confirmation card.
+  tools.push(defineTool({
+    name: 'meta_audit',
+    description: 'Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the "forgot to exclude purchasers" leak, run pixel diagnostics (match rate, server events match rate, top events), list frequency caps across active ad sets, and audit a product catalog\'s review status. All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says "audit my retargeting", "what\'s my pixel match quality", "list my custom audiences", "what custom conversions do I have", "are my ad sets capped", or "is my catalog healthy".',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      action: z.enum([
+        'list-audiences',
+        'audit-audience-rule',
+        'audit-retargeting-cascade',
+        'list-conversions',
+        'audit-pixel',
+        'audit-frequency-caps',
+        'audit-catalog',
+      ]).describe('The audit operation to perform. All actions read-only.'),
+      brand: brandSchema.optional().describe('Brand name for vault-scoped Meta credentials.'),
+      adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel: optional pixel id override (defaults to brand cfg metaPixelId).'),
+      catalogId: z.string().optional().describe('For audit-catalog: the Meta product catalog id (find it via mcp__merlin__meta_ads({action:"catalog"}) or in Commerce Manager).'),
+      status: z.enum(['active', 'all']).optional().describe('For audit-retargeting-cascade and audit-frequency-caps: filter ad sets. Default "active" (paused ad sets are noise).'),
+      limit: z.number().optional().describe('Max records to return per page. Defaults: list-audiences=250, list-conversions=100, audit-catalog=200. Hard caps: 500.'),
+    },
+    handler: async (args) => {
+      const action = 'meta-' + (
+        args.action === 'list-audiences' ? 'audit-audiences' :
+        args.action === 'list-conversions' ? 'audit-conversions' :
+        args.action === 'audit-pixel' ? 'audit-pixel' :
+        args.action === 'audit-frequency-caps' ? 'audit-frequency-caps' :
+        args.action === 'audit-catalog' ? 'audit-catalog' :
+        args.action === 'audit-retargeting-cascade' ? 'audit-retargeting-cascade' :
+        args.action === 'audit-audience-rule' ? 'audit-audience-rule' :
+        args.action
+      );
+      return toEnvelope(await runBinary(ctx, action, args));
+    },
+  }, tool, z, ctx));
+
   // ── tiktok_ads ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'tiktok_ads',

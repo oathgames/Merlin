@@ -92,7 +92,7 @@ test('buildTools registers every advertised tool', () => {
   buildTools(tool, z, ctx);
   const names = registry.map(t => t.name);
   const expected = [
-    'connection_status', 'meta_ads', 'tiktok_ads', 'google_ads',
+    'connection_status', 'meta_ads', 'meta_audit', 'tiktok_ads', 'google_ads',
     'amazon_ads', 'shopify', 'klaviyo', 'email', 'seo', 'content',
     'video', 'voice', 'dashboard', 'discord', 'threads', 'reddit_ads',
     'linkedin_ads', 'etsy', 'config', 'competitor_spy', 'platform_login',
@@ -122,6 +122,12 @@ test('buildTools flags destructive ad tools with annotations', () => {
   assert.ok(destructiveNames.includes('meta_ads'));
   assert.ok(destructiveNames.includes('reddit_ads'));
   assert.ok(destructiveNames.includes('linkedin_ads'));
+  // meta_audit is read-only — it must NOT carry the destructive annotation.
+  // A future regression that copy-pastes meta_ads' annotation block onto
+  // meta_audit would flip preview gating on for inspection actions and
+  // destroy the "ask freely about your account" UX.
+  assert.ok(!destructiveNames.includes('meta_audit'),
+    'meta_audit must not be flagged destructive — it only issues GETs');
 });
 
 // ─────────────────────────────────────────────────────────────────────
