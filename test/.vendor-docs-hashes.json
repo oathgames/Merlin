@@ -1,0 +1,39 @@
+{
+  "hashes": {
+    "fal": {
+      "hash": "412298ab6681580a0bcfa5415e5006c381a5daab0e33d9a55a16aeed60c9d6a0",
+      "firstSeen": "2026-05-01",
+      "lastChecked": "2026-05-01"
+    },
+    "elevenlabs": {
+      "hash": "2e5ef8a1f0f2a1cffde74a414d35c727303b4093a0b95982beef95a6d382b29e",
+      "firstSeen": "2026-05-01",
+      "lastChecked": "2026-05-01"
+    },
+    "meta": {
+      "hash": "d4dff0ac0ab6d959c212805330ae3f0f387026e2a5bb28e372306551758aa8e9",
+      "firstSeen": "2026-05-01",
+      "lastChecked": "2026-05-01"
+    },
+    "tiktok": {
+      "hash": "f556eb1cfa3957a22152ca0b8c75e75d729075688d4cee08c61464bc17ad42a8",
+      "firstSeen": "2026-05-01",
+      "lastChecked": "2026-05-01"
+    },
+    "google_ads": {
+      "hash": "ed34d6df5470c2a479261b8a3a895c3dd95398e5c072f6abf5e22ef862ad2c39",
+      "firstSeen": "2026-05-01",
+      "lastChecked": "2026-05-01"
+    },
+    "shopify": {
+      "hash": "3eea949c8b0cb8e453a7583e7c0d49cabea33eaaa7fbe479884a3c167acbad9e",
+      "firstSeen": "2026-05-01",
+      "lastChecked": "2026-05-01"
+    },
+    "klaviyo": {
+      "hash": "a3f8d77c971678f1a7cd92bbd7e78d9bc205c1a95282141d0b904f4b120ae543",
+      "firstSeen": "2026-05-01",
+      "lastChecked": "2026-05-01"
+    }
+  }
+}
