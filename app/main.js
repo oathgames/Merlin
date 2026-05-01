@@ -3099,17 +3099,35 @@ async function startSession(brandOverride) {
       autoCompactWindow: 200000,
     },
   };
-  // Per-brand SDK session resume. When a brand has a prior sessionId, Claude
-  // picks up the prior conversation state (system prompt, memory, tool
-  // history) from ~/.claude/projects/... — no context leaks from other
-  // brands, because each brand uses a distinct session file.
+  // REGRESSION GUARD (2026-05-01, sdk-0.2.123-resume-mcp-loss):
+  // The original branch passed `queryOptions.resume = resumeSessionId` so the
+  // SDK would carry prior conversation state across user turns. With SDK
+  // 0.2.123 (shipped in v1.21.0), passing `resume:` causes in-process MCP
+  // tool definitions registered via `createSdkMcpServer` to silently disappear
+  // from Claude's tool list — the SDK's init message still reports
+  // `merlin: connected` but the actual tool definitions never reach the
+  // subprocess's tool registry. Live repro: same setup, only difference is
+  // `resume:` flag → fresh session sees all 16+ mcp__merlin__* tools, resumed
+  // session sees zero. Every paying user on v1.21.0 hit this on their second
+  // message in any brand because per-brand sessionId persisting via
+  // .merlin-threads.json triggers resume on every turn.
+  //
+  // Workaround: skip the resume call entirely until Anthropic ships an SDK
+  // fix. Trade-off: each turn is a fresh SDK session — Claude no longer
+  // carries SDK-level conversation memory between user turns. This is
+  // acceptable because (a) MCP tool access is the whole point of the app,
+  // and losing it on turn 2 is a P0 vs losing in-SDK turn-to-turn memory is
+  // a soft regression, (b) per-turn context still reaches Claude through the
+  // bubble history rendered by the renderer, the system-prompt brand-active
+  // hint, the resumed conversation file's prior tool calls available via
+  // ~/.claude/projects/, and the auto-memory layer.
+  //
+  // When the SDK is fixed, restore: replace this block with the original
+  // `if (resumeSessionId) { queryOptions.resume = resumeSessionId; … }`.
   if (resumeSessionId) {
-    queryOptions.resume = resumeSessionId;
-    console.log(`[threads] resuming session ${resumeSessionId.slice(0, 8)}… for brand "${activeBrand}"`);
-    emitSessionPhase('resume', 'Resuming session…');
-  } else {
-    emitSessionPhase('query-start', 'Sending to Claude…');
+    console.log(`[threads] skipping resume of session ${resumeSessionId.slice(0, 8)}… for brand "${activeBrand}" (SDK 0.2.123 resume-MCP-loss workaround)`);
   }
+  emitSessionPhase('query-start', 'Sending to Claude…');
 
   activeQuery = query({
     prompt: messageGenerator(),
