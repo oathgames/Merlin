@@ -284,6 +284,12 @@ function defineTool(def, tool, z, ctx) {
   // tool ship without blast-radius gating.
   if (def.preview === true) annotations.preview = true;
   else if (def.preview === false) annotations.preview = false;
+  // Expose blastRadius callback on annotations so tests + renderer can
+  // introspect the per-action contract (e.g. google_analytics has 6 read
+  // actions that skip the approval card and 7 writes that require it).
+  // wrapHandler still reads the function directly from `def`, so this is
+  // a pure introspection surface — it does not change runtime behavior.
+  if (typeof def.blastRadius === 'function') annotations.blastRadius = def.blastRadius;
 
   const registered = tool(def.name, def.description, shape, wrapped, { annotations });
   return registered;
