@@ -295,6 +295,39 @@ test('§3.12 — Meta 1885183 emits deadend sentinel, not generic contact-suppor
   );
 });
 
+test('§3.13 — friendlyError chip-renders mcp__merlin__google_analytics scope_missing sentinel', () => {
+  // REGRESSION GUARD (2026-05-01, ga-scope-reauth): the Go binary's
+  // errAnalyticsScopeMissing sentinel uses the exact prefix
+  // "mcp__merlin__google_analytics: scope_missing:". Renderer's
+  // friendlyError() must match this prefix and emit a Reconnect-Google
+  // chip rather than fall through to the raw HTTP error. Without this
+  // hookup, the Go-side sentinel would surface as opaque text and the
+  // user would have no actionable signal — the whole point of the
+  // sentinel is to render a one-click reconnect chip.
+  const fnStart = RENDERER_JS.indexOf('function friendlyError(');
+  const fnEnd = RENDERER_JS.indexOf('function humanizeUpdateError', fnStart);
+  assert.ok(fnEnd > fnStart, 'friendlyError fn boundary located');
+  const body = RENDERER_JS.slice(fnStart, fnEnd);
+  assert.ok(
+    body.includes("'mcp__merlin__google_analytics: scope_missing:'") ||
+    body.includes('"mcp__merlin__google_analytics: scope_missing:"'),
+    'friendlyError contains the scope_missing sentinel string literal — the Go binary returns this exact prefix and the renderer must match it before any other branch can swallow it'
+  );
+  assert.ok(
+    /\[\[chip:Reconnect Google:reconnect:google\]\]/.test(body),
+    'scope_missing branch emits a [[chip:Reconnect Google:reconnect:google]] sentinel — same chip target as the Google Ads expired-token branch (single Google tile, four scopes)'
+  );
+  // Match must come before the generic token-expiration branch — otherwise
+  // the word "scope" in our sentinel could falsely route via the existing
+  // sl.includes('google') branch and lose the GA-specific copy.
+  const sentinelIdx = body.search(/mcp__merlin__google_analytics:\s*scope_missing:/);
+  const tokenExpiredIdx = body.search(/sl\.includes\('token'\)/);
+  assert.ok(
+    sentinelIdx > 0 && (tokenExpiredIdx < 0 || sentinelIdx < tokenExpiredIdx),
+    'scope_missing sentinel match must appear BEFORE the generic "token expired" branch in friendlyError() so the specific message wins'
+  );
+});
+
 test('§3.12 — dead-end banner is session-deduped', () => {
   assert.ok(RENDERER_JS.includes('_deadEndShownThisSession'),
     'session dedup set declared');

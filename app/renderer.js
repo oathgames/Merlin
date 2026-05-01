@@ -1450,6 +1450,25 @@ function friendlyError(raw, platformName) {
   const s = String(raw);
   const sl = s.toLowerCase();
 
+  // REGRESSION GUARD (2026-05-01, ga-scope-reauth):
+  // The Go binary's analytics.go returns errAnalyticsScopeMissing with the
+  // exact prefix `mcp__merlin__google_analytics: scope_missing:` when a 403
+  // arrives from GA4 with a body that DEFINITIVELY cites missing OAuth
+  // scope (see autocmo-core/analytics.go for the detector + sentinel).
+  // Match here so users with a pre-v1.21.0 Google connection (which lacks
+  // the analytics.edit scope) see a Reconnect-Google chip instead of the
+  // raw HTTP error. Match BEFORE the generic "token expired" branch — the
+  // word "scope" is in our sentinel and could otherwise route to a
+  // less-actionable bucket. Match BEFORE the generic 403/forbidden bucket.
+  // The chip target is `reconnect:google` — same as the Google Ads chip,
+  // because Merlin uses one Google OAuth tile for all four scopes
+  // (adwords + webmasters.readonly + content + analytics.edit; see
+  // Hard-Won Security Rule 18). Reconnecting from this chip presents all
+  // four scopes on one consent screen.
+  if (s.startsWith('mcp__merlin__google_analytics: scope_missing:')) {
+    return 'Your Google connection is missing the Analytics permission. Reconnecting will add it.\nTry: [[chip:Reconnect Google:reconnect:google]]';
+  }
+
   // ── Platform-specific token expiration ──
   if (sl.includes('token') && (sl.includes('expir') || sl.includes('invalid'))) {
     if (sl.includes('meta') || sl.includes('facebook')) return 'Your Meta access token has expired (they last ~60 days).\nTry: [[chip:Reconnect Meta:reconnect:meta]]';
