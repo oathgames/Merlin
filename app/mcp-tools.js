@@ -660,6 +660,100 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── google_analytics ───────────────────────────────────
+  // GA4 read + write surface. Six READ actions inspect a property
+  // (discover/traffic/conversions/attribution/landing-pages/audit-property);
+  // seven WRITE actions program the measurement plan (create/archive
+  // key events, create custom dimensions/metrics, create audiences, update
+  // property settings, attach the standard Shopify ecommerce events).
+  //
+  // SAFETY MODEL: destructive: true because the tool ships writes. preview
+  // is gated PER-ACTION via blastRadius below — the seven write actions
+  // require the approval-card → confirm_token round-trip, the six read
+  // actions skip it. The Go binary's analytics.go ALSO refuses any write
+  // unless cmd.Approved is true (Hard-Won Security Rule 18) — defense in
+  // depth so a bypass at this layer still hits the binary's check. The
+  // handler does NOT auto-set args.approved; the renderer's approval card
+  // supplies it on user click.
+  //
+  // GA4 has no API for funnel explorations themselves — those live in the
+  // Explorations workspace UI. What IS programmable, and what makes
+  // funnels POSSIBLE, is the underlying measurement plan. The write
+  // actions automate that plan so brands can skip the manual click-through
+  // GA4 otherwise requires.
+  tools.push(defineTool({
+    name: 'google_analytics',
+    description: 'Read + write Google Analytics 4. READ: discover property + measurement IDs, pull traffic (sessions/users/engagement) by date or channel, list key conversion events with revenue, compare first-touch vs last-touch attribution by channel, walk landing pages with per-URL engagement metrics (auto-populates seo-signals.json), or audit a property for health (key events, data stream, enhanced measurement, industry category). WRITE (programmatic measurement-plan setup that powers funnel explorations in the GA4 UI): create-key-event marks an event as a conversion; create-custom-dimension / create-custom-metric add reportable fields scoped to event/user/item; create-audience defines a cohort for funnel comparison; update-property-settings patches industry category / time zone / currency / display name; attach-shopify-events one-click wires the standard ecommerce funnel (purchase / add_to_cart / begin_checkout / view_item / view_item_list / search / sign_up / generate_lead) idempotently. Every write requires an approval card — the renderer prompts the user before the call lands. Use when the user says "how is organic traffic", "sessions last week", "what\'s converting in GA", "audit my GA4 property", "set up my GA4 conversions", "wire up GA4 for shopify", "mark X as a conversion", "create a GA4 audience for cart abandoners", or "fix my GA4 timezone".',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'google_analytics' },
+    preview: true,
+    // Per-action gating: only the seven write actions require the approval
+    // card. Read actions return { required: false } and pass straight through
+    // the foundation's preview gate (mcp-define-tool.js).
+    blastRadius: (payload) => {
+      const writeActions = new Set([
+        'create-key-event',
+        'archive-key-event',
+        'create-custom-dimension',
+        'create-custom-metric',
+        'create-audience',
+        'update-property-settings',
+        'attach-shopify-events',
+      ]);
+      if (writeActions.has(payload && payload.action)) {
+        const reasons = {
+          'create-key-event':            'Mark a GA4 event as a conversion',
+          'archive-key-event':           'Un-mark a GA4 event as a conversion',
+          'create-custom-dimension':     'Add a GA4 custom dimension',
+          'create-custom-metric':        'Add a GA4 custom metric',
+          'create-audience':             'Create a GA4 audience',
+          'update-property-settings':    'Patch GA4 property settings',
+          'attach-shopify-events':       'Mark the 8 standard ecommerce events as GA4 conversions (idempotent)',
+        };
+        return { required: true, reason: reasons[payload.action], action: payload.action };
+      }
+      return { required: false };
+    },
+    input: {
+      action: z.enum([
+        // Read
+        'discover', 'traffic', 'conversions', 'attribution', 'landing-pages', 'audit-property',
+        // Write — measurement plan setup
+        'create-key-event', 'archive-key-event',
+        'create-custom-dimension', 'create-custom-metric',
+        'create-audience',
+        'update-property-settings',
+        'attach-shopify-events',
+      ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card.'),
+      brand: brandSchema.optional(),
+      batchCount: z.number().optional().describe('Days of data (positive integer; default 7). Negative interpreted as today only. Read actions only.'),
+      level: z.string().optional().describe('For traffic: "date" (default) or "channel".'),
+      limit: z.number().optional().describe('Max rows to return (clamps to 1000).'),
+      analyticsPropertyId: z.string().optional().describe('Per-call override for the configured GA4 property. Useful for agencies running against multiple properties under one Google account.'),
+      // ── Write fields ─────────────────────────────────────────
+      analyticsEventName: z.string().optional().describe('For create-key-event: the event name (e.g. "purchase", "sign_up").'),
+      analyticsCountingMethod: z.enum(['ONCE_PER_EVENT', 'ONCE_PER_SESSION']).optional().describe('Default ONCE_PER_EVENT.'),
+      analyticsDefaultValue: z.number().optional().describe('Default conversion value for revenue tagging on create-key-event.'),
+      analyticsParameterName: z.string().optional().describe('For create-custom-dimension / create-custom-metric: the GA4 event parameter name to map.'),
+      analyticsDisplayName: z.string().optional().describe('Human-readable name shown in GA4 UI.'),
+      analyticsDescription: z.string().optional().describe('Optional description for create-* actions.'),
+      analyticsScope: z.enum(['EVENT', 'USER', 'ITEM']).optional().describe('Custom dimension scope (default EVENT). Custom metrics are EVENT-only.'),
+      analyticsMeasurementUnit: z.enum(['STANDARD', 'CURRENCY', 'FEET', 'METERS', 'KILOMETERS', 'MILES', 'MILLISECONDS', 'SECONDS', 'MINUTES', 'HOURS']).optional().describe('Custom metric unit.'),
+      analyticsAudience: z.any().optional().describe('Full Audience resource body (filterClauses, membershipDurationDays, displayName, etc). Open-ended JSON — passed through to the GA4 Admin API verbatim.'),
+      analyticsKeyEventName: z.string().optional().describe('For archive-key-event: the GA4 event name (or full keyEvents resource path).'),
+      patchBody: z.record(z.any()).optional().describe('For update-property-settings: field map. Allowed: industryCategory, timeZone, currencyCode, displayName.'),
+      approved: z.boolean().optional().describe('Approval flag for write actions. Set by the Electron approval card; set true here only with explicit user approval to proceed.'),
+    },
+    // Handler does NOT auto-set args.approved — that bypasses the safety
+    // rail. The renderer's approval card supplies it on user click. For
+    // tests, runBinary accepts args.approved and passes it through to the
+    // binary as cmd.Approved.
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'google-analytics-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── tiktok_ads ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'tiktok_ads',

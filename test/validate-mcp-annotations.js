@@ -56,7 +56,7 @@ function makeFakeZ() {
   return {
     string: () => chain(), number: () => chain(), boolean: () => chain(),
     any: () => chain(), enum: () => chain(), array: () => chain(),
-    object: () => chain(),
+    object: () => chain(), record: () => chain(),
   };
 }
 

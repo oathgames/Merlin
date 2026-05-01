@@ -59,6 +59,7 @@ function makeFakeZ() {
     enum: () => chain(),
     array: () => chain(),
     object: () => chain(),
+    record: () => chain(),
   };
 }
 
@@ -92,7 +93,8 @@ test('buildTools registers every advertised tool', () => {
   buildTools(tool, z, ctx);
   const names = registry.map(t => t.name);
   const expected = [
-    'connection_status', 'meta_ads', 'meta_audit', 'tiktok_ads', 'google_ads',
+    'connection_status', 'meta_ads', 'meta_audit', 'google_analytics',
+    'tiktok_ads', 'google_ads',
     'amazon_ads', 'shopify', 'klaviyo', 'email', 'seo', 'content',
     'video', 'voice', 'dashboard', 'discord', 'threads', 'reddit_ads',
     'linkedin_ads', 'etsy', 'config', 'competitor_spy', 'platform_login',
@@ -128,6 +130,52 @@ test('buildTools flags destructive ad tools with annotations', () => {
   // destroy the "ask freely about your account" UX.
   assert.ok(!destructiveNames.includes('meta_audit'),
     'meta_audit must not be flagged destructive — it only issues GETs');
+  // google_analytics IS destructive (2026-05-01 brief expansion): it ships
+  // both reads and writes (create-key-event, create-custom-dimension/-metric,
+  // create-audience, update-property-settings, attach-shopify-events,
+  // archive-key-event). The seven write actions are gated PER-ACTION via
+  // blastRadius — read calls skip the approval card. See Hard-Won Security
+  // Rule 18 + analytics.go's REGRESSION GUARD (2026-05-01) block.
+  assert.ok(destructiveNames.includes('google_analytics'),
+    'google_analytics MUST be flagged destructive — it ships GA4 Admin API write actions (key events, custom dimensions/metrics, audiences, property settings) gated by per-action blastRadius. See Hard-Won Security Rule 18.');
+});
+
+test('google_analytics blastRadius: per-action contract — every write action requires approval, every read does not', () => {
+  // REGRESSION GUARD: a future mutation to the writeActions Set inside
+  // mcp-tools.js's google_analytics handler (e.g. accidentally typoing
+  // "create-audience" → "create-audiance" in the Set) would silently
+  // bypass the approval-card gate for that action. This test pins the
+  // exact contract per-action: read actions skip the card, write actions
+  // require it. See Hard-Won Security Rule 18.
+  const { tool, registry } = makeFakeTool();
+  buildTools(tool, makeFakeZ(), makeCtx());
+  const ga = registry.find(t => t.name === 'google_analytics');
+  assert.ok(ga, 'google_analytics tool must be registered');
+  const blastRadius = ga.options && ga.options.annotations && ga.options.annotations.blastRadius;
+  assert.equal(typeof blastRadius, 'function',
+    'google_analytics must define a blastRadius callback (per-action gating; not a constant true/false)');
+
+  // Read actions — must NOT require approval
+  const reads = ['discover', 'traffic', 'conversions', 'attribution', 'landing-pages', 'audit-property'];
+  for (const action of reads) {
+    const r = blastRadius({ action });
+    assert.ok(r && r.required === false,
+      `google_analytics read action "${action}" must NOT require approval (blastRadius.required === false). Got: ${JSON.stringify(r)}`);
+  }
+
+  // Write actions — must require approval
+  const writes = [
+    'create-key-event', 'archive-key-event',
+    'create-custom-dimension', 'create-custom-metric',
+    'create-audience',
+    'update-property-settings',
+    'attach-shopify-events',
+  ];
+  for (const action of writes) {
+    const r = blastRadius({ action });
+    assert.ok(r && r.required === true,
+      `google_analytics write action "${action}" MUST require approval (blastRadius.required === true). Got: ${JSON.stringify(r)} — a typo in the writeActions Set would silently bypass the approval-card gate. See Hard-Won Security Rule 18.`);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────
