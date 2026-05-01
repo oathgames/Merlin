@@ -289,6 +289,29 @@ function setupConnectionHandler() {
     let authAttempts = 0;
 
     ws.on('message', (raw) => {
+      // ── Application-level keepalive (REGRESSION GUARD (2026-05-01)) ──
+      //
+      // Mobile carrier NAT idle timeouts silently drop WS TCP after
+      // 1–5 min. Browser WebSocket spec doesn't expose ping/pong to
+      // JS, so the PWA sends `{type:"ping"}` every ~25s. We respond
+      // with `{type:"pong"}` immediately and short-circuit BEFORE
+      // the auth gate so an idle paired phone keeps its NAT mapping
+      // alive even if the PWA hasn't yet replayed its auth token
+      // (e.g. after page foreground from background, before the
+      // re-auth handshake completes). Pings on UNAUTHED sockets are
+      // safe: they're a single literal byte sequence that triggers
+      // a single literal reply; no state mutation.
+      //
+      // String-based exact match instead of JSON.parse → key access:
+      // pings come ~2-3/min per connection across desktop + N
+      // phones, so a parsed match would be measurable overhead at
+      // scale. The relay does the same exact-match short-circuit
+      // (relay/durable.js).
+      if (raw.toString() === '{"type":"ping"}') {
+        try { ws.send('{"type":"pong"}'); } catch {}
+        return;
+      }
+
       let msg;
       try { msg = JSON.parse(raw); } catch { return; }
 

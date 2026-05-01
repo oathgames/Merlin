@@ -175,6 +175,51 @@ test('rotatePairing clears creds before re-init (would throw on real network)', 
   void threw;
 });
 
+// ── Keepalive (REGRESSION GUARD 2026-05-01) ─────────────────────────
+//
+// Mobile carrier NAT idle timeouts silently drop WS TCP after 1–5 min.
+// We send {type:"ping"} every PING_INTERVAL_MS to keep the leg fresh.
+// These tests pin the contract:
+//   - Constants exist + are bounded (under any plausible NAT timeout).
+//   - Frame is a literal compact JSON string (matches relay's exact-match).
+//   - PONG_DEADLINE_MS > PING_INTERVAL_MS so a single missed ack doesn't
+//     bounce the connection.
+
+test('keepalive constants exist on the module export', () => {
+  const rc = freshRelayClient();
+  assert.equal(typeof rc.PING_INTERVAL_MS, 'number');
+  assert.equal(typeof rc.PONG_DEADLINE_MS, 'number');
+  assert.equal(typeof rc.PING_FRAME, 'string');
+});
+
+test('PING_INTERVAL_MS is below carrier NAT idle floor (~30s)', () => {
+  const rc = freshRelayClient();
+  assert.ok(rc.PING_INTERVAL_MS < 30_000,
+    `PING_INTERVAL_MS (${rc.PING_INTERVAL_MS}) must be < 30s — typical mobile carrier NAT idle floor`);
+  assert.ok(rc.PING_INTERVAL_MS >= 10_000,
+    `PING_INTERVAL_MS (${rc.PING_INTERVAL_MS}) must be >= 10s — anything tighter wastes battery / data`);
+});
+
+test('PONG_DEADLINE_MS > PING_INTERVAL_MS (single missed ack must not bounce the connection)', () => {
+  const rc = freshRelayClient();
+  assert.ok(rc.PONG_DEADLINE_MS > rc.PING_INTERVAL_MS,
+    `PONG_DEADLINE_MS (${rc.PONG_DEADLINE_MS}) must be > PING_INTERVAL_MS (${rc.PING_INTERVAL_MS})`);
+  // At least 2 pings should fit in the deadline so a single transient
+  // packet loss doesn't trigger reconnect churn.
+  assert.ok(rc.PONG_DEADLINE_MS >= 2 * rc.PING_INTERVAL_MS,
+    `PONG_DEADLINE_MS should be at least 2x PING_INTERVAL_MS for single-loss tolerance`);
+});
+
+test('PING_FRAME is the literal compact JSON the relay short-circuits on', () => {
+  const rc = freshRelayClient();
+  // Must be byte-identical to the string in relay/durable.js's
+  // webSocketMessage exact-match check. Whitespace differences here would
+  // turn every ping into a routed message that drops as not-in-allowlist
+  // — the keepalive would still work, but it would burn the rate-limit
+  // budget. Pin the exact bytes.
+  assert.equal(rc.PING_FRAME, '{"type":"ping"}');
+});
+
 // ── Final tally ─────────────────────────────────────────────────────
 setTimeout(() => {
   console.log(`\n  ${passed} passed, ${failed} failed`);

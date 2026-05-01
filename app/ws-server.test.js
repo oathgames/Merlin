@@ -578,3 +578,51 @@ test('certNotAfterMs parses a real PEM and returns a future timestamp', () => {
   assert.ok(notAfter && notAfter > Date.now(), 'notAfter must be in the future for a 3650d cert');
   try { fs.rmSync(tmp, { recursive: true, force: true }); } catch {}
 });
+
+// ── Application-level keepalive (REGRESSION GUARD 2026-05-01) ────────
+//
+// The PWA sends `{type:"ping"}` every ~25s to defeat mobile carrier NAT
+// idle timeouts. The ws-server short-circuits ping → pong BEFORE the
+// auth gate so a paired phone keeps its NAT alive even during the
+// auth-replay window after page foreground. Source-pin the key
+// invariants so a future refactor can't move the short-circuit AFTER
+// the auth gate (which would silently break keepalive on freshly
+// reconnected, not-yet-authed clients) or change the literal bytes
+// (which would force a JSON.parse path and burn budget).
+
+test('ws-server.js — keepalive ping handler exists and is BEFORE the auth gate', () => {
+  const src = fs.readFileSync(path.join(APP_DIR, 'ws-server.js'), 'utf8');
+  // The exact-match check on the literal compact JSON ping frame.
+  assert.match(
+    src,
+    /raw\.toString\(\)\s*===\s*'\{"type":"ping"\}'/,
+    'ws-server.js missing literal-string ping short-circuit. Mobile NAT idle timeouts will silently kill paired phones.',
+  );
+  assert.match(
+    src,
+    /ws\.send\('\{"type":"pong"\}'\)/,
+    'ws-server.js ping handler must reply with the literal compact pong string.',
+  );
+  // The ping check must come BEFORE the `if (!authed)` gate. Find the
+  // start positions of both and assert order.
+  const pingIdx = src.indexOf("raw.toString() === '{\"type\":\"ping\"}'");
+  const authedIdx = src.indexOf('if (!authed)');
+  assert.ok(pingIdx > 0, 'ping check not found in ws-server.js');
+  assert.ok(authedIdx > 0, 'auth gate not found in ws-server.js');
+  assert.ok(
+    pingIdx < authedIdx,
+    'ws-server.js: ping short-circuit must come BEFORE the auth gate. ' +
+    'A paired phone re-foregrounding a backgrounded tab will replay auth — ' +
+    'pings during that window must keep the NAT alive even on an unauthed socket. ' +
+    `Got pingIdx=${pingIdx} authedIdx=${authedIdx}.`,
+  );
+});
+
+test('ws-server.js — keepalive REGRESSION GUARD comment is present', () => {
+  const src = fs.readFileSync(path.join(APP_DIR, 'ws-server.js'), 'utf8');
+  assert.match(
+    src,
+    /REGRESSION GUARD \(2026-05-01\)/,
+    'ws-server.js missing REGRESSION GUARD (2026-05-01) for application-level keepalive — restore it before merging any change to the message handler.',
+  );
+});

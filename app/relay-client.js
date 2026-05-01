@@ -25,12 +25,33 @@ const RECONNECT_MIN_MS = 1500;
 const RECONNECT_MAX_MS = 60_000;
 const MAX_MSG_BYTES = 128 * 1024;
 
+// REGRESSION GUARD (2026-05-01): app-level WebSocket keepalive.
+//
+// Mobile carrier NAT idle timeouts (typical 1–5 min) silently drop WS
+// TCP connections when no bytes flow. The browser WebSocket spec does
+// NOT expose ping/pong control to JS, the `ws` Node library has NO
+// default ping (this file's pre-2026-05-01 comment that "the runtime
+// sends WS pings automatically" was wrong), and Cloudflare's
+// hibernatable WebSockets do NOT auto-PING. So WITHOUT this app-level
+// keepalive, an idle desktop↔relay connection looks alive on every
+// layer and silently dies on first send-attempt.
+//
+// 25s ping cadence is below the floor of every common NAT idle timeout
+// (carrier NATs ≥30s, home routers ≥60s, Cloudflare's edge keepalive
+// is ~100s). 60s pong-deadline forces a fast reconnect on a dead leg
+// rather than waiting for the OS to detect it (often 2–10 min).
+const PING_INTERVAL_MS = 25_000;
+const PONG_DEADLINE_MS = 60_000;
+const PING_FRAME = '{"type":"ping"}';
+
 let ws = null;
 let creds = null;            // { sessionId, desktopToken }  in-memory, NEVER logged
 let reconnectTimer = null;
 let reconnectAttempts = 0;
 let stopping = false;
 let connected = false;
+let pingTimer = null;        // setInterval handle; cleared on close
+let lastPongAt = 0;          // monotonic ms; updated on every inbound frame
 
 // Handlers injected from main.js (same shape as ws-server.setHandlers).
 let onSendMessage = null;
@@ -136,8 +157,10 @@ function connect() {
     ws = new WebSocket(url, {
       maxPayload: MAX_MSG_BYTES,
       handshakeTimeout: 15_000,
-      // Electron bundles CA roots; verify TLS (default). Disable keep-alive
-      // ping by default — the runtime sends WS pings automatically.
+      // Electron bundles CA roots; verify TLS (default). The `ws` library
+      // does NOT auto-PING; we send app-level {type:"ping"} frames every
+      // PING_INTERVAL_MS — see REGRESSION GUARD (2026-05-01) at the top
+      // of this file.
     });
   } catch (e) {
     logSafe('ws construction failed');
@@ -148,15 +171,27 @@ function connect() {
   ws.on('open', () => {
     connected = true;
     reconnectAttempts = 0;
+    lastPongAt = Date.now();
+    startKeepalive();
     logSafe('connected');
   });
 
   ws.on('message', (raw) => {
+    // Any inbound frame counts as liveness — even a non-pong message means
+    // the leg is healthy. This is correct because the relay's hibernatable
+    // WS won't deliver anything if the TCP path is dead. Updating
+    // lastPongAt on every message also avoids edge cases where the relay
+    // is forwarding a high-volume sdk-message stream and our 25s ping
+    // happens to be in flight when the stream arrives.
+    lastPongAt = Date.now();
+
     let msg;
     try { msg = JSON.parse(raw.toString('utf8')); } catch { return; }
     if (!msg || typeof msg.type !== 'string') return;
 
     switch (msg.type) {
+      case 'pong':
+        return; // Keepalive ack from relay — already updated lastPongAt above.
       case 'auth-ok':
         return; // Sent by DO on connect — informational.
       case 'send-message':
@@ -202,6 +237,7 @@ function connect() {
   ws.on('close', (code) => {
     connected = false;
     ws = null;
+    stopKeepalive();
     // 1008 (auth) / 4401 (custom) = creds are permanently bad. Bail out and
     // let the user re-pair.
     if (code === 1008 || code === 4401) {
@@ -217,6 +253,47 @@ function connect() {
     // Logged via the close event; avoid duplicate noise. Never log the URL —
     // it contains the token.
   });
+}
+
+// ── Keepalive ───────────────────────────────────────────────────────
+//
+// Sends {type:"ping"} every PING_INTERVAL_MS while connected. The relay
+// short-circuits ping in durable.js's webSocketMessage and replies with
+// {type:"pong"} (see relay/durable.js REGRESSION GUARD 2026-05-01). If
+// no inbound frame arrives within PONG_DEADLINE_MS of the last one, the
+// leg is considered dead and we force a close — the close handler then
+// runs the standard reconnect path. Without this, a NAT-killed
+// connection sits in a "looks alive" state until the user tries to send.
+function startKeepalive() {
+  stopKeepalive();
+  pingTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    // Liveness check first — if we haven't seen ANY frame (pong or
+    // otherwise) in PONG_DEADLINE_MS, the leg is dead. Force a close
+    // so the reconnect path runs.
+    if (Date.now() - lastPongAt > PONG_DEADLINE_MS) {
+      logSafe('keepalive deadline exceeded — forcing reconnect');
+      try { ws.close(4000, 'keepalive_timeout'); } catch {}
+      return;
+    }
+    try { ws.send(PING_FRAME); } catch {
+      // Send failure is itself a signal the socket is dead. Close
+      // handler will pick up; no-op here.
+    }
+  }, PING_INTERVAL_MS);
+  // Don't keep the Electron event loop alive solely for keepalive —
+  // when the user quits, this should not block process exit. unref()
+  // is a no-op on already-unref'd timers, safe to call.
+  if (pingTimer && typeof pingTimer.unref === 'function') {
+    pingTimer.unref();
+  }
+}
+
+function stopKeepalive() {
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
 }
 
 function forward(type, payload) {
@@ -363,4 +440,10 @@ module.exports = {
   getState,
   // Test hooks — not documented in the public API.
   _setCredsForTest(c) { creds = c ? { ...c } : null; },
+  // Keepalive constants exported for test pinning. Bumping these is a
+  // ship decision — see REGRESSION GUARD (2026-05-01) at the top of
+  // this file before changing.
+  PING_INTERVAL_MS,
+  PONG_DEADLINE_MS,
+  PING_FRAME,
 };

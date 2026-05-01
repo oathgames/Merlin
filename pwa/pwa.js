@@ -37,6 +37,27 @@ const LEGACY_CREDS_KEY = 'merlin.relay.creds.v1';
 const MAX_RECONNECT_MS = 60_000;
 const MIN_RECONNECT_MS = 1_500;
 
+// REGRESSION GUARD (2026-05-01): app-level WebSocket keepalive.
+//
+// Mobile carrier NAT idle timeouts (typical 1–5 min) silently drop WS
+// TCP connections when no bytes flow. The browser WebSocket API does
+// NOT expose ping/pong control to JS — there's no ws.ping() — so we
+// MUST send an application-level frame periodically. The relay's
+// durable.js short-circuits {type:"ping"} → {type:"pong"} without
+// forwarding or counting against the rate-limit budget.
+//
+// Without this, an idle mobile session reads connected, then dies on
+// next interaction — exactly the "fails after 5 min even while I'm
+// using it on my phone" symptom (live incident 2026-04-30).
+//
+// 25s ping cadence is below the floor of every common NAT idle
+// timeout (carrier NATs ≥30s, home routers ≥60s). 60s pong-deadline
+// forces a fast reconnect on a dead leg rather than waiting for the
+// browser to detect it (often 2–10 min on mobile Safari/Chrome).
+const PING_INTERVAL_MS = 25_000;
+const PONG_DEADLINE_MS = 60_000;
+const PING_FRAME = '{"type":"ping"}';
+
 let ws = null;
 let currentBubble = null;
 let textBuffer = '';
@@ -47,6 +68,8 @@ let reconnectTimer = null;
 let mode = null; // 'relay' | 'lan'
 let relayCreds = null; // { sessionId, deviceId } — NO tokens; auth is via httpOnly cookie
 let refreshInFlight = null; // Promise: de-dupe concurrent refresh attempts
+let pingTimer = null;       // setInterval handle; cleared on close
+let lastPongAt = 0;         // monotonic ms; updated on every inbound frame
 
 const messages = document.getElementById('messages');
 const chat = document.getElementById('chat');
@@ -283,13 +306,22 @@ function openSocket(url, onOpen) {
 
   ws.onopen = () => {
     reconnectAttempts = 0;
+    lastPongAt = Date.now();
+    startKeepalive();
     if (onOpen) onOpen();
   };
 
   ws.onmessage = (event) => {
+    // Every inbound frame counts as liveness — even a non-pong message
+    // means the leg is healthy. This also covers high-volume sdk-message
+    // streams where our ping might be in flight when the stream arrives.
+    lastPongAt = Date.now();
+
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     switch (msg.type) {
+      case 'pong':
+        return; // Keepalive ack — already updated lastPongAt above.
       case 'auth-ok':
         setStatus(true);
         // Push subscription is only attempted after auth succeeds.
@@ -311,6 +343,7 @@ function openSocket(url, onOpen) {
 
   ws.onclose = (ev) => {
     setStatus(false);
+    stopKeepalive();
     // 1008 = relay enforced policy (rate limit, revoked). Treat as
     // permanent — clearing creds forces a re-pair on next visit.
     if (ev && ev.code === 1008) {
@@ -346,6 +379,40 @@ function scheduleReconnect() {
     if (mode === 'relay') connectRelay();
     else if (mode === 'lan' && lanToken) connectLan(lanToken);
   }, delay);
+}
+
+// ── Keepalive ───────────────────────────────────────────────────────
+//
+// Sends {type:"ping"} every PING_INTERVAL_MS while connected. The relay
+// (or the LAN ws-server) short-circuits the ping and replies with
+// {type:"pong"}. If no inbound frame arrives within PONG_DEADLINE_MS of
+// the last one, force-close and let the standard reconnect path run.
+//
+// Without this, a NAT-killed connection sits in "looks alive" state on
+// mobile until the user tries to send — then they see a stale UI for
+// the duration of the reconnect handshake. See REGRESSION GUARD at
+// the top of this file.
+function startKeepalive() {
+  stopKeepalive();
+  pingTimer = setInterval(() => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    if (Date.now() - lastPongAt > PONG_DEADLINE_MS) {
+      // Leg is dead; force close. onclose runs scheduleReconnect.
+      try { ws.close(4000, 'keepalive_timeout'); } catch {}
+      return;
+    }
+    try { ws.send(PING_FRAME); } catch {
+      // Send failure is itself a signal the socket is dead. onclose
+      // (or onerror) will fire; no-op here.
+    }
+  }, PING_INTERVAL_MS);
+}
+
+function stopKeepalive() {
+  if (pingTimer) {
+    clearInterval(pingTimer);
+    pingTimer = null;
+  }
 }
 
 function send(obj) {
