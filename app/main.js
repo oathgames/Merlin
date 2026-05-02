@@ -11463,17 +11463,54 @@ function resolveSidecarPaths() {
   let cdcMod;
   try { cdcMod = require('./claude-desktop-config'); }
   catch { return null; }
+  // codex-config.js is optional — sidecar paths still resolve if it
+  // fails to load (we just won't surface Codex config in the result).
+  let codexMod = null;
+  try { codexMod = require('./codex-config'); }
+  catch { codexMod = null; }
+
+  // Path-resolution overrides for enterprise / MDM deployments. When
+  // Merlin is shipped via Intune / Jamf / Workspace ONE, IT sets these
+  // env vars (or the Electron --js-flags equivalent) to pin the shim
+  // and Node binary to known-good paths instead of relying on asar
+  // layout heuristics. Useful when:
+  //   * The bundled Node has been replaced with a corp-signed runtime.
+  //   * The shim is mirrored to a managed location for AV exclusion.
+  //   * A multi-version install (per-machine + per-user) needs the
+  //     autoconfig to point at a specific build.
+  // Env vars must resolve to absolute paths or they are ignored
+  // (defensive — relative paths in MCP server entries break Codex /
+  // Claude Code on directory changes).
+  const envShim = process.env.MERLIN_SHIM_PATH_OVERRIDE;
+  const envNode = process.env.MERLIN_NODE_OVERRIDE;
+  const overrideShim = (envShim && path.isAbsolute(envShim)) ? envShim : null;
+  const overrideNode = (envNode && path.isAbsolute(envNode)) ? envNode : null;
+
   // The shim ships unpacked from asar (see asarUnpack in package.json).
   // Packaged: <appInstall>/app.asar.unpacked/app/merlin-mcp-shim.js
   // Dev:      <repo>/app/merlin-mcp-shim.js
-  const shimPath = app.isPackaged
+  const shimPath = overrideShim || (app.isPackaged
     ? path.join(appInstall, 'app.asar.unpacked', 'app', 'merlin-mcp-shim.js')
-    : path.join(__dirname, 'merlin-mcp-shim.js');
-  const nodePath = getBundledNodePath() || 'node';
+    : path.join(__dirname, 'merlin-mcp-shim.js'));
+  const nodePath = overrideNode || getBundledNodePath() || 'node';
   const merlinEntry = cdcMod.buildMerlinEntry({ nodePath, shimPath });
   const configPath = cdcMod.claudeDesktopConfigPath();
   const claudeJsonPath = cdcMod.claudeCodeConfigPath();
-  return { cdcMod, shimPath, nodePath, merlinEntry, configPath, claudeJsonPath };
+  // Codex shares the same merlin{command,args} pair as Claude. The
+  // codex-config buildCodexMerlinEntry returns the TOML body shape
+  // (which is byte-identical to the JSON entry for command + args; the
+  // only difference is the surrounding TOML vs JSON syntax).
+  const codexMerlinBody = codexMod
+    ? codexMod.buildCodexMerlinEntry({ nodePath, shimPath })
+    : null;
+  const codexConfigPath = codexMod ? codexMod.codexConfigPath() : '';
+  return {
+    cdcMod, codexMod,
+    shimPath, nodePath, merlinEntry,
+    configPath, claudeJsonPath,
+    codexMerlinBody, codexConfigPath,
+    overridesActive: !!(overrideShim || overrideNode),
+  };
 }
 
 // Show a directory picker for the Claude Code project the user wants
@@ -11544,7 +11581,7 @@ async function maybePromptClaudeDesktopAutoconfig() {
 
   const paths = resolveSidecarPaths();
   if (!paths) { console.warn('[mcp-autoconfig] module load failed'); return; }
-  const { cdcMod, merlinEntry, configPath } = paths;
+  const { cdcMod, codexMod, merlinEntry, configPath, codexMerlinBody, codexConfigPath } = paths;
 
   // Compute the major version from package.json. If unparseable, skip.
   let currentMajor = 0;
@@ -11554,43 +11591,82 @@ async function maybePromptClaudeDesktopAutoconfig() {
   // sentinel + Claude Desktop matching state. If shouldPrompt says
   // "fire", we still need to detect which client(s) are installed and
   // tailor the dialog accordingly.
-  const decision = cdcMod.shouldPrompt({ stateDir, configPath, merlinEntry, currentMajor });
-  if (!decision.fire) return;
+  //
+  // Codex has its OWN decision sentinel (.mcp-codex-prompt) so the
+  // Claude shouldPrompt() result is irrelevant to whether we offer
+  // Codex. We compute both gates independently and union the result —
+  // a user who chose "never" for Claude can still see the Codex offer
+  // on a major bump if Codex is newly installed.
+  const claudeGate = cdcMod.shouldPrompt({ stateDir, configPath, merlinEntry, currentMajor });
+  const codexDecision = codexMod ? codexMod.readCodexDecision(stateDir) : null;
+  const codexBlocked = codexDecision && (
+    codexDecision.decision === 'never'
+    || (codexDecision.decision === 'skipped' && codexDecision.major === currentMajor)
+    || (codexDecision.decision === 'added' && codexDecision.major === currentMajor)
+  );
 
   const installed = cdcMod.detectInstalledClients();
-  // If neither client is detected, suppress — no point prompting a user
-  // who has neither host. The Desktop branch's "no config dir" check
-  // already short-circuits in shouldPrompt; this catches Code-only
-  // gaps too.
-  if (!installed.desktop && !installed.code) return;
+  // If NO client is detected, suppress — no point prompting a user who
+  // has none of the supported hosts.
+  if (!installed.desktop && !installed.code && !installed.codex) return;
+  // If Claude side says "don't fire" AND Codex is either not installed,
+  // already blocked by its own sentinel, or the codex module failed to
+  // load, suppress entirely.
+  const codexEligible = installed.codex && codexMod && !codexBlocked && !!codexMerlinBody;
+  if (!claudeGate.fire && !codexEligible) return;
 
   const { dialog } = require('electron');
 
   // Build the dialog buttons dynamically based on which clients are
-  // installed. Order: Desktop, Code, Both, Skip, Don't ask again.
-  // `actions` is parallel to `buttons` and tells the response handler
-  // which apply-flow to invoke.
+  // installed AND eligible. Order: Desktop, Code, Codex, All, Skip,
+  // Don't ask again. `actions` is parallel to `buttons` and tells the
+  // response handler which apply-flow to invoke. The "Add to All"
+  // button only appears when ≥2 eligible hosts are present, matching
+  // the prior Desktop+Code "Both" UX scaled up.
   const buttons = [];
   const actions = [];
-  if (installed.desktop) { buttons.push('Add to Claude Desktop'); actions.push('desktop'); }
-  if (installed.code)    { buttons.push('Add to Claude Code');    actions.push('code'); }
-  if (installed.desktop && installed.code) { buttons.push('Add to Both');         actions.push('both'); }
+  const claudeEligible = claudeGate.fire;
+  if (installed.desktop && claudeEligible) { buttons.push('Add to Claude Desktop'); actions.push('desktop'); }
+  if (installed.code    && claudeEligible) { buttons.push('Add to Claude Code');    actions.push('code'); }
+  if (codexEligible)                       { buttons.push('Add to Codex');           actions.push('codex'); }
+  // Count eligible hosts to decide whether to offer "All".
+  const eligibleCount = (installed.desktop && claudeEligible ? 1 : 0)
+                      + (installed.code    && claudeEligible ? 1 : 0)
+                      + (codexEligible ? 1 : 0);
+  if (eligibleCount >= 2) { buttons.push('Add to All'); actions.push('all'); }
   buttons.push('Skip');             actions.push('skip');
   buttons.push("Don't ask again");  actions.push('never');
 
   let response;
   try {
-    const messageDetail = installed.desktop && installed.code
-      ? 'Merlin can register itself as a tool in Claude Desktop AND/OR Claude Code.\n\nClaude Desktop is one click. Claude Code asks you to pick the project folder to enable Merlin in (its security model requires per-project opt-in).'
-      : (installed.desktop
-          ? 'Merlin can register itself as a tool in Claude Desktop.\n\nAfter this, you can ask Claude Desktop things like "create a Meta ad" or "show me my Stripe revenue" and Claude will call Merlin\'s tools directly.'
-          : 'Merlin can register itself as a tool in Claude Code.\n\nClaude Code requires per-project opt-in for security, so we\'ll ask you to pick the project folder to enable Merlin in.\n\nAfter this, Claude Code can call Merlin\'s tools directly from that project.');
+    // Compose a detail string that names exactly the hosts the user
+    // can choose from. Hosts in declared install order: Desktop, Code,
+    // Codex. Fall back to a generic phrasing only if the eligibility
+    // calculation surprises us.
+    const eligibleHosts = [];
+    if (installed.desktop && claudeEligible) eligibleHosts.push('Claude Desktop');
+    if (installed.code    && claudeEligible) eligibleHosts.push('Claude Code');
+    if (codexEligible)                       eligibleHosts.push('Codex');
+    let messageDetail;
+    if (eligibleHosts.length >= 2) {
+      messageDetail = 'Merlin can register itself as a tool in '
+        + eligibleHosts.slice(0, -1).join(', ') + ' and ' + eligibleHosts[eligibleHosts.length - 1]
+        + '.\n\nClaude Desktop and Codex register globally. Claude Code asks you to pick a project folder (its security model requires per-project opt-in).';
+    } else if (eligibleHosts[0] === 'Claude Desktop') {
+      messageDetail = 'Merlin can register itself as a tool in Claude Desktop.\n\nAfter this, you can ask Claude Desktop things like "create a Meta ad" or "show me my Stripe revenue" and Claude will call Merlin\'s tools directly.';
+    } else if (eligibleHosts[0] === 'Claude Code') {
+      messageDetail = 'Merlin can register itself as a tool in Claude Code.\n\nClaude Code requires per-project opt-in for security, so we\'ll ask you to pick the project folder to enable Merlin in.\n\nAfter this, Claude Code can call Merlin\'s tools directly from that project.';
+    } else if (eligibleHosts[0] === 'Codex') {
+      messageDetail = 'Merlin can register itself as a tool in the OpenAI Codex CLI.\n\nAfter this, you can ask Codex to "make a Meta ad" or "show last week\'s revenue" and Codex will call Merlin\'s tools directly. Your config is at ~/.codex/config.toml.';
+    } else {
+      messageDetail = 'Merlin can register itself with your installed MCP clients.';
+    }
 
     const result = await dialog.showMessageBox(win || null, {
       type: 'question',
-      title: 'Use Merlin from Claude?',
-      message: 'Connect Merlin to your Claude client.',
-      detail: messageDetail + '\n\nYour API keys never leave Merlin\'s encrypted vault — Claude only sees tool inputs and outputs, the same boundary as the in-app chat.',
+      title: 'Use Merlin from your AI client?',
+      message: 'Connect Merlin to ' + (eligibleHosts.length >= 2 ? 'your AI clients.' : eligibleHosts[0] + '.'),
+      detail: messageDetail + '\n\nYour API keys never leave Merlin\'s encrypted vault — the AI client only sees tool inputs and outputs, the same boundary as the in-app chat.',
       buttons,
       defaultId: 0,
       cancelId: actions.indexOf('skip'),
@@ -11604,12 +11680,14 @@ async function maybePromptClaudeDesktopAutoconfig() {
 
   const action = actions[response];
   let didAnyApply = false;
+  let didAnyClaudeApply = false;
+  let didCodexApply = false;
 
-  if (action === 'desktop' || action === 'both') {
+  if (action === 'desktop' || action === 'both' || action === 'all') {
     // applyRegistration writes the 'added' decision sentinel internally
     // on success — we don't need to also call writeDecision below.
     const out = cdcMod.applyRegistration({ stateDir, configPath, merlinEntry });
-    if (out.ok) didAnyApply = true;
+    if (out.ok) { didAnyApply = true; didAnyClaudeApply = true; }
     if (!out.ok) {
       try {
         await dialog.showMessageBox(win || null, {
@@ -11623,9 +11701,29 @@ async function maybePromptClaudeDesktopAutoconfig() {
     }
   }
 
-  if (action === 'code' || action === 'both') {
+  if (action === 'code' || action === 'both' || action === 'all') {
     const ccOut = await applyClaudeCodeFlow(cdcMod, paths);
-    if (ccOut && ccOut.ok) didAnyApply = true;
+    if (ccOut && ccOut.ok) { didAnyApply = true; didAnyClaudeApply = true; }
+  }
+
+  if ((action === 'codex' || action === 'all') && codexEligible) {
+    const codexOut = codexMod.applyCodexRegistration({
+      stateDir,
+      configPath: codexConfigPath,
+      merlinBody: codexMerlinBody,
+    });
+    if (codexOut && codexOut.ok) { didAnyApply = true; didCodexApply = true; }
+    if (codexOut && !codexOut.ok) {
+      try {
+        await dialog.showMessageBox(win || null, {
+          type: 'warning',
+          title: 'Could not update Codex config',
+          message: 'Merlin was unable to register itself with Codex.',
+          detail: codexOut.error || 'Unknown error.',
+          buttons: ['OK'],
+        });
+      } catch {}
+    }
   }
 
   // Gitar PR #163 follow-up (2026-04-29, two findings landed together):
@@ -11649,14 +11747,27 @@ async function maybePromptClaudeDesktopAutoconfig() {
   // always stamping the major. writeDecision is last-writer-wins:
   // applyRegistration's un-stamped decision gets overwritten by this
   // stamped one on the desktop path.
-  if (didAnyApply) {
+  // Stamp per-client decision sentinels so the autoprompt doesn't
+  // re-fire within the same major. Claude and Codex use SEPARATE
+  // sentinels — a user may add Codex now and Claude later (or vice
+  // versa) on a future launch.
+  if (didAnyClaudeApply) {
     try { cdcMod.writeDecision(stateDir, 'added', { major: currentMajor }); } catch {}
+  }
+  if (didCodexApply) {
+    try { codexMod.writeCodexDecision(stateDir, 'added', { major: currentMajor }); } catch {}
   }
 
   if (action === 'skip') {
+    // Skip applies to whatever offer is on screen — both Claude and
+    // Codex sentinels get the same skipped-this-major mark so we don't
+    // re-pester the user this version. They re-prompt on the next
+    // major bump.
     cdcMod.recordSkip(stateDir, currentMajor, false);
+    if (codexMod) try { codexMod.recordCodexSkip(stateDir, currentMajor, false); } catch {}
   } else if (action === 'never') {
     cdcMod.recordSkip(stateDir, currentMajor, true);
+    if (codexMod) try { codexMod.recordCodexSkip(stateDir, currentMajor, true); } catch {}
   }
 }
 
@@ -11688,6 +11799,25 @@ ipcMain.handle('mcp-autoconfig-add-claude-code', async () => {
   return await applyClaudeCodeFlow(paths.cdcMod, paths);
 });
 
+// IPC: renderer-driven "Add to Codex" button. Atomically merges the
+// Merlin entry into ~/.codex/config.toml. Same merge-or-no-op semantics
+// as the Claude Desktop handler. Returns { ok, changed?, configPath?, error? }.
+ipcMain.handle('mcp-autoconfig-add-codex', async () => {
+  if (!app.isPackaged) {
+    return { ok: false, error: 'Sidecar autoconfig is only available in packaged builds.' };
+  }
+  const paths = resolveSidecarPaths();
+  if (!paths) return { ok: false, error: 'autoconfig module not available' };
+  if (!paths.codexMod || !paths.codexMerlinBody) {
+    return { ok: false, error: 'Codex autoconfig module not available in this build.' };
+  }
+  return paths.codexMod.applyCodexRegistration({
+    stateDir,
+    configPath: paths.codexConfigPath,
+    merlinBody: paths.codexMerlinBody,
+  });
+});
+
 // IPC: renderer query — what's the sidecar status across BOTH clients?
 //
 // Return shape (v1.20.4 — extended for Claude Code):
@@ -11708,13 +11838,18 @@ ipcMain.handle('mcp-autoconfig-status', async () => {
     return {
       desktop: { configured: false, configPath: '' },
       code: { configured: false, claudeJsonPath: '', projects: [] },
+      codex: { configured: false, configPath: '', installed: false },
       socketAlive: false,
       shimPath: '',
       registered: false,
       configPath: '',
+      overridesActive: false,
     };
   }
-  const { cdcMod, shimPath, merlinEntry, configPath, claudeJsonPath } = paths;
+  const {
+    cdcMod, codexMod, shimPath, merlinEntry, configPath, claudeJsonPath,
+    codexMerlinBody, codexConfigPath, overridesActive,
+  } = paths;
   const desktopRegistered = cdcMod.isRegistered({ configPath, merlinEntry });
   let codeProjects = [];
   try {
@@ -11723,12 +11858,24 @@ ipcMain.handle('mcp-autoconfig-status', async () => {
     console.warn('[mcp-autoconfig] listClaudeCodeProjectsStatus failed:', err && err.message);
   }
   const codeConfigured = codeProjects.some((p) => p.enabled);
+  let codexConfigured = false;
+  let codexInstalled = false;
+  if (codexMod && codexMerlinBody) {
+    try {
+      codexConfigured = codexMod.isRegisteredCodex({ configPath: codexConfigPath, merlinBody: codexMerlinBody });
+      codexInstalled = codexMod.detectInstalledCodex();
+    } catch (err) {
+      console.warn('[mcp-autoconfig] codex status check failed:', err && err.message);
+    }
+  }
   const socketAlive = !!(_mcpIpcEndpoint && _mcpIpcEndpoint.server && _mcpIpcEndpoint.server.listening);
   return {
     desktop: { configured: desktopRegistered, configPath },
     code: { configured: codeConfigured, claudeJsonPath, projects: codeProjects },
+    codex: { configured: codexConfigured, configPath: codexConfigPath, installed: codexInstalled },
     socketAlive,
     shimPath,
+    overridesActive,
     // Backward-compat aliases for v1.20.0 callers.
     registered: desktopRegistered,
     configPath,
