@@ -71,14 +71,22 @@ function claudeCodeProjectMcpPath(projectRoot) {
 
 // Detect which MCP-host clients appear to be installed on this machine.
 // Used by the autoprompt to choose between the Desktop-only / Code-only
-// / both flows. We never try to connect to either client — we just
-// check for the existence of their canonical config (Desktop) or
-// presence of ~/.claude.json (Code). Detection is cheap and tolerant of
-// missing files / permissions errors.
+// / Codex / multi-host flows. We never try to connect to any client —
+// we just check for the existence of their canonical config or
+// well-known directory. Detection is cheap and tolerant of missing
+// files / permissions errors.
 //
-// Returns { desktop: bool, code: bool }.
+// Returns { desktop: bool, code: bool, codex: bool }.
+//
+// `codex` was added 2026-05-02 (v1.21.10) when Codex CLI joined Claude
+// Desktop + Claude Code as a first-class autoconfig target. The Codex
+// detection logic lives in app/codex-config.js so we can keep the
+// TOML-handling code isolated; we lazy-require it here so this module
+// stays loadable even if codex-config.js fails to parse (defense in
+// depth — a syntax error in one client's autoconfig should not break
+// detection for the others).
 function detectInstalledClients() {
-  const out = { desktop: false, code: false };
+  const out = { desktop: false, code: false, codex: false };
   try {
     const desktopPath = claudeDesktopConfigPath();
     // Existence of the per-OS Claude config DIRECTORY (not the file)
@@ -96,6 +104,12 @@ function detectInstalledClients() {
       out.code = true;
     }
   } catch { /* not installed or unparseable */ }
+  try {
+    // Codex CLI installs ~/.codex/ on first run. The TOML config file
+    // may or may not exist yet — the directory's presence is enough.
+    const cc = require('./codex-config');
+    out.codex = cc.detectInstalledCodex();
+  } catch { /* codex-config module failed to load — treat as not installed */ }
   return out;
 }
 

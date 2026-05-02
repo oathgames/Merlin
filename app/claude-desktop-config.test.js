@@ -842,11 +842,56 @@ test('rememberClaudeCodeProject: dedups + atomic', () => {
   } finally { rmTmp(stateDir); }
 });
 
-test('detectInstalledClients: returns shape {desktop, code}', () => {
+test('detectInstalledClients: returns shape {desktop, code, codex}', () => {
+  // codex field added v1.21.10 — every host class must always be a boolean
+  // so the autoprompt's eligibility math doesn't have to defensive-coalesce.
   const out = cdc.detectInstalledClients();
   assert.strictEqual(typeof out, 'object');
   assert.strictEqual(typeof out.desktop, 'boolean');
   assert.strictEqual(typeof out.code, 'boolean');
+  assert.strictEqual(typeof out.codex, 'boolean');
+});
+
+test('detectInstalledClients: codex detection survives codex-config.js load failure', () => {
+  // Defensive-load contract: if codex-config.js throws on require (e.g.
+  // a future syntax error during a refactor), detectInstalledClients
+  // must still return a usable {desktop, code, codex} object so the
+  // autoprompt for Claude hosts continues working. We simulate the
+  // failure by stubbing require for ./codex-config and restoring after.
+  const Module = require('module');
+  const origResolve = Module._resolveFilename;
+  const origLoad = Module._load;
+  let restored = false;
+  function restore() {
+    if (restored) return;
+    Module._resolveFilename = origResolve;
+    Module._load = origLoad;
+    restored = true;
+  }
+  // Bust the require cache for codex-config so our stub takes effect.
+  const codexConfigPath = require.resolve('./codex-config');
+  delete require.cache[codexConfigPath];
+  Module._load = function patchedLoad(request, parent, ...rest) {
+    if (request === './codex-config' && parent && parent.filename
+        && parent.filename.endsWith('claude-desktop-config.js')) {
+      throw new Error('simulated codex-config load failure');
+    }
+    return origLoad.call(this, request, parent, ...rest);
+  };
+  try {
+    // Bust cache for claude-desktop-config too so it re-requires codex-config.
+    delete require.cache[require.resolve('./claude-desktop-config')];
+    const fresh = require('./claude-desktop-config');
+    const out = fresh.detectInstalledClients();
+    assert.strictEqual(typeof out, 'object');
+    assert.strictEqual(typeof out.desktop, 'boolean');
+    assert.strictEqual(typeof out.code, 'boolean');
+    assert.strictEqual(out.codex, false, 'codex must report false when module fails to load');
+  } finally {
+    restore();
+    delete require.cache[require.resolve('./claude-desktop-config')];
+    require('./claude-desktop-config'); // re-prime cache for any later tests
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);
