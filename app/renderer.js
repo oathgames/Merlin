@@ -1492,9 +1492,21 @@ function friendlyError(raw, platformName) {
   if (sl.includes('ad account') && sl.includes('disabled')) return 'Your Meta ad account has been disabled by Facebook.\nTry: [[chip:Open Meta Business:open-url:https://business.facebook.com]]';
 
   // ── Balance / billing errors ──
+  // Audit Wave D+E — E10: Sim 10 (grandma persona) flagged that
+  // surfacing the literal vendor name "fal.ai" / "ElevenLabs" / "HeyGen"
+  // to a user who never directly relates to those vendors looks like
+  // phishing. Map the vendor to a user-meaningful capability label
+  // ("image generation", "voice generation", "video generation") and
+  // route the user to Settings rather than a third-party URL she's
+  // never seen before. Power users can still find the underlying
+  // vendor via the Connections panel; the chat surface stays clean.
   if (sl.includes('exhausted balance') || sl.includes('top up') || sl.includes('insufficient') || sl.includes('billing')) {
-    const src = sl.includes('fal.ai') ? 'fal.ai' : sl.includes('elevenlabs') ? 'ElevenLabs' : sl.includes('heygen') ? 'HeyGen' : (platformName || 'API');
-    return `Your ${src} balance is empty.\nTry: Add credits at ${src === 'fal.ai' ? 'fal.ai/dashboard' : src === 'ElevenLabs' ? 'elevenlabs.io/subscription' : src === 'HeyGen' ? 'heygen.com/pricing' : 'your account dashboard'}.`;
+    let capability = 'a connected service';
+    if (sl.includes('fal.ai') || sl.includes('fal_')) capability = 'image generation';
+    else if (sl.includes('elevenlabs')) capability = 'voice generation';
+    else if (sl.includes('heygen')) capability = 'video generation';
+    else if (platformName) capability = platformName.toLowerCase();
+    return `${capability.charAt(0).toUpperCase()}${capability.slice(1)} credits ran out.\nTry: Open Settings → Connections to add more credits.`;
   }
   if (sl.includes('rate limit') || sl.includes('too many requests') || sl.includes('429')) return 'Too many requests — Merlin is protecting your account.\nTry: Wait 30 seconds and try again. This is normal.';
   if (sl.includes('quota') || sl.includes('exceeded')) return `${platformName || 'API'} quota exceeded.\nTry: Check your plan limits or upgrade your ${platformName || 'API'} account.`;
