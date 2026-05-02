@@ -28,7 +28,8 @@ Post-iOS 14.5, platform-reported ROAS over-credits paid channels by 20–60% dep
 
 | Action | Key params | Returns |
 |---|---|---|
-| `dashboard` | `brand`, `batchCount` (days) | MER + contribution margin + platform ROAS table + LTV:CAC + payback, top/bottom ads, recommendations |
+| `dashboard` | `brand`, `batchCount` (days) | MER + revenue + total spend + per-platform ROAS table + WoW deltas + recent decisions + reallocation suggestions. **For LTV:CAC + payback, chain `stripe-cohorts` separately** (not in `dashboard` today). |
+| `stripe-cohorts` | `brand`, `months` | Per-cohort customer count + revenue + average revenue per customer. **Older cohorts naturally show higher AvgRevenue solely because they had more time to bill** — interpret AvgRevenue/months_elapsed (rev-per-customer-per-month) for fair cross-cohort comparison. |
 | `wisdom` | `brand` | Collective anonymized insights (hook CTR, format win-rate, timing patterns by vertical) |
 | `calendar` | `brand` | Launch history, average cadence, seasonal signals, upcoming gaps |
 
