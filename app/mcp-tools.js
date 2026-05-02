@@ -1592,7 +1592,35 @@ function buildTools(tool, z, ctx) {
       });
 
       try {
-        const signal = await scrapeBrand(url);
+        // REGRESSION GUARD (2026-05-02, RSI Session 4 D7.6 fix): forward
+        // intra-scrape stage progress to the renderer pill so a 60s scrape
+        // doesn't sit stuck at 5% the entire wait. The pre-fix UX was
+        // "Reading homepage" pinned for the full duration even as the
+        // scraper internally advanced through primary-load → primary-signal
+        // → primary-screenshot → secondary-pages → logo-quantize. Each
+        // stage now translates to a renderer-friendly label aligned with
+        // SKILL.md's narration vocabulary so the pill text stays in sync
+        // with what the agent is naturally reporting in chat.
+        const stageLabels = {
+          'primary-load': 'Reading homepage',
+          'primary-signal': 'Capturing brand signals',
+          'primary-screenshot': 'Taking screenshots',
+          'secondary-pages': 'Crawling secondary pages',
+          'logo-quantize': 'Extracting brand colors',
+          'complete': 'Almost done',
+        };
+        const signal = await scrapeBrand(url, {
+          onProgress: (stage, pct) => {
+            emitScrapeProgress(ctx, {
+              tool: 'brand_scrape',
+              scrapeId,
+              stage,
+              label: stageLabels[stage] || stage,
+              pct,
+              url,
+            });
+          },
+        });
         if (!includeScreenshots && signal.screenshots) {
           signal.screenshots = {
             desktop: '[elided — pass includeScreenshots:true to include ~1-3MB base64 PNG]',

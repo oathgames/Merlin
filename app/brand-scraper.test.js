@@ -756,3 +756,118 @@ test('REGRESSION GUARD (2026-04-23): scrapeBrand routes through settleOverallRac
     'scrapeBrand must NOT return raceWithTimeout directly — that path rejects on timeout and drops the partial signal',
   );
 });
+
+// REGRESSION GUARD (2026-05-02, RSI Session 4 D7.1 fix): the secondary-page
+// crawl MUST NOT be a serial `for…of … await` loop. With 5 default extra
+// pages × up to 15s each, the serial form had a 75s worst-case wall time
+// before logo-quantize even started — blowing past the <30s onboarding
+// budget and the Parallelism Standard ("a `for _, x := range xs {
+// externalCall(x) }` loop without batching/parallelism is a code smell").
+// The bounded fan-out with `Promise.allSettled` and `SECONDARY_PARALLELISM = 3`
+// is the post-fix invariant; reverting to a serial await sequence is what
+// this test catches.
+test('REGRESSION GUARD (2026-05-02): scrapeBrand parallelizes the secondary-pages crawl', () => {
+  // The `secondary-pages` stage block must declare a parallelism cap and
+  // use Promise.allSettled. We anchor on the constant name so a renaming
+  // refactor flags here before merge.
+  assert.match(
+    SCRAPER_SOURCE,
+    /SECONDARY_PARALLELISM\s*=\s*3\b/,
+    'scrapeBrand secondary-pages crawl must declare SECONDARY_PARALLELISM = 3 — bounded fan-out replaces the serial loop',
+  );
+  assert.match(
+    SCRAPER_SOURCE,
+    /await\s+Promise\.allSettled\s*\(\s*workers\s*\)/,
+    'scrapeBrand secondary-pages crawl must await Promise.allSettled(workers) — fan-out joiner',
+  );
+
+  // The forbidden form: a serial `for (const subpath of extraPages) { ...
+  // await capturePage ... }` directly inside that loop body. We carve out
+  // ONLY the `for (const subpath of extraPages) { ... }` block (balanced
+  // braces tracked manually) and assert it contains no `await capturePage`.
+  // The post-fix loop only pushes to subUrls; capturePage runs inside the
+  // worker fan-out below.
+  const stageBlock = SCRAPER_SOURCE.match(/currentStage\s*=\s*'secondary-pages'[\s\S]*?currentStage\s*=\s*'logo-quantize'/);
+  assert.ok(stageBlock, 'could not isolate the secondary-pages stage block in scrapeBrand');
+  const block = stageBlock[0];
+  const buildLoopStart = block.indexOf('for (const subpath of extraPages)');
+  assert.notEqual(buildLoopStart, -1, 'secondary-pages block must declare a `for (const subpath of extraPages)` URL-build loop');
+  // Walk balanced braces from the first `{` after the for-header to find
+  // the loop body end.
+  const openBrace = block.indexOf('{', buildLoopStart);
+  let depth = 1;
+  let i = openBrace + 1;
+  while (i < block.length && depth > 0) {
+    if (block[i] === '{') depth += 1;
+    else if (block[i] === '}') depth -= 1;
+    i += 1;
+  }
+  const loopBody = block.slice(openBrace + 1, i - 1);
+  assert.doesNotMatch(
+    loopBody,
+    /await\s+capturePage/,
+    'REGRESSION: secondary-pages url-build loop body re-grew an `await capturePage` — D7.1 fix reverted (the await must live inside the worker fan-out)',
+  );
+});
+
+// REGRESSION GUARD (2026-05-02, RSI Session 4 D7.6 fix): every stage
+// transition inside scrapeBrand MUST emit a progress event so the renderer
+// pill animates rather than freezing at 5%. opts.onProgress is the hook;
+// pre-fix the function never called it.
+test('REGRESSION GUARD (2026-05-02): scrapeBrand emits onProgress at every stage transition', () => {
+  // The hook plumbing must be present in the function header.
+  assert.match(
+    SCRAPER_SOURCE,
+    /typeof\s+opts\.onProgress\s*===\s*'function'/,
+    "scrapeBrand must accept opts.onProgress and call it at every currentStage advance",
+  );
+
+  // Every named stage past pre-navigation must have a paired onProgress
+  // call. The fix paired them 1:1 (5 transitions plus `complete`).
+  const stageAdvanceCount = (SCRAPER_SOURCE.match(/currentStage\s*=\s*'(primary-load|primary-signal|primary-screenshot|secondary-pages|logo-quantize|complete)'/g) || []).length;
+  const onProgressCallCount = (SCRAPER_SOURCE.match(/onProgress\(\s*'(primary-load|primary-signal|primary-screenshot|secondary-pages|logo-quantize|complete)'/g) || []).length;
+  assert.ok(
+    stageAdvanceCount >= 6,
+    `expected at least 6 currentStage assignments for the named stages, found ${stageAdvanceCount}`,
+  );
+  assert.equal(
+    onProgressCallCount, stageAdvanceCount,
+    `REGRESSION: onProgress emit count (${onProgressCallCount}) != stage assignment count (${stageAdvanceCount}) — every stage advance must emit a progress event`,
+  );
+});
+
+// Source-scan: the onProgress emissions must appear in execution order so
+// pct values are monotonic. A reordering refactor that emits later stages
+// before earlier ones is semantically broken; this test catches that.
+test('REGRESSION GUARD (2026-05-02): scrapeBrand emits onProgress stages in monotonic order', () => {
+  const onProgressMatches = [...SCRAPER_SOURCE.matchAll(/onProgress\(\s*'([^']+)'\s*,/g)];
+  const stages = onProgressMatches.map((m) => m[1]).filter((s) => s !== '');
+  const expected = ['primary-load', 'primary-signal', 'primary-screenshot', 'secondary-pages', 'logo-quantize', 'complete'];
+  let i = 0;
+  for (const s of stages) {
+    if (s === expected[i]) i += 1;
+    if (i === expected.length) break;
+  }
+  assert.equal(
+    i, expected.length,
+    `expected onProgress called in order ${JSON.stringify(expected)}, got ${JSON.stringify(stages)}`,
+  );
+});
+
+// REGRESSION GUARD (2026-05-02): mcp-tools.js brand_scrape handler must
+// thread an onProgress callback into scrapeBrand and translate every
+// stage to a renderer-friendly label. Pre-fix the handler called
+// scrapeBrand(url) bare and the pill never advanced.
+test('REGRESSION GUARD (2026-05-02): mcp-tools brand_scrape handler threads onProgress to scrapeBrand', () => {
+  const mcpToolsSource = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  assert.match(
+    mcpToolsSource,
+    /scrapeBrand\(url,\s*\{[\s\S]*?onProgress:/,
+    'mcp-tools.js brand_scrape handler must call scrapeBrand(url, { onProgress: ... }) — pre-fix call was scrapeBrand(url) with no progress hook',
+  );
+  // Stage labels for the renderer pill — the SKILL narration vocabulary
+  // anchor. A label rename here MUST also update SKILL.md narration
+  // examples in lockstep (CLAUDE.md "narration exception" section).
+  assert.match(mcpToolsSource, /'primary-load':\s*'Reading homepage'/, 'mcp-tools.js must map primary-load → "Reading homepage"');
+  assert.match(mcpToolsSource, /'logo-quantize':\s*'Extracting brand colors'/, 'mcp-tools.js must map logo-quantize → "Extracting brand colors"');
+});

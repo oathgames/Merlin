@@ -261,6 +261,17 @@ async function scrapeBrand(url, opts = {}) {
   const overallTimeoutMs = opts.overallTimeoutMs || DEFAULT_OVERALL_TIMEOUT_MS;
   const extraPages = opts.extraPages || DEFAULT_EXTRA_PAGES;
 
+  // REGRESSION GUARD (2026-05-02, RSI Session 4 D7.6 fix): caller-supplied
+  // progress hook fires at every `currentStage = ...` advance with (stage, pct).
+  // Pre-fix the scrape pill was stuck at 5% the entire wait — currentStage
+  // tracked but never emitted. The callback is best-effort: any throw is
+  // swallowed so a misbehaving listener cannot crash the scraper.
+  const onProgress = typeof opts.onProgress === 'function'
+    ? (stage, pct, detail) => {
+      try { opts.onProgress(stage, pct, detail); } catch (_) { /* never crash on telemetry */ }
+    }
+    : () => {};
+
   const normalized = normalizeUrl(url);
   if (!normalized) {
     throw new Error(`brand-scraper: invalid URL "${url}"`);
@@ -329,41 +340,75 @@ async function scrapeBrand(url, opts = {}) {
   const body = (async () => {
     try {
       currentStage = 'primary-load';
+      onProgress('primary-load', 0.10);
       const primary = await capturePage(win, normalized, timeoutMs);
       // Stage 1 output: primary signal (title, copy, palette, logos, typography).
       // Store immediately so a timeout during secondary-pages or logo-quantize
       // still returns this.
       currentStage = 'primary-signal';
+      onProgress('primary-signal', 0.30);
       if (primary && primary.signal) {
         partial.primary = primary.signal;
       }
       currentStage = 'primary-screenshot';
+      onProgress('primary-screenshot', 0.45);
       if (primary && primary.screenshots) {
         partial.screenshots = primary.screenshots;
       }
 
       // Best-effort secondary pages for richer copy/palette signal. Failures
       // don't block the guide — we just lose a bit of signal.
+      //
+      // REGRESSION GUARD (2026-05-02, RSI Session 4 D7.1 fix): the secondary
+      // crawl was a serial `for…of` loop awaiting capturePage per page. With
+      // 5 pages × up to 15s each, worst-case pre-fix was 75s of wall time
+      // before logo-quantize even started — blowing past the <30s onboarding
+      // budget on slow CDNs. Parallelism Standard (CLAUDE.md) explicitly
+      // calls this pattern out as "almost never correct" and demands fan-out
+      // bounded by the platform's concurrent-slot budget. Concurrency cap 3
+      // matches typical CDN concurrent-slot budgets and collapses 5×15s
+      // worst-case into ceil(5/3)×15s = 30s worst-case, ~5-8s actual.
+      // Promise.allSettled mirrors the prior best-effort contract: any
+      // single-page failure is swallowed and the rest still land in
+      // `secondary` independently.
       currentStage = 'secondary-pages';
+      onProgress('secondary-pages', 0.60);
       const secondary = [];
       partial.secondaryPages = secondary; // mutated by reference as we go
+      const subUrls = [];
       for (const subpath of extraPages) {
         if (win.isDestroyed()) break;
         const subUrl = joinUrl(normalized, subpath);
         if (!subUrl || subUrl === normalized) continue;
-        try {
-          const snap = await capturePage(win, subUrl, Math.min(timeoutMs, 15000), { screenshots: false });
-          if (snap && snap.signal) secondary.push({ url: subUrl, signal: snap.signal });
-        } catch (_) { /* ignore — best effort */ }
+        subUrls.push(subUrl);
       }
+      // Bounded parallel fan-out — small worker pool of 3 over the URL list.
+      // Each worker pulls the next URL until the queue empties.
+      const SECONDARY_PARALLELISM = 3;
+      let nextIdx = 0;
+      const workers = Array.from({ length: Math.min(SECONDARY_PARALLELISM, subUrls.length) }, async () => {
+        for (;;) {
+          const i = nextIdx++;
+          if (i >= subUrls.length) return;
+          if (win.isDestroyed()) return;
+          const subUrl = subUrls[i];
+          try {
+            const snap = await capturePage(win, subUrl, Math.min(timeoutMs, 15000), { screenshots: false });
+            if (snap && snap.signal) secondary.push({ url: subUrl, signal: snap.signal });
+          } catch (_) { /* ignore — best effort */ }
+        }
+      });
+      await Promise.allSettled(workers);
 
       // Quantize dominant colors from the best logo candidate (if raster).
       // This is best-effort; failures never block the guide.
       currentStage = 'logo-quantize';
+      onProgress('logo-quantize', 0.85);
       const logoColors = await quantizeLogoColors(win, primary.signal.logoCandidates, normalized);
       partial.logoColors = logoColors;
 
       currentStage = 'complete';
+      onProgress('complete', 0.99);
       // Happy-path return — superset of `partial`, plus the envelope fields
       // Cluster-F's MCP handler keys off.
       return {
