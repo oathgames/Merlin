@@ -28,8 +28,8 @@ Post-iOS 14.5, platform-reported ROAS over-credits paid channels by 20–60% dep
 
 | Action | Key params | Returns |
 |---|---|---|
-| `dashboard` | `brand`, `batchCount` (days) | MER + revenue + total spend + per-platform ROAS table + WoW deltas + recent decisions + reallocation suggestions. **For LTV:CAC + payback, chain `stripe-cohorts` separately** (not in `dashboard` today). |
-| `stripe-cohorts` | `brand`, `months` | Per-cohort customer count + revenue + average revenue per customer. **Older cohorts naturally show higher AvgRevenue solely because they had more time to bill** — interpret AvgRevenue/months_elapsed (rev-per-customer-per-month) for fair cross-cohort comparison. |
+| `dashboard` | `brand`, `batchCount` (days) | MER + revenue + total spend + per-platform ROAS table + WoW deltas + recent decisions + reallocation suggestions + **NC-ROAS, LTV, LTV:CAC, payback (months)** with confidence label. NC-ROAS is computed from Shopify orders where `customer.orders_count==1` (authoritative — Shopify sets the field at order-creation time, no inference). LTV from the ≥12-month cohort `total_spent` average. Confidence: `high` ≥100 customers in cohort / `medium` ≥30 / `low` <30 / `none` (insufficient cohort history — surface "not enough data yet" rather than render 0). |
+| `stripe-cohorts` | `brand`, `months` | Per-cohort customer count + revenue + average revenue per customer. Use this to **inspect** cohort-level retention curves; for the topline LTV number `dashboard` is now authoritative. **Older cohorts naturally show higher AvgRevenue solely because they had more time to bill** — interpret AvgRevenue/months_elapsed (rev-per-customer-per-month) for fair cross-cohort comparison. |
 | `wisdom` | `brand` | Collective anonymized insights (hook CTR, format win-rate, timing patterns by vertical) |
 | `calendar` | `brand` | Launch history, average cadence, seasonal signals, upcoming gaps |
 

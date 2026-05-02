@@ -32,6 +32,7 @@
     "app/auth-credentials.js",
     "app/brand-scraper.js",
     "app/brand-scraper-cli.js",
+    "app/brand-slug.js",
     "app/bulk-upload.js",
     "app/captions.js",
     "app/chat-artifacts.js",

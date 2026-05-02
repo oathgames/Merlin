@@ -57,26 +57,36 @@ test('renderer.js friendlyError no longer surfaces fal.ai vendor name to grandma
   );
 });
 
-test('analytics SKILL no longer claims dashboard returns LTV:CAC + payback', () => {
+test('analytics SKILL describes dashboard\'s NC-ROAS + LTV surface (Wave F-1)', () => {
   const src = fs.readFileSync(
     path.join(__dirname, '..', '.claude', 'skills', 'merlin-analytics', 'SKILL.md'),
     'utf8',
   );
-  // Pre-fix the dashboard row promised LTV:CAC + payback that the binary
-  // does not compute. Sim 6 (Anna B2B SaaS) called this out as fireable.
+  // Pre-Wave-F: the dashboard row promised LTV:CAC + payback that the
+  // binary did not compute (Sim 6 Anna). Wave D+E made the claim
+  // honest by saying "chain stripe-cohorts." Wave F-1 actually built
+  // NC-ROAS + LTV + LTV:CAC + payback into the dashboard, so the
+  // SKILL row now describes the real surface — and must NOT regress
+  // to silently promising metrics the binary doesn't compute.
   assert.doesNotMatch(
     src,
     /\| `dashboard` \| `brand`, `batchCount` \(days\) \| MER \+ contribution margin \+ platform ROAS table \+ LTV:CAC \+ payback,/,
-    'REGRESSION: SKILL row reverted to claiming dashboard returns LTV:CAC + payback — the binary does NOT compute these; the claim is a marketing lie',
+    'REGRESSION: SKILL row reverted to the pre-Wave-F shape that promised LTV:CAC + payback as a flat list (without describing the confidence label or the Shopify orders_count==1 source).',
   );
-  // The honest replacement must explicitly redirect unit-economics
-  // questions to stripe-cohorts.
+  // The Wave-F dashboard row must cite NC-ROAS + LTV authoritatively
+  // and explain the confidence label so the agent doesn't render a
+  // 0 LTV as "$0 LTV" when the brand has no cohort yet.
   assert.match(
     src,
-    /chain `stripe-cohorts` separately/,
-    'SKILL must instruct the agent to chain stripe-cohorts when the user asks unit-economics questions (LTV / payback)',
+    /NC-ROAS, LTV, LTV:CAC, payback/,
+    'SKILL must describe the new NC-ROAS + LTV + LTV:CAC + payback surface returned by dashboard',
   );
-  // The new stripe-cohorts row must surface the cohort-age
+  assert.match(
+    src,
+    /confidence/,
+    'SKILL must mention the LTV confidence label so the agent doesn\'t render 0 as "$0 LTV"',
+  );
+  // The stripe-cohorts row must still surface the cohort-age
   // normalization caveat (Sim 6 flagged the bare AvgRevenue is
   // misleading).
   assert.match(

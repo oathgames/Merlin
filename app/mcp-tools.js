@@ -245,7 +245,7 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   'wisdom',
   // Global notification channels
   'discord-login', 'discord-setup', 'discord-post',
-  'slack-login', 'slack-exchange',
+  'slack-login', 'slack-exchange', 'slack-post',
   // OAuth login flows — user may connect globally or per-brand; the binary
   // writes to the correct scope based on whether brand was passed.
   'meta-login', 'tiktok-login', 'google-login', 'amazon-login',
@@ -1315,6 +1315,26 @@ function buildTools(tool, z, ctx) {
       slackMessage: z.string().optional().describe('Message text (for post)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'discord-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── slack ────────────────────────────────────────────────
+  // Wave F-3 (Sim 1, Sarah) — the Monday digest skill needs an
+  // explicit `slack-post` surface; previously Slack only had
+  // login/exchange so Claude had to tell the user "paste this into
+  // Slack manually." Now: chain dashboard → slack({action:'post', ...}).
+  tools.push(defineTool({
+    name: 'slack',
+    description: 'Slack notifications — post a free-form message (e.g., a Monday digest) to the configured webhook. Pair with `dashboard` for end-of-week summaries.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    preview: false,
+    input: {
+      action: z.enum(['post']).describe('Operation'),
+      slackMessage: z.string().describe('The message body. Plain text or Slack mrkdwn (use *bold*, _italic_, single backticks for code).'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'slack-' + args.action, args)),
   }, tool, z, ctx));
 
   // ── threads ─────────────────────────────────────────────
