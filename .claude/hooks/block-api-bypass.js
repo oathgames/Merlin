@@ -253,6 +253,17 @@ const PROTECTED_PATH_PATTERNS = [
   // SKILL.md.bak or config.json.bak would otherwise sail past the hook.
   /[/\\]\.claude[/\\]scheduled-tasks[/\\][^/\\]+[/\\]SKILL\.md(\.|$)/i,
   /[/\\]\.claude[/\\]scheduled-tasks[/\\][^/\\]+[/\\]config\.json(\.|$)/i,
+  // REGRESSION GUARD (2026-05-02, audit Wave B — B1): per-brand state
+  // ledgers added in Loop 3. .merlin-active-spend.json carries every
+  // platform's daily-budget commitment + timestamps; an attacker reading
+  // it learns the user's full spend posture across every connected ad
+  // platform — informs a multi-stage attack (which OAuth token to phish
+  // next, what spend patterns to forge in a fake invoice). The dashboard
+  // snapshot file (.merlin-dashboard-prev.json) carries MER, revenue,
+  // and per-platform ROAS — same exfiltration risk. (\.|$) covers .bak
+  // and .tmp atomic-write siblings per Hard-Won Rule 7.
+  /\.merlin-active-spend(\.|$)/i,
+  /\.merlin-dashboard-prev(\.|$)/i,
 ];
 const PROTECTED_COMMAND_PATTERNS = [
   /merlin-config\.json\b/i,
@@ -289,6 +300,20 @@ const PROTECTED_COMMAND_PATTERNS = [
   // ad-spend). Bash parity with the inline Read|Edit|Write hook — mutating
   // via `cp`/`mv`/`rm` must be blocked the same way as direct edits.
   /\.claude[/\\]skills[/\\]/i,
+  // REGRESSION GUARD (2026-05-02, audit Wave B — B2): the Bash-shape
+  // hole. RSI Loop 5 added ~/.claude/scheduled-tasks/<id>/SKILL.md to
+  // PROTECTED_PATH_PATTERNS (covering Edit/Write/Read), but
+  // PROTECTED_COMMAND_PATTERNS — the Bash-call form — was missed. So a
+  // session prompt-injection that says `Bash(echo "evil" >>
+  // ~/.claude/scheduled-tasks/merlin-daily/SKILL.md)` or `Bash(cp
+  // /tmp/evil.md ~/.claude/scheduled-tasks/X/SKILL.md)` would sail
+  // through the Edit-shape hook AND through the Bash blocklist,
+  // rewriting Monday's spend logic. Sims 4 + 9 in the 10-persona
+  // adversarial audit independently flagged this. Mirror Loop 5's
+  // pattern in Bash form. The legitimate write path remains the
+  // mcp__scheduled-tasks__create_scheduled_task IPC tool which the
+  // user explicitly invokes from the Spellbook UI.
+  /\.claude[/\\]scheduled-tasks[/\\]/i,
   /\.claude[/\\]settings\.json\b/i,
   // REGRESSION GUARD (2026-04-16): Bash parity with the settings.json
   // inline Read-hook blocklist. Blocks `cat app/ws-server.js`,
