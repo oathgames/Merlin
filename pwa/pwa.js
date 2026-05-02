@@ -326,6 +326,10 @@ function openSocket(url, onOpen) {
         setStatus(true);
         // Push subscription is only attempted after auth succeeds.
         if (mode === 'relay') subscribePush();
+        // RSI Loop 5 — drain any messages queued during disconnect.
+        // FIFO ordering preserved; failures stop the drain mid-loop and
+        // re-queue so reconnect cycles don't lose messages.
+        drainOutbox();
         break;
       case 'auth-fail':
         setStatus(false);
@@ -421,8 +425,46 @@ function stopKeepalive() {
   }
 }
 
+// REGRESSION GUARD (2026-05-02, RSI Loop 5 G6-4): PWA outbox queue.
+// Pre-fix `send()` was a silent no-op when the socket was dead. A user
+// on the subway typing "what's my ROAS" would see their bubble appear,
+// the "Sending to Merlin…" pill, but the message went into the void —
+// never delivered, never queued, never surfaced as failed. Now: if
+// the socket is not OPEN, the envelope is queued (bounded at 20 to
+// prevent unbounded growth on a long disconnect). drainOutbox() runs
+// after every successful auth-ok handshake, sending in FIFO order.
+const OUTBOX_MAX = 20;
+const outbox = [];
+
 function send(obj) {
-  if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
+  if (ws && ws.readyState === 1) {
+    try {
+      ws.send(JSON.stringify(obj));
+      return true;
+    } catch (_) {
+      // Fall through to queue — a transient socket-write failure means
+      // the connection is about to flip.
+    }
+  }
+  // Socket dead → queue. Drop the OLDEST message if we're at the cap so
+  // a long disconnect with many inputs doesn't grow unbounded.
+  if (outbox.length >= OUTBOX_MAX) outbox.shift();
+  outbox.push(obj);
+  return false;
+}
+
+function drainOutbox() {
+  if (!outbox.length) return;
+  while (outbox.length && ws && ws.readyState === 1) {
+    const msg = outbox.shift();
+    try {
+      ws.send(JSON.stringify(msg));
+    } catch (_) {
+      // Re-queue and stop — the send failed, no point trying further.
+      outbox.unshift(msg);
+      break;
+    }
+  }
 }
 
 // ── Message Rendering ───────────────────────────────────────
@@ -1124,3 +1166,38 @@ async function init() {
 }
 
 init();
+
+// REGRESSION GUARD (2026-05-02, RSI Loop 5 G6-12): visibilitychange +
+// online listeners. Pre-fix the PWA had no foreground/online recovery —
+// iOS Safari throttles backgrounded tabs aggressively, pausing the 25s
+// keepalive ping; on tab return the user saw "Connected" but the
+// underlying socket was actually dead, and messages dropped (Q4 audit
+// finding) until the 60s pong-deadline force-closed and reconnected.
+// On `visibilitychange→visible` we eagerly probe by checking lastPongAt
+// — if it's stale beyond half the deadline, force the close+reconnect
+// path now rather than waiting up to 60s. On `online` (NetworkInformation)
+// we reset reconnectAttempts so the immediate reconnect doesn't sit in
+// the backoff window.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  // Stale-ness probe: if we haven't heard from the server in over half
+  // the pong deadline, the socket is likely dead from a backgrounded
+  // throttle. Force the close, which triggers scheduleReconnect.
+  const stalenessLimit = (typeof PONG_DEADLINE_MS === 'number' ? PONG_DEADLINE_MS : 60000) / 2;
+  if (typeof lastPongAt === 'number' && Date.now() - lastPongAt > stalenessLimit) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.close(4000, 'visibility-stale'); } catch (_) {}
+    }
+  }
+});
+
+window.addEventListener('online', () => {
+  // Network came back. Reset the backoff counter so the next reconnect
+  // attempt fires immediately rather than after an exponentially-grown
+  // wait that was justified while offline.
+  reconnectAttempts = 0;
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    // If we're not currently reconnecting, kick one off now.
+    scheduleReconnect();
+  }
+});
