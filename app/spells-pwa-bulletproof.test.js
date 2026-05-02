@@ -39,6 +39,19 @@ test('block-api-bypass.js protects scheduled-task SKILL.md from session writes',
     /scheduled-tasks[^\n]*config\\\.json/,
     'block-api-bypass.js must also protect the per-task config.json (cron + status state).',
   );
+  // Hard-Won Rule 7: the patterns must use (\.|$) not bare $ so .bak /
+  // .tmp atomic-write siblings are caught too. The audit pass-2
+  // reviewer flagged this as a BLOCK; this regression-guard pins it.
+  assert.match(
+    src,
+    /scheduled-tasks[^\n]*SKILL\\\.md\(\\\.\|\$\)/,
+    "scheduled-tasks SKILL.md pattern must end in (\\.|$) per Hard-Won Rule 7 — bare $ leaves SKILL.md.bak / SKILL.md.tmp unprotected",
+  );
+  assert.match(
+    src,
+    /scheduled-tasks[^\n]*config\\\.json\(\\\.\|\$\)/,
+    "scheduled-tasks config.json pattern must end in (\\.|$) per Hard-Won Rule 7",
+  );
 });
 
 // Functional probe: load the hook module, simulate a Write tool call

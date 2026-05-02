@@ -248,8 +248,11 @@ const PROTECTED_PATH_PATTERNS = [
   // `mcp__scheduled-tasks__create_scheduled_task` MCP tool which the user
   // explicitly invokes from the Spellbook UI — that path goes through a
   // different IPC channel and isn't subject to the file-write hook.
-  /[/\\]\.claude[/\\]scheduled-tasks[/\\][^/\\]+[/\\]SKILL\.md$/i,
-  /[/\\]\.claude[/\\]scheduled-tasks[/\\][^/\\]+[/\\]config\.json$/i,
+  // Hard-Won Rule 7: terminal `(\.|$)` (not bare `$`) so .bak / .tmp
+  // atomic-write siblings are also protected. A direct write to
+  // SKILL.md.bak or config.json.bak would otherwise sail past the hook.
+  /[/\\]\.claude[/\\]scheduled-tasks[/\\][^/\\]+[/\\]SKILL\.md(\.|$)/i,
+  /[/\\]\.claude[/\\]scheduled-tasks[/\\][^/\\]+[/\\]config\.json(\.|$)/i,
 ];
 const PROTECTED_COMMAND_PATTERNS = [
   /merlin-config\.json\b/i,
