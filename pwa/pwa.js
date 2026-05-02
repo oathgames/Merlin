@@ -333,11 +333,17 @@ function openSocket(url, onOpen) {
         try { ws.close(); } catch {}
         break;
       case 'sdk-message':       handleSdkMessage(msg.payload); break;
-      case 'approval-request':  showApproval(msg.payload);     break;
-      case 'ask-user-question': showQuestion(msg.payload);     break;
-      case 'sdk-error':         showError(msg.payload);        break;
+      case 'approval-request':  clearChatStatus(); showApproval(msg.payload);     break;
+      case 'ask-user-question': clearChatStatus(); showQuestion(msg.payload);     break;
+      case 'sdk-error':         clearChatStatus(); showError(msg.payload);        break;
       case 'user-message':      addUserBubble('\u{1F5A5}\u{FE0F} ' + msg.payload.text); break;
       case 'transcription':     handleTranscription(msg.payload); break;
+      // session-phase: desktop emits these via emitSessionPhase()
+      // (app/main.js) — the in-app renderer AND the relay broadcast both
+      // receive them. Pre-fix the PWA dropped this type silently, so the
+      // user got zero feedback between sending and the first assistant
+      // token (could be 30s+ on a tool call). See setChatStatus().
+      case 'session-phase':     setChatStatus(msg.payload?.label || 'Working…'); break;
     }
   };
 
@@ -518,11 +524,19 @@ function handleStreamEvent(msg) {
 
   if (event.type === 'content_block_start' && event.content_block?.type === 'text') {
     if (!currentBubble) { addClaudeBubble(); isStreaming = true; }
+    // First assistant text token landed — agent is past the
+    // tool-call / preflight phase and replying. Hide the status
+    // pill so it doesn't compete visually with the streaming bubble.
+    clearChatStatus();
   }
   if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
     appendText(event.delta.text);
   }
   if (event.type === 'message_stop') {
+    // Belt-and-braces: also clear at message_stop in case the assistant
+    // returned a tool-only turn with no text content (rare but possible
+    // when a tool's structured output is the entire response).
+    clearChatStatus();
     finalizeBubble();
   }
 }
@@ -592,11 +606,56 @@ function showError(err) {
   bubble.style.borderColor = 'rgba(239,68,68,.3)';
 }
 
+// ── Chat status pill (session-phase indicator) ─────────────
+//
+// REGRESSION GUARD (2026-05-01, pwa-status-indicator):
+// Without these helpers the PWA dropped every session-phase frame
+// the desktop broadcasts (app/main.js emitSessionPhase →
+// wsServer.broadcast), and the user got zero feedback between
+// pressing send and the first assistant token landing — could be
+// 30s+ on a tool call. Live incident: Ryan typed two messages, saw
+// "Let me check actual run history…", then nothing for ~minute, sent
+// "?" because he assumed the request didn't go through. The pill
+// fires on every send + every phase update + every recovery from a
+// stalled state, so the UI always shows what the agent is doing.
+
+const chatStatusEl = () => document.getElementById('chat-status');
+const chatStatusLabelEl = () => document.querySelector('#chat-status .chat-status-label');
+
+function setChatStatus(label) {
+  const el = chatStatusEl();
+  const labelEl = chatStatusLabelEl();
+  if (!el || !labelEl) return;
+  // Defensive: clamp pathologically long labels rather than letting them
+  // wrap and shove the input bar off-screen on mobile (CSS already
+  // ellipsizes via white-space:nowrap, but trim defensively).
+  const clean = String(label || 'Working…').slice(0, 120);
+  labelEl.textContent = clean;
+  el.classList.remove('hidden');
+  // Force a reflow so the fade-in animation re-fires on each phase
+  // change. Without this, repeated setChatStatus calls within a single
+  // turn (e.g. "Sending…" → "Querying meta_ads…") only animate the
+  // first time and feel laggy on phase boundaries.
+  void el.offsetHeight;
+}
+
+function clearChatStatus() {
+  const el = chatStatusEl();
+  if (!el) return;
+  el.classList.add('hidden');
+}
+
 // ── Input ───────────────────────────────────────────────────
 function sendMessage() {
   const text = input.value.trim();
   if (!text || isStreaming) return;
   addUserBubble(text);
+  // Show the pill IMMEDIATELY so the user has feedback the moment they
+  // hit send, even before the desktop's first session-phase frame
+  // arrives over the WS (network round-trip + main.js bootstrap can be
+  // 200-800ms on relay mode). The pill's label updates as desktop's
+  // own phase events flow in.
+  setChatStatus('Sending to Merlin…');
   send({ type: 'send-message', text });
   input.value = '';
   input.style.height = 'auto';

@@ -702,3 +702,57 @@ body{
   background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);
   color:var(--danger);font-size:13px;
 }
+
+/* ── Chat status pill (session-phase indicator) ──────────────────────
+   Renders below the message list, above the input bar. Driven by
+   `session-phase` WS frames forwarded from the desktop via
+   wsServer.broadcast (app/main.js emitSessionPhase). Without this,
+   the user typed a message → saw nothing → assumed it didn't go
+   through. The pill always appears on send and updates as phases
+   advance ("Sending to Merlin…" → "Querying meta_ads…" → cleared
+   on first assistant text token). */
+#chat-status{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 14px;
+  margin:0 12px 6px;
+  background:var(--accent-bg);
+  border:1px solid var(--accent-border);
+  border-radius:14px;
+  color:var(--accent);
+  font-size:13px;
+  font-weight:500;
+  font-family:var(--font);
+  letter-spacing:-.005em;
+  /* Pinned just above input-bar; respects safe-area on iOS */
+  align-self:stretch;
+  min-height:36px;
+  box-sizing:border-box;
+  animation:chatStatusFadeIn 140ms ease-out;
+}
+#chat-status.hidden{display:none}
+.chat-status-spinner{
+  display:inline-block;
+  font-size:14px;
+  line-height:1;
+  /* Slow pulse keeps it readable but signals "still working" */
+  animation:chatStatusPulse 1.4s ease-in-out infinite;
+}
+.chat-status-label{
+  flex:1;
+  min-width:0;
+  /* Long phase labels (e.g. "Generating image with fal-ai/flux-pro/v1.1…")
+     truncate cleanly rather than push the layout */
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+@keyframes chatStatusPulse{
+  0%,100%{opacity:.55;transform:scale(1)}
+  50%{opacity:1;transform:scale(1.12)}
+}
+@keyframes chatStatusFadeIn{
+  from{opacity:0;transform:translateY(4px)}
+  to{opacity:1;transform:translateY(0)}
+}

@@ -9,4 +9,4 @@
 //
 // Shape: exactly one global assignment, no imports, no side effects.
 
-self.MERLIN_PWA_VERSION = '1.13.0';
+self.MERLIN_PWA_VERSION = '1.13.1';

@@ -56,6 +56,15 @@
   <div id="messages"></div>
 </div>
 
+<!-- Status indicator: shows the active session-phase label ("Sending to Merlin…",
+     "Querying meta_ads…", etc.) so the user always knows the agent is
+     working. Driven by `session-phase` WS frames forwarded from the desktop
+     via wsServer.broadcast. Hidden by default; pwa.js toggles .visible. -->
+<div id="chat-status" class="hidden" aria-live="polite" aria-atomic="true">
+  <span class="chat-status-spinner" aria-hidden="true">✦</span>
+  <span class="chat-status-label">Sending to Merlin…</span>
+</div>
+
 <div id="input-bar">
   <textarea id="input" placeholder="Message Merlin..." rows="1"></textarea>
   <button id="send-btn" aria-label="Send (hold to record voice)">
