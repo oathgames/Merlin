@@ -1482,7 +1482,18 @@ function buildTools(tool, z, ctx) {
     costImpact: 'none',
     brandRequired: false,
     input: {
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'stripe', 'linkedin', 'pinterest', 'snapchat', 'twitter']).describe('Platform to connect'),
+      // REGRESSION GUARD (2026-05-02, RSI Session 3 D5.3 fix): pinterest,
+      // snapchat, twitter were in the enum AND in `comingSoon` below — i.e.
+      // the agent could "successfully" call platform_login for them, get a
+      // "coming soon" envelope back, and have no actionable next step. Per
+      // CLAUDE.md ("DORMANT CAPABILITY" pattern) the right answer is to drop
+      // them from the agent surface entirely until ACTIVE_PLATFORMS includes
+      // them; the binary's runPinterestLogin / runSnapchatLogin / runTwitterLogin
+      // remain (TODO providers) but are unreachable from the agent. When any
+      // graduates to ACTIVE, add it back here AND update the comingSoon list.
+      // klaviyo stays in the enum because its API-key tile is the active
+      // path — the comingSoon branch redirects the user to the tile.
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'stripe', 'linkedin']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -1495,13 +1506,14 @@ function buildTools(tool, z, ctx) {
           instructions: 'Ask the user to click the Meta tile in the Connections panel and paste their token from developers.facebook.com/tools/explorer. Then use connection_status to verify.',
         };
       }
-      // Coming-soon providers — defined in oauth-provider-config.js PROVIDERS
-      // but not yet in ACTIVE_PLATFORMS because the BFF doesn't ship app
-      // credentials for them. Surface a clean message instead of letting the
-      // binary fatal with "<X> integration coming soon — app credentials
-      // not yet configured" (oauth.go runPinterestLogin / runSnapchatLogin
-      // / runTwitterLogin). Klaviyo stays on this list while its OAuth flow
-      // is being finished — users connect via API key on the tile today.
+      // Coming-soon defense-in-depth — pinterest/snapchat/twitter were
+      // dropped from the zod enum (D5.3 fix) so the agent can't reach this
+      // branch for them anymore. Klaviyo stays in this list because its
+      // OAuth flow isn't wired (users connect via API-key tile today); the
+      // branch redirects the model to the tile rather than failing.
+      // Defense-in-depth: keep the dormant entries here so a future enum
+      // addition that forgets to wire the provider lands a friendly message
+      // instead of a binary fatal.
       const comingSoon = ['klaviyo', 'pinterest', 'snapchat', 'twitter'];
       if (comingSoon.includes(args.platform)) {
         return {

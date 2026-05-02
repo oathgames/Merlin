@@ -53,6 +53,18 @@ const DEFAULT_CAPS = Object.freeze({
   heygen: 2,           // ~3 concurrent renders; 2 is safe
   openai: 5,           // Anthropic-adjacent but used for meta-generation
 
+  // REGRESSION GUARD (2026-05-02, RSI Session 3 D2.7 fix): four platforms
+  // declared in autocmo-core/ratelimit_preflight.go:platformLimits had no
+  // matching entry here and silently fell to _default=2. Defaults work but
+  // mask whether 2 was actually reasoned about per platform; explicit caps
+  // make drift visible and reviewable. Concurrency parity test (added in
+  // this session) blocks the next addition that lands in platformLimits
+  // without a paired entry below.
+  google_analytics: 5, // GA4 Data + Admin APIs — 60 req/min/property, 5 concurrent matches `google` (same Google rate-limit family).
+  postscript:       3, // Postscript Customer API — undocumented concurrent budget; matches klaviyo (similar steady-drain pattern).
+  applovin:         2, // AppLovin Report API — 3 req/min documented, 2 concurrent stays within ceiling.
+  trendtrack:       3, // TrendTrack ad-library scrape — credit-limited, concurrency cap is anti-thunder rather than ceiling.
+
   // Default for any platform not explicitly listed — err on the side of
   // safety. 2 concurrent forces callers to queue instead of fan out wide.
   _default: 2,

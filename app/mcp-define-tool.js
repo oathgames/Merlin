@@ -117,10 +117,51 @@ function wrapHandler(def, ctx) {
     blastRadius,
   } = def;
 
+  // REGRESSION GUARD (2026-05-02, RSI Session 3 D2.4 fix): build the
+  // allowed-key set ONCE per registration so the runtime check is O(K)
+  // per call. Pre-fix the SDK's zod construction silently dropped unknown
+  // fields — an attacker (or a confused agent) could pass extra args that
+  // were stripped without surfacing an error, breaking caller assumptions
+  // and obscuring bugs. The check fail-closes with a structured envelope
+  // pointing at the unknown key — same shape Zod's strict mode would emit.
+  //
+  // Skipped when def.input is empty/undefined — there's nothing to be strict
+  // about against an unspecified schema. Production tools all declare their
+  // inputs explicitly; the skip exists for unit-test fixtures that use the
+  // recording-tool helper with no input schema.
+  const declaredInputKeys = Object.keys(def.input || {});
+  const strictModeActive = declaredInputKeys.length > 0;
+  const allowedKeys = new Set();
+  for (const k of declaredInputKeys) allowedKeys.add(k);
+  // Auto-added keys from enrichSchema:
+  allowedKeys.add('brand');
+  if (idempotent) allowedKeys.add('idempotencyKey');
+  if (def.preview) {
+    allowedKeys.add('preview');
+    allowedKeys.add('confirm_token');
+  }
+
   return async (args) => {
     const startedAt = Date.now();
     const brand = args && args.brand;
     const toolName = def.name;
+
+    // ── 0. Unknown-key check (D2.4 strict-mode equivalent) ────
+    if (strictModeActive && args && typeof args === 'object') {
+      const unknownKeys = [];
+      for (const k of Object.keys(args)) {
+        if (!allowedKeys.has(k)) unknownKeys.push(k);
+      }
+      if (unknownKeys.length > 0) {
+        const err = errors.makeError('INVALID_INPUT', {
+          message: `Refusing ${toolName}: unknown field(s) ${JSON.stringify(unknownKeys)} not declared in the input schema. Re-check the tool's parameters — typos are silently dropped without this guard.`,
+          retryable: false,
+        });
+        return envelope.render(envelope.fail(err, {
+          meta: { tool: toolName, durationMs: Date.now() - startedAt },
+        }));
+      }
+    }
 
     // ── 1. Brand check ────────────────────────────────────────
     if (brandRequired) {
