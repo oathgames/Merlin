@@ -2813,6 +2813,59 @@ body.platform-mac .titlebar-drag{
   max-width: 280px;
   line-height: 1.4;
 }
+/* Refresh-thumbnail action shown in the no-thumbnail preview path
+   (archive-tiles-not-clickable fix, 2026-05-03). Clicking re-fetches
+   creativeUrl from Meta via refresh-live-ads. */
+.preview-refresh-btn {
+  margin-top: 16px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(167,139,250,.5);
+  background: rgba(167,139,250,.16);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.preview-refresh-btn:hover { background: rgba(167,139,250,.28); border-color: rgba(167,139,250,.7); }
+.preview-refresh-btn:active { transform: scale(.96); }
+.preview-refresh-btn:disabled { opacity: .55; cursor: default; }
+/* Staleness chip — appended to the archive grid when the cached
+   live-ads data is older than the freshness threshold. Renders inline
+   above the campaign headers so it's visible without scrolling. */
+.archive-staleness-chip {
+  grid-column: 1 / -1;
+  padding: 8px 14px;
+  margin-bottom: 6px;
+  border-radius: 8px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.08);
+  color: var(--text-dim);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: .02em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.archive-staleness-chip-stale {
+  background: rgba(245,158,11,.10);
+  border-color: rgba(245,158,11,.32);
+  color: #f59e0b;
+}
+/* Live-ad metrics panel (separate from .preview-stats which is the
+   pipeline-metadata panel). Shown when an ad object is attached to
+   the preview item so externally-running ads surface name + status +
+   spend + impressions + CTR + ROAS even when the Meta CDN URL has
+   expired and the image fell back to the placeholder. */
+.preview-stats-livead .preview-stat-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+  word-break: break-word;
+}
 .archive-preview-close {
   position: fixed;
   top: 52px;

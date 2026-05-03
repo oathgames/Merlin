@@ -9195,6 +9195,55 @@ async function loadArchive() {
     // The actual bucketing lives in archive-campaign-group.js so it can be
     // unit-tested from Node — we just consume `{ flatAds, showHeaders }`
     // plus a key function here and preserve the existing forEach shape.
+    // Staleness chip — show "as of X ago" plus auto-trigger refresh when
+    // the cached state is older than 4h. The user's complaint
+    // "Anime is NOT live but is showing Live" maps to this case: the binary
+    // last wrote ads-live.json hours ago and the platform-side status has
+    // since changed. This chip + auto-refresh closes the freshness loop
+    // without forcing the user to remember to click ↻.
+    // REGRESSION GUARD (2026-05-03, archive-stale-live-status incident):
+    // the auto-refresh fires at most once per panel population to avoid
+    // a refresh storm; the chip still surfaces the relative age so the
+    // user can see when the last sync ran.
+    try {
+      const STALE_THRESHOLD_MS = 4 * 60 * 60 * 1000; // 4 hours
+      const newestUpdatedAt = ads.reduce((max, a) => {
+        const t = Date.parse(a.updatedAt || a.publishedAt || 0) || 0;
+        return t > max ? t : max;
+      }, 0);
+      const ageMs = newestUpdatedAt > 0 ? Date.now() - newestUpdatedAt : 0;
+      if (newestUpdatedAt > 0) {
+        const fmtAgo = (ms) => {
+          if (ms < 60 * 1000) return 'just now';
+          const m = Math.round(ms / 60000);
+          if (m < 60) return `${m}m ago`;
+          const h = Math.round(m / 60);
+          if (h < 24) return `${h}h ago`;
+          const d = Math.round(h / 24);
+          return `${d}d ago`;
+        };
+        const chip = document.createElement('div');
+        chip.className = 'archive-staleness-chip';
+        const isStale = ageMs > STALE_THRESHOLD_MS;
+        if (isStale) chip.classList.add('archive-staleness-chip-stale');
+        chip.textContent = `Live ad data: ${fmtAgo(ageMs)}` + (isStale ? ' — refreshing…' : '');
+        grid.appendChild(chip);
+        if (isStale && !window.__merlinAutoRefreshFiredFor) {
+          window.__merlinAutoRefreshFiredFor = newestUpdatedAt;
+          // Fire-and-forget: refreshLiveAds will rewrite ads-live.json
+          // via the binary, then a subsequent populateArchivePanel call
+          // by the user (or by the next tab activation) will pick up
+          // the new data. We don't auto-redraw because the binary call
+          // can take 5-15s and the user might be reading current data.
+          (async () => {
+            try {
+              await merlin.refreshLiveAds(activeBrand || null);
+            } catch {}
+          })();
+        }
+      }
+    } catch {}
+
     const MerlinArchiveCampaignGroup = window.MerlinArchiveCampaignGroup;
     const { groups: campaignGroups, flatAds, showHeaders: showCampaignHeaders } =
       MerlinArchiveCampaignGroup.groupLiveAdsByCampaign(ads);
@@ -9342,11 +9391,6 @@ async function loadArchive() {
       // browser's default broken-image glyph instead of our placeholder.
       // outerHTML replacement scopes the fallback to the thumb, leaving the
       // KPI strip + brand label untouched.
-      // Cards that fall back to the placeholder (no image src OR image fails to
-      // load) must NOT be clickable — opening a preview modal for an ad with
-      // no renderable creative just shows another broken-image glyph, which
-      // was the regression the user reported. Flag the card as "static" and
-      // use it to gate both the click handler and the pointer cursor.
       //
       // REGRESSION GUARD (2026-04-20, archive-thumb-fix incident):
       // Do NOT gate the swap on naturalWidth — an earlier guard swapped any
@@ -9358,6 +9402,22 @@ async function loadArchive() {
       // cleanly; DPA silhouettes upscale too but that's a far smaller UX hit
       // than hiding every real creative. Keep ONLY the error handler — it's
       // the reliable signal for expired/404 CDN URLs.
+      //
+      // REGRESSION GUARD (2026-05-03, archive-tiles-not-clickable incident):
+      // Pre-fix the card had `if (isStaticCard) return;` in the click
+      // handler so any tile rendering the sparkle placeholder was a dead
+      // pixel — the comment above (now relocated) said "must NOT be
+      // clickable" because clicking opened a broken-image preview modal,
+      // but the user-facing failure mode was worse: no click meant no way
+      // to inspect the metrics for ads whose Meta CDN URL had expired or
+      // whose insights run hadn't yet cached creativePath. Fix: every
+      // tile is always clickable; clicks on cards without a renderable
+      // creative open the same preview modal in `noThumbnail` mode which
+      // surfaces the metrics panel and a "↻ Refresh thumbnail" action
+      // that re-runs refreshLiveAds for that brand to re-fetch the
+      // creativeUrl from Meta. The .archive-card-static class still
+      // applies for visual styling (subtle dim) but no longer gates
+      // pointer events or click handlers.
       let isStaticCard = !ad.creativePath && !ad.creativeUrl;
       const thumbImg = card.querySelector('img.archive-card-thumb');
       if (thumbImg) {
@@ -9370,11 +9430,28 @@ async function loadArchive() {
       if (isStaticCard) card.classList.add('archive-card-static');
 
       // Left click: preview the creative. Prefer local path over remote URL.
+      // When neither path nor URL is available (sparkle placeholder), open
+      // the preview in `noThumbnail` mode so the user sees metrics +
+      // refresh action instead of a dead-pixel tile.
       card.addEventListener('click', () => {
-        if (isStaticCard) return;
         const previewSrc = ad.creativePath || ad.creativeUrl;
         if (previewSrc) {
-          openArchivePreview({ type: 'image', thumbnail: previewSrc, folder: '', files: [] });
+          openArchivePreview({
+            type: 'image',
+            thumbnail: previewSrc,
+            folder: '',
+            files: [],
+            ad,
+          });
+        } else {
+          openArchivePreview({
+            type: 'image',
+            thumbnail: '',
+            folder: '',
+            files: [],
+            ad,
+            noThumbnail: true,
+          });
         }
       });
 
@@ -10232,6 +10309,41 @@ function openArchivePreview(item) {
     </div>`;
   }
 
+  // Build a metrics panel from the live-ad object when available. The tags
+  // path above covers locally-pushed creatives (verdict + ROAS + hook from
+  // file metadata); the live-ad path here covers externally-running ads
+  // surfaced via meta-insights / tiktok-insights / etc., where the ad
+  // object carries adName + impressions + spend + ctr + lastRoas + status.
+  // Both panels coexist — they show different facets of the same creative.
+  const liveAd = item.ad || null;
+  let liveAdHtml = '';
+  if (liveAd) {
+    const fmtMoney = (n) => `$${Number(n || 0).toFixed(2)}`;
+    const fmtPct = (n) => `${Number(n || 0).toFixed(2)}%`;
+    const fmtNum = (n) => Number(n || 0).toLocaleString();
+    const adName = liveAd.adName || liveAd.name || '';
+    const status = (liveAd.status || '').toLowerCase();
+    const statusBadge = status === 'live'
+      ? '<span style="color:#22c55e;font-weight:700">● Live</span>'
+      : status === 'paused'
+        ? '<span style="color:#f59e0b;font-weight:700">○ Paused</span>'
+        : status
+          ? `<span style="color:var(--text-dim);font-weight:700">○ ${escapeHtml(status)}</span>`
+          : '';
+    const rows = [];
+    if (statusBadge) rows.push(`<div class="preview-stat"><span class="preview-stat-label">Status</span>${statusBadge}</div>`);
+    if (liveAd.platform) rows.push(`<div class="preview-stat"><span class="preview-stat-label">Platform</span><span>${escapeHtml(String(liveAd.platform))}</span></div>`);
+    if (typeof liveAd.spend === 'number' && liveAd.spend > 0) rows.push(`<div class="preview-stat"><span class="preview-stat-label">Spend</span><span>${fmtMoney(liveAd.spend)}</span></div>`);
+    if (typeof liveAd.impressions === 'number' && liveAd.impressions > 0) rows.push(`<div class="preview-stat"><span class="preview-stat-label">Impressions</span><span>${fmtNum(liveAd.impressions)}</span></div>`);
+    if (typeof liveAd.ctr === 'number' && liveAd.ctr > 0) rows.push(`<div class="preview-stat"><span class="preview-stat-label">CTR</span><span>${fmtPct(liveAd.ctr)}</span></div>`);
+    if (typeof liveAd.lastRoas === 'number' && liveAd.lastRoas > 0) rows.push(`<div class="preview-stat"><span class="preview-stat-label">ROAS</span><span style="color:#22c55e;font-weight:700">${liveAd.lastRoas.toFixed(2)}x</span></div>`);
+    if (typeof liveAd.purchases === 'number' && liveAd.purchases > 0) rows.push(`<div class="preview-stat"><span class="preview-stat-label">Purchases</span><span>${fmtNum(liveAd.purchases)}</span></div>`);
+    if (rows.length) {
+      const title = adName ? `<div class="preview-stat-title">${escapeHtml(adName)}</div>` : '';
+      liveAdHtml = `<div class="preview-stats preview-stats-livead">${title}${rows.join('')}</div>`;
+    }
+  }
+
   // Fallback panel shown when the src fails to load (expired Meta CDN URL,
   // missing local file). Without this, a failed <img> paints the browser's
   // default broken-image glyph as a tiny floating tile — confusing and ugly.
@@ -10241,15 +10353,51 @@ function openArchivePreview(item) {
       <div class="preview-fallback-sub">The creative's thumbnail URL has expired or the file is no longer on disk.</div>
     </div>`;
 
+  // No-thumbnail panel — shown when click came from a sparkle-placeholder
+  // tile (creativePath + creativeUrl both absent). Surfaces a refresh action
+  // that re-fetches the creative URL from Meta. REGRESSION GUARD
+  // (2026-05-03, archive-tiles-not-clickable incident): previously the
+  // click handler short-circuited on isStaticCard so the user had no way
+  // to refresh; now we always open the preview and offer the refresh path.
+  const noThumbHtml = `<div class="preview-fallback">
+      <div class="preview-fallback-mark" aria-hidden="true">✦</div>
+      <div class="preview-fallback-text">No thumbnail cached</div>
+      <div class="preview-fallback-sub">Meta's signed creative URL expires after ~24h. Refresh below to fetch the current thumbnail.</div>
+      <button class="preview-refresh-btn" type="button">↻ Refresh thumbnail from Meta</button>
+    </div>`;
+
   if (isVideo && mediaPath) {
-    overlay.innerHTML = `<div class="preview-layout"><video src="${escapeHtml(mediaPath)}" controls autoplay playsinline></video>${statsHtml}</div>`;
+    overlay.innerHTML = `<div class="preview-layout"><video src="${escapeHtml(mediaPath)}" controls autoplay playsinline></video>${statsHtml}${liveAdHtml}</div>`;
+  } else if (item.noThumbnail) {
+    overlay.innerHTML = `<div class="preview-layout">${noThumbHtml}${statsHtml}${liveAdHtml}</div>`;
+    const refreshBtn = overlay.querySelector('.preview-refresh-btn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', async () => {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = 'Refreshing…';
+        try {
+          const brand = (liveAd && liveAd.brand) || (item.ad && item.ad.brand) || '';
+          await merlin.refreshLiveAds(brand || null);
+          // Reload the archive panel so freshly-fetched creativeUrls take
+          // effect, then close this preview. The user can re-click the
+          // tile if they want to re-inspect.
+          if (typeof populateArchivePanel === 'function') {
+            try { await populateArchivePanel(); } catch {}
+          }
+          closePreview();
+        } catch (e) {
+          refreshBtn.disabled = false;
+          refreshBtn.textContent = '↻ Try again';
+        }
+      }, { once: false });
+    }
   } else if (mediaPath) {
-    overlay.innerHTML = `<div class="preview-layout"><img src="${escapeHtml(mediaPath)}" alt="" data-folder="${escapeHtml(item.folder || '')}" data-file="${escapeHtml(decodeURIComponent(mediaPath.replace('merlin://', '')))}">${statsHtml}</div>`;
+    overlay.innerHTML = `<div class="preview-layout"><img src="${escapeHtml(mediaPath)}" alt="" data-folder="${escapeHtml(item.folder || '')}" data-file="${escapeHtml(decodeURIComponent(mediaPath.replace('merlin://', '')))}">${statsHtml}${liveAdHtml}</div>`;
     const previewImg = overlay.querySelector('img');
     if (previewImg) {
       const swap = () => {
         const layout = overlay.querySelector('.preview-layout');
-        if (layout) layout.innerHTML = previewFallbackHtml + statsHtml;
+        if (layout) layout.innerHTML = previewFallbackHtml + statsHtml + liveAdHtml;
       };
       previewImg.addEventListener('error', swap, { once: true });
       previewImg.addEventListener('load', () => {
