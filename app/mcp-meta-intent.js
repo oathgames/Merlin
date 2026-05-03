@@ -153,7 +153,8 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       adBody: z.string().describe('Ad primary text / body'),
       adLink: z.string().describe('Destination URL'),
       dailyBudget: z.number().describe('Daily budget in DOLLARS (not cents). Pass 10 for $10/day.'),
-      campaignName: z.string().optional().describe('Override the campaign name (default: brand + date)'),
+      campaignId: z.string().optional().describe('Target campaign ID. When set, the ad lands in this exact campaign. Wins over campaignName.'),
+      campaignName: z.string().optional().describe('Target campaign name. Looked up via metaFindCampaign — fails if not found. Use campaignId for stricter routing.'),
       adFormat: z.enum(['single', 'carousel', 'collection']).optional().describe('Ad format (default: single)'),
       carouselCards: z.array(z.object({
         imagePath: z.string().optional(),
@@ -206,7 +207,8 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         hookStyle: z.string().optional(),
         postId: z.string().optional(),
       })).describe('Array of ads (up to 50)'),
-      campaignName: z.string().optional(),
+      campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
+      campaignName: z.string().optional().describe('Target campaign name. Looked up via metaFindCampaign — fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Use campaignId for stricter routing.'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
     },
     handler: async (args) => {
@@ -252,7 +254,14 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     handler: async (args) => {
       const budgetErr = guardBudget(args);
       if (budgetErr) return budgetErr;
-      return toEnvelope(await runBinary(ctx, 'meta-warmup', args));
+      // REGRESSION GUARD (2026-05-03, scale_winner-routes-to-warmup incident):
+      // pre-fix this routed to 'meta-warmup' which is the API-permissions
+      // ladder action (~50 GET endpoints, no spend changes). Users clicking
+      // "scale this winner" got back "✓ Meta API Warmup" output and zero
+      // ads scaled — silent no-op on a costImpact:'spend' tool. The
+      // correct action is 'meta-duplicate' which clones the source ad
+      // into a new ad set at the supplied dailyBudget.
+      return toEnvelope(await runBinary(ctx, 'meta-duplicate', args));
     },
   }, tool, z, ctx));
 

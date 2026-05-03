@@ -22,6 +22,18 @@ Live incident 2026-04-29 (POG): the agent generated 12 product images without lo
 
 If any of (1)–(4) is unresolved, STOP and surface the exact missing item. Never substitute "I'll generate something general" — that's the AI-slop pattern this app is built to refuse.
 
+## MANDATORY post-tool: echo the gallery block verbatim
+
+When the `content` tool returns image/video output, the binary emits a sentinel block that the renderer replaces with `<div class="merlin-gallery">…<figure class="merlin-artifact">…</figure>…</div>` HTML. **You MUST include the entire gallery `<div>` block VERBATIM in your reply** — do NOT paraphrase the images as inline backticked paths (`` `results/image/.../image_1_portrait.jpg` ``). Paraphrasing prevents the renderer from converting the open grid into the fanned card stack the user expects to click.
+
+Live incident 2026-05-03: the model summarized 3 variant images as "Variant C — `path`, Variant D — `path`, Variant E — `path`" instead of echoing the gallery `<div>`s. The user saw text-with-paths in chat, no image previews, no clickable carousel. The renderer's `__transformChatGalleries` walks `.merlin-gallery` elements and converts them to the fanned stack — when the model paraphrases, the walk finds nothing.
+
+Concrete contract:
+- If the tool result contains one or more `<div class="merlin-gallery"…>…</div>` blocks, your final assistant text MUST echo each block verbatim somewhere in the reply (typically once per block, ordered as the binary emitted them).
+- Prose around the blocks is fine and encouraged — describe each variant, call out the standout, recommend the next action. But the gallery div itself must appear unmodified.
+- Adding extra prose paths in backticks IS fine as long as the gallery div is also present. The renderer renders both — duplicate display is rare in practice because the path matching the gallery already shows the image.
+- If you only see ONE gallery block but the tool generated multiple images (concatenated into one bundle), the single block is correct — echo it once.
+
 ## Image Prompts (`mcp__merlin__content({action: "image"})`)
 
 Before writing ANY image prompt (after the mandatory checklist above):

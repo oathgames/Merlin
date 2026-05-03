@@ -505,6 +505,7 @@ a:hover{text-decoration:underline}
   transform:translateY(-1px);
   border-color:var(--accent, #7c5cff);
 }
+.merlin-artifact{ position:relative; }
 .merlin-artifact img,
 .merlin-artifact video{
   display:block;
@@ -512,7 +513,39 @@ a:hover{text-decoration:underline}
   height:auto;
   max-height:360px;
   object-fit:cover;
-  background:#000;
+  /* REGRESSION GUARD (2026-05-03, chat-gallery-partial-render incident
+     v2): the previous `background: #000` rule was the same trap that
+     bit gallery-viewer in v1.21.14. When source bytes arrive slowly,
+     the browser renders received scanlines in place — combined with
+     the black background, the unloaded portion stuck on screen as a
+     sharp black band that looked like a fully-loaded dark image. Drop
+     to transparent so partial decodes (if any slip past the
+     data-loaded gate below) at least show through to the parent card
+     surface instead of a stuck black block. */
+  background:transparent;
+}
+/* Hide IMG until the renderer's chat-gallery hook flips
+   data-loaded="true" on the load event. Defense-in-depth: even if a
+   future render path bypasses the hook, the IMG simply stays
+   opacity-0 (the shimmer ::before sits on top so it looks like a
+   normal loading tile rather than a stuck band). */
+.merlin-artifact img:not([data-loaded="true"]){
+  opacity:0;
+}
+.merlin-artifact img[data-loaded="true"]{
+  opacity:1;
+  transition:opacity .18s ease;
+}
+.merlin-artifact:has(img:not([data-loaded="true"]))::before{
+  content:"";
+  position:absolute;
+  inset:0;
+  background:
+    linear-gradient(110deg, rgba(255,255,255,.04) 8%, rgba(255,255,255,.10) 18%, rgba(255,255,255,.04) 33%);
+  background-size:200% 100%;
+  animation:gv-shimmer 1.4s ease-in-out infinite;
+  pointer-events:none;
+  border-radius:10px;
 }
 .merlin-artifact audio{
   display:block;

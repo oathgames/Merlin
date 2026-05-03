@@ -102,7 +102,15 @@ function renderItemHtml(item) {
       break;
     case 'image':
     default:
-      body = `<img src="${safeUrl}" alt="${safeLabel}" loading="lazy">`;
+      // REGRESSION GUARD (2026-05-03, chat-gallery-partial-render v2):
+      // decoding="async" pushes bitmap decode off the main thread, so
+      // a slow CDN response can't block the chat thread or paint a
+      // partial frame in the visible card. The renderer's gallery
+      // hook attaches an onload listener that flips
+      // data-loaded="true"; CSS in .merlin-artifact img keeps IMG
+      // opacity:0 + shows a shimmer ::before until that flag flips.
+      // Together: no half-rendered images in chat.
+      body = `<img src="${safeUrl}" alt="${safeLabel}" loading="lazy" decoding="async">`;
       break;
   }
   return `<figure class="merlin-artifact merlin-artifact-${escapeHtml(item.kind || 'image')}">${body}<figcaption>${safeLabel}${qaBadge}</figcaption></figure>`;

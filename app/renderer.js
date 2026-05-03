@@ -991,6 +991,13 @@ let _streamRenderState = null; // {prefixText, prefixHtml}
 // them and returning early. Saves ~2ms per frame on hot streaming turns —
 // small per-frame, but paid 30-60 times per second during heavy streams.
 function appendText(text) {
+  // REGRESSION GUARD (2026-05-03, escape-cancel-leaves-stale-bubble incident):
+  // when Escape canceled a turn we marked currentBubble.dataset.canceled='true'.
+  // Any late-arriving text_delta events that race the SDK abort would
+  // otherwise paint into the canceled bubble (and worse, into the NEXT
+  // turn's bubble after addClaudeBubble re-uses the reference). Drop
+  // the write — the user has explicitly stopped this turn.
+  if (currentBubble && currentBubble.dataset.canceled === 'true') return;
   // Fact binding: pass the delta through the tail quarantine before it joins
   // the text buffer. When the flag is off this returns `text` unchanged, so
   // the streaming behavior is identical to before.
@@ -1010,13 +1017,19 @@ function appendText(text) {
           && boundary > 0
           && cleaned.startsWith(_streamRenderState.prefixText);
         if (canReuse && boundary > _streamRenderState.prefixText.length) {
-          // Extend cached prefix up to the new boundary and re-parse the
-          // tail only. marked.parse on small strings is inexpensive; the
-          // cost we're avoiding is the O(n) DOMPurify pass over the full
-          // document.
+          // REGRESSION GUARD (2026-05-03, chat-sluggishness incident):
+          // pre-fix this re-parsed the FULL prefix every frame — the
+          // cache.prefixHtml field was stored but never read. On a 5KB
+          // dashboard reply that meant DOMPurify ran over ~5000 chars
+          // 30-60× per second of streaming. Now we reuse the cached
+          // HTML up to the OLD boundary and only render the delta
+          // between OLD and NEW boundaries, plus the tail. ~80% less
+          // markdown+sanitize work per frame on long streams.
+          const oldBoundary = _streamRenderState.prefixText.length;
           const newPrefix = cleaned.slice(0, boundary);
           const newTail = cleaned.slice(boundary);
-          const newPrefixHtml = renderMarkdown(newPrefix);
+          const deltaPrefix = cleaned.slice(oldBoundary, boundary);
+          const newPrefixHtml = _streamRenderState.prefixHtml + renderMarkdown(deltaPrefix);
           const tailHtml = renderMarkdown(newTail);
           rendered = newPrefixHtml + tailHtml;
           _streamRenderState = { prefixText: newPrefix, prefixHtml: newPrefixHtml };
@@ -1945,7 +1958,11 @@ function handleStreamEvent(msg) {
   if (event.type === 'content_block_start') {
     if (event.content_block && event.content_block.type === 'text') {
       setStatusLabel('Weaving a response'); // Keep status visible — only clear on turn end
-      if (!currentBubble) {
+      // REGRESSION GUARD (2026-05-03, escape-cancel-leaves-stale-bubble incident):
+      // also open a fresh bubble when the prior currentBubble was
+      // canceled by Escape. Pre-fix the canceled bubble was reused
+      // for the next assistant message, mixing two turns' content.
+      if (!currentBubble || currentBubble.dataset.canceled === 'true') {
         addClaudeBubble();
         isStreaming = true;
       } else if (textBuffer.length > 0) {
@@ -6694,14 +6711,46 @@ input.addEventListener('keydown', (e) => {
     e.preventDefault();
     sendMessage();
   }
-  // Escape to stop generation
+  // Escape to stop generation.
+  //
+  // REGRESSION GUARD (2026-05-03, escape-cancel-leaves-stale-bubble-absorbing-tokens incident):
+  // Pre-fix this called only `merlin.stopGeneration()` which signals
+  // the message GENERATOR (the iterable feeding new user turns) but
+  // does NOT abort the in-flight SDK query. The for-await loop in
+  // main.js kept consuming SDK frames; late text_delta events landed
+  // in `appendText`, opened a fresh "stale" bubble (because
+  // finalizeBubble had nulled currentBubble), and then absorbed the
+  // NEXT user turn's tokens — the two-conversations-in-one-bubble
+  // bug the user reported. Plus the "TALKING TO META" status pill
+  // never cleared because clearStatusLabel was missing.
+  //
+  // Fix:
+  //   1. Mark the current bubble dataset.canceled='true' so
+  //      appendText drops late-arrival writes.
+  //   2. Call merlin.abortActiveQuery() — the REAL SDK interrupt
+  //      (main.js:abort-active-query → activeQuery.interrupt()).
+  //      stopGeneration alone never stopped the stream.
+  //   3. clearStatusLabel() — belt-and-suspenders before the
+  //      `query-aborted` IPC fires (covers the < 50ms gap).
   if (e.key === 'Escape' && (isStreaming || sessionActive)) {
     e.preventDefault();
     stopSpeaking();
-    merlin.stopGeneration();
+    if (currentBubble) currentBubble.dataset.canceled = 'true';
+    if (typeof merlin.abortActiveQuery === 'function') {
+      try { merlin.abortActiveQuery().catch(() => {}); } catch {}
+    }
+    if (typeof merlin.stopGeneration === 'function') {
+      // Still call stopGeneration so the generator terminates cleanly
+      // for the next user turn — abortActiveQuery only unwinds the
+      // current SDK call.
+      try { merlin.stopGeneration(); } catch {}
+    }
     finalizeBubble();
     removeTypingIndicator();
     stopTickingTimer();
+    if (typeof clearStatusLabel === 'function') {
+      try { clearStatusLabel(); } catch {}
+    }
     sessionActive = false;
     isStreaming = false;
     setInputDisabled(false);
@@ -7681,6 +7730,33 @@ function __transformChatGalleries(root) {
       try { console.warn('[gallery] transform failed', err); } catch {}
     }
   }
+  // REGRESSION GUARD (2026-05-03, chat-gallery-partial-render v2):
+  // wire load + error listeners on every IMG in the freshly-rendered
+  // gallery so CSS can flip from the shimmer ::before pseudo to the
+  // fully-loaded image only AFTER the bitmap is in the browser.
+  // Pre-fix the IMG element painted received scanlines as bytes
+  // arrived, leaving a sharp black band stuck on screen on slow
+  // CDN responses. The data-loaded gate + opacity-fade in
+  // .merlin-artifact img CSS guarantees the user sees either the
+  // shimmer or the fully-loaded image — never a half-decoded frame.
+  try {
+    const imgs = root.querySelectorAll('.merlin-artifact img:not([data-loaded])');
+    if (imgs && imgs.length) {
+      for (const img of imgs) {
+        if (img.complete && img.naturalWidth > 0) {
+          // Already loaded by the time the hook fires (cache hit) —
+          // flip immediately so the shimmer doesn't blink.
+          img.dataset.loaded = 'true';
+          continue;
+        }
+        const onDone = () => { img.dataset.loaded = 'true'; };
+        img.addEventListener('load', onDone, { once: true });
+        // On error, also flip data-loaded so the shimmer stops; the
+        // alt text + fallback styling carries the broken-image surface.
+        img.addEventListener('error', onDone, { once: true });
+      }
+    }
+  } catch {}
 }
 
 // ── Image Lightbox (click to zoom, click/Esc to close) ──────
