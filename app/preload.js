@@ -264,6 +264,12 @@ contextBridge.exposeInMainWorld('merlin', {
   updateSpellMeta: (id, meta) => ipcRenderer.invoke('update-spell-meta', assertStr(id, 200), assertObj(meta)),
   savePastedMedia: (dataUrl, filename) => ipcRenderer.invoke('save-pasted-media', assertStr(dataUrl, 5000000), assertStr(filename, 200)),
   runOAuth: (platform, brand, extra) => ipcRenderer.invoke('run-oauth', assertPlatform(platform), assertBrand(brand), assertObj(extra)),
+  // App-Store-compliant Shopify install handoff. Delivered to the
+  // renderer via merlin://oauth-complete?handoff=<code>&shop=<slug>
+  // through onMerlinDeepLink, then dispatched here to spawn the binary
+  // with action=shopify-handoff. Handoff codes are 22-86 char base64url
+  // strings; the assertStr length cap matches.
+  runShopifyHandoff: (handoffCode, brand) => ipcRenderer.invoke('run-shopify-handoff', assertStr(handoffCode, 100), assertBrand(brand)),
   // Manual-override Meta connect: after the renderer saves metaAccessToken
   // via saveConfigField, this runs the Go binary's meta-discover action to
   // auto-resolve ad account / page / pixel IDs. Normal path is runOAuth —

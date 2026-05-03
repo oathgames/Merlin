@@ -243,11 +243,24 @@ const PROVIDERS = {
 // binary-login path until a future PR adds a deep-link callback model).
 // Slack IS active but goes through runFastOpenOAuth like the others for
 // uniform state-compare + HTML response handling.
+//
+// REGRESSION GUARD (2026-04-25, App Store review unblock):
+// 'shopify' is intentionally OMITTED. Shopify App Store requirement
+// 2.3.1 prohibits the binary from binding a localhost listener and
+// constructing /admin/oauth/authorize URLs locally — both are part of
+// the fast-open flow. The Shopify entry point is now a server-driven
+// install (apps.shopify.com → /apps/shopify/install → /auth/callback
+// → /dash/<shop>) handed off to the desktop via merlin:// custom
+// protocol + shopify-handoff action. See shopify_handoff.go and
+// renderer.js's onMerlinDeepLink handler.
+//
+// DO NOT re-add 'shopify' here without first re-reading the App Store
+// requirements doc. A localhost listener for Shopify is a hard
+// rejection ground.
 const ACTIVE_PLATFORMS = Object.freeze([
   'meta',
   'tiktok',
   'google',
-  'shopify',
   'amazon',
   'reddit',
   'etsy',
