@@ -3051,7 +3051,19 @@ body.platform-mac .titlebar-drag{
   background:linear-gradient(to bottom, rgba(0,0,0,.45), rgba(0,0,0,0));
   pointer-events:none;
 }
-.gv-toolbar > *{ pointer-events:auto; }
+/* REGRESSION GUARD (2026-05-03, button-only-clickable-on-icon report):
+   the prior `>` selector restored pointer-events:auto only on the DIRECT
+   children (.gv-counter, .gv-labels, .gv-actions). The four .gv-action
+   buttons (★ keep / ✗ reject / 🗑 trash / ✕ close) live one level deeper
+   inside .gv-actions; under Electron WebKit the parent's
+   `pointer-events:none` propagated past the direct-child override and
+   the buttons only registered clicks on their glyph text node, not the
+   surrounding 36×36 button bbox. The descendant selector (no `>`) sets
+   pointer-events:auto on every nested control so the entire visual
+   button surface is clickable. The toolbar root keeps pointer-events:none
+   so the gradient header still doesn't block clicks on the stage
+   backdrop behind it. Test: app/gallery-viewer-buttons.test.js. */
+.gv-toolbar *{ pointer-events:auto; }
 .gv-counter{
   font-family:ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size:12px;
