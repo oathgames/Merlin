@@ -60,8 +60,16 @@ test('PROVIDERS has entries for all 10 fast-open targets', () => {
   }
 });
 
-test('ACTIVE_PLATFORMS contains exactly the 10 live providers', () => {
-  const expected = ['meta', 'tiktok', 'google', 'shopify', 'amazon', 'reddit', 'etsy', 'linkedin', 'stripe', 'slack'];
+test('ACTIVE_PLATFORMS contains exactly the 9 fast-open providers (no Shopify)', () => {
+  // Shopify is intentionally OMITTED — App Store §2.3.1 forbids the
+  // localhost-listener fast-open path. Shopify install routes through
+  // the merlin:// custom protocol + shopify-handoff binary action
+  // instead. The absence is also pinned by
+  // app/shopify-app-review.test.js → "ACTIVE_PLATFORMS does not
+  // include shopify". Keep both pins; they catch the regression at
+  // different layers (this one fails on count drift, the other fails
+  // on a specific 'shopify' add-back).
+  const expected = ['meta', 'tiktok', 'google', 'amazon', 'reddit', 'etsy', 'linkedin', 'stripe', 'slack'];
   assert.deepStrictEqual([...ACTIVE_PLATFORMS].sort(), expected.sort());
 });
 
