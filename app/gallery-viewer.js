@@ -106,7 +106,26 @@ class GalleryViewer {
     // viewer instance.
     this._keyHandler = (e) => this._onKey(e);
     this._pointerStart = null;
-    this._stripScrollHandler = () => this._renderFilmstrip();
+    // Filmstrip scroll handler: re-render virtualized thumbs AND drop
+    // the viewer's backdrop-filter while scrolling so the per-tick
+    // GPU recomposite cost stays bounded. The CSS `.gv-scrolling`
+    // class disables blur entirely; we re-enable it 150ms after the
+    // last scroll event so the user gets the depth cue back at rest.
+    // REGRESSION GUARD (2026-05-03, image-browse-perf incident):
+    // pre-fix every scroll tick recomposited the full-viewport blur
+    // layer, which dominated the per-frame GPU budget on macOS Metal.
+    this._scrollDebounce = null;
+    this._stripScrollHandler = () => {
+      this._renderFilmstrip();
+      if (this._root) {
+        this._root.classList.add('gv-scrolling');
+        if (this._scrollDebounce) clearTimeout(this._scrollDebounce);
+        this._scrollDebounce = setTimeout(() => {
+          this._scrollDebounce = null;
+          if (this._root) this._root.classList.remove('gv-scrolling');
+        }, 150);
+      }
+    };
     this._stagePointerDown = (e) => this._onPointerDown(e);
     this._stagePointerUp = (e) => this._onPointerUp(e);
     this._stagePointerCancel = () => { this._pointerStart = null; };
@@ -367,11 +386,47 @@ class GalleryViewer {
         media = document.createElement('img');
         media.alt = cur.label || '';
         media.decoding = 'async';
+        // High fetch priority for the focused stage image — competes with
+        // the filmstrip thumbs (default priority) so the foreground always
+        // wins the bandwidth fight on slow connections.
+        try { media.fetchPriority = 'high'; } catch {}
         break;
     }
     media.className = 'gv-media';
-    media.src = cur.src;
-    this._stage.appendChild(media);
+    // REGRESSION GUARD (2026-05-03, image-stuck-partial-render incident):
+    // Pre-fix the stage IMG was created, src-assigned, and appended in
+    // the same tick. On a slow CDN response, the browser rendered
+    // received scanlines as they came in — combined with the dark
+    // `.gv-media { background: #000 }` rule, the unloaded portion of
+    // the image showed as a sharp black band stuck on screen until the
+    // rest of the bytes arrived (or never did, if the connection
+    // dropped mid-transfer). Fix: HTMLImageElement.decode() returns a
+    // Promise that resolves only when the FULL bitmap is decoded; we
+    // only attach to the DOM after that, so the user either sees the
+    // complete image or the .gv-stage-loading shimmer — never a
+    // half-rendered frame. Decode failure (network drop, 404) falls
+    // through to the direct attach so the existing error handlers
+    // still fire.
+    if (cur.kind !== 'video' && cur.kind !== 'audio' && typeof media.decode === 'function') {
+      const stageEl = this._stage;
+      const cardItem = cur;
+      stageEl.classList.add('gv-stage-loading');
+      media.src = cur.src;
+      media.decode().then(() => {
+        if (this._stage === stageEl && this._items[this._index] === cardItem) {
+          stageEl.appendChild(media);
+          stageEl.classList.remove('gv-stage-loading');
+        }
+      }).catch(() => {
+        if (this._stage === stageEl && this._items[this._index] === cardItem) {
+          stageEl.appendChild(media);
+          stageEl.classList.remove('gv-stage-loading');
+        }
+      });
+    } else {
+      media.src = cur.src;
+      this._stage.appendChild(media);
+    }
     this._stageMedia = media;
   }
 
@@ -426,6 +481,11 @@ class GalleryViewer {
       img.alt = '';
       img.loading = 'lazy';
       img.decoding = 'async';
+      // Filmstrip thumbs are background context — yield bandwidth +
+      // CPU to the foreground stage image which marks itself
+      // fetchPriority='high'. Browsers without fetchpriority support
+      // ignore the assignment harmlessly.
+      try { img.fetchPriority = 'low'; } catch {}
       img.src = item.src;
       el.appendChild(img);
     } else if (item.kind === 'video' && item.src) {

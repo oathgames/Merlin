@@ -3086,11 +3086,25 @@ body.platform-mac .titlebar-drag{
   z-index:9998;
   display:grid;
   grid-template-rows:auto 1fr 100px;
-  background:var(--scrim, rgba(8,10,14,.92));
-  backdrop-filter:blur(28px);
-  -webkit-backdrop-filter:blur(28px);
+  background:var(--scrim, rgba(8,10,14,.96));
+  /* REGRESSION GUARD (2026-05-03, image-browse-perf incident):
+     blur(28px) was the dominant per-frame GPU cost when navigating
+     through the filmstrip — every go(±1) recomposites the entire
+     viewport-sized blur layer plus the new stage image. Reduced to
+     blur(12px) which still gives the depth/separation cue but at
+     ~3× lower compositing cost. The scrim alpha bumped from .92 →
+     .96 keeps the same visual darkness without leaning on blur. */
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
   animation:gv-in .22s cubic-bezier(.2,.8,.2,1);
   outline:none;
+}
+/* Drop the blur entirely while the user is actively scrolling the
+   filmstrip — eliminates per-scroll-tick recomposite. JS adds the
+   gv-scrolling class on scroll + removes it 150ms after last event. */
+.gv-viewer.gv-scrolling{
+  backdrop-filter:none;
+  -webkit-backdrop-filter:none;
 }
 @keyframes gv-in{
   from{ opacity:0; transform:scale(.985); }
@@ -3215,7 +3229,36 @@ body.platform-mac .titlebar-drag{
   border-radius:14px;
   box-shadow:0 30px 80px rgba(0,0,0,.7);
   cursor:default;
-  background:#000;
+  /* REGRESSION GUARD (2026-05-03, image-stuck-partial-render incident):
+     IMG must NOT have a black background — combined with byte-by-byte
+     scanline rendering on a slow CDN, the unloaded portion of the
+     image showed as a sharp black band stuck on screen. Now the
+     decode-before-attach path in gallery-viewer.js _renderStage
+     guarantees the IMG element only enters the DOM once fully
+     decoded, but the transparent background here is defense-in-depth
+     against future render paths that bypass the decode promise.
+     Video + audio elements still get black bg (their own rule below). */
+  background:transparent;
+}
+/* Loading shimmer shown ONLY while gallery-viewer's decode() promise
+   is in flight. Sits in place of the IMG element so the user sees
+   "this is loading" rather than an empty void during the brief
+   decode window (typically <100ms for cached creatives, up to a few
+   seconds for fresh Meta CDN fetches over slow networks). */
+.gv-stage.gv-stage-loading::before{
+  content:"";
+  width:min(70vw, 420px);
+  aspect-ratio:1;
+  border-radius:14px;
+  background:
+    linear-gradient(110deg, rgba(255,255,255,.04) 8%, rgba(255,255,255,.10) 18%, rgba(255,255,255,.04) 33%);
+  background-size:200% 100%;
+  animation:gv-shimmer 1.4s ease-in-out infinite;
+  box-shadow:0 30px 80px rgba(0,0,0,.7);
+}
+@keyframes gv-shimmer{
+  0%{ background-position:200% 0; }
+  100%{ background-position:-200% 0; }
 }
 .gv-stage > video.gv-media,
 .gv-stage > audio.gv-media{ background:#000; }

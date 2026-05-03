@@ -9338,10 +9338,16 @@ async function loadArchive() {
         </div>`;
       const altText = escapeHtml(ad.adName || ad.product || 'Ad creative');
       let thumbHtml;
+      // decoding="async" lets the browser decode bitmaps off the main
+      // thread, eliminating the per-tile decode-then-paint stall that
+      // shows up as scroll jank with 50+ archive cards. loading="lazy"
+      // stays — IntersectionObserver is correct for grids; the agent's
+      // earlier suggestion to switch to eager would force every tile
+      // to fetch immediately. (image-browse-perf incident, 2026-05-03)
       if (ad.creativePath) {
-        thumbHtml = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(ad.creativePath))}" alt="${altText}" loading="lazy">`;
+        thumbHtml = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(ad.creativePath))}" alt="${altText}" loading="lazy" decoding="async">`;
       } else if (ad.creativeUrl) {
-        thumbHtml = `<img class="archive-card-thumb" src="${escapeHtml(ad.creativeUrl)}" alt="${altText}" loading="lazy" referrerpolicy="no-referrer">`;
+        thumbHtml = `<img class="archive-card-thumb" src="${escapeHtml(ad.creativeUrl)}" alt="${altText}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
       } else {
         thumbHtml = placeholderHTML;
       }
@@ -9775,7 +9781,7 @@ function createArchiveCard(item) {
   card.setAttribute('aria-label', `${title}, ${badgeText}, ${time}`);
 
   if (item.thumbnail) {
-    card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(item.thumbnail))}" alt="" loading="lazy">`;
+    card.innerHTML = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(item.thumbnail))}" alt="" loading="lazy" decoding="async">`;
   } else if (isVideo) {
     // No sibling _thumbnail.{jpg,png,webp} exists — fall back to the video
     // file itself with preload="metadata" so Chromium paints the first frame.
