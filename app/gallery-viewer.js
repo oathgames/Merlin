@@ -731,6 +731,36 @@ function transformGalleryToStack(galleryEl, openViewer) {
       im.alt = '';
       im.loading = 'lazy';
       im.decoding = 'async';
+      // REGRESSION GUARD (2026-05-04, dpa-image-cards-render-broken
+      // incident): when the IMG src fails to resolve (404 from the
+      // merlin:// handler, missing/0-byte file from a partial
+      // pipeline write, etc.), Chromium renders its tiny broken-icon
+      // glyph in the top-left of the IMG box on a transparent
+      // background — the user sees a dark card with a green/colored
+      // triangle and no signal about what went wrong. Mirror the
+      // .merlin-artifact img data-loaded gate (CSS in style.css) on
+      // the stack IMGs too: opacity:0 until 'load' fires, opacity:1
+      // on success, replaced with a friendly text placeholder on
+      // 'error'. Result: cards always show either a clean image,
+      // a load-shimmer, or a "Image failed to load" tile — never
+      // the bare broken-icon glyph.
+      im.dataset.loadState = 'pending';
+      const onLoad = () => { im.dataset.loadState = 'loaded'; };
+      const onError = () => {
+        im.dataset.loadState = 'error';
+        // Replace the IMG with a friendly inline placeholder so the
+        // card has visible content explaining the failure. Keep the
+        // card's structure (stack rotation, click-to-open) intact.
+        try {
+          const fallback = document.createElement('div');
+          fallback.className = 'merlin-stack-fallback';
+          fallback.textContent = 'Image unavailable';
+          fallback.title = it.src ? `Failed to load: ${it.src}` : 'Failed to load image';
+          card.replaceChild(fallback, im);
+        } catch { /* if replace fails, leave the broken IMG; better than crashing */ }
+      };
+      im.addEventListener('load', onLoad, { once: true });
+      im.addEventListener('error', onError, { once: true });
       im.src = it.src;
       card.appendChild(im);
     }

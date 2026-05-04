@@ -12,6 +12,7 @@ const { cleanWhisperTranscript } = require('./whisper-transcript-clean');
 const spellConfig = require('./spell-config');
 const scheduledTasksDaemon = require('./scheduled-tasks-daemon');
 const { runFastOpenOAuth, ACTIVE_PLATFORMS: FAST_OPEN_PLATFORMS } = require('./oauth-fast-open');
+const { scaffoldBrandManifest } = require('./brand-manifest-scaffolder');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -3024,6 +3025,35 @@ async function startSession(brandOverride) {
           return { ok: false, code: 'INTERNAL_ERROR', message: `state write failed: ${e.message}` };
         }
         try { threads.touch(appRoot, brand); } catch {}
+        // Auto-scaffold brand-manifest.json (live incident 2026-05-04,
+        // dpa-image-cards-render-broken-because-banana-pro-edit-has-
+        // no-canonical-asset-anchor). The binary's brand_manifest.go
+        // soft-warns when no manifest exists and proceeds without the
+        // composite-mode contract — banana-pro-edit then treats
+        // references/1.jpg as a style hint and re-renders the
+        // garment from scratch instead of preserving it. Scaffolder
+        // walks products/<slug>/references/ + logo/ and writes a
+        // minimal manifest so the binary's enforcement path can
+        // anchor on canonical assets. Idempotent (won't clobber a
+        // hand-curated manifest), best-effort (never blocks brand
+        // activation on a scaffolder failure). See
+        // app/brand-manifest-scaffolder.js for the producer-side
+        // contract that mirrors brand_manifest.go's consumer shape.
+        try {
+          const result = scaffoldBrandManifest(appRoot, brand);
+          if (result.action === 'created' || result.action === 'rebuilt') {
+            console.log(`[brand-manifest-scaffold] ${result.action} ${result.manifestPath} — ${result.products} product(s)${result.hadLogo ? ' + logo' : ''}`);
+          } else if (result.action === 'skipped-no-assets') {
+            console.log(`[brand-manifest-scaffold] skipped: no canonical assets yet under ${brandDir} — will retry on next brand_activate after references / logo land`);
+          } else if (!result.ok && result.error) {
+            console.warn(`[brand-manifest-scaffold] ${result.action}: ${result.error}`);
+          }
+        } catch (e) {
+          // Scaffolder must NEVER block brand activation. Any throw is
+          // logged but otherwise swallowed — the binary's no-manifest
+          // soft-warn path is the safety net.
+          try { console.warn(`[brand-manifest-scaffold] unexpected error: ${e.message}`); } catch {}
+        }
         try {
           if (win && !win.isDestroyed() && win.webContents) {
             win.webContents.send('brand-activated', { brand, previousBrand: prevBrand });
