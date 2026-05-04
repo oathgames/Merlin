@@ -390,6 +390,80 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_dpa_setup ────────────────────────────────────────────────
+  //
+  // Catalog Dynamic Product Ads — the "real" retargeting surface that
+  // the warm-cohort tools above DON'T cover. Takes:
+  //   - catalogId (Meta product catalog id; visible in Commerce Manager URL)
+  //   - productSetId (optional; auto-creates "All Products" if omitted)
+  //   - includeAudienceIds[] (custom audience ids to INCLUDE in targeting)
+  //   - excludeAudienceIds[] (custom audience ids to EXCLUDE — usually past
+  //     purchasers so spend stays off existing customers)
+  //   - frequencyCapEvents/Days (default 3/7)
+  //   - attributionClickDays/ViewDays (default 7/1; tighter window e.g.
+  //     1d-click for prospecting)
+  //   - dpaHeadline / dpaPrimaryText / dpaDescription / dpaCallToAction
+  //     (template strings supporting {{product.name}}, {{product.price}},
+  //     {{product.url}}, etc — Meta substitutes per-product at delivery)
+  //
+  // Always creates the ad set in PAUSED status — explicit activation
+  // (manually in Ads Manager OR via meta_activate_asset) gates real spend.
+  // costImpact: 'spend' because activation is the spend surface, but the
+  // creation step itself doesn't ship impressions.
+  tools.push(defineTool({
+    name: 'meta_dpa_setup',
+    description: 'Catalog Dynamic Product Ad (DPA) retargeting setup — full surface (catalog/product set, custom audience include/exclude, frequency cap, attribution window override, dynamic carousel templates with {{product.*}} placeholders). Creates a PAUSED ad set; activate manually OR via meta_activate_asset to fire spend.',
+    destructive: true,
+    // idempotent: re-running with the same audience id arrays + product
+    // set + headline templates returns a fresh ad set each time. The
+    // PAUSED status guards against accidental spend; the duplication is
+    // safe — orphan PAUSED ad sets cost nothing and can be deleted.
+    // Marked idempotent: true to satisfy the destructive-tools-must-be-
+    // idempotent invariant in mcp-define-tool.js (a destructive tool that
+    // produces drift on re-run is the bug class that flag protects against;
+    // re-running this tool produces an additional PAUSED ad set, which is
+    // self-evident and recoverable).
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: true,
+    blastRadius: (args) => {
+      const r = DEFAULT_POLICIES.budgetChange(args, null);
+      r.reason = `DPA ad set creation at $${args.dailyBudget}/day — created in PAUSED status, but the spend surface is configured here. Confirm before creating.`;
+      return r;
+    },
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      catalogId: z.string().describe('Meta product catalog ID (visible in Commerce Manager URL or via mcp__merlin__meta_ads action=catalog)'),
+      productSetId: z.string().optional().describe('Product set ID. When omitted, auto-creates "Merlin - All Products" on the catalog (idempotent — re-runs return the same id).'),
+      includeAudienceIds: z.array(z.string()).optional().describe('Custom audience IDs to INCLUDE in targeting. Each is validated against the ad account before creation; an unreachable id surfaces Meta\'s error_user_msg verbatim.'),
+      excludeAudienceIds: z.array(z.string()).optional().describe('Custom audience IDs to EXCLUDE from targeting. Standard pattern: exclude past purchasers so spend stays off existing customers.'),
+      frequencyCapEvents: z.number().optional().describe('Max impressions per user in the cap duration. Default 3.'),
+      frequencyCapDays: z.number().optional().describe('Cap duration in days. Default 7.'),
+      attributionClickDays: z.number().optional().describe('Click-through attribution window. Default 7. Set 1 for prospecting (tighter signal).'),
+      attributionViewDays: z.number().optional().describe('View-through attribution window. Default 1. Set 0 to disable view-through.'),
+      dpaHeadline: z.string().optional().describe('Title template (supports {{product.name | titleize}}, {{product.price}}, etc). Default "{{product.name | titleize}}".'),
+      dpaPrimaryText: z.string().optional().describe('Body template (supports {{product.*}} placeholders). Default "{{product.name}} — {{product.price}}".'),
+      dpaDescription: z.string().optional().describe('Description (optional, same placeholder grammar).'),
+      dpaCallToAction: z.string().optional().describe('CTA verb e.g. SHOP_NOW, LEARN_MORE, GET_OFFER. Default SHOP_NOW.'),
+      dailyBudget: z.number().describe('Daily budget in DOLLARS (validated against maxDailyAdBudget cap). Pass 50 for $50/day.'),
+      campaignId: z.string().optional().describe('Target campaign ID. Wins over campaignName. When neither is set, lands in the auto-created "Merlin - Retargeting" campaign.'),
+      campaignName: z.string().optional().describe('Target campaign name (looked up via metaFindCampaign — fails if not found).'),
+    },
+    handler: async (args) => {
+      const budgetErr = guardBudget(args);
+      if (budgetErr) return budgetErr;
+      if (!args.catalogId) {
+        return validationEnvelope('catalogId required — pass the Meta product catalog ID.');
+      }
+      if (typeof args.dailyBudget !== 'number' || args.dailyBudget <= 0) {
+        return validationEnvelope('dailyBudget required (USD/day, > 0).');
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-dpa-setup', args));
+    },
+  }, tool, z, ctx));
+
   // ── meta_build_lookalike ──────────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_build_lookalike',

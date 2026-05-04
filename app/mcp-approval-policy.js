@@ -87,6 +87,13 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   'mcp__merlin__meta_activate_asset':           'duplicate',
   'mcp__merlin__meta_scale_winner':             'duplicate',
   'mcp__merlin__meta_adjust_budget':            'duplicate',
+  // DPA setup creates an ad set in PAUSED state, but the configured
+  // budget IS the spend surface — once a human flips it to ACTIVE the
+  // dollars start. Card it as a duplicate-class spend action so the
+  // user confirms the budget + audience targeting + freq cap before
+  // the ad set is even created. Activation later goes through
+  // meta_activate_asset which has its own card.
+  'mcp__merlin__meta_dpa_setup':                'duplicate',
 
   // Setup-style — touches ad-account state, no per-call spend
   'mcp__merlin__meta_prepare_retargeting':      'setup',
@@ -104,6 +111,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_scale_winner':             'Scale this winning Meta ad',
   'mcp__merlin__meta_adjust_budget':            'Change Meta ad set budget',
   'mcp__merlin__meta_prepare_retargeting':      'Set up Meta retargeting audience',
+  'mcp__merlin__meta_dpa_setup':                'Set up Meta DPA catalog retargeting (PAUSED on create)',
 });
 
 /**
