@@ -450,7 +450,7 @@ function logMigration(line) {
   try {
     const logPath = path.join(appRoot, 'activity.jsonl');
     fs.mkdirSync(appRoot, { recursive: true });
-    fs.appendFileSync(logPath, JSON.stringify({ ts: new Date().toISOString(), kind: 'migration', ...line }) + '\n');
+    appendActivityLog(logPath, JSON.stringify({ ts: new Date().toISOString(), kind: 'migration', ...line }) + '\n');
   } catch {}
 }
 function migrateTreeToSplit(oldRoot) {
@@ -1249,44 +1249,81 @@ async function probeClaudeSetup(force = false) {
 }
 
 // ── Workspace bootstrap + sync ──────────────────────────────
-// Non-blocking. Uses execFile with explicit arg arrays — no shell interpolation.
-// robocopy is called directly (not through cmd.exe) to avoid injection risk.
+// Synchronous, verified. Replaces the prior async `cp -Rn` + `robocopy`
+// pipeline that returned before any error could be observed.
+//
+// REGRESSION GUARD (2026-05-03, mac-persistence-rsi): the prior implementation
+// fired three async child processes via `execFile(...)` and a callback chain,
+// and any non-zero exit code (or even a hard read failure) was silently
+// dropped — the next callback ran, and the function returned without ever
+// signalling failure. On Mac, a translocated-DMG launch where `appInstall`
+// pointed into a read-only `/private/var/folders/.../AppTranslocation/<UUID>`
+// path could fail `cp -Rn` partway through, leaving `~/Merlin/CLAUDE.md`
+// missing — and the SINGLE-SIGNAL `isFirstRun` check at line 1710 then
+// mis-classified the next launch as a fresh install and re-routed the user
+// into onboarding. Two reinforcing fixes shipped together:
+//   1. isReturningUser() (above) now has FIVE independent signals so a
+//      missing CLAUDE.md alone can't trigger re-onboarding.
+//   2. bootstrapWorkspace() is now synchronous with `fs.cpSync({ recursive,
+//      force: false })` — same skip-existing semantics, but Node-native
+//      (no platform-specific cp/robocopy), AND it verifies post-copy that
+//      every load-bearing root file landed. Verification failure logs a
+//      LOUD error (via appendErrorLog) so support can see the bootstrap
+//      failed instead of debugging a phantom re-onboarding.
 function bootstrapWorkspace() {
-  if (!app.isPackaged) return;
-  const { execFile } = require('child_process');
-  const fs = require('fs');
-
-  // Ensure workspace root exists (sync — single mkdir is fast)
+  if (!app.isPackaged) return { ok: true, skipped: true, reason: 'dev-build' };
   try { fs.mkdirSync(appRoot, { recursive: true }); } catch (_) {}
 
-  if (process.platform === 'win32') {
-    // robocopy called directly — no shell, no interpolation
-    // /E=recurse /XC/XN/XO=skip existing /NFL/NDL/NJH/NJS/NP=quiet
-    const roboArgs = ['/E', '/XC', '/XN', '/XO', '/NFL', '/NDL', '/NJH', '/NJS', '/NP'];
-    execFile('robocopy', [path.join(appInstall, '.claude'), path.join(appRoot, '.claude'), ...roboArgs], () => {
-      execFile('robocopy', [path.join(appInstall, 'assets'), path.join(appRoot, 'assets'), ...roboArgs], () => {
-        // Copy individual root files if they don't exist yet
-        for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
-          const src = path.join(appInstall, f);
-          const dest = path.join(appRoot, f);
-          try { if (fs.existsSync(src) && !fs.existsSync(dest)) fs.copyFileSync(src, dest); } catch (_) {}
-        }
-        console.log('[workspace] Bootstrap complete');
-      });
-    });
-  } else {
-    // macOS/Linux: use cp with explicit args — no shell
-    execFile('cp', ['-Rn', path.join(appInstall, '.claude'), path.join(appRoot, '/')], () => {
-      execFile('cp', ['-Rn', path.join(appInstall, 'assets'), path.join(appRoot, '/')], () => {
-        for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
-          const src = path.join(appInstall, f);
-          const dest = path.join(appRoot, f);
-          try { if (fs.existsSync(src) && !fs.existsSync(dest)) fs.copyFileSync(src, dest); } catch (_) {}
-        }
-        console.log('[workspace] Bootstrap complete');
-      });
-    });
+  const result = { ok: true, copied: 0, missing: [], errors: [] };
+  // Subdirectory copies — recursive, skip-existing (force:false). We DO
+  // NOT want to clobber user content (memory.md edits, downloaded
+  // products, results). The skip-existing semantics match the prior
+  // `cp -Rn` / `robocopy /XN /XC /XO` behaviour.
+  const subdirCopies = [
+    [path.join(appInstall, '.claude'), path.join(appRoot, '.claude')],
+    [path.join(appInstall, 'assets'), path.join(appRoot, 'assets')],
+  ];
+  for (const [src, dst] of subdirCopies) {
+    if (!fs.existsSync(src)) {
+      result.missing.push(src);
+      continue;
+    }
+    try {
+      fs.cpSync(src, dst, { recursive: true, force: false, errorOnExist: false });
+      result.copied += 1;
+    } catch (e) {
+      result.errors.push({ src, dst, message: e.message });
+    }
   }
+  // Root files — same skip-existing semantics. CLAUDE.md is load-bearing
+  // for the legacy isFirstRun check; we verify it landed after the loop.
+  for (const f of ['CLAUDE.md', 'version.json', 'memory.md', 'README.txt']) {
+    const src = path.join(appInstall, f);
+    const dest = path.join(appRoot, f);
+    try {
+      if (fs.existsSync(src) && !fs.existsSync(dest)) {
+        fs.copyFileSync(src, dest);
+        result.copied += 1;
+      }
+    } catch (e) {
+      result.errors.push({ src, dst: dest, message: e.message });
+    }
+  }
+  // Verify the load-bearing entry — CLAUDE.md is the single file that, if
+  // missing, would have mis-classified the next launch as first-run under
+  // the OLD isFirstRun (single-signal) logic. We keep verifying it post-
+  // bootstrap as a defence-in-depth signal — and surface a LOUD error so
+  // support can see what actually happened on a failed launch.
+  result.verified = fs.existsSync(path.join(appRoot, 'CLAUDE.md'));
+  if (!result.verified) {
+    result.ok = false;
+    const msg = `[workspace] bootstrap verification FAILED — ${path.join(appRoot, 'CLAUDE.md')} is missing after copy. errors=${JSON.stringify(result.errors)} missing=${JSON.stringify(result.missing)}`;
+    console.error(msg);
+    try { appendErrorLog(`${new Date().toISOString()} ${msg}\n`); } catch {}
+  } else {
+    console.log(`[workspace] Bootstrap complete (${result.copied} entries, ${result.errors.length} errors)`);
+  }
+  return result;
 }
 
 let win = null;
@@ -1707,7 +1744,15 @@ async function createWindow() {
   win.once('ready-to-show', () => {
     // Show window unless explicitly launched hidden (tray mode at startup)
     // ALWAYS show on first run (no workspace yet) — user needs to see the app after install
-    const isFirstRun = app.isPackaged && !fs.existsSync(path.join(appRoot, 'CLAUDE.md'));
+    // REGRESSION GUARD (2026-05-03, mac-persistence-rsi): isReturningUser()
+    // checks FIVE independent persistence signals. Single-signal first-run
+    // detection (just CLAUDE.md presence) was the load-bearing piece of the
+    // Mac re-setup loop — bootstrap is async (setTimeout 500ms), so a user
+    // who clicked through fast OR a translocated DMG launch where the
+    // `cp -Rn` source was read-only could leave CLAUDE.md missing, which
+    // mis-routed every relaunch into onboarding even though brand state
+    // existed. See definition of isReturningUser() above.
+    const isFirstRun = app.isPackaged && !isReturningUser();
     const launchedHidden = !isFirstRun && (process.argv.includes('--hidden') || app.getLoginItemSettings().wasOpenedAsHidden);
     if (!launchedHidden) win.show();
     win.webContents.send('platform', process.platform);
@@ -2676,12 +2721,21 @@ async function startSession(brandOverride) {
     if (savedState.activeBrand) activeBrand = savedState.activeBrand;
   }
   if (!activeBrand) {
+    // REGRESSION GUARD (2026-05-03, mac-persistence-rsi): scan every known
+    // brand-containing path before declaring "no brand." Live incident:
+    // Mac users reported being re-prompted for setup on every relaunch.
+    // The single-path scan against ContentDir (~/Merlin) missed brands
+    // that landed in legacy locations (~/Documents/Merlin, ~/Library/App
+    // Support/Merlin) on installs that pre-dated the D1 workspace split,
+    // or that were created when `cwd` resolved differently for the binary
+    // (translocated DMG, sandboxed launchd helper). discoverBrands()
+    // also auto-recovers a stranded brand by copying it to ContentDir so
+    // subsequent launches find it on the canonical scan path. Do NOT
+    // collapse this back to a single readdirSync without first reading
+    // app/mac-persistence.test.js.
     try {
-      const brandsDir = path.join(appRoot, 'assets', 'brands');
-      const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory() && d.name !== 'example')
-        .map(d => d.name).sort();
-      if (dirs.length > 0) activeBrand = dirs[0];
+      const found = discoverBrands();
+      if (found.length > 0) activeBrand = found[0];
     } catch {}
   }
   const brandHint = activeBrand
@@ -3453,7 +3507,7 @@ async function startSession(brandOverride) {
                 action: `spell-${taskId.replace('merlin-', '')}`,
                 detail: summary || (status === 'failed' ? 'Spell failed' : 'Spell completed'),
               }) + '\n';
-              fs.appendFileSync(logPath, entry);
+              appendActivityLog(logPath, entry);
             }
           } catch (e) { console.error('[spell-log]', e.message); }
 
@@ -3480,7 +3534,7 @@ async function startSession(brandOverride) {
     const errMsg = err.message || String(err);
     console.error('[SDK session error]', errMsg);
     // Write to error log for production debugging (no DevTools in packaged builds)
-    try { fs.appendFileSync(path.join(appRoot, '.merlin-errors.log'), `${new Date().toISOString()} SDK: ${errMsg}\n${err.stack || ''}\n`); } catch {}
+    appendErrorLog(`${new Date().toISOString()} SDK: ${errMsg}\n${err.stack || ''}\n`);
 
     // REGRESSION GUARD (2026-04-24, stale-resume-graceful):
     // Failed-resume fallback. If we asked the SDK to resume a session UUID
@@ -6464,19 +6518,54 @@ ipcMain.handle('open-folder', (_, folderPath) => {
 // binary starts regressing every refresh for a long time.
 const ERROR_LOG_MAX_BYTES = 1024 * 1024;
 
+// Activity logs (activity.jsonl, per-brand activity.jsonl) cap at 5MB and
+// rotate to .old. activity.jsonl is sometimes consulted by /update for
+// migration evidence, so we keep one historical copy. Without rotation
+// these grow unbounded — a daily-active install hits ~50MB after a year
+// of spell runs, and that's wasted disk on a folder users may have
+// excluded from backups.
+//
+// REGRESSION GUARD (2026-05-03, mac-persistence-rsi): every activity /
+// audit / error log write in main.js MUST go through one of the three
+// rotating helpers (appendErrorLog, appendActivityLog, appendAudit).
+// Direct fs.appendFileSync against any of these paths is the regression
+// — it leaks the rotation contract and any one of the three streams can
+// grow without bound, eventually consuming user disk on a long-lived
+// install. Tests in app/log-rotation.test.js source-scan for the bad
+// pattern.
+const ACTIVITY_LOG_MAX_BYTES = 5 * 1024 * 1024;
+
+function _rotateIfOversize(logPath, maxBytes) {
+  try {
+    const stat = fs.statSync(logPath);
+    if (stat.size >= maxBytes) {
+      const oldPath = logPath + '.old';
+      try { fs.unlinkSync(oldPath); } catch {}
+      try { fs.renameSync(logPath, oldPath); } catch {}
+    }
+  } catch {}
+}
+
 function appendErrorLog(line) {
   try {
     const logPath = path.join(appRoot, '.merlin-errors.log');
-    try {
-      const stat = fs.statSync(logPath);
-      if (stat.size >= ERROR_LOG_MAX_BYTES) {
-        const oldPath = logPath + '.old';
-        try { fs.unlinkSync(oldPath); } catch {}
-        try { fs.renameSync(logPath, oldPath); } catch {}
-      }
-    } catch {}
+    _rotateIfOversize(logPath, ERROR_LOG_MAX_BYTES);
     fs.appendFileSync(logPath, line);
   } catch {}
+}
+
+// Append a JSON line to an activity.jsonl-style log with size-based
+// rotation. `logPath` is the absolute target file. Caller is responsible
+// for the JSON.stringify + '\n'. Cap is 5 MB / single .old retention,
+// matching the audit log pattern.
+function appendActivityLog(logPath, line) {
+  try {
+    fs.mkdirSync(path.dirname(logPath), { recursive: true });
+    _rotateIfOversize(logPath, ACTIVITY_LOG_MAX_BYTES);
+    fs.appendFileSync(logPath, line);
+  } catch (e) {
+    console.warn('[activity-log]', e.message);
+  }
 }
 
 // ── Briefing notifier ──────────────────────────────────────────
@@ -7247,7 +7336,7 @@ ipcMain.handle('check-claude-running', async () => {
   return status.running;
 });
 
-// ── Session State Persistence (centralized, atomic) ─────────
+// ── Session State Persistence (centralized, atomic, REDUNDANT) ─────────
 // REGRESSION GUARD (2026-04-24): this identifier MUST NOT be `stateFile`. The
 // module-scope helper `function stateFile(name)` is declared at ~line 376,
 // and a module-scope `const stateFile = ...` here re-declares the same
@@ -7258,10 +7347,175 @@ ipcMain.handle('check-claude-running', async () => {
 // `app/main-no-duplicate-toplevel-ids.test.js` source-scans for any new
 // top-level `const`/`let`/`var`/`function` that collides with an existing
 // top-level identifier in this file; do not bypass it.
+//
+// REGRESSION GUARD (2026-05-03, mac-persistence-rsi):
+// `.merlin-state.json` (which holds activeBrand) is the single signal that
+// determines whether a returning user lands on their brand vs. gets
+// re-routed to onboarding. Live incident: Mac users reported being asked to
+// re-set up their brand on every app re-open. Root cause was multi-fold —
+// .merlin-state.json was written ONLY to ContentDir (~/Merlin), but
+// ContentDir is the user-visible folder a paying user might rename, move
+// to iCloud, exclude from backups, or have nuked by macOS "Optimize
+// Storage." StateDir (~/Library/Application Support/Merlin) is the OS-
+// blessed home for hot state and never moves. The fix is REDUNDANT writes:
+// every state mutation lands in BOTH paths, and reads merge by `_ts`
+// timestamp (most recent wins). Either alone is sufficient for the user
+// to skip re-onboarding. Old single-path installs continue to work because
+// the read merges what's there. This is keyed off `sessionStateFile`
+// (legacy ContentDir path, kept for back-compat) and `sessionStateFileAlt`
+// (StateDir path). Do NOT remove either path without first running the
+// `app/mac-persistence.test.js` regression suite.
 const sessionStateFile = path.join(appRoot, '.merlin-state.json');
+const sessionStateFileAlt = path.join(stateDir, '.merlin-state.json');
+
+// ── Multi-path brand discovery + first-run detection ──────────
+// REGRESSION GUARD (2026-05-03, mac-persistence-rsi):
+// Live incident: Mac users reported being asked to re-do brand setup on
+// every relaunch. Three reinforcing causes:
+//   (a) `.merlin-state.json` was written only to ContentDir (~/Merlin) —
+//       a folder some users moved, renamed, or had nuked by macOS storage
+//       management.
+//   (b) Brand-existence scan only checked `<ContentDir>/assets/brands/` —
+//       misses brands stranded in legacy paths after the D1 ContentDir/
+//       StateDir split, or in app-bundle relative paths if the binary
+//       wrote with a non-canonical cwd.
+//   (c) `isFirstRun` had a single signal (CLAUDE.md presence in ContentDir).
+//       Bootstrap is async (setTimeout 500ms after window paint), so a
+//       motivated user could click into the app before bootstrap finished
+//       — and a translocated DMG launch could leave bootstrap with a
+//       read-only source path that silently failed `cp -Rn`.
+// The fixes:
+//   - discoverBrands() scans EVERY known path (canonical + 3 legacy).
+//     Auto-recovers (copies to canonical) so the next launch finds them
+//     on the fast path.
+//   - isReturningUser() has FIVE independent signals — any one means
+//     the user has already set up. False (true first-run) requires ALL
+//     five to be missing.
+// Every entry in BRAND_SEARCH_PATHS is an ABSOLUTE path. Never relative —
+// relative paths resolve against the SDK / shell cwd, which on a GUI Mac
+// app is `/`, and a bug there is precisely what stranded brands at
+// `/assets/brands/<slug>/` on early Mac builds.
+const BRAND_SEARCH_PATHS = (() => {
+  const paths = [path.join(appRoot, 'assets', 'brands')];
+  // StateDir: in case a future rev moves brands into hot state.
+  paths.push(path.join(stateDir, 'assets', 'brands'));
+  // Legacy mac monolith (pre-split installs).
+  if (process.platform === 'darwin') {
+    try { paths.push(path.join(app.getPath('userData'), 'assets', 'brands')); } catch {}
+    paths.push(path.join(os.homedir(), 'Library', 'Application Support', 'Merlin', 'assets', 'brands'));
+  }
+  // Legacy ~/Documents/Merlin (pre-1.0).
+  try { paths.push(path.join(app.getPath('documents'), 'Merlin', 'assets', 'brands')); } catch {}
+  paths.push(path.join(os.homedir(), 'Documents', 'Merlin', 'assets', 'brands'));
+  // Dedup while preserving order (canonical first).
+  return Array.from(new Set(paths));
+})();
+
+function _listBrandsAt(brandsDir) {
+  try {
+    return fs.readdirSync(brandsDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && d.name !== 'example' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(d.name))
+      .filter(d => {
+        // A directory is a "real brand" if it has brand.md OR a products/
+        // subdirectory. Empty stub directories (created by failed setup
+        // mid-flight) don't count — that's how a user ends up with the
+        // re-setup loop in the first place.
+        try {
+          const brandPath = path.join(brandsDir, d.name);
+          return fs.existsSync(path.join(brandPath, 'brand.md'))
+            || fs.existsSync(path.join(brandPath, 'products'))
+            || fs.existsSync(path.join(brandPath, 'memory.md'));
+        } catch { return false; }
+      })
+      .map(d => d.name);
+  } catch { return []; }
+}
+
+function _recoverStrandedBrand(srcBrandsDir, brandName) {
+  // Copy a brand from a legacy path into the canonical ContentDir so
+  // subsequent launches find it on the fast scan. Idempotent — skips if
+  // the destination already has the brand. NEVER overwrites — a brand at
+  // the canonical path always wins (it's the most recent place anything
+  // wrote to). Returns true if a copy was performed.
+  const dst = path.join(appRoot, 'assets', 'brands', brandName);
+  if (fs.existsSync(dst)) return false;
+  const src = path.join(srcBrandsDir, brandName);
+  try {
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.cpSync(src, dst, { recursive: true, errorOnExist: false, force: false });
+    console.log(`[brand-recover] copied ${src} → ${dst}`);
+    appendActivityLog(path.join(appRoot, 'activity.jsonl'), JSON.stringify({
+      ts: new Date().toISOString(), kind: 'brand-recover', brand: brandName, src, dst,
+    }) + '\n');
+    return true;
+  } catch (e) {
+    console.warn('[brand-recover] failed:', src, e.message);
+    return false;
+  }
+}
+
+function discoverBrands() {
+  // Returns an array of brand slugs known to exist on this system,
+  // canonical-path-first. Side effect: auto-copies stranded brands from
+  // legacy paths into the canonical path, so the loop self-heals over
+  // launches. Never throws — empty array on total scan failure.
+  const seen = new Set();
+  const ordered = [];
+  for (let i = 0; i < BRAND_SEARCH_PATHS.length; i++) {
+    const dir = BRAND_SEARCH_PATHS[i];
+    const brands = _listBrandsAt(dir);
+    for (const b of brands) {
+      if (seen.has(b)) continue;
+      seen.add(b);
+      ordered.push(b);
+      // Recover non-canonical (i > 0 means non-ContentDir scan path).
+      if (i > 0) {
+        try { _recoverStrandedBrand(dir, b); } catch {}
+      }
+    }
+  }
+  return ordered.sort();
+}
+
+function isReturningUser() {
+  // Five independent signals. If ANY is present, this is NOT a first run
+  // and the welcome flow must NOT route into onboarding. Order is by
+  // cheapness — bail on the first hit. The five together form the
+  // "did this user ever finish setup?" gate.
+  // 1. State file (in either redundant location) declares an activeBrand.
+  try {
+    const st = readState();
+    if (st && typeof st.activeBrand === 'string' && st.activeBrand.length > 0) return true;
+  } catch {}
+  // 2. CLAUDE.md exists in ContentDir (bootstrap completed at least once).
+  try { if (fs.existsSync(path.join(appRoot, 'CLAUDE.md'))) return true; } catch {}
+  // 3. A brand directory with real content exists anywhere we know to look.
+  try { if (discoverBrands().length > 0) return true; } catch {}
+  // 4. The vault file exists (user has connected at least one platform).
+  try { if (fs.existsSync(path.join(stateDir, '.vault'))) return true; } catch {}
+  try { if (fs.existsSync(path.join(stateDir, '.merlin-vault'))) return true; } catch {}
+  // 5. A merlin-config.json exists in StateDir (user has any persisted setup).
+  try { if (fs.existsSync(path.join(stateDir, 'merlin-config.json'))) return true; } catch {}
+  return false;
+}
+
+function _readStateAt(p) {
+  try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { return null; }
+}
 
 function readState() {
-  try { return JSON.parse(fs.readFileSync(sessionStateFile, 'utf8')); } catch { return {}; }
+  // Read from BOTH redundant locations and merge — most recent _ts wins.
+  // If neither exists or both are corrupt, return {}.
+  const a = _readStateAt(sessionStateFile);
+  const b = _readStateAt(sessionStateFileAlt);
+  if (!a && !b) return {};
+  if (!a) return b;
+  if (!b) return a;
+  // Both present — merge by _ts (numeric ms). Files written before this
+  // commit have no _ts; treat them as oldest (0).
+  const at = Number(a._ts) || 0;
+  const bt = Number(b._ts) || 0;
+  return at >= bt ? a : b;
 }
 
 // Prepend the current active brand to every user message so Claude always
@@ -7274,17 +7528,32 @@ function injectActiveBrand(text) {
   return `[ACTIVE_BRAND: ${brand}] ${text}`;
 }
 
-function writeState(data) {
+function _writeStateAtomic(p, payload) {
+  // Atomic tmp+rename — random suffix avoids AV-lock collisions on Win
+  // (same pattern used by vault.go / main.js _vaultEnsureSalt). Returns
+  // true on success, false on any failure (caller decides whether the
+  // sibling write being OK is enough).
   try {
-    const state = { ...readState(), ...data };
-    const tmpPath = sessionStateFile + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
-    fs.renameSync(tmpPath, sessionStateFile);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + require('crypto').randomBytes(4).toString('hex');
+    fs.writeFileSync(tmp, payload);
+    fs.renameSync(tmp, p);
     return true;
   } catch (e) {
-    console.error('[state-write]', e.message);
+    console.error('[state-write]', p, e.message);
     return false;
   }
+}
+
+function writeState(data) {
+  const merged = { ...readState(), ...data, _ts: Date.now() };
+  const payload = JSON.stringify(merged, null, 2);
+  // Write to BOTH locations. Treat success as "at least one landed" — a
+  // partial failure (e.g. ContentDir is on a read-only iCloud share) still
+  // leaves the StateDir copy as a recovery anchor on next launch.
+  const okA = _writeStateAtomic(sessionStateFile, payload);
+  const okB = _writeStateAtomic(sessionStateFileAlt, payload);
+  return okA || okB;
 }
 
 // REGRESSION GUARD (2026-04-29, codex enterprise review fix #11):
@@ -12166,10 +12435,24 @@ app.whenReady().then(async () => {
     console.error('[workspace-sync]', err.message);
   }
 
-  await createWindow();
+  // REGRESSION GUARD (2026-05-03, mac-persistence-rsi): bootstrapWorkspace
+  // MUST run BEFORE createWindow so the window's ready-to-show handler
+  // (line ~1710) sees the canonical post-bootstrap state when computing
+  // isFirstRun. The prior shape — `await createWindow(); setTimeout(boot, 500)`
+  // — left a 500ms race window during which a fast-clicking user (or a
+  // cached-window-paint launch) could trip the welcome flow against an
+  // un-bootstrapped workspace and land in the re-onboarding loop. Move
+  // bootstrap UP. It's now synchronous + verified (Node-native cpSync, no
+  // child-process callback chain) so it costs ~5-50 ms on a return launch
+  // (skip-existing) and ~200-800 ms on a true first launch. Both are
+  // well under the prior 500ms timeout, so the "Not Responding" comment
+  // the old code carried is no longer applicable.
+  try { bootstrapWorkspace(); } catch (e) {
+    console.error('[workspace] bootstrap threw:', e.message);
+    try { appendErrorLog(`${new Date().toISOString()} [workspace] bootstrap threw: ${e.message}\n`); } catch {}
+  }
 
-  // Bootstrap workspace AFTER window is visible (prevents "Not Responding" on first launch)
-  setTimeout(bootstrapWorkspace, 500);
+  await createWindow();
 
   // Warmup-perf: move the idempotent migrations off the critical path. These
   // only touch user state files (tokens, vault, legacy skills/results, stray
