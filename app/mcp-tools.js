@@ -683,7 +683,7 @@ function buildTools(tool, z, ctx) {
   // GA4 otherwise requires.
   tools.push(defineTool({
     name: 'google_analytics',
-    description: 'Read + write Google Analytics 4. READ: discover property + measurement IDs, pull traffic (sessions/users/engagement) by date or channel, list key conversion events with revenue, compare first-touch vs last-touch attribution by channel, walk landing pages with per-URL engagement metrics (auto-populates seo-signals.json), or audit a property for health (key events, data stream, enhanced measurement, industry category). WRITE (programmatic measurement-plan setup that powers funnel explorations in the GA4 UI): create-key-event marks an event as a conversion; create-custom-dimension / create-custom-metric add reportable fields scoped to event/user/item; create-audience defines a cohort for funnel comparison; update-property-settings patches industry category / time zone / currency / display name; attach-shopify-events one-click wires the standard ecommerce funnel (purchase / add_to_cart / begin_checkout / view_item / view_item_list / search / sign_up / generate_lead) idempotently. Every write requires an approval card — the renderer prompts the user before the call lands. Use when the user says "how is organic traffic", "sessions last week", "what\'s converting in GA", "audit my GA4 property", "set up my GA4 conversions", "wire up GA4 for shopify", "mark X as a conversion", "create a GA4 audience for cart abandoners", or "fix my GA4 timezone".',
+    description: 'Read + write Google Analytics 4. READ: discover property + measurement IDs, pull traffic (sessions/users/engagement) by date or channel, list key conversion events with revenue, compare first-touch vs last-touch attribution by channel, walk landing pages with per-URL engagement metrics (auto-populates seo-signals.json), audit a property for health (key events, data stream, enhanced measurement, industry category), pull realtime activity (last 30 min by country / page / device — no date range), or run a funnel report against ordered event steps (defaults to the standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase). WRITE (programmatic measurement-plan setup that powers funnel explorations in the GA4 UI): create-key-event marks an event as a conversion; create-custom-dimension / create-custom-metric add reportable fields scoped to event/user/item; create-audience defines a cohort for funnel comparison; update-property-settings patches industry category / time zone / currency / display name; attach-shopify-events one-click wires the standard ecommerce funnel (purchase / add_to_cart / begin_checkout / view_item / view_item_list / search / sign_up / generate_lead) idempotently. Every write requires an approval card — the renderer prompts the user before the call lands. Use when the user says "how is organic traffic", "sessions last week", "what\'s converting in GA", "who is on my site right now", "live visitors", "where is my checkout funnel leaking", "audit my GA4 property", "set up my GA4 conversions", "wire up GA4 for shopify", "mark X as a conversion", "create a GA4 audience for cart abandoners", or "fix my GA4 timezone".',
     destructive: true,
     idempotent: true,
     costImpact: 'api',
@@ -721,6 +721,7 @@ function buildTools(tool, z, ctx) {
       action: z.enum([
         // Read
         'discover', 'traffic', 'conversions', 'attribution', 'landing-pages', 'audit-property',
+        'realtime', 'funnel',
         // Write — measurement plan setup
         'create-key-event', 'archive-key-event',
         'create-custom-dimension', 'create-custom-metric',
@@ -729,9 +730,10 @@ function buildTools(tool, z, ctx) {
         'attach-shopify-events',
       ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card.'),
       brand: brandSchema.optional(),
-      batchCount: z.number().optional().describe('Days of data (positive integer; default 7). Negative interpreted as today only. Read actions only.'),
-      level: z.string().optional().describe('For traffic: "date" (default) or "channel".'),
+      batchCount: z.number().optional().describe('Days of data (positive integer; default 7). Negative interpreted as today only. Read actions only. Ignored by realtime (always last 30 min).'),
+      level: z.string().optional().describe('For traffic: "date" (default) or "channel". For realtime: "country" (default), "page", or "device".'),
       limit: z.number().optional().describe('Max rows to return (clamps to 1000).'),
+      analyticsFunnelSteps: z.array(z.string()).optional().describe('For funnel: ordered list of GA4 event names (≥2). Empty → standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase.'),
       analyticsPropertyId: z.string().optional().describe('Per-call override for the configured GA4 property. Useful for agencies running against multiple properties under one Google account.'),
       // ── Write fields ─────────────────────────────────────────
       analyticsEventName: z.string().optional().describe('For create-key-event: the event name (e.g. "purchase", "sign_up").'),
