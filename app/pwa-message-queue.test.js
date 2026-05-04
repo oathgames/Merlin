@@ -65,7 +65,11 @@ function extractMobileHandlersBlock(src) {
 }
 
 function extractOnSendMessageBody(block) {
-  const m = block.match(/onSendMessage\s*:\s*\(\s*text\s*\)\s*=>\s*\{/);
+  // Accept (text) or (text, clientMsgId) — RSI Loop 2 (2026-05-03) added
+  // the clientMsgId param for end-to-end dedup of phone-originated
+  // messages. A future param addition will require widening this regex
+  // again, but the contract is the FIRST arg is `text`.
+  const m = block.match(/onSendMessage\s*:\s*\(\s*text\s*(?:,\s*[A-Za-z0-9_]+\s*)?\)\s*=>\s*\{/);
   if (!m) throw new Error('onSendMessage arrow not found in mobileHandlers');
   const start = m.index + m[0].length - 1; // position of the opening {
   let depth = 0;

@@ -43,6 +43,12 @@ let onApproveTool = null;
 let onDenyTool = null;
 let onAnswerQuestion = null;
 let onTranscribeAudio = null;
+// RSI Loop 4 (2026-05-03): history-pull handler. Returns the bubble log
+// for the active brand. Resolves to { brand, bubbles } or null. The LAN
+// path replies on the requesting socket only; the relay path can't
+// target a single PWA today (DO broadcasts), so it broadcasts the
+// snapshot and other PWAs dedup by ts.
+let onRequestHistory = null;
 
 // Per-frame ceiling for base64-encoded voice audio coming from the PWA. A
 // 15s opus recording base64s to ~60-90 KB; 192 KB gives headroom for iOS's
@@ -332,11 +338,29 @@ function setupConnectionHandler() {
 
       // Route authenticated messages
       switch (msg.type) {
-        case 'send-message':
+        case 'send-message': {
           if (typeof msg.text !== 'string' || msg.text.length > 50000) break;
-          if (onSendMessage) onSendMessage(msg.text);
-          broadcastExcept(ws, 'user-message', { text: msg.text });
+          // RSI Loop 2 (2026-05-03): clientMsgId is the dedup key. Strict
+          // shape check — caps at 32 chars (16 random bytes b64url = 22
+          // chars; allow some headroom). An absent or malformed ID falls
+          // through to undefined; downstream code treats that as "no
+          // dedup possible" and forwards anyway. Don't refuse the message
+          // on a bad ID — that would silently drop legacy clients.
+          const clientMsgId = (typeof msg.clientMsgId === 'string'
+            && msg.clientMsgId.length > 0 && msg.clientMsgId.length <= 32
+            && /^[A-Za-z0-9_-]+$/.test(msg.clientMsgId))
+            ? msg.clientMsgId : undefined;
+          if (onSendMessage) onSendMessage(msg.text, clientMsgId);
+          // RSI Loop 5 (2026-05-03): the legacy `broadcastExcept` call
+          // here used to echo only to OTHER LAN sockets — invisible to
+          // every relay-paired phone. The replacement is in
+          // mobileHandlers.onSendMessage (main.js), which calls
+          // wsServer.broadcast (fans to BOTH LAN PWAs AND the relay via
+          // relayForward). The sender's own echo is absorbed by its
+          // clientMsgId dedup map (see Loop 2). One source of truth
+          // for "this user message reached every paired device."
           break;
+        }
         case 'approve-tool':
           if (typeof msg.toolUseID !== 'string' || msg.toolUseID.length > 64) break;
           if (onApproveTool) onApproveTool(msg.toolUseID);
@@ -350,6 +374,22 @@ function setupConnectionHandler() {
           if (typeof msg.answers !== 'object' || msg.answers === null) break;
           if (onAnswerQuestion) onAnswerQuestion(msg.toolUseID, msg.answers);
           break;
+        case 'request-history': {
+          // RSI Loop 4: targeted reply to the requesting socket only.
+          // The LAN broadcast path would also work but a per-socket
+          // reply avoids painting other paired devices over their own
+          // local cache. Dedup by ts is the failsafe regardless.
+          if (!onRequestHistory) break;
+          const limit = (typeof msg.limit === 'number' && msg.limit >= 1 && msg.limit <= 500)
+            ? Math.floor(msg.limit) : 200;
+          Promise.resolve(onRequestHistory(limit))
+            .then((snapshot) => {
+              if (!snapshot) return;
+              try { ws.send(JSON.stringify({ type: 'history-snapshot', payload: snapshot })); } catch {}
+            })
+            .catch(() => { /* swallow — PWA can ask again on next reconnect */ });
+          break;
+        }
         case 'transcribe-audio': {
           // PWA mic hand-off: phone captures audio, desktop runs whisper.
           // We reply only to the requesting client, not broadcast, so the
@@ -467,6 +507,7 @@ module.exports = {
     onDenyTool = handlers.onDenyTool;
     onAnswerQuestion = handlers.onAnswerQuestion;
     onTranscribeAudio = handlers.onTranscribeAudio;
+    onRequestHistory = handlers.onRequestHistory; // RSI Loop 4
   },
   setRelayForward,
   // Test-only hooks. NOT part of the public API — anything here can be

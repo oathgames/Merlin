@@ -59,6 +59,7 @@ let onApproveTool = null;
 let onDenyTool = null;
 let onAnswerQuestion = null;
 let onTranscribeAudio = null;
+let onRequestHistory = null; // RSI Loop 4
 
 // PWA-originated audio frames. Matches ws-server's limit so the LAN and
 // relay paths enforce the same ceiling.
@@ -194,10 +195,17 @@ function connect() {
         return; // Keepalive ack from relay — already updated lastPongAt above.
       case 'auth-ok':
         return; // Sent by DO on connect — informational.
-      case 'send-message':
+      case 'send-message': {
         if (typeof msg.text !== 'string' || msg.text.length > 50_000) return;
-        if (onSendMessage) onSendMessage(msg.text);
+        // RSI Loop 2: clientMsgId for end-to-end dedup. Same shape check
+        // as ws-server.js — 32-char cap, base64url alphabet, optional.
+        const clientMsgId = (typeof msg.clientMsgId === 'string'
+          && msg.clientMsgId.length > 0 && msg.clientMsgId.length <= 32
+          && /^[A-Za-z0-9_-]+$/.test(msg.clientMsgId))
+          ? msg.clientMsgId : undefined;
+        if (onSendMessage) onSendMessage(msg.text, clientMsgId);
         return;
+      }
       case 'approve-tool':
         if (typeof msg.toolUseID !== 'string' || msg.toolUseID.length > 64) return;
         if (onApproveTool) onApproveTool(msg.toolUseID);
@@ -211,6 +219,22 @@ function connect() {
         if (!msg.answers || typeof msg.answers !== 'object') return;
         if (onAnswerQuestion) onAnswerQuestion(msg.toolUseID, msg.answers);
         return;
+      case 'request-history': {
+        // RSI Loop 4: forward history snapshot back through the relay.
+        // The relay broadcasts to all paired PWAs; harmless because
+        // each PWA dedups by ts. We use forward() to build the frame
+        // so the type passes the DESKTOP_TYPES allowlist there.
+        if (!onRequestHistory) return;
+        const limit = (typeof msg.limit === 'number' && msg.limit >= 1 && msg.limit <= 500)
+          ? Math.floor(msg.limit) : 200;
+        Promise.resolve(onRequestHistory(limit))
+          .then((snapshot) => {
+            if (!snapshot) return;
+            forward('history-snapshot', snapshot);
+          })
+          .catch(() => { /* swallow — phone can ask again */ });
+        return;
+      }
       case 'transcribe-audio': {
         if (typeof msg.requestId !== 'string' || msg.requestId.length > 64) return;
         if (typeof msg.mime !== 'string' || msg.mime.length > 64) return;
@@ -299,8 +323,9 @@ function stopKeepalive() {
 function forward(type, payload) {
   if (!connected || !ws || ws.readyState !== WebSocket.OPEN) return false;
   // Only forward types the DO accepts from desktop. Prevents a renderer bug
-  // from emitting PWA-origin envelopes into the relay.
-  const DESKTOP_TYPES = new Set(['sdk-message', 'approval-request', 'ask-user-question', 'sdk-error', 'user-message', 'transcription']);
+  // from emitting PWA-origin envelopes into the relay. RSI Loop 4 added
+  // 'history-snapshot' (must mirror durable.js DESKTOP_TO_PWA_TYPES).
+  const DESKTOP_TYPES = new Set(['sdk-message', 'approval-request', 'ask-user-question', 'sdk-error', 'user-message', 'transcription', 'history-snapshot']);
   if (!DESKTOP_TYPES.has(type)) return false;
   try {
     const frame = JSON.stringify({ type, payload });
@@ -417,6 +442,7 @@ function setHandlers(h) {
   onDenyTool         = h.onDenyTool         || null;
   onAnswerQuestion   = h.onAnswerQuestion   || null;
   onTranscribeAudio  = h.onTranscribeAudio  || null;
+  onRequestHistory   = h.onRequestHistory   || null; // RSI Loop 4
 }
 
 // Revoke a specific paired device.

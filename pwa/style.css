@@ -100,6 +100,44 @@ a:hover{text-decoration:underline}
   border-radius:18px 18px 4px 18px;
   padding:10px 16px;
   font-weight:500;
+  position:relative;
+}
+/* RSI Loop 2: delivered ✓ marker. Renders below the bubble's bottom-right
+   corner once the desktop's user-message echo confirms receipt. The
+   pseudo-element keeps the DOM unchanged and avoids any layout shift —
+   the check appears in the existing margin gap between bubbles. */
+.msg-user.delivered::after{
+  content:"\2713"; /* ✓ */
+  position:absolute;
+  right:6px;
+  bottom:-14px;
+  font-size:11px;
+  line-height:1;
+  color:var(--text-dim);
+  opacity:0;
+  animation:fadeIn .2s ease forwards;
+}
+@keyframes fadeIn{ to{ opacity:1; } }
+/* RSI Loop 3: undelivered marker. Renders when the outbox refused the
+   message (queue full) or a future "send-failed" path. The strike-through
+   + dimmed background communicates "this didn't go through" without an
+   intrusive modal — the user can still see what they typed. */
+.msg-user.undelivered{
+  background:rgba(239,68,68,.18);
+  color:var(--text-dim);
+  text-decoration:line-through;
+  text-decoration-color:rgba(239,68,68,.6);
+}
+.msg-user.undelivered::after{
+  content:"\26A0"; /* ⚠ */
+  position:absolute;
+  right:6px;
+  bottom:-14px;
+  font-size:11px;
+  line-height:1;
+  color:rgba(239,68,68,.9);
+  animation:none;
+  opacity:1;
 }
 .msg-claude{
   align-self:flex-start;

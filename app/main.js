@@ -1887,13 +1887,44 @@ async function createWindow() {
   // Start WebSocket server for PWA mobile clients
   await wsServer.startServer();
 
+  // RSI Loop 2 (2026-05-03): clientMsgId dedup map for phone-originated
+  // messages. A reconnect-during-send race in the PWA's drainOutbox
+  // would otherwise re-send the same message and feed it to the SDK
+  // twice (double-charged tool calls, duplicated user bubbles). Bounded
+  // LRU at 200 entries — enough headroom for any realistic burst, small
+  // enough that even a long-running session can't grow this past a
+  // handful of KB. The map key is the clientMsgId; value is the timestamp
+  // we first saw it (kept for telemetry / future TTL). Eviction is
+  // insertion-order: when size exceeds cap, drop the oldest. Map iteration
+  // order in V8 is insertion order, so first-key removal is O(1).
+  const SEEN_PWA_MSG_IDS = new Map();
+  const SEEN_PWA_MSG_IDS_MAX = 200;
+  function rememberPwaMsgId(id) {
+    if (!id) return false; // no id → no dedup possible; caller proceeds
+    if (SEEN_PWA_MSG_IDS.has(id)) return true; // duplicate
+    SEEN_PWA_MSG_IDS.set(id, Date.now());
+    if (SEEN_PWA_MSG_IDS.size > SEEN_PWA_MSG_IDS_MAX) {
+      const oldest = SEEN_PWA_MSG_IDS.keys().next().value;
+      SEEN_PWA_MSG_IDS.delete(oldest);
+    }
+    return false;
+  }
+
   // Same handler set used for both local LAN WS and outbound relay. One
   // source of truth for how desktop-side acts on messages coming FROM a
   // phone — preserves the guarantee that a compromise-at-the-relay never
   // lets the phone do something LAN can't do (or vice versa).
   const mobileHandlers = {
-    onSendMessage: (text) => {
+    onSendMessage: (text, clientMsgId) => {
       if (typeof text !== 'string' || text.length > 50000) return; // validate input
+      // RSI Loop 2: dedup by clientMsgId. Drop a duplicate before any
+      // side effect — no thread bubble append, no SDK feed, no broadcast.
+      // A duplicate here means the phone's outbox re-drained after a
+      // flap; the original was already received and queued.
+      if (rememberPwaMsgId(clientMsgId)) {
+        console.log('[mobile] dedup: dropping duplicate clientMsgId', clientMsgId.slice(0, 8));
+        return;
+      }
       // REGRESSION GUARD (2026-04-20, pwa-message-queue): PWA-origin messages
       // must share the same queue + session-start fallback as the desktop IPC
       // path (ipcMain.handle('send-message')). Before this guard, a phone
@@ -1936,6 +1967,21 @@ async function createWindow() {
       if (win && !win.isDestroyed()) {
         win.webContents.send('remote-user-message', text);
       }
+      // RSI Loop 5 (2026-05-03): fan the user-message out to every
+      // paired PWA (LAN + relay) so multi-device sessions stay in
+      // sync. Pre-fix the relay-PWA path never broadcast at all
+      // (other phones missed the bubble until Claude replied), and
+      // the LAN-PWA path used broadcastExcept which DID NOT call
+      // relayForward (relay phones missed LAN-typed messages
+      // entirely). Both gaps are closed by routing through
+      // wsServer.broadcast. Sender PWA dedups its own echo via
+      // clientMsgId (Loop 2). clientMsgId is undefined on legacy
+      // pre-Loop-2 phones — the receiving PWA falls through to the
+      // 🖥️-prefixed render in that case (still correct, just no
+      // ✓ ack).
+      try {
+        wsServer.broadcast('user-message', { text, clientMsgId });
+      } catch { /* broadcast failures never break the SDK feed */ }
     },
     onApproveTool: (toolUseID) => {
       const resolve = pendingApprovals.get(toolUseID);
@@ -1948,6 +1994,26 @@ async function createWindow() {
     onAnswerQuestion: (toolUseID, answers) => {
       const resolve = pendingApprovals.get(toolUseID);
       if (resolve) { resolve.fn(answers); pendingApprovals.delete(toolUseID); }
+    },
+    // RSI Loop 4 (2026-05-03): chat history pull. Returns the active
+    // brand's bubble log (max 500 from threads.js) clamped to the
+    // requested limit, so a freshly-paired or reconnecting PWA can
+    // paint the prior conversation. NULL means "no active brand /
+    // nothing to send" — caller swallows. Read-only; no SDK side effects.
+    onRequestHistory: async (limit) => {
+      try {
+        const activeBrand = (readState().activeBrand || '').trim();
+        if (!activeBrand) return null;
+        const thread = threads.getThread(appRoot, activeBrand);
+        const all = Array.isArray(thread?.bubbles) ? thread.bubbles : [];
+        // Clamp + take the most recent N (chat is bottom-up).
+        const cap = Math.max(1, Math.min(500, Number(limit) || 200));
+        const bubbles = all.slice(-cap);
+        return { brand: activeBrand, bubbles };
+      } catch (e) {
+        console.warn('[mobile] history snapshot failed:', e.message);
+        return null;
+      }
     },
     // PWA hold-to-record: phone sends base64 audio, we transcode + whisper,
     // hand back { text } or { error }. Shares the same pipeline as the

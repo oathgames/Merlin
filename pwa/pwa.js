@@ -330,6 +330,13 @@ function openSocket(url, onOpen) {
         // FIFO ordering preserved; failures stop the drain mid-loop and
         // re-queue so reconnect cycles don't lose messages.
         drainOutbox();
+        // RSI Loop 4 — pull desktop chat history. The desktop replies
+        // with a single 'history-snapshot' frame; we render anything
+        // not already on screen (dedup by ts) and update localStorage
+        // so the next page-load paints instantly. Idempotent: if the
+        // cache rehydrate already painted these bubbles, the dedup
+        // pass skips them.
+        requestHistory();
         break;
       case 'auth-fail':
         setStatus(false);
@@ -340,7 +347,17 @@ function openSocket(url, onOpen) {
       case 'approval-request':  clearChatStatus(); showApproval(msg.payload);     break;
       case 'ask-user-question': clearChatStatus(); showQuestion(msg.payload);     break;
       case 'sdk-error':         clearChatStatus(); showError(msg.payload);        break;
-      case 'user-message':      addUserBubble('\u{1F5A5}\u{FE0F} ' + msg.payload.text); break;
+      case 'user-message': {
+        // RSI Loop 2: dedup by clientMsgId. If this echo matches a
+        // bubble we already rendered optimistically (sender-side),
+        // mark it delivered (✓) and skip. Otherwise — desktop-typed
+        // OR another paired phone — render with the desktop prefix.
+        const cid = msg.payload && typeof msg.payload.clientMsgId === 'string'
+          ? msg.payload.clientMsgId : '';
+        if (cid && markDelivered(cid)) break;
+        addUserBubble('\u{1F5A5}\u{FE0F} ' + msg.payload.text);
+        break;
+      }
       case 'transcription':     handleTranscription(msg.payload); break;
       // session-phase: desktop emits these via emitSessionPhase()
       // (app/main.js) — the in-app renderer AND the relay broadcast both
@@ -348,12 +365,30 @@ function openSocket(url, onOpen) {
       // user got zero feedback between sending and the first assistant
       // token (could be 30s+ on a tool call). See setChatStatus().
       case 'session-phase':     setChatStatus(msg.payload?.label || 'Working…'); break;
+      case 'history-snapshot':  applyHistorySnapshot(msg.payload); break;
     }
   };
 
   ws.onclose = (ev) => {
     setStatus(false);
     stopKeepalive();
+    // REGRESSION GUARD (2026-05-03, RSI Loop 1): finalize any in-flight
+    // streaming bubble on close. Pre-fix the assistant-streaming path left
+    // `currentBubble` non-null, `textBuffer` partially-rendered, `.streaming`
+    // class on, and — critically — `isStreaming = true`, which made
+    // `sendMessage()` silently early-return. The user typed, hit send, the
+    // input bar swallowed every keystroke, no error, no pill. They reloaded
+    // the PWA thinking it was broken.
+    //
+    // Calling finalizeBubble() flips isStreaming=false, drops the streaming
+    // class, and writes whatever was buffered so far. The next assistant
+    // turn (after reconnect) starts a fresh bubble cleanly. Status pill is
+    // also cleared — leaving "Sending to Merlin…" pinned across a disconnect
+    // is the same lie that made the orphan bubble feel like a hang.
+    if (currentBubble || isStreaming) {
+      finalizeBubble();
+    }
+    clearChatStatus();
     // 1008 = relay enforced policy (rate limit, revoked). Treat as
     // permanent — clearing creds forces a re-pair on next visit.
     if (ev && ev.code === 1008) {
@@ -425,6 +460,149 @@ function stopKeepalive() {
   }
 }
 
+// REGRESSION GUARD (2026-05-03, RSI Loop 2): clientMsgId end-to-end.
+//
+// Every PWA→desktop send-message carries a stable clientMsgId. The
+// desktop dedups by ID (so a reconnect-during-send race doesn't feed
+// the SDK twice). The desktop's user-message echo carries the same
+// clientMsgId back, which lets the PWA:
+//   - Mark its OWN optimistic bubble as delivered (✓) instead of
+//     rendering a duplicate "🖥️ <text>" bubble for messages it sent.
+//   - Other paired PWAs render the echo as-normal (no clientMsgId
+//     match in their local cache → fall through to addUserBubble).
+//
+// Pre-fix the wire format had no correlation field at all, so:
+//   - drainOutbox could re-send the same message after a flap and
+//     the desktop fed the SDK twice (double-charged tool calls).
+//   - The sender's own bubble appeared twice (once optimistic, once
+//     when the desktop's user-message echo arrived).
+// CLIENT_MSG_ID_BYTES=12 → 16-char base64url; collision probability
+// across a session is negligible. Keep the field name `clientMsgId`
+// throughout (durable.js ENVELOPE_FIELDS, ws-server.js, relay-client.js,
+// main.js dedup map) — drift breaks dedup silently.
+const CLIENT_MSG_ID_BYTES = 12;
+const SENT_BUBBLES = new Map(); // clientMsgId → bubble element
+
+// REGRESSION GUARD (2026-05-03, RSI Loop 4): chat history sync.
+// Pre-fix the PWA had no chat persistence — every page reload, every
+// app cold-start, every brand-switch on the desktop showed an empty
+// chat on the phone. The desktop has had per-brand bubble logs in
+// `app/threads.js` (.merlin-threads.json) since v1.6.x; the gap was
+// purely the wire protocol.
+//
+// Now: on auth-ok, the PWA sends `{type:'request-history', limit:N}`.
+// The desktop replies with `{type:'history-snapshot', payload:{brand,
+// bubbles:[{role,text,ts}]}}`. The PWA renders bubbles it doesn't
+// already have (dedup by ts) and persists the latest snapshot to
+// localStorage so a page reload paints instantly without waiting for
+// the WS handshake. The local cache is a UX-only mirror; the desktop
+// remains source of truth.
+const HISTORY_CACHE_KEY = 'merlin.chat.cache.v1';
+const HISTORY_CACHE_MAX = 200;
+const HISTORY_REQUEST_LIMIT = 200;
+// Tracks the timestamps we've rendered so the dedup pass on
+// history-snapshot doesn't paint over bubbles already on screen.
+// Per-page-load — cleared on reload (which is fine; the snapshot will
+// re-seed it from cache + the wire reply).
+const RENDERED_TS = new Set();
+
+function loadHistoryCache() {
+  try {
+    const raw = localStorage.getItem(HISTORY_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (!Array.isArray(parsed.bubbles)) return null;
+    return parsed;
+  } catch { return null; }
+}
+
+function saveHistoryCache(brand, bubbles) {
+  try {
+    if (!Array.isArray(bubbles)) return;
+    // Keep the cache small even across chatty sessions.
+    const trimmed = bubbles.slice(-HISTORY_CACHE_MAX);
+    const payload = { brand: String(brand || ''), bubbles: trimmed, savedAt: Date.now() };
+    localStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Quota errors etc — non-fatal. Sync still works over the wire.
+  }
+}
+
+// Render a single historical bubble. Skips empty text and dedup-misses
+// (already rendered by ts). Used by both the localStorage rehydrate
+// path and the wire history-snapshot path so render shape stays in
+// one place.
+function renderHistoryBubble(b) {
+  if (!b || typeof b.text !== 'string' || !b.text) return;
+  const ts = typeof b.ts === 'number' ? b.ts : 0;
+  if (ts && RENDERED_TS.has(ts)) return;
+  if (ts) RENDERED_TS.add(ts);
+  if (b.role === 'user') {
+    // skipCache: this bubble came FROM the cache (or from the desktop
+    // snapshot). Re-writing it would duplicate the entry. The ts is
+    // already in RENDERED_TS via the dedup branch above.
+    addUserBubble(b.text, { skipCache: true, ts });
+  } else if (b.role === 'claude') {
+    // Build a finalized claude bubble without going through the
+    // streaming path (no live tokens to append).
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg msg-claude';
+    const avatar = document.createElement('div');
+    avatar.className = 'msg-avatar';
+    avatar.textContent = '\u{1FA84}';
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.innerHTML = renderMarkdown(b.text);
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(bubble);
+    messages.appendChild(wrapper);
+  }
+}
+
+function rehydrateFromCache() {
+  const cached = loadHistoryCache();
+  if (!cached || !Array.isArray(cached.bubbles)) return;
+  for (const b of cached.bubbles) renderHistoryBubble(b);
+  scrollToBottom();
+}
+
+function applyHistorySnapshot(payload) {
+  if (!payload || typeof payload !== 'object') return;
+  if (!Array.isArray(payload.bubbles)) return;
+  for (const b of payload.bubbles) renderHistoryBubble(b);
+  scrollToBottom();
+  saveHistoryCache(payload.brand, payload.bubbles);
+}
+
+function requestHistory() {
+  send({ type: 'request-history', limit: HISTORY_REQUEST_LIMIT });
+}
+
+function newClientMsgId() {
+  // crypto.getRandomValues exists everywhere we ship (modern browsers
+  // + the relay-tested PWAs). No fallback — refusing to emit an ID
+  // is safer than emitting a weak one that collides under load.
+  const buf = new Uint8Array(CLIENT_MSG_ID_BYTES);
+  crypto.getRandomValues(buf);
+  let bin = '';
+  for (const b of buf) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+// Mark a sent bubble as delivered (visible ✓ via CSS .delivered).
+// Idempotent — duplicate ack frames are harmless. Also drops the entry
+// from SENT_BUBBLES so the map doesn't grow unbounded across a long
+// session; the bubble DOM keeps the .delivered class regardless.
+function markDelivered(clientMsgId) {
+  if (!clientMsgId) return false;
+  const el = SENT_BUBBLES.get(clientMsgId);
+  if (!el) return false;
+  el.classList.add('delivered');
+  SENT_BUBBLES.delete(clientMsgId);
+  return true;
+}
+
 // REGRESSION GUARD (2026-05-02, RSI Loop 5 G6-4): PWA outbox queue.
 // Pre-fix `send()` was a silent no-op when the socket was dead. A user
 // on the subway typing "what's my ROAS" would see their bubble appear,
@@ -446,11 +624,44 @@ function send(obj) {
       // the connection is about to flip.
     }
   }
-  // Socket dead → queue. Drop the OLDEST message if we're at the cap so
-  // a long disconnect with many inputs doesn't grow unbounded.
-  if (outbox.length >= OUTBOX_MAX) outbox.shift();
+  // REGRESSION GUARD (2026-05-03, RSI Loop 3): outbox cap MUST surface
+  // user-visible feedback. Pre-fix `outbox.shift()` silently dropped
+  // the OLDEST queued message — a phone user typing a paragraph on the
+  // subway would have the first half vanish with no warning. Now: at
+  // cap, we (1) keep the existing message, (2) drop the NEWEST input
+  // (so the user's "first" thought is preserved over their "last"
+  // thought — first-in-wins matches the chat metaphor), (3) flag the
+  // optimistic bubble as dropped via `markUndelivered`, and (4) update
+  // the chat-status pill so the user sees that the queue is full.
+  // Dropping any message in either direction is now visible — no
+  // silent failure.
+  if (outbox.length >= OUTBOX_MAX) {
+    // The newest queued envelope is what we're trying to add now.
+    // Mark its bubble (if it has one) as undelivered, then refuse
+    // the push so first-in-wins.
+    if (obj && obj.clientMsgId) markUndelivered(obj.clientMsgId, 'queue_full');
+    setChatStatus(`Disconnected — queue full (${OUTBOX_MAX}). Reconnect to send.`);
+    return false;
+  }
   outbox.push(obj);
+  // Update the pill so the user knows the queue depth without having
+  // to count bubbles. This is the single point where the depth changes
+  // for outbound messages, so the label stays accurate.
+  setChatStatus(`Disconnected — ${outbox.length} message${outbox.length === 1 ? '' : 's'} waiting.`);
   return false;
+}
+
+// Mark a sent bubble as undelivered. Distinct from "delivered" — the
+// bubble gets a strikethrough + retry hint via CSS .undelivered. Also
+// pops from SENT_BUBBLES since the bubble is no longer pending an ack.
+function markUndelivered(clientMsgId, reason) {
+  if (!clientMsgId) return false;
+  const el = SENT_BUBBLES.get(clientMsgId);
+  if (!el) return false;
+  el.classList.add('undelivered');
+  if (reason) el.dataset.undeliveredReason = reason;
+  SENT_BUBBLES.delete(clientMsgId);
+  return true;
 }
 
 function drainOutbox() {
@@ -465,15 +676,43 @@ function drainOutbox() {
       break;
     }
   }
+  // After a successful drain, clear the "Disconnected — N waiting"
+  // pill if one was set. The next session-phase frame from desktop
+  // will repaint it with whatever Claude is doing.
+  if (outbox.length === 0) clearChatStatus();
 }
 
 // ── Message Rendering ───────────────────────────────────────
-function addUserBubble(text) {
+function addUserBubble(text, opts) {
   const div = document.createElement('div');
   div.className = 'msg msg-user';
   div.textContent = text;
   messages.appendChild(div);
   scrollToBottom();
+  // RSI Loop 4: persist to localStorage for cold-load survival. The
+  // history-rehydrate path passes { skipCache: true } so we don't
+  // double-write what we just READ from the cache. The given ts (if
+  // provided) is added to RENDERED_TS so a same-session history
+  // snapshot from desktop dedups against it.
+  const skipCache = opts && opts.skipCache;
+  const ts = (opts && typeof opts.ts === 'number') ? opts.ts : Date.now();
+  RENDERED_TS.add(ts);
+  if (!skipCache) appendCacheBubble({ role: 'user', text, ts });
+  // Returned so callers (sendMessage) can attach a clientMsgId dataset
+  // for delivery-ack tracking. RSI Loop 2.
+  return div;
+}
+
+// RSI Loop 4: append a single bubble to the localStorage cache,
+// preserving the cap. Cheap call in the chat hot path so we read,
+// mutate, write — no debouncer because writes are 1KB-ish and the
+// cap keeps the array small.
+function appendCacheBubble(b) {
+  try {
+    const cached = loadHistoryCache() || { brand: '', bubbles: [] };
+    cached.bubbles = (cached.bubbles || []).concat([b]).slice(-HISTORY_CACHE_MAX);
+    saveHistoryCache(cached.brand, cached.bubbles);
+  } catch { /* localStorage quota — non-fatal */ }
 }
 
 function addClaudeBubble() {
@@ -509,6 +748,15 @@ function finalizeBubble() {
   if (currentBubble) {
     currentBubble.classList.remove('streaming');
     currentBubble.innerHTML = renderMarkdown(textBuffer);
+    // RSI Loop 4: persist the assistant bubble to cache so a page
+    // reload paints the full transcript without waiting for the WS
+    // history-snapshot. Skip if textBuffer is empty (rare tool-only
+    // turn — nothing visible to cache).
+    if (textBuffer && textBuffer.trim()) {
+      const ts = Date.now();
+      RENDERED_TS.add(ts);
+      appendCacheBubble({ role: 'claude', text: textBuffer, ts });
+    }
   }
   currentBubble = null;
   textBuffer = '';
@@ -691,14 +939,23 @@ function clearChatStatus() {
 function sendMessage() {
   const text = input.value.trim();
   if (!text || isStreaming) return;
-  addUserBubble(text);
+  // RSI Loop 2: mint a clientMsgId, tag the optimistic bubble, send
+  // both fields. The desktop's user-message echo will carry this ID
+  // back so we can mark the bubble delivered (and dedup vs rendering
+  // a duplicate "🖥️ <text>" bubble for our own send).
+  const clientMsgId = newClientMsgId();
+  const bubble = addUserBubble(text);
+  if (bubble) {
+    bubble.dataset.clientMsgId = clientMsgId;
+    SENT_BUBBLES.set(clientMsgId, bubble);
+  }
   // Show the pill IMMEDIATELY so the user has feedback the moment they
   // hit send, even before the desktop's first session-phase frame
   // arrives over the WS (network round-trip + main.js bootstrap can be
   // 200-800ms on relay mode). The pill's label updates as desktop's
   // own phase events flow in.
   setChatStatus('Sending to Merlin…');
-  send({ type: 'send-message', text });
+  send({ type: 'send-message', text, clientMsgId });
   input.value = '';
   input.style.height = 'auto';
 }
@@ -1127,6 +1384,12 @@ btnSignout && btnSignout.addEventListener('click', async () => {
 let lanToken = null;
 
 async function init() {
+  // RSI Loop 4: paint cached history IMMEDIATELY so the user sees
+  // their last session without waiting for the WS handshake (1-3s on
+  // cold relay). This is purely visual rehydrate — desktop-source-of-
+  // truth replaces the cache via history-snapshot once auth-ok lands.
+  rehydrateFromCache();
+
   const parsed = parseHash();
 
   if (parsed.kind === 'lan') {
@@ -1188,16 +1451,34 @@ document.addEventListener('visibilitychange', () => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       try { ws.close(4000, 'visibility-stale'); } catch (_) {}
     }
+    return;
+  }
+  // RSI Loop 6 (2026-05-03): if the socket is healthy but we've been
+  // backgrounded for a while, the desktop may have advanced the
+  // conversation (autonomous spell ran, scheduled task fired, user
+  // typed on desktop). Request a fresh snapshot so the foreground UI
+  // reflects whatever happened. Cheap idempotent call — server reply
+  // dedups against RENDERED_TS.
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    requestHistory();
   }
 });
 
 window.addEventListener('online', () => {
-  // Network came back. Reset the backoff counter so the next reconnect
-  // attempt fires immediately rather than after an exponentially-grown
-  // wait that was justified while offline.
-  reconnectAttempts = 0;
+  // RSI Loop 6 (2026-05-03): DO NOT zero reconnectAttempts here.
+  // Pre-fix `reconnectAttempts = 0` on every online event collapsed
+  // the exponential backoff during cellular flap (subway / elevator
+  // / building-entrance handoffs fire online/offline every 5-10s).
+  // Each flap reset the backoff and triggered an immediate reconnect
+  // — a thundering herd against the relay from a single flaky phone.
+  //
+  // The correct place to zero attempts is when we KNOW the network
+  // path actually works: the WS onopen handler already does that. If
+  // online fires but the next reconnect 4401s or times out, the
+  // backoff stays valid. If it succeeds, onopen zeros it.
   if (!ws || ws.readyState !== WebSocket.OPEN) {
-    // If we're not currently reconnecting, kick one off now.
+    // Not currently reconnecting? Kick one off — but inside the
+    // existing scheduleReconnect, which keeps the backoff intact.
     scheduleReconnect();
   }
 });
