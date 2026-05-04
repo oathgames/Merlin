@@ -22,6 +22,21 @@ const contentSkillPath = path.join(__dirname, '..', '.claude', 'skills', 'merlin
 const metaGoPath = path.join(__dirname, '..', '..', 'autocmo-core', 'meta.go');
 const refinementGoPath = path.join(__dirname, '..', '..', 'autocmo-core', 'creative_refinement.go');
 
+// Cross-repo tests below read autocmo-core source via sibling-path
+// resolution. The full Merlin workspace has both repos mounted as
+// siblings under D:/autoCMO-claude (via tools/new-session.sh), so
+// these paths resolve cleanly locally. CI for the public oathgames/
+// Merlin repo only checks out autoCMO/ — the autocmo-core/*.go files
+// don't exist there, and the tests would crash with ENOENT.
+//
+// Skip gracefully when autocmo-core isn't reachable. The same pattern
+// is used in oauth-provider-config.test.js and pwa-client-msg-id.test.js
+// (the canonical "skip if sibling repo absent" form).
+const crossRepoAvailable = fs.existsSync(metaGoPath) && fs.existsSync(refinementGoPath);
+const skipCrossRepo = crossRepoAvailable
+  ? false
+  : 'autocmo-core/ sibling repo not on disk (running in single-repo CI)';
+
 // ── Cancel UX ────────────────────────────────────────────────────────
 
 test('Escape cancel calls abortActiveQuery (not stopGeneration alone)', () => {
@@ -95,7 +110,7 @@ test('content SKILL instructs Claude to echo gallery <div> blocks verbatim', () 
   assert.match(skill, /must echo each block verbatim/i, 'content SKILL must instruct Claude to echo verbatim — paraphrasing was the original incident');
 });
 
-test('creative_refinement.go emits artifact bundle for refine winners', () => {
+test('creative_refinement.go emits artifact bundle for refine winners', { skip: skipCrossRepo }, () => {
   const src = fs.readFileSync(refinementGoPath, 'utf8');
   assert.match(src, /emitArtifactBundle\(ArtifactBundle\{/, 'runRefineCreative must call emitArtifactBundle so the renderer renders the refined winner as a gallery card');
   assert.match(src, /Refined winner/, 'emitted artifact must be labeled — "Refined winner" anchors the visible label');
@@ -115,7 +130,7 @@ test('meta_scale_winner routes to meta-duplicate (not meta-warmup)', () => {
 
 // ── Meta upload error surfacing ──────────────────────────────────────
 
-test('meta.go image/video upload + batch errors route through metaErrorPreview', () => {
+test('meta.go image/video upload + batch errors route through metaErrorPreview', { skip: skipCrossRepo }, () => {
   const src = fs.readFileSync(metaGoPath, 'utf8');
   // All three sites — image upload, video upload, batch sub-response —
   // must call metaErrorPreview(body) so error_user_title +
@@ -132,7 +147,7 @@ test('meta.go image/video upload + batch errors route through metaErrorPreview',
 
 // ── Meta bulk-push campaignId resolver ───────────────────────────────
 
-test('meta.go has resolveTargetCampaign and runMetaPush + runMetaBulkPush use it', () => {
+test('meta.go has resolveTargetCampaign and runMetaPush + runMetaBulkPush use it', { skip: skipCrossRepo }, () => {
   const src = fs.readFileSync(metaGoPath, 'utf8');
   assert.match(src, /func resolveTargetCampaign\(cfg \*Config, cmd \*Command\)/, 'resolveTargetCampaign helper must exist');
   // The body must check cmd.CampaignID first, then cmd.CampaignName, then fall back to metaEnsureCampaigns.
@@ -161,7 +176,7 @@ test('meta_launch_test_batch + meta_launch_test_ad accept campaignId', () => {
 
 // ── Brand-match Meta page picker ─────────────────────────────────────
 
-test('runMetaLogin accepts *Command and brand-matches pages + ad accounts', () => {
+test('runMetaLogin accepts *Command and brand-matches pages + ad accounts', { skip: skipCrossRepo }, () => {
   const src = fs.readFileSync(metaGoPath, 'utf8');
   assert.match(src, /func runMetaLogin\(cfg \*Config, cmd \*Command, pre \*OAuthResult\)/, 'runMetaLogin signature must accept *Command so cmd.Brand reaches the page-picking logic');
   // The brand-match must use brandMatches against page name + ad account name.
