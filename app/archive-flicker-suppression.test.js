@@ -99,11 +99,10 @@ test('every archive-context merlin.deleteFile call is routed through archiveDele
   // Negative guard: archive-context contexts must NOT bypass the wrapper.
   // We can't ban merlin.deleteFile globally — preview-mode and pwa paths
   // legitimately use it for non-archive surfaces. But we can verify the
-  // three archive call sites identified above don't reintroduce the
-  // direct call. Anchor each on its surrounding function name.
-  for (const fn of ['requestArchiveCardDelete', 'merlin-stack-fallback']) {
-    // (placeholder — real archive-fn anchors below)
-  }
+  // archive call sites identified above don't reintroduce the direct call.
+  // (Gitar PR #216 cleanup: removed an unused `for (const fn of […])` loop
+  // that was a placeholder I never finished — the actual per-fn anchors
+  // are inlined below.)
   // Single-card delete: requestArchiveCardDelete body must use archiveDeleteFile.
   const singleIdx = rendererSrc.indexOf('async function requestArchiveCardDelete');
   assert.ok(singleIdx > 0, 'requestArchiveCardDelete must exist');
