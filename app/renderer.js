@@ -4815,8 +4815,30 @@ function setSidebarPinned(id, pinned) {
       }
     }
     document.body.classList.add(cls);
+    // Mirror to <html> data-attr so the CSS first-paint selector (used
+    // by boot-pin.js for FOUC prevention) stays in sync at runtime too.
+    // Without this, a runtime pin from an unpinned start would never
+    // set the data-attr, and a future relaunch would briefly render
+    // unpinned because the data-attr-based first-paint rule didn't
+    // match (only the body class would; body class only sticks
+    // post-DOMContentLoaded).
+    document.documentElement.setAttribute('data-pinned-sidebar', id);
   } else {
     document.body.classList.remove(cls);
+    // REGRESSION GUARD (2026-05-04, audit followup — stale-html-attr-leak):
+    // setSidebarPinned(id, false) MUST clear the <html> data-attr too,
+    // not just the body class. Pre-fix the data-attr was set by the
+    // boot script and never touched again at runtime — unpinning a
+    // sidebar removed the body class but left
+    // <html data-pinned-sidebar="magic"> set, and the CSS rule
+    // `html[data-pinned-sidebar="magic"] #chat { margin-right:340px }`
+    // kept the chat shrunk to a 340px void on the right. Clear the
+    // attr ONLY if it currently matches THIS id — otherwise we'd
+    // clobber the OTHER sidebar's pinned state during the
+    // mutual-exclusivity unpin path above.
+    if (document.documentElement.getAttribute('data-pinned-sidebar') === id) {
+      document.documentElement.removeAttribute('data-pinned-sidebar');
+    }
   }
   _sidebarPinWriteStored(id, pinned);
   const btn = document.getElementById(id + '-pin');
@@ -8191,7 +8213,19 @@ document.addEventListener('contextmenu', (e) => {
       // images, legacy folder delete) still pass a string for backwards
       // compatibility with the main-process handler.
       const target = deleteTargets.length > 1 ? deleteTargets : (deleteTargets[0] || folderPath);
-      const result = await merlin.deleteFile(target);
+      // REGRESSION GUARD (2026-05-04, archive-grid-flicker-on-delete
+      // adversarial-audit followup): the right-click context-menu Delete
+      // path was missed by the initial flicker fix. It operates on
+      // archive cards (it reads archiveCard.dataset.source/folder/files
+      // — pure archive code path) so it MUST route through the
+      // archiveDeleteFile wrapper to suppress the file-watcher's reload
+      // race. Without this, right-click → Delete reproduces the
+      // original flicker on every archive card. The preview-mode
+      // sub-branch still calls loadArchive() explicitly because it
+      // needs to refresh the panel after closing the preview overlay
+      // (different lifecycle); that loadArchive happens AFTER the
+      // grace window so it converges normally.
+      const result = await archiveDeleteFile(target);
       closeCtxMenu();
       if (result?.success) {
         showCopyToast('Deleted');
@@ -10628,6 +10662,13 @@ let _archiveDeletePromise = null;
 let _archiveWatcherDebounce = null;
 const ARCHIVE_WATCHER_DEBOUNCE_MS = 500;
 const ARCHIVE_DELETE_GRACE_MS = 800;
+// Wall-clock fallback for hung delete IPC promises. If the binary
+// crashes mid-delete or the IPC channel disconnects, the .finally()
+// chain never fires, _archiveDeletePromise stays set forever, and the
+// watcher is silently suppressed for the rest of the session. 30s
+// covers worst-case OS Recycle Bin latency (slow disks, network drives)
+// while ensuring no permanent suppression. See noteArchiveDelete.
+const ARCHIVE_DELETE_HARD_TIMEOUT_MS = 30000;
 
 function noteArchiveDelete(promise) {
   _archiveDeletePromise = promise;
@@ -10638,6 +10679,27 @@ function noteArchiveDelete(promise) {
   promise.finally(() => setTimeout(() => {
     if (_archiveDeletePromise === promise) _archiveDeletePromise = null;
   }, ARCHIVE_DELETE_GRACE_MS));
+  // REGRESSION GUARD (2026-05-04, audit followup — promise-never-settles):
+  // The .finally() above only runs if the promise SETTLES. If the IPC
+  // channel disconnects mid-call (binary crash, main-process panic,
+  // window close + relaunch), the promise hangs forever and
+  // _archiveDeletePromise stays non-null for the rest of the session —
+  // every subsequent watcher event would be silently swallowed. New
+  // generations don't appear in the grid until panel close/reopen,
+  // looking like Merlin lost data.
+  //
+  // Hard wall-clock fallback: 30s after this delete starts, force-clear
+  // the suppression slot regardless of promise state. 30s >> any
+  // reasonable delete-IPC roundtrip (typical: 50-200ms; pathological:
+  // 5s for OS Recycle Bin on slow disk). If a real delete is still in
+  // flight at 30s, the watcher reload at that point is a worse outcome
+  // than the alternative (silent grid-state divergence forever).
+  setTimeout(() => {
+    if (_archiveDeletePromise === promise) {
+      try { console.warn('[archive] delete promise hung 30s — clearing suppression to unblock watcher'); } catch {}
+      _archiveDeletePromise = null;
+    }
+  }, ARCHIVE_DELETE_HARD_TIMEOUT_MS);
   return promise;
 }
 

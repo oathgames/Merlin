@@ -20,6 +20,7 @@
     ".claude/settings.json",
     ".claude/hooks/block-api-bypass.js",
     ".claude/tools/merlin-config.example.json",
+    "app/boot-pin.js",
     "app/main.js",
     "app/preload.js",
     "app/renderer.js",

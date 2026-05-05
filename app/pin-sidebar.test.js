@@ -49,26 +49,41 @@ test('pin buttons declare aria-pressed for screen readers + state styling', () =
 // ── Boot script — apply pin state BEFORE first paint ───────────
 
 test('index.html restores pin state in <head> BEFORE body paints', () => {
-  // The boot script must run in <head> so the first frame already has
-  // the right layout. Restoring after first paint causes a visible
-  // flicker between unpinned and pinned widths on cold start.
+  // REGRESSION GUARD (2026-05-04, pin-sidebar-csp-blocked audit followup):
+  // the boot logic MUST live in an external file. Inline <script> blocks
+  // in index.html are silently blocked by the meta CSP `script-src
+  // 'self'` (no 'unsafe-inline'). External files referenced via src=
+  // satisfy 'self'.
   const headMatch = indexHtml.match(/<head>[\s\S]*?<\/head>/);
   assert.ok(headMatch, '<head> region must exist');
   const headSrc = headMatch[0];
-  assert.match(headSrc, /merlin\.sidebar-pin\./,
-    'boot script in <head> must read the merlin.sidebar-pin.* localStorage keys');
-  assert.match(headSrc, /data-pinned-sidebar/,
-    'boot script must set data-pinned-sidebar on documentElement so the CSS [data-pinned-sidebar="..."] selector applies for the initial paint');
+  assert.match(headSrc, /<script\s+src="boot-pin\.js"/,
+    'index.html must reference boot-pin.js via <script src> — inline <script> is CSP-blocked');
+  // Negative guard: the pin logic must NOT be in any inline <script>
+  // block in <head>. (The pre-existing theme-restore inline IIFE has
+  // its own separate concern and is allowed to remain — its
+  // semantics are theme-related, not pin-related, and replacing it
+  // is out of scope for this audit fix.)
+  const inlineScripts = headSrc.match(/<script\b(?![^>]*\bsrc=)[^>]*>[\s\S]*?<\/script>/g) || [];
+  for (const script of inlineScripts) {
+    assert.ok(!script.includes('merlin.sidebar-pin.'),
+      'pin logic must NOT be in an inline <script> in <head> — CSP blocks it. Move to boot-pin.js.');
+  }
 });
 
-test('boot script enforces mutual exclusivity (only one sidebar pinned at a time)', () => {
-  const headMatch = indexHtml.match(/<head>[\s\S]*?<\/head>/);
-  assert.ok(headMatch, '<head> region must exist');
+test('boot-pin.js enforces mutual exclusivity (only one sidebar pinned at a time)', () => {
+  const bootPinPath = path.join(__dirname, 'boot-pin.js');
+  assert.ok(fs.existsSync(bootPinPath), 'app/boot-pin.js must exist');
+  const bootPinSrc = fs.readFileSync(bootPinPath, 'utf8');
+  assert.match(bootPinSrc, /merlin\.sidebar-pin\./,
+    'boot-pin.js must read the merlin.sidebar-pin.* localStorage keys');
+  assert.match(bootPinSrc, /data-pinned-sidebar/,
+    'boot-pin.js must set data-pinned-sidebar on documentElement so the CSS first-paint rule applies');
   // The break statement after the first stored=true match prevents the
   // boot script from setting data-pinned-sidebar twice. This mirrors
   // the runtime mutual-exclusivity in setSidebarPinned (renderer.js).
-  assert.match(headMatch[0], /break;\s*\/\/\s*only one sidebar pinned at a time/,
-    'boot script must `break` after honoring the first stored pin to avoid setting data-pinned-sidebar twice');
+  assert.match(bootPinSrc, /break;\s*\/\/\s*only one sidebar pinned at a time/,
+    'boot-pin.js must `break` after honoring the first stored pin to avoid setting data-pinned-sidebar twice');
 });
 
 // ── CSS — chat reflow when a sidebar is pinned ─────────────────
@@ -157,4 +172,24 @@ test('renderer.js sidebar-close handlers unpin implicitly', () => {
 test('REGRESSION GUARD comment anchors the pin-sidebar feature', () => {
   assert.match(rendererSrc, /pin-sidebar feature/,
     'renderer.js must carry a "pin-sidebar feature" REGRESSION GUARD anchor for grep-ability');
+});
+
+// ── Audit-followup pins (2026-05-04) ─────────────────────────────
+
+test('setSidebarPinned(false) clears the html data-pinned-sidebar attr', () => {
+  // REGRESSION GUARD (2026-05-04, audit followup — stale-html-attr-leak):
+  // pre-fix the data-attr was set by the boot script and never touched
+  // again at runtime. Unpinning a sidebar removed the body class but left
+  // <html data-pinned-sidebar="..."> set, and the CSS rule kept the
+  // chat shrunk to a 340px void on the right.
+  const fnIdx = rendererSrc.indexOf('function setSidebarPinned');
+  assert.ok(fnIdx > 0, 'setSidebarPinned must exist');
+  const fnBody = rendererSrc.slice(fnIdx, fnIdx + 2500);
+  assert.match(fnBody, /removeAttribute\(\s*['"]data-pinned-sidebar['"]\s*\)/,
+    'setSidebarPinned MUST removeAttribute("data-pinned-sidebar") on the unpin path so the html attr clears in step with the body class');
+  // Identity guard: only clear the attr if it currently matches THIS id —
+  // otherwise the mutual-exclusivity unpin path (where one sidebar's
+  // unpin runs alongside the other's pin) would clobber the new pin.
+  assert.match(fnBody, /getAttribute\(\s*['"]data-pinned-sidebar['"]\s*\)\s*===\s*id/,
+    'setSidebarPinned MUST identity-check the attr before clearing — without this, mid-mutual-exclusivity unpin could clobber the new pin');
 });

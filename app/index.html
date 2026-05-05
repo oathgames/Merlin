@@ -23,31 +23,24 @@
       if (saved === 'light') document.documentElement.setAttribute('data-theme', 'light');
     } catch (_) { /* localStorage disabled — keep dark default */ }
   })();
-  // Restore pinned-sidebar state BEFORE body paints — without this,
-  // first-frame layout would render unpinned (full-width chat) and
-  // then snap to pinned (340px-shrunk chat) once renderer.js runs,
-  // visible flicker on every cold start. Mirror of the theme-restore
-  // pattern above. Mutual exclusivity: only one sidebar pinned at a
-  // time (renderer.js's setSidebarPinned enforces; here we honor the
-  // first non-empty stored flag and ignore the other).
-  (function(){
-    try {
-      for (var _i = 0, _ids = ['magic', 'archive']; _i < _ids.length; _i++) {
-        var id = _ids[_i];
-        if (localStorage.getItem('merlin.sidebar-pin.' + id) === 'true') {
-          document.documentElement.setAttribute('data-pinned-sidebar', id);
-          // Body element doesn't exist yet — defer the body class to
-          // a single immediate-after-DOMContentLoaded callback so it
-          // lands BEFORE the first chat-bubble renders. The data attr
-          // on documentElement is set NOW so the CSS via [data-pinned-
-          // sidebar="..."] selector works for the initial paint while
-          // the body class catches up for the rest of the runtime.
-          break; // only one sidebar pinned at a time
-        }
-      }
-    } catch (_) { /* localStorage disabled — start unpinned */ }
-  })();
 </script>
+<!--
+  REGRESSION GUARD (2026-05-04, pin-sidebar-csp-blocked adversarial-audit
+  followup): the pin-sidebar boot logic MUST live in an external file —
+  the meta CSP at the top of this file declares `script-src 'self'`
+  with NO 'unsafe-inline' directive, so inline <script>...</script>
+  blocks are silently blocked. (The theme-restore IIFE above predates
+  this audit; theme-restore "works" only because renderer.js re-applies
+  the theme post-paint, masking the inline-script failure as a small
+  imperceptible flicker. Pin-sidebar's FOUC would be more obvious
+  because the chat reflows by 340px — visible jank.)
+
+  External file reference satisfies 'self'. Same-origin via the local
+  file:// load. Job: read merlin.sidebar-pin.* localStorage keys,
+  set data-pinned-sidebar="<id>" on <html> so the CSS chat-shrink
+  rule matches on the initial frame.
+-->
+<script src="boot-pin.js"></script>
 </head>
 <body>
 

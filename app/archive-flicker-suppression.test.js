@@ -118,3 +118,39 @@ test('REGRESSION GUARD comment anchors the 2026-05-04 flicker incident', () => {
   assert.match(rendererSrc, /archive-grid-flicker-on-delete/,
     'renderer.js must carry the archive-grid-flicker-on-delete REGRESSION GUARD anchor');
 });
+
+// ── Audit-followup pins (2026-05-04) ─────────────────────────────
+
+test('right-click context-menu Delete routes through archiveDeleteFile (audit followup)', () => {
+  // REGRESSION GUARD (2026-05-04, audit followup): the context-menu
+  // Delete handler at the time of the initial fix called
+  // merlin.deleteFile DIRECTLY, bypassing the suppression wrapper.
+  // Right-click → Delete reproduced the flicker on every archive card.
+  // Anchor on the action === 'delete' branch and verify it calls
+  // archiveDeleteFile, not merlin.deleteFile.
+  const ctxMenuIdx = rendererSrc.indexOf("action === 'delete'");
+  assert.ok(ctxMenuIdx > 0, 'context-menu Delete branch must exist');
+  const region = rendererSrc.slice(ctxMenuIdx, ctxMenuIdx + 2500);
+  assert.match(region, /archiveDeleteFile\(/,
+    'context-menu Delete branch MUST call archiveDeleteFile — calling merlin.deleteFile directly bypasses the watcher suppression and reproduces the flicker');
+});
+
+test('noteArchiveDelete has a hard wall-clock timeout fallback (audit followup)', () => {
+  // REGRESSION GUARD (2026-05-04, audit followup — promise-never-settles):
+  // the .finally() chain only runs if the promise SETTLES. Hung IPC
+  // (binary crash, channel disconnect) would leave _archiveDeletePromise
+  // set forever, silently swallowing every subsequent watcher event.
+  // Hard wall-clock fallback (30s) guarantees no permanent suppression.
+  const fnIdx = rendererSrc.indexOf('function noteArchiveDelete');
+  assert.ok(fnIdx > 0, 'noteArchiveDelete must exist');
+  const fnBody = rendererSrc.slice(fnIdx, fnIdx + 2500);
+  assert.match(fnBody, /ARCHIVE_DELETE_HARD_TIMEOUT_MS/,
+    'noteArchiveDelete must reference ARCHIVE_DELETE_HARD_TIMEOUT_MS for the wall-clock fallback');
+  assert.match(rendererSrc, /const\s+ARCHIVE_DELETE_HARD_TIMEOUT_MS\s*=\s*\d+/,
+    'ARCHIVE_DELETE_HARD_TIMEOUT_MS must be declared as a numeric constant');
+  // The fallback's setTimeout body must do an identity-match clear, just
+  // like the .finally path, so overlapping deletes don't clobber each
+  // other's slot.
+  assert.match(fnBody, /_archiveDeletePromise\s*===\s*promise/,
+    'hard-timeout fallback must identity-match the slot before clearing (mirrors the .finally() pattern)');
+});
