@@ -9740,6 +9740,9 @@ async function loadArchive() {
 
       grid.appendChild(card);
     });
+    // Wire the load gate on this render path too — Live Ads grid uses the
+    // same archive-card-thumb class as the regular archive list.
+    wireArchiveThumbLoadGate(grid);
     return;
   }
 
@@ -9795,6 +9798,7 @@ async function loadArchive() {
     });
     if (__archiveModel) __archiveModel.syncOrder(orderedKeys);
     observeLazyVideos(grid);
+    wireArchiveThumbLoadGate(grid);
   } catch (err) {
     console.warn('[archive]', err);
     if (isStale()) return;
@@ -10051,6 +10055,49 @@ function observeLazyVideos(root) {
   }, { root: root.closest('.archive-content') || null, rootMargin: '200px 0px', threshold: 0.01 });
   lazyVideoObservers.set(root, io);
   videos.forEach(v => io.observe(v));
+}
+
+// REGRESSION GUARD (2026-05-04, fal-image-chopped-in-half-while-
+// downloading incident): wire load + error listeners on every
+// .archive-card-thumb IMG so CSS can flip from opacity:0 → opacity:1
+// only AFTER the bitmap is decoded in the browser. The binary's
+// atomic-rename fix on downloadFile/downloadFileWithKey is the root
+// cause closure (the renderer never sees a partial file anymore),
+// but this gate is defense-in-depth: any future code path that
+// bypasses .tmp+rename still won't paint scanlines as bytes arrive.
+//
+// Mirrors the chat-gallery hook at __transformChatGalleries
+// (renderer.js:7742+) — same load/error/img.complete-fast-path
+// pattern — but scoped to archive thumbs (a different render path
+// that v1.21.16's chat-gallery fix never touched).
+//
+// Idempotent: only wires IMGs that don't already carry data-loaded,
+// so calling this on a re-rendered grid (which can happen on filter
+// flip / refresh) doesn't double-attach listeners on cached IMGs
+// that already passed the gate.
+function wireArchiveThumbLoadGate(root) {
+  if (!root || typeof root.querySelectorAll !== 'function') return;
+  try {
+    const imgs = root.querySelectorAll('img.archive-card-thumb:not([data-loaded])');
+    for (const img of imgs) {
+      if (img.complete && img.naturalWidth > 0) {
+        // Cached / synchronously-loaded — flip immediately so the
+        // shimmer doesn't blink on revisits.
+        img.dataset.loaded = 'true';
+        continue;
+      }
+      const onDone = () => { img.dataset.loaded = 'true'; };
+      img.addEventListener('load', onDone, { once: true });
+      // On error, also flip — the alt + Chromium's broken-image
+      // glyph carries the surface; users get the placeholder
+      // through the existing .archive-card-placeholder pattern
+      // when the thumbnail is missing (the binary emits a
+      // placeholder div in that case, not an IMG).
+      img.addEventListener('error', onDone, { once: true });
+    }
+  } catch (err) {
+    try { console.warn('[archive-thumb-gate] wire failed', err); } catch {}
+  }
 }
 
 // ── Multi-select + Bulk-cull + Merge for creative pairing ──
