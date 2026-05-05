@@ -10181,7 +10181,10 @@ async function requestArchiveCardDelete(card, item, title) {
     cancelLabel: 'Cancel',
     onConfirm: async () => {
       const target = targets.length > 1 ? targets : targets[0];
-      const result = await merlin.deleteFile(target);
+      // archiveDeleteFile suppresses the watcher's reload while this
+      // promise is in flight + 800ms grace, so the card-fade animation
+      // below runs cleanly without the grid getting nuked mid-animation.
+      const result = await archiveDeleteFile(target);
       if (result?.success) {
         showCopyToast('Deleted');
         card.style.opacity = '0';
@@ -10412,7 +10415,10 @@ async function __bulkTrashSelected() {
     confirmLabel: 'Move to Trash',
     cancelLabel: 'Cancel',
     onConfirm: async () => {
-      const result = await merlin.deleteFile(targets);
+      // archiveDeleteFile suppresses the watcher reload during + after this
+      // multi-target trash so the per-card fade animations don't get
+      // interrupted by a grid rebuild.
+      const result = await archiveDeleteFile(targets);
       if (result && result.success) {
         showCopyToast(result.partial ? `Trashed ${result.trashedCount} (some failed)` : `Trashed ${cards.length}`);
         for (const c of cards) {
@@ -10488,7 +10494,9 @@ async function __openArchiveViewerAt(item, card) {
         ? resolveArchiveDeleteTargets(ref.card)
         : (k ? [k] : []);
       if (targets.length === 0) return { success: false };
-      const result = await merlin.deleteFile(targets.length > 1 ? targets : targets[0]);
+      // archiveDeleteFile suppresses the watcher reload so the viewer's
+      // own swipe-to-trash interaction doesn't fight a grid rebuild.
+      const result = await archiveDeleteFile(targets.length > 1 ? targets : targets[0]);
       if (result && result.success) {
         showCopyToast('Moved to Trash');
         if (ref && ref.card) { try { ref.card.style.opacity = '0'; setTimeout(() => ref.card.remove(), 250); } catch {} }
@@ -10500,6 +10508,53 @@ async function __openArchiveViewerAt(item, card) {
   });
 }
 
+// REGRESSION GUARD (2026-05-04, archive-grid-flicker-on-delete incident):
+// Two paths were racing to mutate the archive grid: (a) the user-initiated
+// delete handler optimistically faded out the deleted card over 250-300ms,
+// (b) the main-process file watcher detected the on-disk delete and called
+// `loadArchive()` which executed `grid.innerHTML = ''` to rebuild the grid
+// from scratch. Path B fired during Path A's fade, blowing the entire grid
+// away mid-animation and re-painting from disk — visible flicker on every
+// delete operation. Fix: track in-flight user deletes via
+// `_archiveDeletePromise` and SKIP the watcher's reload while a user
+// delete is in flight or within an 800ms grace window after it settles.
+// The optimistic DOM removal has already converged the grid; the watcher's
+// post-event reload would only undo that work and re-do it. New external
+// changes (a generation completing during the grace window) get caught by
+// the NEXT watcher event after grace expires — worst case 800ms latency,
+// which is acceptable vs. flicker on every delete.
+//
+// Plus debounce: rapid sibling watcher events (Windows fires multiple
+// events per directory change — IN_DELETE + IN_DELETE_SELF + IN_MODIFY on
+// the parent dir) now collapse into a single reload via
+// `_archiveWatcherDebounce`. 500ms window catches a typical Windows event
+// burst (~100-300ms tail).
+let _archiveDeletePromise = null;
+let _archiveWatcherDebounce = null;
+const ARCHIVE_WATCHER_DEBOUNCE_MS = 500;
+const ARCHIVE_DELETE_GRACE_MS = 800;
+
+function noteArchiveDelete(promise) {
+  _archiveDeletePromise = promise;
+  // Keep the suppression alive for ARCHIVE_DELETE_GRACE_MS after the
+  // promise settles (covers the 250-300ms card fade + safety margin
+  // against the file watcher firing slightly after the delete-IPC
+  // promise resolves).
+  promise.finally(() => setTimeout(() => {
+    if (_archiveDeletePromise === promise) _archiveDeletePromise = null;
+  }, ARCHIVE_DELETE_GRACE_MS));
+  return promise;
+}
+
+// archiveDeleteFile — wrapper used by every archive-context call to
+// merlin.deleteFile. Notes the in-flight promise so the watcher
+// callback can skip the post-delete reload that causes the flicker.
+// Non-archive callers (preview-mode delete, pwa) keep using
+// merlin.deleteFile directly — they don't render to the archive grid.
+function archiveDeleteFile(target) {
+  return noteArchiveDelete(merlin.deleteFile(target));
+}
+
 // Live archive invalidation: when the watcher in the main process detects
 // a fresh run folder, an external file drop, or a bulk trash, refresh the
 // panel without losing focus or scroll position.
@@ -10507,7 +10562,21 @@ if (typeof merlin.onArchiveChanged === 'function') {
   merlin.onArchiveChanged(() => {
     const panel = document.getElementById('archive-panel');
     if (!panel || panel.classList.contains('hidden')) return;
-    loadArchive();
+    if (_archiveDeletePromise) {
+      // User-initiated delete in flight or just finished. The optimistic
+      // DOM removal in the delete handler has already updated the grid;
+      // nuking innerHTML + rebuilding from disk would flicker the panel
+      // and undo work that's already correct.
+      return;
+    }
+    if (_archiveWatcherDebounce) clearTimeout(_archiveWatcherDebounce);
+    _archiveWatcherDebounce = setTimeout(() => {
+      _archiveWatcherDebounce = null;
+      // Re-check the suppression in case a delete started between the
+      // initial fire and the debounced execution.
+      if (_archiveDeletePromise) return;
+      loadArchive();
+    }, ARCHIVE_WATCHER_DEBOUNCE_MS);
   });
 }
 
