@@ -43,7 +43,7 @@ const BYTE_TIERS = {
 };
 
 const TIER_A_SKILLS = new Set(['clarify-intent']);
-const TIER_C_SKILLS = new Set(['merlin-setup', 'merlin-content', 'merlin-ads', 'merlin-social', 'merlin-analytics']);
+const TIER_C_SKILLS = new Set(['merlin-setup', 'merlin-content', 'merlin-ads', 'merlin-social', 'merlin-analytics', 'merlin-creative-engine']);
 
 // ── Description linter rules ─────────────────────────────────────────────────
 const DESCRIPTION_PREFIX = /^Use when /;
