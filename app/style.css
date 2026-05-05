@@ -2625,6 +2625,24 @@ body.platform-mac .titlebar-drag{
   background: var(--bg);
   display: block;
 }
+/* REGRESSION GUARD (2026-05-04, fal-image-chopped-in-half-while-
+   downloading incident): the binary's atomic-rename fix on
+   downloadFile/downloadFileWithKey is the root cause closure (the
+   renderer never sees a partial file anymore), but the data-loaded
+   gate here is defense-in-depth — if any future code path bypasses
+   the .tmp+rename pattern, the renderer still won't paint scanlines
+   as bytes arrive. Mirror the .merlin-artifact img gate from
+   v1.21.16: opacity:0 until renderer wires the load handler that
+   flips data-loaded. The error handler in renderer.js also flips it
+   so a failed-load tile shows whatever Chromium can render
+   (better than a stuck shimmer). */
+.archive-card-thumb:not([data-loaded="true"]) {
+  opacity: 0;
+}
+.archive-card-thumb[data-loaded="true"] {
+  opacity: 1;
+  transition: opacity .18s ease;
+}
 .archive-card-info { padding: 6px 8px; }
 .archive-card-title {
   font-size: 11px;
