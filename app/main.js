@@ -3404,8 +3404,22 @@ async function startSession(brandOverride) {
   let _authFailureIntercepted = false;
 
   emitSessionPhase('awaiting-response', 'Sending to Claude…');
+  // REGRESSION GUARD (2026-05-04, stuck-chat-no-result-event incident):
+  // Track whether the SDK iterator ever emitted a `result` message during
+  // this turn. If the iterator naturally ends (no error thrown) WITHOUT a
+  // `result` — Anthropic API closed the stream mid-turn, network blip
+  // truncated the connection, MCP tool hung past the SDK's internal
+  // timeout but didn't bubble — the renderer never sees a turn-end
+  // signal and stays frozen forever (input disabled, status pill stuck,
+  // streaming cursor blinking). The synthetic-result emit below
+  // guarantees the renderer always gets a terminal event for every turn
+  // it received an `init` for. See the catch + finally blocks for the
+  // error / interrupt paths; this flag covers ONLY the silent-truncation
+  // path that those don't catch.
+  let _sawTerminalResult = false;
   try {
     for await (const msg of activeQuery) {
+      if (msg && msg.type === 'result') _sawTerminalResult = true;
       // Per-brand session-id capture. The SDK emits one init message per
       // session; on a fresh session it's a brand-new UUID, on resume it
       // echoes the resumed ID. Either way, pin it to the current brand so
@@ -3625,6 +3639,31 @@ async function startSession(brandOverride) {
           } catch (e) { console.error('[spell-ping]', e.message); }
         }
       }
+    }
+    // REGRESSION GUARD (2026-05-04, stuck-chat-no-result-event):
+    // For-await loop ended NATURALLY (no throw) but the SDK never emitted
+    // a `result` message — Anthropic API closed the stream mid-turn,
+    // upstream tool call returned partial-then-EOF, etc. Without a
+    // synthetic terminal here, the renderer's onSdkMessage('result')
+    // handler never fires, isStreaming stays true, the input stays
+    // disabled, and the chat is frozen with a blinking cursor on a
+    // half-rendered response. Customer-visible failure mode reported
+    // 2026-05-04 ("we good or are you stuck?" — yes, stuck). Fix:
+    // synthesize a terminal `result` with subtype='truncated' so the
+    // renderer cleans up its UI AND surfaces a recoverable error to
+    // the user. Idempotent — only fires when no real result arrived.
+    if (!_sawTerminalResult && win && !win.isDestroyed()) {
+      const synthetic = {
+        type: 'result',
+        subtype: 'truncated',
+        is_error: true,
+        result: 'The model stopped responding mid-turn — try sending your message again.',
+        session_id: '',
+        _synthetic: true,
+      };
+      try { win.webContents.send('sdk-message', synthetic); } catch {}
+      try { wsServer.broadcast('sdk-message', synthetic); } catch {}
+      appendErrorLog(`${new Date().toISOString()} SDK: stream ended without result — synthesized truncated terminal\n`);
     }
   } catch (err) {
     const errMsg = err.message || String(err);

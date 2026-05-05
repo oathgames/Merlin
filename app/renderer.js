@@ -919,6 +919,21 @@ function paintBrandThread(bubbles) {
   isStreaming = false;
   _pendingMessageBreak = false;
   _turnImageArtifactsSet.clear();
+  // REGRESSION GUARD (2026-05-04, stuck-chat-brand-switch-no-reset
+  // incident): brand switch must ALWAYS clear ALL turn-state flags,
+  // not just isStreaming. Pre-fix sessionActive / setInputDisabled /
+  // status-pill / typing-indicator / ticking-timer / stream-watchdog
+  // could survive a brand switch if the prior turn was hung — Ryan
+  // 2026-05-04 reported "even switching brands did not reset" after
+  // the no-result-event freeze. Brand switch is the user's escape
+  // hatch when the chat is wedged; it MUST work no matter what state
+  // the prior turn left behind.
+  sessionActive = false;
+  try { setInputDisabled(false); } catch {}
+  try { removeTypingIndicator(); } catch {}
+  try { clearStatusLabel(); } catch {}
+  try { stopTickingTimer(); } catch {}
+  try { stopStreamWatchdog(); } catch {}
   if (!Array.isArray(bubbles) || bubbles.length === 0) return 0;
   for (const b of bubbles) {
     if (!b || (b.role !== 'user' && b.role !== 'claude')) continue;
@@ -952,6 +967,18 @@ function preseedBrandSwitch(brandLabel) {
   isStreaming = false;
   _pendingMessageBreak = false;
   _turnImageArtifactsSet.clear();
+  // Mirror paintBrandThread's full-reset (REGRESSION GUARD 2026-05-04,
+  // stuck-chat-brand-switch-no-reset). The preseed runs synchronously at
+  // brand-switch start; paintBrandThread runs ~150-450ms later when the
+  // SDK swap returns — but if the chat is hung BEFORE the swap, the
+  // preseed's reset is what actually unsticks the input bar so the user
+  // can interact with the new brand immediately.
+  sessionActive = false;
+  try { setInputDisabled(false); } catch {}
+  try { removeTypingIndicator(); } catch {}
+  try { clearStatusLabel(); } catch {}
+  try { stopTickingTimer(); } catch {}
+  try { stopStreamWatchdog(); } catch {}
   const placeholder = document.createElement('div');
   placeholder.className = 'msg msg-claude brand-preseed';
   placeholder.style.cssText = 'opacity:0.6;font-style:italic;padding:14px 18px';
@@ -1102,6 +1129,62 @@ updateOnlineStatus();
 
 let typingTimeout = null;
 let typingStuckTimeout = null;
+
+// REGRESSION GUARD (2026-05-04, stuck-chat-no-result-event incident):
+// Stream watchdog. When a turn is in flight, every SDK message resets
+// this timer; if NO message arrives for STREAM_STALL_MS, we assume the
+// stream is dead (Anthropic API truncation, network drop, MCP tool
+// hung beyond the SDK's internal timeout) and force-recover the UI.
+// Pairs with the main.js synthetic-truncated-result emitter — that one
+// covers the case where the for-await loop ends naturally without a
+// result; the watchdog covers the case where the for-await loop is
+// blocked indefinitely on an event that never arrives.
+//
+// Customer-visible failure mode reported 2026-05-04: response stuck
+// mid-sentence ("fetching their back-image URLs in parallel.|" with a
+// blinking cursor), input frozen, even brand-switch didn't reset. The
+// watchdog ALWAYS unsticks the UI within STREAM_STALL_MS of the last
+// signal — the user can re-send, switch brands, or just type again.
+const STREAM_STALL_MS = 90000; // 90s — generous for legitimate long
+                                // tool calls (HeyGen renders, large
+                                // image batches, brand scrape) but short
+                                // enough that a hung turn unsticks
+                                // before the user gives up on the app.
+let _streamWatchdog = null;
+function bumpStreamWatchdog() {
+  if (_streamWatchdog) clearTimeout(_streamWatchdog);
+  _streamWatchdog = setTimeout(() => {
+    _streamWatchdog = null;
+    if (!isStreaming && !sessionActive) return; // already cleaned up
+    try { console.warn('[stream-watchdog] no SDK events for ' + (STREAM_STALL_MS/1000) + 's — force-recovering UI'); } catch {}
+    // Force-recover the UI directly. We don't try to round-trip through
+    // the result-handler because the synthetic-result path (main.js) is
+    // already covered by the SDK iterator's natural-end branch — if the
+    // watchdog fires, it's because the iterator is BLOCKED (not ended),
+    // so main.js can't help us.
+    try {
+      const note = 'Connection went silent — try sending your message again. (no SDK events for ' + Math.round(STREAM_STALL_MS/1000) + 's)';
+      if (textBuffer && !textBuffer.endsWith('\n\n')) textBuffer += '\n\n';
+      textBuffer += '⚠️ ' + note;
+      finalizeBubble();
+    } catch {}
+    isStreaming = false;
+    sessionActive = false;
+    setInputDisabled(false);
+    removeTypingIndicator();
+    clearStatusLabel();
+    stopTickingTimer();
+    // Best-effort interrupt on the SDK side so the hung turn gets aborted
+    // upstream — otherwise the user's NEXT send queues behind a dead
+    // turn. abortActiveQuery already handles "no active query" gracefully.
+    if (window.merlin && typeof window.merlin.abortActiveQuery === 'function') {
+      try { window.merlin.abortActiveQuery().catch(() => {}); } catch {}
+    }
+  }, STREAM_STALL_MS);
+}
+function stopStreamWatchdog() {
+  if (_streamWatchdog) { clearTimeout(_streamWatchdog); _streamWatchdog = null; }
+}
 
 function finalizeBubble() {
   if (currentBubble) {
@@ -1835,6 +1918,12 @@ function appendUnreferencedImageArtifacts(bubble) {
 merlin.onSdkMessage((msg) => {
   // Suppress internal action responses (spell toggle/create) — no chat bubbles
   if (msg._internal) return;
+  // Reset the no-events stall watchdog on every real message — the stream
+  // is alive. Synthetic-truncated results from main.js carry _synthetic:true
+  // and shouldn't bump (they signal end-of-turn, not progress).
+  if (!msg._synthetic) {
+    try { bumpStreamWatchdog(); } catch {}
+  }
 
   // When first real SDK content arrives, clean up welcome state
   if (firstMessage && msg.type === 'stream_event') {
@@ -1903,6 +1992,23 @@ merlin.onSdkMessage((msg) => {
     case 'result':
       sessionActive = false;
       if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
+      // REGRESSION GUARD (2026-05-04, stuck-chat-no-result-event): when
+      // main.js synthesizes a {subtype:'truncated', is_error:true,
+      // _synthetic:true} terminal because the SDK iterator ended without
+      // emitting a real result, append a visible "stream interrupted"
+      // marker to the bubble so the user knows the response was
+      // incomplete. The model often stops mid-sentence in this case
+      // (Ryan's screenshot 2026-05-04 ended on "fetching their back-image
+      // URLs in parallel.|" with a blinking cursor). Without the marker,
+      // the user has no signal that what they're seeing is half a
+      // response — they think Merlin just got lazy.
+      if (msg && msg._synthetic && msg.subtype === 'truncated') {
+        try {
+          const note = msg.result || 'The model stopped responding mid-turn — try sending your message again.';
+          if (textBuffer && !textBuffer.endsWith('\n\n')) textBuffer += '\n\n';
+          textBuffer += '⚠️ ' + note;
+        } catch {}
+      }
       // Auto-embed any unreferenced image artifacts before finalization so
       // they land inside the same bubble the model is closing on. See the
       // `_turnImageArtifacts` REGRESSION GUARD at top of file.
@@ -1914,6 +2020,7 @@ merlin.onSdkMessage((msg) => {
       isStreaming = false;
       setInputDisabled(false);
       stopTickingTimer();
+      stopStreamWatchdog();
       // Refresh brand dropdown after each turn — Claude may have created a
       // new brand, imported products, or changed connections during this turn.
       try { loadBrands().then(() => loadConnections()); } catch {}
@@ -6705,6 +6812,7 @@ function sendMessage() {
   turnTokens = 0;
   sessionActive = true;
   startTickingTimer();
+  bumpStreamWatchdog(); // arm the no-events stall detector
   merlin.sendMessage(text);
   input.value = '';
   autoResize();
