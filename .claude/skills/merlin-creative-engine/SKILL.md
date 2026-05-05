@@ -23,6 +23,22 @@ The skill's planning, matrix sampling, brief drafting, EvaluateBrief scoring, Co
 
 Per-variant brief detail is attached to the IMAGE METADATA emitted by the binary's image pipeline — the user clicks into a creative card and sees the angle, hook archetype, ad-type module, brief notes, and the exact `mcp__merlin__content` call that produced it. Available on demand, never dumped on render.
 
+## MANDATORY post-tool: echo every gallery block verbatim
+
+**Inherits the same contract as `merlin-content`'s gallery-echo rule.** Every `mcp__merlin__content` and `mcp__merlin__video` call returns a sentinel block that the renderer replaces with `<div class="merlin-gallery">…<figure class="merlin-artifact">…</figure>…</div>` HTML. **You MUST include EVERY gallery `<div>` block VERBATIM in your reply** — do NOT paraphrase the images as a numbered list of file paths (`1. Vanilla Cream Classic — \`results/image/.../image_1_portrait.jpg\``). Paraphrasing prevents the renderer's `__transformChatGalleries` walk from finding `.merlin-gallery` elements, and the user sees a wall of paths instead of the fanned card stack.
+
+**Live incident 2026-05-04 (apotheke 5-variant fan-out, post-skill-rewrite):** the model called `mcp__merlin__content` 5 times in parallel, got 5 gallery bundles back, and summarized them as "Output folders: 1. Vanilla Cream Classic — `path`, 2. Fig & Olive Leaf Classic — `path`, …" instead of echoing the 5 gallery `<div>`s. User saw text-with-paths in chat — no image previews, no clickable carousel. **The silent-orchestration contract above made it tempting to omit the gallery emission too, but it applies to PLANNING TEXT (matrix, briefs, audit detail), not to the gallery-output contract.** The gallery div IS the creatives the user is here to see.
+
+Concrete contract for the parallel-fan-out case:
+
+- After all N `mcp__merlin__content` / `mcp__merlin__video` calls return, your reply MUST contain N gallery `<div class="merlin-gallery">…</div>` blocks — one per call, in any order. Echo them verbatim.
+- Prose around the blocks is fine — a one-line status above ("Fanning out 12 APOTHEKE variants — done"), brief callouts between them ("Variant 3 nailed the bergamot warmth"), or a one-line summary footer below. But the gallery divs themselves are the deliverable.
+- **Do NOT replace the gallery blocks with a numbered list of paths.** A numbered list with backtick paths is the exact paraphrase pattern this rule blocks.
+- **Do NOT collapse N gallery blocks into one summary list of "Output folders".** Each call's gallery is its own block; the renderer counts them and lays them out as separate fanned card stacks.
+- If a tool call failed (returned no gallery block), include a one-line note about which variant failed; do not invent a gallery div.
+
+Silent planning + verbatim gallery echo = clean chat with the creatives front-and-center. That's the whole skill.
+
 ## Pick this skill when
 
 - User wants **BREADTH**: "give me 30 ad ideas", "fan out 50 hooks", "spin up a creative pass for POG"
