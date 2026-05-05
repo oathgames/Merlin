@@ -69,6 +69,11 @@
     { "utterance": "make 12 ads of the cherry product", "expectedSkill": "merlin-content" },
     { "utterance": "generate hero shots for my new SKU", "expectedSkill": "merlin-content" },
     { "utterance": "shoot ad images using the photos I uploaded", "expectedSkill": "merlin-content" },
-    { "utterance": "create 6 image variations for the launch", "expectedSkill": "merlin-content" }
+    { "utterance": "create 6 image variations for the launch", "expectedSkill": "merlin-content" },
+    { "utterance": "fan out 30 ads", "expectedSkill": "merlin-creative-engine" },
+    { "utterance": "spin up a creative pass for ivory-ella", "expectedSkill": "merlin-creative-engine" },
+    { "utterance": "give me 50 hooks across all our demos", "expectedSkill": "merlin-creative-engine" },
+    { "utterance": "I need 20 retargeting variants across angles", "expectedSkill": "merlin-creative-engine" },
+    { "utterance": "test a bunch of angles with 25 image briefs", "expectedSkill": "merlin-creative-engine" }
   ]
 }
