@@ -1988,7 +1988,10 @@ function handleStreamEvent(msg) {
       };
       // MCP Merlin tools — specific labels per action so users see what's happening
       // instead of the generic "Channeling" fallback. Image/video/voice runs can
-      // take minutes; a precise label prevents "taking a while…" dead-air confusion.
+      // take minutes; a precise label prevents dead-air confusion (e.g. user sees
+      // "BREWING AN IMAGE" through the entire long render instead of wondering
+      // what the spinner is doing). Pairs with the Cancel-button fade-in below
+      // for tools that hang outright.
       let label = labels[toolName];
       if (!label && typeof toolName === 'string' && toolName.indexOf('mcp__merlin__') === 0) {
         const tool = toolName.slice('mcp__merlin__'.length);
@@ -6343,12 +6346,17 @@ let _cancelBtnTimer = null;
 //
 // REGRESSION GUARD (2026-04-29, trypog.co WebFetch 5-minute hang):
 // Before this affordance, a hung tool call left the user staring at
-// "Summoning knowledge — taking a while..." with no escape — only force-
-// quitting Merlin would reclaim the chat. The Cancel button calls
+// the spinner with no escape — only force-quitting Merlin would
+// reclaim the chat. The Cancel button calls
 // merlin.abortActiveQuery() which interrupts the SDK turn and unwinds
 // the for-await loop. Pairs with the brand_scrape routing rule in
 // commands/merlin.md (prevents the most-common cause) + the abort-active-
 // query IPC handler in main.js (the actual escape hatch).
+//
+// (The "— taking a while..." textual stuck hint that originally
+// accompanied this affordance was removed 2026-05-04 per Ryan: it
+// added visual noise on legitimately-long tools and the Cancel
+// button is the actionable escape, not the suffix.)
 const CANCEL_BTN_DELAY_MS = 30000;
 
 function _onCancelButtonClick() {
@@ -6392,14 +6400,17 @@ function setStatusLabel(label) {
     _statusDebounce = null;
   }, 50);
 
-  // Stuck detection — if status doesn't change for 45s, show a hint
-  _stuckTimer = setTimeout(() => {
-    const statusEl = document.getElementById('chat-status');
-    const labelEl = statusEl?.querySelector('.chat-status-label');
-    if (labelEl && labelEl.textContent === label) {
-      labelEl.textContent = label + ' — taking a while...';
-    }
-  }, 45000);
+  // (The "— taking a while..." stuck-detection suffix was removed at
+  // Ryan's explicit request 2026-05-04: it was visual noise on
+  // legitimately-long tools — image/video gen, brand scrape, large
+  // ad batches, HeyGen renders — and the Cancel-button fade-in below
+  // is the real escape hatch for hung calls anyway. The status label
+  // now stays exactly as the tool first set it; users see "BREWING
+  // AN IMAGE" instead of "BREWING AN IMAGE — taking a while..." on
+  // long generations. _stuckTimer is intentionally unset; clearStatusLabel
+  // still calls clearTimeout(_stuckTimer) on a possibly-null handle,
+  // which is a no-op — preserved for forward compatibility if a
+  // future visual stuck-affordance is reintroduced.)
 
   // Cancel-button fade-in — at CANCEL_BTN_DELAY_MS, append a Cancel
   // button next to the spinner so the user can break out of a hung tool.

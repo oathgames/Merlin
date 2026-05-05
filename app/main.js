@@ -4167,8 +4167,8 @@ ipcMain.handle('stop-generation', () => {
 // REGRESSION GUARD (2026-04-29, trypog.co WebFetch 5-minute hang):
 // Live incident — agent invoked built-in WebFetch on the user's brand
 // URL instead of the hardened mcp__merlin__brand_scrape tool, hit a slow
-// CDN, and the chat sat on "Summoning knowledge — taking a while..." for
-// 5+ minutes with no abort affordance. Two fixes landed together:
+// CDN, and the chat sat spinning for 5+ minutes with no abort
+// affordance. Two fixes landed together:
 // (a) routing rule in commands/merlin.md hard-pushes brand-URL intents
 // to brand_scrape (which has 5/15/90s timeouts per CLAUDE.md Rule 13),
 // (b) THIS handler gives the user an escape hatch when any tool hangs.
