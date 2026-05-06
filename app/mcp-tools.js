@@ -1411,9 +1411,23 @@ function buildTools(tool, z, ctx) {
   // not Shopify (Hard-Won Security Rule 10).
   tools.push(defineTool({
     name: 'stripe',
-    description: 'Stripe revenue & subscription analytics (read-only). Actions: setup (run once after stripe-login to verify access + persist account ID), revenue (gross + net + refund totals over a date window), subscriptions (active count, MRR, ARR, churn %), cohorts (monthly retention curves), analytics (margin + LTV:CAC where available), preference (set the dashboard\'s revenue-source preference when both Shopify AND Stripe are connected — values: "shopify" / "stripe" / "both"; default prefers Shopify for order semantics).',
-    destructive: false,
+    description: 'Stripe revenue & subscription analytics (read-only API surface). Actions: setup (run once after stripe-login to verify access + persist account ID), revenue (gross + net + refund totals over a date window), subscriptions (active count, MRR, ARR, churn %), cohorts (monthly retention curves), analytics (margin + LTV:CAC where available), preference (set the dashboard\'s revenue-source preference when both Shopify AND Stripe are connected — values: "shopify" / "stripe" / "both"; default prefers Shopify for order semantics). The Stripe OAuth scope is pinned to read_only in BOTH the binary and the BFF (Hard-Won Security Rules 8 + 9), so even the "preference" action — which writes the preference to the local merlin-config — never touches Stripe write surface.',
+    // REGRESSION GUARD (2026-05-06, Gitar review on PR #224): the
+    // 'preference' action mutates a local config field
+    // (cfg.RevenueSourcePreference) — it doesn't touch Stripe's write
+    // surface (which is locked behind read_only OAuth, see Hard-Won
+    // Security Rules 8 + 9). But it IS a state mutation, and the
+    // dashboard's RevenueSource picker (Hard-Won Security Rule 10)
+    // reads from it on every dashboard pull, so silent flipping
+    // changes downstream reporting. Marking destructive:true with
+    // preview:false matches the pattern used by every other
+    // write-capable tool (klaviyo, postscript, google_merchant) and
+    // makes the state mutation visible to MCP-host approval gates.
+    // idempotent:true is correct — re-setting the same preference is
+    // a no-op (last write wins; same input = same outcome).
+    destructive: true,
     idempotent: true,
+    preview: false,
     costImpact: 'api',
     brandRequired: false,
     concurrency: { platform: 'stripe' },
@@ -1456,9 +1470,21 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'merchant-' + args.action, args)),
   }, tool, z, ctx));
 
-  // ── reddit_organic ────────────────────────────────────────
-  // Reddit organic prospecting — scan subreddits for high-intent
-  // questions, draft compliant comment / post replies, post to Reddit.
+  // ── reddit_organic + reddit_organic_post ──────────────────
+  // Reddit organic prospecting. Split into TWO tools per Gitar review on
+  // PR #224: the read+staging surface (scan, draft) is idempotent — same
+  // thread + same draft inputs produce the same draft, retries are safe.
+  // The publish surface (post) is INHERENTLY non-idempotent — every call
+  // makes a new comment on Reddit. A blanket `idempotent: true` on the
+  // combined tool would let an LLM-supplied idempotencyKey cache a
+  // failed post and refuse to retry on transient errors (the
+  // wrapHandler idempotency cache stores ALL successful results,
+  // including is_error envelopes that aren't network failures).
+  //
+  // Splitting also makes the cost model visible: scan/draft are pure
+  // API reads; post mutates the Reddit account's public footprint and
+  // is what the 7-layer compliance preflight gates.
+  //
   // Wholly distinct from reddit_ads (which buys spend). Organic is
   // gated by the binary's 7-layer compliance preflight (TCPA-style
   // checks: subreddit rules, account-age, karma floor, recent-post
@@ -1470,25 +1496,52 @@ function buildTools(tool, z, ctx) {
   // actions (reddit-prospect-scan / -draft / -post) shipped without an
   // MCP tool. The legacy reddit_ads tool only exposed paid actions;
   // organic was binary-only.
+  // REGRESSION GUARD (2026-05-06, Gitar review on PR #224): split into
+  // reddit_organic (read+staging, idempotent) + reddit_organic_post
+  // (publish, NOT idempotent). Combining a destructive non-idempotent
+  // action with idempotent reads under a single tool created an
+  // idempotency-cache poisoning risk on retried posts.
   tools.push(defineTool({
     name: 'reddit_organic',
-    description: 'Reddit organic prospecting (NOT paid ads — see reddit_ads for spend). Actions: scan (search target subreddits for high-intent questions matching the brand\'s keywords), draft (write a compliant reply for a flagged thread; passes through the 7-layer compliance preflight), post (publish a drafted comment after the user reviews it). Every post action runs through the binary\'s subreddit-rules / karma-floor / mod-cooldown gate and REFUSES on failure — there is no auto-fix path. Per-account daily-post caps live in the binary.',
-    destructive: true,
+    description: 'Reddit organic prospecting (reads + staging — see reddit_organic_post for the publish action). Actions: scan (search target subreddits for high-intent questions matching the brand\'s keywords), draft (write a compliant reply for a flagged thread; passes through the 7-layer compliance preflight). Both actions are idempotent — same inputs produce the same output, retries are safe.',
+    destructive: false,
     idempotent: true,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'reddit_organic' },
+    input: {
+      action: z.enum(['scan', 'draft']).describe('Operation'),
+      brand: brandSchema,
+      subreddit: z.string().optional().describe('Target subreddit (without r/ prefix). Required for scan when limiting scope; optional for draft (inferred from the threadId).'),
+      keywords: z.array(z.string()).optional().describe('Keywords to filter scan results. Each keyword is matched against title + selftext. Required for scan.'),
+      threadId: z.string().optional().describe('Reddit submission ID (e.g. "t3_abc123") for draft. The 7-layer compliance preflight uses this to look up the parent thread state.'),
+      replyBody: z.string().optional().describe('Override the drafted body. The 7-layer compliance preflight still runs; user-edited bodies are not bypass paths.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'reddit-prospect-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── reddit_organic_post ───────────────────────────────────
+  // Publish a drafted Reddit comment. This is the only action that
+  // mutates Reddit's public state, so it lives in its own tool with
+  // destructive:true + idempotent:false (matching the actual semantic
+  // — every call produces a new public comment) + preview:false (the
+  // user already reviewed the draft via the draft action; chaining
+  // another preview gate would be UX friction with no upside).
+  tools.push(defineTool({
+    name: 'reddit_organic_post',
+    description: 'Publish a drafted Reddit comment (the publish step of the reddit_organic flow). Each call produces a NEW public comment on Reddit — NOT idempotent, retries create duplicate posts. Runs through the binary\'s subreddit-rules / karma-floor / mod-cooldown gate and REFUSES on failure — there is no auto-fix path. Per-account daily-post caps live in the binary.',
+    destructive: true,
+    idempotent: false,
     preview: false,
     costImpact: 'api',
     brandRequired: true,
     concurrency: { platform: 'reddit_organic' },
     input: {
-      action: z.enum(['scan', 'draft', 'post']).describe('Operation'),
       brand: brandSchema,
-      subreddit: z.string().optional().describe('Target subreddit (without r/ prefix). Required for scan when limiting scope; optional for draft/post (inferred from the threadId).'),
-      keywords: z.array(z.string()).optional().describe('Keywords to filter scan results. Each keyword is matched against title + selftext. Required for scan.'),
-      threadId: z.string().optional().describe('Reddit submission ID (e.g. "t3_abc123") for draft/post. The 7-layer compliance preflight uses this to look up the parent thread state.'),
-      draftId: z.string().optional().describe('Draft ID returned by the draft action — passed to post to publish it.'),
+      draftId: z.string().describe('Draft ID returned by reddit_organic action="draft" — passed here to publish it.'),
       replyBody: z.string().optional().describe('Override the drafted body. The 7-layer compliance preflight still runs; user-edited bodies are not bypass paths.'),
     },
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'reddit-prospect-' + args.action, args)),
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'reddit-prospect-post', args)),
   }, tool, z, ctx));
 
   // ── trendtrack ────────────────────────────────────────────

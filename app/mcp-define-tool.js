@@ -54,11 +54,25 @@ function validateDefinition(def) {
   if (typeof def.brandRequired !== 'boolean') {
     throw new TypeError(`defineTool(${def.name}): brandRequired: boolean is required`);
   }
-  // Destructive tools MUST be idempotent — you cannot retry-safely mutate
-  // platform state without a key. This is a hard rule.
-  if (def.destructive && !def.idempotent) {
-    throw new TypeError(`defineTool(${def.name}): destructive tools must also be idempotent`);
-  }
+  // REGRESSION GUARD (2026-05-06, Gitar review on PR #224):
+  // The legacy rule here was "destructive tools must also be idempotent"
+  // — required `idempotent: true` on every destructive tool. That baked
+  // in a falsehood for inherently non-idempotent operations: a Reddit
+  // comment post, a Klaviyo single-send campaign, an SMS blast — every
+  // call mutates a unique public-facing artifact, and a retry creates
+  // a duplicate, not the same outcome. Marking those `idempotent: true`
+  // would be a lie that the framework's idempotency cache then trusts
+  // (it caches the result of the FIRST call and silently returns it
+  // for subsequent calls with the same key — the exact failure mode
+  // Gitar flagged on PR #224's reddit_organic split).
+  //
+  // The legacy rule is REMOVED. `idempotent: boolean` is already
+  // required for every tool by the typecheck above (line ~48), so an
+  // author can no longer "forget" to make a choice — but EITHER value
+  // is now valid for destructive tools. The framework's idempotency
+  // cache (lines ~193 + ~326) gates on `idempotent && args.idempotencyKey`,
+  // so `idempotent: false` simply disables caching — which is the
+  // correct behavior for genuinely non-idempotent operations.
   // Destructive tools SHOULD support preview. We warn (not error) because
   // some destructive tools are too small to warrant a preview step.
   if (def.destructive && def.preview === undefined) {
@@ -294,27 +308,34 @@ function wrapHandler(def, ctx) {
     if (concurrencyOpts && concurrencyOpts.platform) {
       // Resolve the platform name. Static-string tools pass through; the
       // function form (codex API audit P2 #2 fix) gets called with args
-      // so it can branch on provider/action. A non-string return triggers
-      // a fail-closed: the call routes via runHandler without a slot
-      // (better than throwing — but we log the bug).
+      // so it can branch on provider/action.
+      //
+      // REGRESSION GUARD (2026-05-06, Gitar review on PR #224 — fail-OPEN
+      // bug): a broken resolver (throws OR returns non-string) used to
+      // route the call via runHandler with NO slot acquired. That's
+      // fail-OPEN — a persistently broken resolver would let unlimited
+      // concurrent calls through, bypassing the JS-layer concurrency
+      // budget for that tool entirely. Fix: route via the '_default'
+      // platform on resolver failure so the call is STILL metered (the
+      // _default cap in mcp-concurrency.js is intentionally low — 2 —
+      // exactly so unknown/broken cases don't fan out wide).
       let platformName = concurrencyOpts.platform;
       if (typeof platformName === 'function') {
         try {
           platformName = platformName(args);
         } catch (e) {
           console.warn('[defineTool]', toolName, 'concurrency resolver threw:', e && e.message);
-          platformName = '';
+          platformName = '_default';
         }
         if (typeof platformName !== 'string' || !platformName) {
-          console.warn('[defineTool]', toolName, 'concurrency resolver returned non-string:', platformName);
-          platformName = '';
+          console.warn('[defineTool]', toolName, 'concurrency resolver returned non-string; falling back to _default cap:', platformName);
+          platformName = '_default';
         }
       }
-      if (platformName) {
-        resultEnvelope = await concurrency.withSlot(platformName, runHandler);
-      } else {
-        resultEnvelope = await runHandler();
-      }
+      // Always claim a slot — fail-closed. Static-string platforms hit
+      // their declared slot; broken resolvers fall through to '_default'
+      // so the call is still rate-limited.
+      resultEnvelope = await concurrency.withSlot(platformName, runHandler);
     } else {
       resultEnvelope = await runHandler();
     }

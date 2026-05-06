@@ -100,11 +100,35 @@ test('validateDefinition rejects invalid costImpact values', () => {
   }
 });
 
-test('destructive tools must also be idempotent', () => {
+// REGRESSION GUARD (2026-05-06, Gitar review on PR #224): the legacy
+// "destructive tools must also be idempotent" rule was REMOVED. It
+// baked in a falsehood for inherently non-idempotent destructive
+// operations (Reddit comment posts, single-send Klaviyo campaigns,
+// SMS blasts) — every call mutates a unique public artifact, retry
+// semantics differ. Marking them idempotent:true would have let the
+// framework's idempotency cache silently return a stale result on
+// retried calls. Now `idempotent: false` is a valid (and meaningful)
+// annotation for destructive tools — it disables the cache.
+//
+// The universal `idempotent: boolean is required` rule (line 48)
+// still forces an explicit choice, so authors can't accidentally
+// omit it.
+test('destructive tools may set idempotent:false (explicit "retries create dupes")', () => {
+  // Missing idempotent → reject by the universal typecheck.
   assert.throws(() => validateDefinition({
     name: 'kill_ad', description: 'd', handler: () => {},
+    destructive: true, costImpact: 'api', brandRequired: true,
+  }), /idempotent: boolean is required/);
+  // idempotent:true → accept (legacy retry-safe path).
+  assert.doesNotThrow(() => validateDefinition({
+    name: 'kill_ad', description: 'd', handler: () => {},
+    destructive: true, idempotent: true, costImpact: 'api', brandRequired: true,
+  }));
+  // idempotent:false → accept (the rule that used to reject this is gone).
+  assert.doesNotThrow(() => validateDefinition({
+    name: 'reddit_post', description: 'd', handler: () => {},
     destructive: true, idempotent: false, costImpact: 'api', brandRequired: true,
-  }), /destructive tools must also be idempotent/);
+  }));
 });
 
 test('concurrency.platform must be a string or function when provided', () => {
