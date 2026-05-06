@@ -1510,6 +1510,23 @@ async function createWindow() {
       return new Response('Not found', { status: 404 });
     }
 
+    // REGRESSION GUARD (2026-05-06, image-card-unavailable incident):
+    // Reject 0-byte files explicitly. The Go binary's image pipeline
+    // sometimes emits the gallery sentinel slightly before the bytes
+    // hit disk on Windows (file exists at 0 bytes during atomic rename
+    // /  partial flush). Pre-fix the handler returned 200 OK with an
+    // empty body and Content-Length:0 — the browser treated it as a
+    // SUCCESSFUL load of an empty image and never fired `error`, so
+    // the stack-IMG retry-on-error path below couldn't kick in. Live
+    // user report 2026-05-06: "Image still appears as unavailable
+    // once rendered with the card style." Returning 425 Too Early
+    // makes the browser fire `error` on the IMG, which the stack
+    // retries (gallery-viewer.js), and on the second attempt the
+    // file is fully written and the load succeeds.
+    if (stat.size === 0) {
+      return new Response('File not yet ready', { status: 425 });
+    }
+
     const contentType = MIME_TYPES[ext];
     const totalSize = stat.size;
 
