@@ -49,14 +49,24 @@ function makeFakeTool() {
 }
 
 function makeFakeZ() {
+  // REGRESSION GUARD (2026-05-06, ga-batchcount-type followup):
+  // chain().int() supports `z.number().int()` and `z.coerce.number().int()`
+  // declarations introduced for batchCount fields (ga-batchcount-type
+  // session — defense-in-depth coerce-to-int so an LLM passing "7"
+  // string still lands as integer 7 in the Go binary).
   const chain = () => ({
     optional: () => chain(), describe: () => chain(), default: () => chain(),
-    regex: () => chain(), // Codex 2026-04-24: brandSchema = z.string().regex(BRAND_NAME_PATTERN, ...)
+    regex: () => chain(), int: () => chain(),
   });
   return {
     string: () => chain(), number: () => chain(), boolean: () => chain(),
     any: () => chain(), enum: () => chain(), array: () => chain(),
     object: () => chain(), record: () => chain(),
+    // z.coerce.number() shape — paired with .int() in the live code at
+    // every batchCount declaration. mcp-batchcount-coerce.test.js
+    // source-scans the declarations; this fake-zod has to mirror the
+    // shape so buildTools doesn't throw at registration time.
+    coerce: { number: () => chain() },
   };
 }
 
@@ -128,8 +138,20 @@ function main() {
     }
 
     // Cross-field rules.
-    if (ann.destructive === true && ann.idempotent !== true) {
-      violations.push(`${name}: destructive tools MUST be idempotent (retry safety)`);
+    //
+    // REGRESSION GUARD (2026-05-06, Gitar review on PR #224 followup):
+    // Pre-fix this rule rejected `destructive: true, idempotent: false`.
+    // That baked in a falsehood for inherently non-idempotent destructive
+    // operations (Reddit comment posts, single-send Klaviyo campaigns,
+    // SMS blasts) — every call mutates a unique public artifact, retry
+    // semantics differ. Marking them idempotent:true would have let the
+    // framework's idempotency cache silently return stale failures on
+    // retried calls. Now the rule only requires `idempotent` to be a
+    // boolean (universal annotation rule already enforced by
+    // mcp-define-tool.js). Either value is valid for destructive tools;
+    // false is a deliberate "retries create dupes" annotation.
+    if (ann.destructive === true && typeof ann.idempotent !== 'boolean') {
+      violations.push(`${name}: destructive tools MUST declare idempotent explicitly (true | false)`);
     }
 
     // Preview gating: if destructive, preview must be explicitly set.
