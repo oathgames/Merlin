@@ -371,6 +371,67 @@ test('transformGalleryToStack: empty gallery is a no-op', () => {
   }
 });
 
+// REGRESSION GUARD (2026-05-06, image-card-unavailable incident):
+//
+// Live user report: "Image still appears as unavailable once rendered
+// with the card style." Pre-fix, the stack IMG fired `error` on the
+// FIRST failed load and immediately replaced the IMG with the
+// "Image unavailable" placeholder. The underlying cause was a
+// transient race: on Windows, the Go binary's image pipeline emits
+// the gallery sentinel just before the bytes hit disk, so the
+// merlin:// handler briefly served a 0-byte file. The browser
+// treated the 0-byte response as a successful load (no `error`
+// event), but rendered nothing — leaving the user looking at the
+// placeholder forever.
+//
+// The fix has two parts:
+//   1. main.js merlin:// handler returns 425 Too Early on 0-byte
+//      files so the IMG fires `error` (not silent success).
+//   2. gallery-viewer.js stack-IMG `error` handler retries the load
+//      up to 2× with 600ms + 1500ms backoff before declaring the
+//      image dead and showing the placeholder.
+//
+// These tests source-scan both halves. A behavior test would need
+// jsdom + fake timers (intentionally avoided per the file header).
+test('source-scan: stack IMG error handler retries before declaring dead', () => {
+  // The retry budget MUST exist — pre-fix the error handler immediately
+  // replaced the IMG with the placeholder.
+  assert.ok(SOURCE.includes('STACK_IMG_MAX_RETRIES'),
+    'expected STACK_IMG_MAX_RETRIES constant in stack IMG error path');
+  assert.ok(/STACK_IMG_MAX_RETRIES\s*=\s*2\b/.test(SOURCE),
+    'retry budget MUST be at least 2 (covers the producer-side write race window)');
+  assert.ok(SOURCE.includes('STACK_IMG_RETRY_DELAYS_MS'),
+    'expected STACK_IMG_RETRY_DELAYS_MS constant');
+  // The retry must use setTimeout (not synchronous re-fetch) so the
+  // file-write race window has time to close.
+  assert.ok(/retriesLeft\s*>\s*0[\s\S]*?setTimeout/.test(SOURCE),
+    'retry path MUST use setTimeout to wait out the producer race');
+  // Setting src='' before re-setting forces re-fetch even if the URL
+  // is identical and would otherwise be served from a stale cache.
+  assert.ok(/im\.src\s*=\s*['"]['"];?[\s\S]{0,200}?im\.src\s*=\s*it\.src/.test(SOURCE),
+    'retry MUST clear src to "" before re-setting so the browser re-fetches');
+  // Re-arming the listeners with {once:true} is mandatory — without
+  // it, the second error never fires.
+  assert.ok(/im\.addEventListener\(['"]error['"],\s*onError,\s*\{\s*once:\s*true/.test(SOURCE),
+    'error listener must be {once:true} so it re-fires on each retry');
+});
+
+test('source-scan: stack IMG fallback only renders after retries exhaust', () => {
+  // The .merlin-stack-fallback replacement must live INSIDE the
+  // `retriesLeft <= 0` branch — pre-fix it ran on the first error.
+  // Find the onError function body and assert the retry-check appears
+  // BEFORE the fallback creation.
+  const errorHandlerStart = SOURCE.indexOf('const onError = () =>');
+  assert.ok(errorHandlerStart > 0, 'onError handler must exist');
+  const handlerSlice = SOURCE.slice(errorHandlerStart, errorHandlerStart + 1500);
+  const retryCheckIdx = handlerSlice.search(/retriesLeft\s*>\s*0/);
+  const fallbackCreateIdx = handlerSlice.search(/merlin-stack-fallback/);
+  assert.ok(retryCheckIdx > 0 && fallbackCreateIdx > 0,
+    'both retry-check and fallback-create must be in the error handler');
+  assert.ok(retryCheckIdx < fallbackCreateIdx,
+    'retry-check MUST run BEFORE the fallback-create — otherwise transient errors immediately show "Image unavailable"');
+});
+
 test('source-scan: arrow keys do NOT wrap at boundaries', () => {
   // The `go(delta)` method must EARLY-RETURN at boundaries, not wrap.
   // S-tier expectation: pressing ← at index 0 stops there, no surprise jump

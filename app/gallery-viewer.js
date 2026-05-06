@@ -744,9 +744,45 @@ function transformGalleryToStack(galleryEl, openViewer) {
       // 'error'. Result: cards always show either a clean image,
       // a load-shimmer, or a "Image failed to load" tile — never
       // the bare broken-icon glyph.
+      // REGRESSION GUARD (2026-05-06, image-card-unavailable retry path):
+      // Pre-fix the IMG fired `error` on the first failed load and the
+      // user immediately saw the "Image unavailable" placeholder — even
+      // when the underlying cause was a transient race (file briefly
+      // 0-bytes during atomic write on Windows, merlin:// handler
+      // returning 425 Too Early per the matching guard in main.js).
+      // Now we retry up to 2 times with a short delay before declaring
+      // the image dead. Live user report 2026-05-06: "Image still
+      // appears as unavailable once rendered with the card style."
+      //
+      // Retry budget: 2 attempts with 600ms then 1500ms backoff. After
+      // ~2.1s of cumulative wait, transient producer-side races have
+      // resolved (the binary's atomicWrite + fsync completes well
+      // within that window). Permanent 404s still surface the friendly
+      // placeholder, just 2.1s later.
       im.dataset.loadState = 'pending';
+      const STACK_IMG_MAX_RETRIES = 2;
+      const STACK_IMG_RETRY_DELAYS_MS = [600, 1500];
+      let retriesLeft = STACK_IMG_MAX_RETRIES;
+      let nextDelayIdx = 0;
       const onLoad = () => { im.dataset.loadState = 'loaded'; };
       const onError = () => {
+        if (retriesLeft > 0) {
+          const delay = STACK_IMG_RETRY_DELAYS_MS[nextDelayIdx] ||
+            STACK_IMG_RETRY_DELAYS_MS[STACK_IMG_RETRY_DELAYS_MS.length - 1];
+          retriesLeft--;
+          nextDelayIdx++;
+          // Re-arm the listeners (the {once:true} consumed them) and
+          // re-set src after the delay. Setting src='' first forces
+          // the browser to re-fetch even if the URL is identical and
+          // would otherwise be served from a stale cache entry.
+          setTimeout(() => {
+            im.addEventListener('load', onLoad, { once: true });
+            im.addEventListener('error', onError, { once: true });
+            im.src = '';
+            im.src = it.src;
+          }, delay);
+          return;
+        }
         im.dataset.loadState = 'error';
         // Replace the IMG with a friendly inline placeholder so the
         // card has visible content explaining the failure. Keep the
