@@ -1148,7 +1148,23 @@ function buildTools(tool, z, ctx) {
     costImpact: 'generation',
     brandRequired: false,
     longRunning: true,
-    concurrency: { platform: 'fal' },
+    // REGRESSION GUARD (2026-05-06, codex API audit P2 #2):
+    // Resolve concurrency by provider so LLM auto-mode can't saturate
+    // the wrong provider's queue. Pre-fix every video gen routed
+    // through the 'fal' slot regardless of whether it actually used
+    // veo/arcads/heygen — a 25-video heygen burst would queue against
+    // fal's slot budget instead of heygen's. The function takes args at
+    // call time and returns the platform name; mcp-concurrency.js owns
+    // the slot map. Falls back to 'fal' for unknown / unset providers.
+    concurrency: {
+      platform: (args) => {
+        const p = String(args && args.provider || '').toLowerCase();
+        if (p === 'veo') return 'google_ai';
+        if (p === 'heygen') return 'heygen';
+        if (p === 'arcads') return 'arcads';
+        return 'fal';
+      },
+    },
     preview: false,
     input: {
       brand: brandSchema.optional(),
@@ -1174,7 +1190,14 @@ function buildTools(tool, z, ctx) {
     idempotent: true,
     costImpact: 'generation',
     brandRequired: false,
-    concurrency: { platform: 'elevenlabs' },
+    // REGRESSION GUARD (2026-05-06, codex API audit P2 #2):
+    // list-avatars hits HeyGen's API; the other voice actions hit
+    // ElevenLabs. Pre-fix all four routed through the 'elevenlabs' slot,
+    // so a list-avatars burst contended against in-flight voice clones.
+    // Now: clone/list/delete → 'elevenlabs', list-avatars → 'heygen'.
+    concurrency: {
+      platform: (args) => (args && args.action === 'list-avatars') ? 'heygen' : 'elevenlabs',
+    },
     preview: false,
     input: {
       action: z.enum(['clone', 'list', 'delete', 'list-avatars']).describe('Operation'),
@@ -1352,6 +1375,129 @@ function buildTools(tool, z, ctx) {
       brand: brandSchema.optional(),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'threads-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── stripe ────────────────────────────────────────────────
+  // Stripe read-only revenue + subscription analytics. The OAuth scope
+  // is pinned to read_only in BOTH the binary (oauth.go getStripeOAuth)
+  // and the Worker BFF (Hard-Won Security Rule 9), and stripe.go is
+  // read-only by construction (Hard-Won Security Rule 8 — no POST/PUT/
+  // DELETE verbs). This MCP tool is just the LLM-facing surface for
+  // those binary actions; it cannot widen the scope or fire writes.
+  //
+  // REGRESSION GUARD (2026-05-06, codex API audit P1 #3): all binary
+  // CLI actions (stripe-revenue / -subscriptions / -cohorts / -analytics
+  // / -setup / -preference) shipped without an MCP tool, so the LLM
+  // saw zero Stripe surface. Adding this tool unblocks dashboard's
+  // RevenueSource preference flow for users who connect Stripe but
+  // not Shopify (Hard-Won Security Rule 10).
+  tools.push(defineTool({
+    name: 'stripe',
+    description: 'Stripe revenue & subscription analytics (read-only). Actions: setup (run once after stripe-login to verify access + persist account ID), revenue (gross + net + refund totals over a date window), subscriptions (active count, MRR, ARR, churn %), cohorts (monthly retention curves), analytics (margin + LTV:CAC where available), preference (set the dashboard\'s revenue-source preference when both Shopify AND Stripe are connected — values: "shopify" / "stripe" / "both"; default prefers Shopify for order semantics).',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'stripe' },
+    input: {
+      action: z.enum(['setup', 'revenue', 'subscriptions', 'cohorts', 'analytics', 'preference']).describe('Operation'),
+      brand: brandSchema.optional(),
+      batchCount: z.number().optional().describe('Days of data (revenue/subscriptions/cohorts/analytics)'),
+      preference: z.enum(['shopify', 'stripe', 'both', '']).optional().describe('Revenue source preference (preference action only). Empty string clears any explicit preference.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'stripe-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── google_merchant ───────────────────────────────────────
+  // Google Merchant Center — product feed sync + diagnostic insights.
+  // Catalog-side mirror of google_ads (which manages campaigns); the
+  // Merchant API provides the product database that Google Shopping
+  // ads serve from. setup creates the per-brand Merchant account
+  // bindings; sync-shopify pushes the Shopify catalog to GMC; insights
+  // surfaces disapprovals + warnings that block ads.
+  //
+  // REGRESSION GUARD (2026-05-06, codex API audit P1 #3): binary CLI
+  // actions (merchant-status / -setup / -sync-shopify / -insights)
+  // shipped without an MCP tool. Without this, when a Shopify-connected
+  // user said "fix my Shopping ads disapprovals" the LLM had no path
+  // from chat to merchant-insights.
+  tools.push(defineTool({
+    name: 'google_merchant',
+    description: 'Google Merchant Center — product feed sync + Shopping ad diagnostics. Actions: status (account binding check), setup (one-time per brand), sync-shopify (push Shopify catalog → GMC), insights (product disapprovals, policy warnings, item-level issues blocking Google Shopping ads).',
+    destructive: true,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'google_merchant' },
+    input: {
+      action: z.enum(['status', 'setup', 'sync-shopify', 'insights']).describe('Operation'),
+      brand: brandSchema,
+      batchCount: z.number().optional().describe('Days of data (insights)'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'merchant-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── reddit_organic ────────────────────────────────────────
+  // Reddit organic prospecting — scan subreddits for high-intent
+  // questions, draft compliant comment / post replies, post to Reddit.
+  // Wholly distinct from reddit_ads (which buys spend). Organic is
+  // gated by the binary's 7-layer compliance preflight (TCPA-style
+  // checks: subreddit rules, account-age, karma floor, recent-post
+  // dedup, mod-removal cool-down, rate limits, opt-in language). A
+  // failed gate REFUSES the post (no auto-fix) so a paying user's
+  // Reddit account never gets shadow-banned by Merlin.
+  //
+  // REGRESSION GUARD (2026-05-06, codex API audit P1 #3): binary CLI
+  // actions (reddit-prospect-scan / -draft / -post) shipped without an
+  // MCP tool. The legacy reddit_ads tool only exposed paid actions;
+  // organic was binary-only.
+  tools.push(defineTool({
+    name: 'reddit_organic',
+    description: 'Reddit organic prospecting (NOT paid ads — see reddit_ads for spend). Actions: scan (search target subreddits for high-intent questions matching the brand\'s keywords), draft (write a compliant reply for a flagged thread; passes through the 7-layer compliance preflight), post (publish a drafted comment after the user reviews it). Every post action runs through the binary\'s subreddit-rules / karma-floor / mod-cooldown gate and REFUSES on failure — there is no auto-fix path. Per-account daily-post caps live in the binary.',
+    destructive: true,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'reddit_organic' },
+    input: {
+      action: z.enum(['scan', 'draft', 'post']).describe('Operation'),
+      brand: brandSchema,
+      subreddit: z.string().optional().describe('Target subreddit (without r/ prefix). Required for scan when limiting scope; optional for draft/post (inferred from the threadId).'),
+      keywords: z.array(z.string()).optional().describe('Keywords to filter scan results. Each keyword is matched against title + selftext. Required for scan.'),
+      threadId: z.string().optional().describe('Reddit submission ID (e.g. "t3_abc123") for draft/post. The 7-layer compliance preflight uses this to look up the parent thread state.'),
+      draftId: z.string().optional().describe('Draft ID returned by the draft action — passed to post to publish it.'),
+      replyBody: z.string().optional().describe('Override the drafted body. The 7-layer compliance preflight still runs; user-edited bodies are not bypass paths.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'reddit-prospect-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── trendtrack ────────────────────────────────────────────
+  // TrendTrack ecommerce intelligence — Shopify store discovery,
+  // ad library, email library, trend signals. Currently exposes only
+  // the unmetered system endpoints (status, verify-key) — the broader
+  // query surface is documented in trendtrack.go but not yet wired
+  // through the MCP layer. This tool establishes the MCP entry point
+  // so the broader query actions can be added without renaming.
+  //
+  // REGRESSION GUARD (2026-05-06, codex API audit P1 #3): binary CLI
+  // actions (trendtrack-status, trendtrack-verify-key) shipped without
+  // an MCP tool, so the LLM had no path to surface "your TrendTrack
+  // key is invalid" in chat.
+  tools.push(defineTool({
+    name: 'trendtrack',
+    description: 'TrendTrack ecommerce intelligence — system / verification endpoints only (status, verify-key). The broader TrendTrack query surface (Shopify store discovery, ad library, email library, trend signals) is implemented in the binary and will be exposed here as the corresponding MCP actions ship.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'trendtrack' },
+    input: {
+      action: z.enum(['status', 'verify-key']).describe('Operation'),
+      brand: brandSchema.optional(),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'trendtrack-' + args.action, args)),
   }, tool, z, ctx));
 
   // ── reddit_ads ───────────────────────────────────────────

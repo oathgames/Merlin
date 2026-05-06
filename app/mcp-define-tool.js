@@ -65,8 +65,22 @@ function validateDefinition(def) {
     console.warn(`[defineTool] ${def.name} is destructive without explicit preview: true|false — defaulting to false`);
   }
   if (def.concurrency !== undefined) {
-    if (!def.concurrency || typeof def.concurrency.platform !== 'string') {
-      throw new TypeError(`defineTool(${def.name}): concurrency.platform must be a string`);
+    // REGRESSION GUARD (2026-05-06, codex API audit P2 #2):
+    // concurrency.platform may now be EITHER a string (most tools have a
+    // fixed platform — meta_ads → 'meta', klaviyo → 'klaviyo', …) OR a
+    // function (args) => string for tools whose backing platform varies
+    // by argument shape. The video + voice tools span multiple providers
+    // (fal/veo/arcads/heygen for video; elevenlabs/heygen for voice) and
+    // need per-call resolution so LLM auto-mode can't saturate the wrong
+    // provider's queue. The function form is invoked once per call with
+    // the parsed args (see wrapHandler below); a string return type is
+    // required and validated at call time.
+    if (!def.concurrency) {
+      throw new TypeError(`defineTool(${def.name}): concurrency must be an object with a platform field`);
+    }
+    const p = def.concurrency.platform;
+    if (typeof p !== 'string' && typeof p !== 'function') {
+      throw new TypeError(`defineTool(${def.name}): concurrency.platform must be a string or a function returning a string`);
     }
   }
 }
@@ -278,7 +292,29 @@ function wrapHandler(def, ctx) {
 
     let resultEnvelope;
     if (concurrencyOpts && concurrencyOpts.platform) {
-      resultEnvelope = await concurrency.withSlot(concurrencyOpts.platform, runHandler);
+      // Resolve the platform name. Static-string tools pass through; the
+      // function form (codex API audit P2 #2 fix) gets called with args
+      // so it can branch on provider/action. A non-string return triggers
+      // a fail-closed: the call routes via runHandler without a slot
+      // (better than throwing — but we log the bug).
+      let platformName = concurrencyOpts.platform;
+      if (typeof platformName === 'function') {
+        try {
+          platformName = platformName(args);
+        } catch (e) {
+          console.warn('[defineTool]', toolName, 'concurrency resolver threw:', e && e.message);
+          platformName = '';
+        }
+        if (typeof platformName !== 'string' || !platformName) {
+          console.warn('[defineTool]', toolName, 'concurrency resolver returned non-string:', platformName);
+          platformName = '';
+        }
+      }
+      if (platformName) {
+        resultEnvelope = await concurrency.withSlot(platformName, runHandler);
+      } else {
+        resultEnvelope = await runHandler();
+      }
     } else {
       resultEnvelope = await runHandler();
     }
@@ -340,5 +376,6 @@ module.exports = {
   defineTool,
   validateDefinition,
   enrichSchema,
+  wrapHandler,
   VALID_COST_IMPACTS,
 };
