@@ -507,6 +507,14 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
+    // Stays brandRequired:false because the action enum includes 'setup',
+    // 'discover', 'adlib' which legitimately operate brand-less (account
+    // discovery, competitor research). Per-action enforcement lives in
+    // runBinary via BRAND_OPTIONAL_ACTIONS. New code should prefer the
+    // intent-specific tools (meta_launch_test_ad, meta_review_performance,
+    // meta_scale_winner) which ARE brandRequired:true. (codex API audit
+    // P2 #1 — flipped most tools, but multi-action tools whose enum spans
+    // brand-required AND brand-optional actions stay false.)
     brandRequired: false,
     concurrency: { platform: 'meta' },
     preview: false,
@@ -626,7 +634,7 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'meta' },
     preview: false,
     input: {
@@ -639,7 +647,7 @@ function buildTools(tool, z, ctx) {
         'audit-frequency-caps',
         'audit-catalog',
       ]).describe('The audit operation to perform. All actions read-only.'),
-      brand: brandSchema.optional().describe('Brand name for vault-scoped Meta credentials.'),
+      brand: brandSchema.describe('Brand name for vault-scoped Meta credentials.'),
       adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel: optional pixel id override (defaults to brand cfg metaPixelId).'),
       catalogId: z.string().optional().describe('For audit-catalog: the Meta product catalog id (find it via mcp__merlin__meta_ads({action:"catalog"}) or in Commerce Manager).'),
       status: z.enum(['active', 'all']).optional().describe('For audit-retargeting-cascade and audit-frequency-caps: filter ad sets. Default "active" (paused ad sets are noise).'),
@@ -687,7 +695,7 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'google_analytics' },
     preview: true,
     // Per-action gating: only the seven write actions require the approval
@@ -729,7 +737,7 @@ function buildTools(tool, z, ctx) {
         'update-property-settings',
         'attach-shopify-events',
       ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card.'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       batchCount: z.number().optional().describe('Days of data (positive integer; default 7). Negative interpreted as today only. Read actions only. Ignored by realtime (always last 30 min).'),
       level: z.string().optional().describe('For traffic: "date" (default) or "channel". For realtime: "country" (default), "page", or "device".'),
       limit: z.number().optional().describe('Max rows to return (clamps to 1000).'),
@@ -763,12 +771,12 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'tiktok' },
     preview: false,
     input: {
       action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'lookalike']).describe('The operation to perform'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
       dailyBudget: z.number().optional(),
@@ -795,12 +803,12 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'google' },
     preview: false,
     input: {
       action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
       adImagePath: z.string().optional(),
@@ -826,12 +834,12 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'amazon' },
     preview: false,
     input: {
       action: z.enum(['push', 'insights', 'kill', 'setup', 'status', 'products', 'orders']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
       dailyBudget: z.number().optional(),
@@ -852,11 +860,11 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'shopify' },
     input: {
       action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       batchCount: z.number().optional().describe('Days of data (for analytics/orders)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'shopify-' + args.action, args)),
@@ -936,7 +944,7 @@ function buildTools(tool, z, ctx) {
     preview: false,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'klaviyo' },
     input: {
       action: z.enum([
@@ -949,7 +957,7 @@ function buildTools(tool, z, ctx) {
         'flows-list', 'flow-get', 'flow-create',
         'flow-update-status', 'flow-delete', 'flows-bulk-import',
       ]).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       batchCount: z.number().optional().describe('Days of data (performance/campaigns)'),
       // Template fields (used by template-* + bulk-upload actions)
       templateId: z.string().optional().describe('Klaviyo template ID (get/update/delete)'),
@@ -1028,7 +1036,7 @@ function buildTools(tool, z, ctx) {
     idempotent: true,
     preview: false,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'postscript' },
     input: {
       action: z.enum([
@@ -1043,7 +1051,7 @@ function buildTools(tool, z, ctx) {
         // Bulk
         'bulk-import-flow',
       ]).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       limit: z.number().optional().describe('Max rows returned'),
       automationId: z.string().optional().describe('Automation (flow) ID for get/update/delete/activate/deactivate'),
       stepId: z.string().optional().describe('Step ID inside an automation (for step update/delete)'),
@@ -1064,10 +1072,10 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     input: {
       action: z.enum(['audit', 'revenue']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       batchCount: z.number().optional().describe('Days of data'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'email-' + args.action, args)),
@@ -1080,10 +1088,10 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     input: {
       action: z.enum(['audit', 'keywords', 'rankings', 'fix-alt', 'track', 'gaps', 'update-rank']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       url: z.string().optional().describe('Target URL (for audit)'),
     },
     handler: async (args) => {
@@ -1100,12 +1108,12 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'generation',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'fal' },
     preview: false,
     input: {
       action: z.enum(['image', 'batch', 'blog-post', 'blog-list', 'social-post']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       product: z.string().optional(),
       imagePrompt: z.string().optional().describe('Freeform image prompt'),
       imageCount: z.number().optional().describe('Number of images (1-4)'),
@@ -1146,7 +1154,7 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'generation',
-    brandRequired: false,
+    brandRequired: true,
     longRunning: true,
     // REGRESSION GUARD (2026-05-06, codex API audit P2 #2):
     // Resolve concurrency by provider so LLM auto-mode can't saturate
@@ -1167,7 +1175,7 @@ function buildTools(tool, z, ctx) {
     },
     preview: false,
     input: {
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       product: z.string().optional(),
       script: z.string().optional().describe('Custom script text'),
       format: z.string().optional().describe('"9:16", "16:9", or "1:1"'),
@@ -1238,6 +1246,9 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'generation',
+    // captions operates on a raw video file path and dispatches directly
+    // to the captions module — never to runBinary. No brand-scoped state
+    // is touched, so brandRequired stays false (codex API audit P2 #1).
     brandRequired: false,
     longRunning: true,
     input: {
@@ -1312,6 +1323,13 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'api',
+    // Stays brandRequired:false because the action enum includes 'wisdom'
+    // (vertical-keyed, not brand-keyed) and 'landing-audit' (URL-driven,
+    // brand-agnostic) — both legitimately brand-less. Per-action
+    // enforcement lives in runBinary via BRAND_OPTIONAL_ACTIONS for
+    // 'dashboard' / 'calendar' / 'report' / 'competitor-scan'. Same
+    // multi-action exemption rationale as meta_ads above (codex API
+    // audit P2 #1).
     brandRequired: false,
     input: {
       action: z.enum(['dashboard', 'calendar', 'wisdom', 'report', 'competitor-scan', 'landing-audit']).describe('Operation'),
@@ -1369,10 +1387,10 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     input: {
       action: z.enum(['profile', 'posts', 'insights']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'threads-' + args.action, args)),
   }, tool, z, ctx));
@@ -1507,12 +1525,12 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'reddit_ads' },
     preview: false,
     input: {
       action: z.enum(['accounts', 'campaigns', 'adgroups', 'ads', 'insights', 'create-campaign', 'create-ad', 'kill']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       campaignId: z.string().optional().describe('Campaign ID'),
       adId: z.string().optional().describe('Ad or ad group ID'),
       campaignName: z.string().optional().describe('Campaign name'),
@@ -1535,12 +1553,12 @@ function buildTools(tool, z, ctx) {
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'linkedin' },
     preview: false,
     input: {
       action: z.enum(['accounts', 'campaigns', 'setup', 'push', 'insights', 'kill', 'duplicate', 'budget']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       campaignId: z.string().optional().describe('Campaign ID or URN'),
       adId: z.string().optional().describe('Creative ID or URN'),
       campaignName: z.string().optional().describe('Campaign name'),
@@ -1564,11 +1582,11 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'api',
-    brandRequired: false,
+    brandRequired: true,
     concurrency: { platform: 'etsy' },
     input: {
       action: z.enum(['shop', 'products', 'orders']).describe('Operation'),
-      brand: brandSchema.optional(),
+      brand: brandSchema,
       batchCount: z.number().optional().describe('Number of results to return (max 100)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'etsy-' + args.action, args)),
@@ -2165,10 +2183,10 @@ function buildTools(tool, z, ctx) {
     destructive: false,
     idempotent: true,
     costImpact: 'none',
-    brandRequired: false,
+    brandRequired: true,
     input: {
       action: z.enum(['queue']).describe('queue=list unconsumed DecisionFacts (kills needing replacements)'),
-      brand: brandSchema.optional().describe('Brand name'),
+      brand: brandSchema.describe('Brand name'),
       sinceUnix: z.number().optional().describe('Only return decisions with Timestamp >= this Unix seconds value (default: all)'),
     },
     handler: async (args) => {
