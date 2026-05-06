@@ -328,6 +328,81 @@ test('§3.13 — friendlyError chip-renders mcp__merlin__google_analytics scope_
   );
 });
 
+test('SDK ede_diagnostic / error_during_execution surfaces a friendly message, NEVER the raw diagnostic', () => {
+  // REGRESSION GUARD (2026-05-05, sdk-ede-diagnostic):
+  //
+  // The Claude Agent SDK's `error_during_execution` result subtype ships
+  // its diagnostic as `[ede_diagnostic] result_type=<X> last_content_type=<Y>
+  // stop_reason=<Z>`. Pre-fix, this string surfaced verbatim in chat with
+  // the generic 3-attempt retry banner below — three lines of SDK
+  // internals to a paying user. Hard-Won Security Rule 6: every
+  // user-visible error MUST pass through friendlyError. Match BEFORE
+  // the generic JSON / 5xx branches.
+  //
+  // Source-scan: friendlyError() must contain a literal `ede_diagnostic`
+  // or `error_during_execution` match-arm that returns a sentence-style
+  // string (no `[`, no `=`, no `result_type`). The match MUST live
+  // BEFORE the generic JSON branch (`s.includes('{"')`) because a
+  // future SDK version could ship the diagnostic with embedded JSON.
+  const fnStart = RENDERER_JS.indexOf('function friendlyError(');
+  assert.ok(fnStart > 0, 'friendlyError defined');
+  const fnEnd = RENDERER_JS.indexOf('function humanizeUpdateError', fnStart);
+  assert.ok(fnEnd > fnStart, 'friendlyError fn boundary located');
+  const body = RENDERER_JS.slice(fnStart, fnEnd);
+
+  assert.ok(
+    body.includes('ede_diagnostic') || body.includes('error_during_execution'),
+    'friendlyError must contain an ede_diagnostic / error_during_execution match-arm so the SDK\'s raw diagnostic never surfaces to chat'
+  );
+
+  // Match must come BEFORE the generic JSON branch — otherwise `s.includes("{")`
+  // (the JSON-detection branch) would never fire here, but the structural
+  // ordering invariant is what we lock: SDK-internal error strings get
+  // their own friendly copy, then we fall through to platform-specific
+  // matches.
+  const sdkMatchIdx = body.search(/ede_diagnostic|error_during_execution/);
+  const jsonBranchIdx = body.search(/s\.includes\(['"]\{"['"]\)/);
+  assert.ok(
+    sdkMatchIdx > 0 && (jsonBranchIdx < 0 || sdkMatchIdx < jsonBranchIdx),
+    'ede_diagnostic / error_during_execution match-arm MUST appear BEFORE the generic JSON / HTTP branch — otherwise an SDK diagnostic with embedded JSON would route via the generic path and surface "Something went wrong"'
+  );
+
+  // The friendly copy must be a complete sentence — no [, =, or
+  // diagnostic-token leakage. Pull the string literal that's returned
+  // for the ede_diagnostic branch and assert its shape.
+  const branchMatch = body.match(/ede_diagnostic[\s\S]{0,800}?return\s+['"`]([^'"`]+)['"`]/);
+  assert.ok(branchMatch, 'ede_diagnostic branch returns a quoted string literal');
+  const userCopy = branchMatch[1];
+  for (const banned of ['[', ']', '=', 'result_type', 'last_content_type', 'stop_reason', 'ede_diagnostic']) {
+    assert.ok(
+      !userCopy.includes(banned),
+      `ede_diagnostic friendly copy must not contain "${banned}" — that's SDK internals leaking. Got: "${userCopy}"`
+    );
+  }
+  // And it must contain a plain-English actionable next step.
+  assert.match(userCopy, /try:?/i,
+    'ede_diagnostic friendly copy must contain a "Try:" actionable hint so the user knows what happens next');
+});
+
+test('SDK terminal-state errors (max_turns / max_budget / max_structured_output_retries) all friendly', () => {
+  // REGRESSION GUARD (2026-05-05, sdk-terminal-states):
+  //
+  // The SDK ships three other terminal-state error subtypes alongside
+  // error_during_execution: error_max_turns, error_max_budget_usd,
+  // error_max_structured_output_retries. Each has a distinct user-
+  // facing fix (simplify the ask, raise the budget, rephrase). Each
+  // gets its own friendly branch so the user sees the right next step
+  // instead of a generic "Something went wrong."
+  const fnStart = RENDERER_JS.indexOf('function friendlyError(');
+  const fnEnd = RENDERER_JS.indexOf('function humanizeUpdateError', fnStart);
+  const body = RENDERER_JS.slice(fnStart, fnEnd);
+
+  for (const sentinel of ['error_max_turns', 'error_max_budget_usd', 'error_max_structured_output_retries']) {
+    assert.ok(body.includes(sentinel),
+      `friendlyError must include a branch matching the SDK sentinel "${sentinel}" — without this the user sees "Something went wrong" instead of the actionable fix (simplify / raise budget / rephrase)`);
+  }
+});
+
 test('§3.12 — dead-end banner is session-deduped', () => {
   assert.ok(RENDERER_JS.includes('_deadEndShownThisSession'),
     'session dedup set declared');
