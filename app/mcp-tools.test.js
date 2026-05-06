@@ -733,28 +733,29 @@ test('postscript tool description references TCPA gate (the safety contract)', (
 });
 
 test('postscript tool prefixes the action and dispatches to postscript-<action>', async () => {
-  // Uses the brand-guard refusal text as a routing oracle: a brand-LESS
-  // call to a postscript action that's NOT in BRAND_OPTIONAL_ACTIONS
-  // trips the guard with the FULL action string in the error message. A
-  // typo'd action ("postscrpit-..." or a dropped prefix) would surface as
-  // a failed regex match — caught before merge.
-  // Strengthened from the trivial smoke version (Gitar PR #154); dead
-  // `captured` scaffold removed (Gitar PR #154 follow-up).
+  // REGRESSION GUARD (2026-05-06, codex API audit P2 #1):
+  // Pre-fix postscript was brandRequired:false at the framework level, so
+  // a brand-less call fell through to runBinary's BRAND_MISSING refusal
+  // whose message includes the FULL prefixed action ("postscript-automation-create")
+  // — and the test used that as a routing oracle. With brandRequired:true
+  // the framework refuses BEFORE runBinary builds the prefixed action, so
+  // we now route the routing-typo check through the engine-not-found path
+  // instead. Pass a brand + a missing binary path; the handler must reach
+  // the binary-spawn step (where action is prefixed) and surface the
+  // engine-missing error WITHOUT crashing on schema validation.
   const { tool, registry } = makeFakeTool();
   const ctx = makeCtx({ getBinaryPath: () => null });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'postscript');
 
-  const outBrandless = await entry.handler({ action: 'automation-create' });
-  const textBrandless = outBrandless.content && outBrandless.content[0] ? outBrandless.content[0].text : '';
-  if (textBrandless.includes('Refusing')) {
-    assert.match(textBrandless, /postscript-automation-create/,
-      `brand-guard refusal must include the full prefixed action; routing typo would surface here. Got: ${textBrandless}`);
-  } else {
-    // Engine-not-found path; can't introspect the action from the user-
-    // facing text, but the handler must not crash.
-    assert.ok(textBrandless.length > 0, 'postscript handler returned empty text');
-  }
+  const out = await entry.handler({ action: 'automation-create', brand: 'pog' });
+  const text = out.content && out.content[0] ? out.content[0].text : '';
+  // Engine-not-found path; can't introspect the action from the user-
+  // facing text, but the handler must not crash AND must reach the
+  // engine path (i.e., not refuse on schema validation).
+  assert.ok(text.length > 0, 'postscript handler returned empty text');
+  assert.ok(!text.includes('BRAND_MISSING') && !text.includes('Refusing postscript'),
+    `passing brand=pog should not refuse on missing-brand. Got: ${text}`);
 });
 
 test('postscript tool description mentions bulk-import-flow (the morning-setup verb)', () => {
