@@ -127,7 +127,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     input: {
       brand: brandSchema.describe('Brand name'),
-      batchCount: z.number().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort by: spend, roas, ctr, clicks, impressions, cpc, purchases'),
       sortOrder: z.enum(['asc', 'desc']).optional().describe('Sort order (default: desc)'),
       limit: z.number().optional().describe('Max results (e.g. 5 for top 5)'),

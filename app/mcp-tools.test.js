@@ -53,13 +53,31 @@ function makeFakeZ() {
   }
   return {
     string: pass,
-    number: pass,
+    number: () => {
+      // z.number() returns a chain that ALSO supports .int() for the
+      // batchCount declarations (z.coerce.number().int().optional()).
+      const node = chain();
+      node.int = () => node;
+      return node;
+    },
     boolean: pass,
     any: pass,
     enum: () => chain(),
     array: () => chain(),
     object: () => chain(),
     record: () => chain(),
+    // z.coerce.number().int() — defense-in-depth coercion for the
+    // batchCount fields (codex API audit followup, ga-batchcount-type
+    // incident 2026-05-06). The fake mirrors z.number() — with .int()
+    // chainable — because the test surface only cares about schema
+    // construction, not runtime coercion.
+    coerce: {
+      number: () => {
+        const node = chain();
+        node.int = () => node;
+        return node;
+      },
+    },
   };
 }
 

@@ -52,11 +52,12 @@ function makeFakeTool() {
 function makeFakeZ() {
   const chain = () => ({
     optional: () => chain(), describe: () => chain(), default: () => chain(),
-    regex: () => chain(),
+    regex: () => chain(), int: () => chain(),
   });
   return {
     string: () => chain(), number: () => chain(), boolean: () => chain(),
-    any: () => chain(), enum: () => chain(), array: () => chain(),
+    any: () => chain(), enum: () => chain(),
+    coerce: { number: () => chain() }, array: () => chain(),
     object: () => chain(), record: () => chain(),
   };
 }

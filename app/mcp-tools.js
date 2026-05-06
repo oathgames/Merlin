@@ -530,7 +530,7 @@ function buildTools(tool, z, ctx) {
       adBody: z.string().optional().describe('Ad primary text'),
       adLink: z.string().optional().describe('Destination URL'),
       dailyBudget: z.number().optional().describe('Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform\'s API. If the user says "$10 a day", pass 10. If unsure, ask the user.'),
-      batchCount: z.number().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks, impressions, cpc, purchases'),
       sortOrder: z.string().optional().describe('Sort order: desc (default) or asc'),
       limit: z.number().optional().describe('Max results to return (e.g. 5 for top 5)'),
@@ -738,7 +738,7 @@ function buildTools(tool, z, ctx) {
         'attach-shopify-events',
       ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card.'),
       brand: brandSchema,
-      batchCount: z.number().optional().describe('Days of data (positive integer; default 7). Negative interpreted as today only. Read actions only. Ignored by realtime (always last 30 min).'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (positive integer; default 7). Negative interpreted as today only. Read actions only. Ignored by realtime (always last 30 min).'),
       level: z.string().optional().describe('For traffic: "date" (default) or "channel". For realtime: "country" (default), "page", or "device".'),
       limit: z.number().optional().describe('Max rows to return (clamps to 1000).'),
       analyticsFunnelSteps: z.array(z.string()).optional().describe('For funnel: ordered list of GA4 event names (≥2). Empty → standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase.'),
@@ -785,7 +785,7 @@ function buildTools(tool, z, ctx) {
       adHeadline: z.string().optional(),
       adBody: z.string().optional(),
       adLink: z.string().optional(),
-      batchCount: z.number().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks'),
       limit: z.number().optional().describe('Max results to return'),
     },
@@ -816,7 +816,7 @@ function buildTools(tool, z, ctx) {
       adBody: z.string().optional(),
       adLink: z.string().optional().describe('Final URL'),
       dailyBudget: z.number().optional(),
-      batchCount: z.number().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks, conversions'),
       limit: z.number().optional().describe('Max results to return'),
     },
@@ -843,7 +843,7 @@ function buildTools(tool, z, ctx) {
       adId: z.string().optional(),
       campaignId: z.string().optional(),
       dailyBudget: z.number().optional(),
-      batchCount: z.number().optional().describe('Days of data'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data'),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Amazon');
@@ -865,7 +865,7 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts']).describe('Operation'),
       brand: brandSchema,
-      batchCount: z.number().optional().describe('Days of data (for analytics/orders)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (for analytics/orders)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'shopify-' + args.action, args)),
   }, tool, z, ctx));
@@ -958,7 +958,7 @@ function buildTools(tool, z, ctx) {
         'flow-update-status', 'flow-delete', 'flows-bulk-import',
       ]).describe('Operation'),
       brand: brandSchema,
-      batchCount: z.number().optional().describe('Days of data (performance/campaigns)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (performance/campaigns)'),
       // Template fields (used by template-* + bulk-upload actions)
       templateId: z.string().optional().describe('Klaviyo template ID (get/update/delete)'),
       templateName: z.string().optional().describe('Display name for the template (create/update)'),
@@ -999,7 +999,7 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['status', 'max-report', 'ad-report', 'campaign-performance', 'manage']).describe('Operation'),
       brand: brandSchema.optional(),
-      batchCount: z.number().optional().describe('Days of data (default 7, max 365)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (default 7, max 365)'),
       limit: z.number().optional().describe('Max rows returned'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'applovin-' + args.action, args)),
@@ -1076,7 +1076,7 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['audit', 'revenue']).describe('Operation'),
       brand: brandSchema,
-      batchCount: z.number().optional().describe('Days of data'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'email-' + args.action, args)),
   }, tool, z, ctx));
@@ -1127,7 +1127,7 @@ function buildTools(tool, z, ctx) {
       referenceImages: z.array(z.string()).optional(),
       referencesDir: z.string().optional(),
       templatePath: z.string().optional(),
-      batchCount: z.number().optional().describe('Number of variations (for batch)'),
+      batchCount: z.coerce.number().int().optional().describe('Number of variations (for batch)'),
       blogTitle: z.string().optional(),
       blogBody: z.string().optional(),
       blogTags: z.string().optional(),
@@ -1334,7 +1334,7 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['dashboard', 'calendar', 'wisdom', 'report', 'competitor-scan', 'landing-audit']).describe('Operation'),
       brand: brandSchema.optional(),
-      batchCount: z.number().optional().describe('Days of data'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data'),
       url: z.string().optional().describe('URL (for landing-audit)'),
     },
     handler: async (args) => {
@@ -1434,7 +1434,7 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['setup', 'revenue', 'subscriptions', 'cohorts', 'analytics', 'preference']).describe('Operation'),
       brand: brandSchema.optional(),
-      batchCount: z.number().optional().describe('Days of data (revenue/subscriptions/cohorts/analytics)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (revenue/subscriptions/cohorts/analytics)'),
       preference: z.enum(['shopify', 'stripe', 'both', '']).optional().describe('Revenue source preference (preference action only). Empty string clears any explicit preference.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'stripe-' + args.action, args)),
@@ -1465,7 +1465,7 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['status', 'setup', 'sync-shopify', 'insights']).describe('Operation'),
       brand: brandSchema,
-      batchCount: z.number().optional().describe('Days of data (insights)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (insights)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'merchant-' + args.action, args)),
   }, tool, z, ctx));
@@ -1590,7 +1590,7 @@ function buildTools(tool, z, ctx) {
       dailyBudget: z.number().optional().describe('Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform\'s API. If the user says "$10 a day", pass 10. If unsure, ask the user.'),
       adHeadline: z.string().optional().describe('Ad headline'),
       adLink: z.string().optional().describe('Destination URL'),
-      batchCount: z.number().optional().describe('Days of data (for insights)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Reddit');
@@ -1619,7 +1619,7 @@ function buildTools(tool, z, ctx) {
       adHeadline: z.string().optional().describe('Ad headline'),
       adBody: z.string().optional().describe('Ad body text'),
       adLink: z.string().optional().describe('Destination URL'),
-      batchCount: z.number().optional().describe('Days of data (for insights)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'LinkedIn');
@@ -1640,7 +1640,7 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['shop', 'products', 'orders']).describe('Operation'),
       brand: brandSchema,
-      batchCount: z.number().optional().describe('Number of results to return (max 100)'),
+      batchCount: z.coerce.number().int().optional().describe('Number of results to return (max 100)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'etsy-' + args.action, args)),
   }, tool, z, ctx));
