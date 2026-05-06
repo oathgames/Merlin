@@ -6,7 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const { defineTool, validateDefinition, enrichSchema, VALID_COST_IMPACTS } =
+const { defineTool, validateDefinition, enrichSchema, wrapHandler, VALID_COST_IMPACTS } =
   require('./mcp-define-tool');
 const envelope = require('./mcp-envelope');
 const { IdempotencyStore } = require('./mcp-idempotency');
@@ -107,12 +107,78 @@ test('destructive tools must also be idempotent', () => {
   }), /destructive tools must also be idempotent/);
 });
 
-test('concurrency.platform must be a string when provided', () => {
+test('concurrency.platform must be a string or function when provided', () => {
+  // Number rejected.
   assert.throws(() => validateDefinition({
     name: 't', description: 'd', handler: () => {},
     destructive: false, idempotent: true, costImpact: 'none', brandRequired: false,
     concurrency: { platform: 42 },
-  }), /concurrency.platform must be a string/);
+  }), /concurrency.platform must be a string or a function/);
+  // null/undefined object rejected.
+  assert.throws(() => validateDefinition({
+    name: 't', description: 'd', handler: () => {},
+    destructive: false, idempotent: true, costImpact: 'none', brandRequired: false,
+    concurrency: null,
+  }), /concurrency must be an object/);
+  // String accepted (legacy form — most tools use this).
+  assert.doesNotThrow(() => validateDefinition({
+    name: 't', description: 'd', handler: () => {},
+    destructive: false, idempotent: true, costImpact: 'none', brandRequired: false,
+    concurrency: { platform: 'meta' },
+  }));
+  // Function accepted (new form — codex API audit P2 #2 fix).
+  assert.doesNotThrow(() => validateDefinition({
+    name: 't', description: 'd', handler: () => {},
+    destructive: false, idempotent: true, costImpact: 'none', brandRequired: false,
+    concurrency: { platform: (args) => 'meta' },
+  }));
+});
+
+// REGRESSION GUARD (2026-05-06, codex API audit P2 #2):
+// concurrency.platform may now be a function so video / voice tools can
+// route to the correct provider's slot at call time. Source-scan the
+// generated annotations to confirm the function form passes through
+// validateDefinition + ends up in the registered annotations.
+test('dynamic concurrency: function form passes validateDefinition', () => {
+  // Already covered by the upgraded "must be a string or function" test
+  // above; this is the explicit cross-check that defineTool itself
+  // accepts the function form (not just validateDefinition in isolation).
+  const z = makeFakeZod();
+  let registered = null;
+  const tool = (n, d, s, h, opts) => { registered = { n, d, opts }; };
+  defineTool({
+    name: 'video_dynamic',
+    description: 'd',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: {
+      platform: (args) => (args && args.provider) === 'veo' ? 'google_ai' : 'fal',
+    },
+    input: {},
+    handler: async () => ({}),
+  }, tool, z, { redactionPaths: [] });
+  assert.ok(registered, 'tool must register');
+  assert.equal(typeof registered.opts.annotations.concurrency.platform, 'function',
+    'annotations must preserve the function form so MCP clients see the dynamic resolver');
+});
+
+test('source-scan: wrapHandler resolves function-form concurrency before claiming a slot', () => {
+  // Lock the implementation pattern in source: the function must be
+  // called with args BEFORE concurrency.withSlot is invoked. This is
+  // the load-bearing property — calling withSlot first then resolving
+  // the platform name would be a deadlock-prone race.
+  const src = fs.readFileSync(path.join(__dirname, 'mcp-define-tool.js'), 'utf8');
+  const wrapStart = src.indexOf('function wrapHandler');
+  assert.ok(wrapStart > 0);
+  const wrap = src.slice(wrapStart);
+  const fnCallIdx = wrap.search(/typeof\s+platformName\s*===\s*['"]function['"]/);
+  const slotCallIdx = wrap.search(/concurrency\.withSlot\(platformName/);
+  assert.ok(fnCallIdx > 0 && slotCallIdx > 0,
+    'wrapHandler must contain both the function-form resolver and the withSlot call');
+  assert.ok(fnCallIdx < slotCallIdx,
+    'function-form resolution MUST run BEFORE withSlot is called — otherwise the slot is claimed against an unresolved name');
 });
 
 // ── enrichSchema ─────────────────────────────────────────────────────────

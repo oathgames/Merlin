@@ -65,6 +65,19 @@ const DEFAULT_CAPS = Object.freeze({
   applovin:         2, // AppLovin Report API — 3 req/min documented, 2 concurrent stays within ceiling.
   trendtrack:       3, // TrendTrack ad-library scrape — credit-limited, concurrency cap is anti-thunder rather than ceiling.
 
+  // REGRESSION GUARD (2026-05-06, codex API audit P0 #2 fix): two new
+  // platforms wired through PreflightCheck in this session — both got
+  // entries in platformLimits, so the concurrency parity test would
+  // otherwise fail.
+  google_ai:             3, // Gemini + Veo — Free 15 req/min Flash / 5 req/min Pro; paid tiers higher. 3 concurrent stays under cross-tier budget; matches the conservative posture of fal/heygen.
+  google_search_console: 3, // Search Console — 1,200 QPM/project, 50K queries/day/property. 3 concurrent is anti-thunder; the QPM ceiling is the real limit.
+
+  // REGRESSION GUARD (2026-05-06, codex API audit P2 #2 fix): arcads is
+  // a video-generation provider that can now be selected via the video
+  // tool's dynamic concurrency resolver. Without an explicit entry it
+  // would fall to _default=2 silently.
+  arcads:           3, // Arcads UGC video — credit-gated, 3 concurrent matches fal's posture.
+
   // Default for any platform not explicitly listed — err on the side of
   // safety. 2 concurrent forces callers to queue instead of fan out wide.
   _default: 2,
