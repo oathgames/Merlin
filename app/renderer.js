@@ -1626,6 +1626,52 @@ function friendlyError(raw, platformName) {
   const s = String(raw);
   const sl = s.toLowerCase();
 
+  // REGRESSION GUARD (2026-05-05, sdk-ede-diagnostic):
+  //
+  // The Claude Agent SDK emits an `error_during_execution` result subtype
+  // when the conversation stream ends in an unexpected state — e.g. a
+  // tool returned but the assistant didn't follow up with text, the
+  // model exhausted retries on a stream-side hiccup, or an internal
+  // abort fired between a tool_result and the next assistant turn.
+  // The error string the SDK ships looks like:
+  //
+  //   [ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null
+  //
+  // (and similar variants — `result_type` may be `assistant` or
+  // `undefined`, `last_content_type` may be `none`/`text`/`tool_use`,
+  // `stop_reason` may be a real reason or `null`.) Source: SDK cli.js
+  // `error_during_execution` branch — the diagnostic is constructed
+  // from `findLast(assistant|user)`'s shape vs. the recorded
+  // `stop_reason`. Live incident 2026-05-05: paying user kicked off a
+  // 5-variant creative-engine run, the stream ended unexpectedly, and
+  // the raw SDK diagnostic surfaced verbatim in chat with the generic
+  // "Retrying in 2s... (attempt 1/3)" line below — three lines of
+  // SDK internals leaking to a paying user. Hard-Won Security Rule 6:
+  // every user-visible error MUST pass through friendlyError.
+  //
+  // The retry path handles this correctly (transient stream-end is
+  // exactly what restart-the-session fixes), so we keep the retry
+  // loop running and only swap the user-visible copy. Match BEFORE
+  // the generic JSON / 5xx branches below — otherwise the "ede" /
+  // "n/a" tokens never make it to a sympathetic message.
+  if (sl.includes('[ede_diagnostic]') || sl.includes('ede_diagnostic') || sl.includes('error_during_execution')) {
+    return 'Merlin had a hiccup mid-thought.\nTry: Merlin is automatically restarting your session — your last message will replay in a moment.';
+  }
+
+  // SDK terminal-state error subtypes — surfaced when the conversation
+  // hit a hard ceiling instead of finishing cleanly. Each gets its own
+  // friendly translation so the user knows whether to wait, simplify
+  // their request, or upgrade their plan.
+  if (sl.includes('error_max_turns') || sl.includes('reached maximum number of turns')) {
+    return 'That request needed more steps than Merlin could fit in one go.\nTry: Break it into smaller asks (e.g. "make 5 ads" → "make 1 hero ad first").';
+  }
+  if (sl.includes('error_max_budget_usd') || sl.includes('reached maximum budget')) {
+    return 'That request hit Merlin\'s spend ceiling for one turn.\nTry: Break it into smaller asks, or open Settings → Connections to raise your budget.';
+  }
+  if (sl.includes('error_max_structured_output_retries') || sl.includes('valid structured output after')) {
+    return 'Merlin had trouble producing a clean structured answer.\nTry: Rephrase the request more directly, or [[chip:Update Merlin:update]] to pick up the latest fixes.';
+  }
+
   // REGRESSION GUARD (2026-05-01, ga-scope-reauth):
   // The Go binary's analytics.go returns errAnalyticsScopeMissing with the
   // exact prefix `mcp__merlin__google_analytics: scope_missing:` when a 403
