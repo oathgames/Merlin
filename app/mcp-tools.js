@@ -1230,6 +1230,35 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'postscript-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── clarity ──────────────────────────────────────────────
+  // Microsoft Clarity behavioral analytics (read-only Data Export API).
+  // Brand-scoped: each brand connects its own Clarity project token.
+  //   connect  → opens the Clarity dashboard so the user can generate a
+  //              Data Export API token (Settings → Data Export).
+  //   verify   → validates a pasted token with a real API probe and, on
+  //              success, persists it for the brand + seeds the cache.
+  //   status   → reports connection state (no API call).
+  //   insights → pulls the behavioral snapshot (rage/dead clicks, scroll
+  //              depth, JS errors). Cache-aware — Clarity caps the API at
+  //              10 pulls/project/day, so clarity.go serves a 6h-TTL
+  //              per-brand snapshot rather than hitting the wire each call.
+  tools.push(defineTool({
+    name: 'clarity',
+    description: 'Microsoft Clarity behavioral analytics — connect a brand\'s Clarity project, then pull real visitor friction (rage clicks, dead clicks, scroll depth, JavaScript errors). connect → opens Clarity so the user can generate a Data Export API token. verify → validates and saves a pasted token. status → checks connection state. insights → pulls the behavioral snapshot (cached 6h to respect Clarity\'s 10-pulls/day limit). Clarity data also auto-enriches landing-audit and funnel-teardown for connected brands.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'clarity' },
+    input: {
+      action: z.enum(['connect', 'verify', 'status', 'insights']).describe('connect → open Clarity to generate a token. verify → validate + save a pasted token (requires apiKey). status → check connection. insights → pull the behavioral snapshot.'),
+      brand: brandSchema,
+      apiKey: z.string().optional().describe('The Clarity Data Export API token to validate (required for verify). Generated in Clarity → Settings → Data Export → Generate new API token by a project admin.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'clarity-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── email ────────────────────────────────────────────────
   tools.push(defineTool({
     name: 'email',
@@ -1897,7 +1926,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'stripe', 'linkedin']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'stripe', 'linkedin']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -1954,6 +1983,15 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'Postscript connects via API key',
           instructions: 'Click the Postscript tile in the Connections panel and paste your API key from app.postscript.io → Settings → API. Then use connection_status to verify.',
+        };
+      }
+      // Microsoft Clarity connects via the dedicated `clarity` tool: it
+      // owns the connect/verify flow (browser open + brand-scoped token
+      // persistence in the Go binary), so platform_login just routes there.
+      if (args.platform === 'clarity') {
+        return {
+          summary: 'Microsoft Clarity connects via the clarity tool',
+          instructions: 'Call mcp__merlin__clarity with action "connect" — it opens Clarity so the user can generate a Data Export API token (Settings → Data Export, project admin only). When they paste the token back, call clarity with action "verify" and the apiKey to save it for this brand. Then connection_status will show Clarity as connected.',
         };
       }
       try {

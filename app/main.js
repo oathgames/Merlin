@@ -8309,6 +8309,10 @@ const BRAND_KEYS = [
   'slackBotToken', 'slackWebhookUrl',
   'applovinMaxReportKey', 'applovinAdReportKey',
   'postscriptApiKey',
+  // Microsoft Clarity Data Export API token — brand-scoped (each brand
+  // connects its own Clarity project). Mirror of brandScopedKeys in
+  // autocmo-core/vault.go.
+  'clarityApiToken',
   'linkedinAccessToken', 'linkedinRefreshToken', 'linkedinAdAccountId',
 ];
 
@@ -9149,6 +9153,10 @@ function getConnections(brandName) {
     checkBrand('stripeAccessToken', 'stripe');
     checkBrand('linkedinAccessToken', 'linkedin');
     checkBrand('pinterestAccessToken', 'pinterest');
+    // Microsoft Clarity — brand-scoped Data Export API token. Long-lived
+    // JWT with no refresh cycle, so it never carries a _tokenTimestamps
+    // entry and checkBrand never false-flags it 'expired'.
+    checkBrand('clarityApiToken', 'clarity');
     // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
     const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
     const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
@@ -9262,6 +9270,8 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       trendtrack: ['trendtrackApiKey'],
       applovin: ['applovinMaxReportKey', 'applovinAdReportKey'],
       postscript: ['postscriptApiKey'],
+      // Microsoft Clarity — single brand-scoped Data Export API token.
+      clarity: ['clarityApiToken'],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };

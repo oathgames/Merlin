@@ -83,6 +83,11 @@ const VAULT_SENSITIVE_KEYS = [
   // in one shot but the per-key save call still hit the rejection.
   'applovinMaxReportKey',
   'applovinAdReportKey',
+  // Microsoft Clarity Data Export API token (brand-scoped JWT). The Go
+  // binary persists it via VaultPut on clarity-verify, but it is listed
+  // here so the disconnect-platform handler's vaultDelete fires for it
+  // and isSensitiveConfigKey treats it as a never-plaintext credential.
+  'clarityApiToken',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',
