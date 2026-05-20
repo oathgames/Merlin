@@ -8313,6 +8313,9 @@ const BRAND_KEYS = [
   // connects its own Clarity project). Mirror of brandScopedKeys in
   // autocmo-core/vault.go.
   'clarityApiToken',
+  // PostHog — three brand-scoped fields (each brand connects its own
+  // PostHog project). Mirror of brandScopedKeys in autocmo-core/vault.go.
+  'posthogApiKey', 'posthogProjectId', 'posthogHost',
   'linkedinAccessToken', 'linkedinRefreshToken', 'linkedinAdAccountId',
 ];
 
@@ -9157,6 +9160,16 @@ function getConnections(brandName) {
     // JWT with no refresh cycle, so it never carries a _tokenTimestamps
     // entry and checkBrand never false-flags it 'expired'.
     checkBrand('clarityApiToken', 'clarity');
+    // PostHog — brand-scoped; connected only when BOTH the API key and the
+    // project id are present (the project id is what scopes every query).
+    const phKey = brandName ? brandCfg.posthogApiKey : globalCfg.posthogApiKey;
+    const phProject = brandName ? brandCfg.posthogProjectId : globalCfg.posthogProjectId;
+    if (phKey && phProject) {
+      const hasVaultKey = typeof phKey === 'string' && phKey.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'posthogApiKey')
+        : !!phKey;
+      if (hasVaultKey) connected.push({ platform: 'posthog', status: 'connected' });
+    }
     // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
     const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
     const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
@@ -9272,6 +9285,8 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       postscript: ['postscriptApiKey'],
       // Microsoft Clarity — single brand-scoped Data Export API token.
       clarity: ['clarityApiToken'],
+      // PostHog — three brand-scoped fields (key + project id + host).
+      posthog: ['posthogApiKey', 'posthogProjectId', 'posthogHost'],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };

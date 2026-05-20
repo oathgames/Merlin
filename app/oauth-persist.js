@@ -88,6 +88,12 @@ const VAULT_SENSITIVE_KEYS = [
   // here so the disconnect-platform handler's vaultDelete fires for it
   // and isSensitiveConfigKey treats it as a never-plaintext credential.
   'clarityApiToken',
+  // PostHog Personal API Key (brand-scoped Bearer token). The Go binary
+  // persists it via VaultPut on posthog-verify; listed here so the
+  // disconnect-platform handler's vaultDelete fires for it. The companion
+  // posthogProjectId / posthogHost fields are non-secret identifiers and
+  // are NOT listed here (same treatment as shopifyStore).
+  'posthogApiKey',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',

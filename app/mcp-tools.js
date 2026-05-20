@@ -1259,6 +1259,35 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'clarity-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── posthog ──────────────────────────────────────────────
+  // PostHog product/ecommerce analytics (read-only HogQL Query API).
+  // Brand-scoped: each brand connects its own PostHog project.
+  //   connect  → opens PostHog so the user can mint a Personal API Key.
+  //   verify   → validates a pasted key, auto-detects the US/EU region,
+  //              resolves the project, and persists it for the brand.
+  //   status   → reports connection state (no API call).
+  //   insights → pulls the ecommerce snapshot — conversion funnel
+  //              (view → cart → checkout → purchase), revenue, orders,
+  //              top products, top pages. Cached 2h.
+  tools.push(defineTool({
+    name: 'posthog',
+    description: 'PostHog product & ecommerce analytics — connect a brand\'s PostHog project, then pull its real conversion funnel (product views → add-to-cart → checkout → orders), revenue, top products, and top pages. connect → opens PostHog to mint a Personal API Key. verify → validates a pasted key (auto-detects US/EU region, resolves the project); pass host for self-hosted PostHog and projectId to pin a specific project. status → checks connection. insights → pulls the ecommerce snapshot (cached 2h). PostHog data also auto-enriches landing-audit and funnel-teardown for connected brands.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'posthog' },
+    input: {
+      action: z.enum(['connect', 'verify', 'status', 'insights']).describe('connect → open PostHog to mint a Personal API Key. verify → validate + save a pasted key (requires apiKey). status → check connection. insights → pull the ecommerce analytics snapshot.'),
+      brand: brandSchema,
+      apiKey: z.string().optional().describe('The PostHog Personal API Key to validate (required for verify). Minted in PostHog → Settings → Personal API Keys with the "Query Read" and "Project Read" scopes.'),
+      host: z.string().optional().describe('Optional for verify: PostHog region or host — "us" (default), "eu", or a full base URL for self-hosted PostHog. Omit to auto-detect the region from the key.'),
+      projectId: z.string().optional().describe('Optional for verify: pin a specific PostHog project id. Omit to use the first project the key can access.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'posthog-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── email ────────────────────────────────────────────────
   tools.push(defineTool({
     name: 'email',
@@ -1926,7 +1955,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'stripe', 'linkedin']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -1992,6 +2021,15 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'Microsoft Clarity connects via the clarity tool',
           instructions: 'Call mcp__merlin__clarity with action "connect" — it opens Clarity so the user can generate a Data Export API token (Settings → Data Export, project admin only). When they paste the token back, call clarity with action "verify" and the apiKey to save it for this brand. Then connection_status will show Clarity as connected.',
+        };
+      }
+      // PostHog connects via the dedicated `posthog` tool — it owns the
+      // connect/verify flow (browser open + brand-scoped persistence in
+      // the Go binary), so platform_login just routes there.
+      if (args.platform === 'posthog') {
+        return {
+          summary: 'PostHog connects via the posthog tool',
+          instructions: 'Call mcp__merlin__posthog with action "connect" — it opens PostHog so the user can mint a Personal API Key (Settings → Personal API Keys, scopes "Query Read" + "Project Read"). When they paste the key back, call posthog with action "verify" and the apiKey to save it for this brand (it auto-detects the US/EU region). Then connection_status will show PostHog as connected.',
         };
       }
       try {
