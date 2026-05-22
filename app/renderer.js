@@ -5201,6 +5201,9 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   setSidebarPinned('archive', false);
   document.getElementById('wisdom-overlay').classList.add('hidden');
   closeAgencyOverlay();
+  // Palantir is a sibling sidebar — hide it when Magic opens (it is never
+  // pinned, so no setSidebarPinned pairing is needed).
+  document.getElementById('palantir-panel').classList.add('hidden');
   const panel = document.getElementById('magic-panel');
   panel.classList.toggle('hidden');
   // If we're hiding magic via toggle, also clear its pinned state so
@@ -9981,6 +9984,8 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   setSidebarPinned('magic', false);
   document.getElementById('wisdom-overlay').classList.add('hidden');
   closeAgencyOverlay();
+  // Palantir is a sibling sidebar — hide it when Archive opens.
+  document.getElementById('palantir-panel').classList.add('hidden');
   const panel = document.getElementById('archive-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) { showArchiveView(); }
@@ -10028,6 +10033,393 @@ document.getElementById('archive-expand').addEventListener('click', (e) => {
   const btn = document.getElementById('archive-expand');
   panel.classList.toggle('expanded');
   btn.textContent = panel.classList.contains('expanded') ? '→' : '←';
+});
+
+// ── Palantir — competitor ad feed ──────────────────────────────────
+// An infinite-scroll wall of competitor / market ads for creative
+// research. Ads + locally-cached thumbnails come from the binary's
+// `palantir-feed` action (Foreplay-backed) — see palantir.go and the
+// palantir-feed IPC handler in main.js. The feed paginates via an opaque
+// Foreplay cursor; an IntersectionObserver on #palantir-sentinel pulls
+// the next page as the user scrolls. All media loads through merlin://
+// (thumbnails cached locally by the binary, video downloaded on demand)
+// so the renderer CSP never has to trust a remote ad-CDN host.
+const palantirState = {
+  loading: false,
+  hasMore: false,
+  cursor: '',
+  brandIds: '',
+  domain: '',
+  count: 0,
+};
+let palantirObserver = null;
+
+function palantirEl(id) { return document.getElementById(id); }
+
+function palantirSetStatus(msg, kind) {
+  const el = palantirEl('palantir-status');
+  if (!el) return;
+  el.textContent = msg || '';
+  el.className = 'palantir-status' + (kind ? ' palantir-status-' + kind : '');
+  el.style.display = msg ? '' : 'none';
+}
+
+function palantirTruncate(s, n) {
+  s = String(s == null ? '' : s);
+  if (s.length <= n) return s;
+  return s.slice(0, Math.max(1, n - 1)).trimEnd() + '…';
+}
+
+function palantirFormatLabel(f) {
+  const map = {
+    video: 'Video', image: 'Image', carousel: 'Carousel', dco: 'Dynamic',
+    dpa: 'Catalog', multi_images: 'Multi-image', multi_videos: 'Multi-video',
+  };
+  return map[String(f || '').toLowerCase()] || (f ? String(f) : 'Ad');
+}
+
+function palantirCtaLabel(c) {
+  return String(c || '').replace(/_/g, ' ').toLowerCase()
+    .replace(/\b\w/g, (ch) => ch.toUpperCase());
+}
+
+function palantirDaysRunning(started) {
+  let s = Number(started) || 0;
+  if (s <= 0) return 0;
+  if (s > 1e12) s = s / 1000; // tolerate millisecond timestamps
+  const days = Math.floor((Date.now() / 1000 - s) / 86400);
+  return days > 0 ? days : 0;
+}
+
+function palantirThumbUrl(thumbFile) {
+  if (!thumbFile) return '';
+  return merlinUrl('results/competitor-ads/thumbs/' + thumbFile);
+}
+
+function palantirRenderCard(ad) {
+  const card = document.createElement('div');
+  card.className = 'palantir-card';
+  card.dataset.adId = ad.adId || '';
+  const thumb = palantirThumbUrl(ad.thumbFile);
+  const headline = ad.headline || ad.name || '';
+  const body = ad.description || '';
+  const liveBadge = ad.live
+    ? '<span class="palantir-badge palantir-badge-live">● Live</span>'
+    : '<span class="palantir-badge palantir-badge-off">Inactive</span>';
+  const fmtLabel = ad.hasVideo ? 'Video' : palantirFormatLabel(ad.displayFormat);
+  const noImg = `<span class="palantir-card-noimg">${ad.hasVideo ? '▶ Video ad' : 'Ad creative'}</span>`;
+  const mediaInner = thumb
+    ? `<img class="palantir-card-thumb" src="${escapeHtml(thumb)}" alt="" loading="lazy" decoding="async">${ad.hasVideo ? '<span class="palantir-play-badge" aria-hidden="true">▶</span>' : ''}`
+    : noImg;
+  card.innerHTML =
+    `<div class="palantir-card-media${thumb ? '' : ' palantir-card-media-empty'}">${mediaInner}</div>` +
+    `<div class="palantir-card-body">` +
+      (headline ? `<div class="palantir-card-headline">${escapeHtml(palantirTruncate(headline, 90))}</div>` : '') +
+      (body ? `<div class="palantir-card-copy">${escapeHtml(palantirTruncate(body, 150))}</div>` : '') +
+      `<div class="palantir-card-meta">${liveBadge}<span class="palantir-badge">${escapeHtml(fmtLabel)}</span>` +
+        (ad.ctaType ? `<span class="palantir-badge">${escapeHtml(palantirCtaLabel(ad.ctaType))}</span>` : '') +
+      `</div>` +
+    `</div>`;
+  const img = card.querySelector('img.palantir-card-thumb');
+  if (img) {
+    img.addEventListener('error', () => {
+      const media = card.querySelector('.palantir-card-media');
+      if (media) {
+        media.classList.add('palantir-card-media-empty');
+        media.innerHTML = noImg;
+      }
+    }, { once: true });
+  }
+  card.addEventListener('click', () => openPalantirDetail(ad));
+  return card;
+}
+
+function palantirEnsureObserver() {
+  if (palantirObserver) return;
+  const sentinel = palantirEl('palantir-sentinel');
+  if (!sentinel || typeof IntersectionObserver !== 'function') return;
+  const panel = palantirEl('palantir-panel');
+  const root = panel ? panel.querySelector('.palantir-scroll') : null;
+  palantirObserver = new IntersectionObserver((entries) => {
+    for (const e of entries) {
+      if (e.isIntersecting && palantirState.hasMore && !palantirState.loading) {
+        loadPalantirFeed({ reset: false });
+      }
+    }
+  }, { root: root || null, rootMargin: '500px 0px', threshold: 0.01 });
+  palantirObserver.observe(sentinel);
+}
+
+// loadPalantirFeed fetches one page of competitor ads. reset:true starts
+// a fresh search from the domain input; reset:false appends the next
+// cursor page. Concurrent calls are coalesced via palantirState.loading.
+async function loadPalantirFeed(opts) {
+  opts = opts || {};
+  const reset = opts.reset === true;
+  if (palantirState.loading) return;
+
+  const grid = palantirEl('palantir-grid');
+  const empty = palantirEl('palantir-empty');
+  const brandsEl = palantirEl('palantir-brands');
+  if (!grid) return;
+
+  if (reset) {
+    const domain = ((palantirEl('palantir-search') || {}).value || '').trim();
+    grid.innerHTML = '';
+    if (brandsEl) brandsEl.innerHTML = '';
+    palantirState.cursor = '';
+    palantirState.brandIds = '';
+    palantirState.hasMore = false;
+    palantirState.count = 0;
+    if (!domain) {
+      if (empty) empty.style.display = '';
+      palantirSetStatus('');
+      return;
+    }
+    palantirState.domain = domain;
+    if (empty) empty.style.display = 'none';
+  } else if (!palantirState.hasMore || !palantirState.brandIds) {
+    return; // nothing more to page
+  }
+
+  const feedOpts = { limit: 24 };
+  const fmt = (palantirEl('palantir-format') || {}).value || '';
+  const live = (palantirEl('palantir-live') || {}).value || '';
+  const order = (palantirEl('palantir-order') || {}).value || '';
+  if (fmt) feedOpts.foreplayFormat = fmt;
+  if (live) feedOpts.foreplayLive = live;
+  if (order) feedOpts.foreplayOrder = order;
+  const brand = (typeof getActiveBrandSelection === 'function') ? getActiveBrandSelection() : '';
+  if (brand) feedOpts.brand = brand;
+  if (reset) {
+    feedOpts.url = palantirState.domain;
+  } else {
+    feedOpts.foreplayBrandIds = palantirState.brandIds;
+    feedOpts.foreplayCursor = palantirState.cursor;
+  }
+
+  palantirState.loading = true;
+  palantirSetStatus(reset ? 'Loading competitor ads…' : 'Loading more ads…', 'loading');
+
+  let res;
+  try {
+    res = await window.merlin.palantirFeed(feedOpts);
+  } catch (e) {
+    palantirState.loading = false;
+    palantirSetStatus('Could not reach Merlin. Check your connection and try again.', 'error');
+    return;
+  }
+  palantirState.loading = false;
+
+  if (!res || typeof res !== 'object') {
+    palantirSetStatus('Could not load competitor ads. Try again.', 'error');
+    return;
+  }
+  if (res.error) {
+    palantirSetStatus(res.error, 'error');
+    if (reset && empty && palantirState.count === 0) empty.style.display = '';
+    return;
+  }
+
+  if (res.brandIds) palantirState.brandIds = res.brandIds;
+  palantirState.cursor = res.cursor || '';
+  palantirState.hasMore = !!res.hasMore;
+
+  if (reset && brandsEl && Array.isArray(res.brands) && res.brands.length) {
+    brandsEl.innerHTML = res.brands.map((b) =>
+      `<span class="palantir-brand-chip">${escapeHtml(b.name || b.domain || b.id || '')}</span>`
+    ).join('');
+  }
+
+  const ads = Array.isArray(res.ads) ? res.ads : [];
+  for (const ad of ads) {
+    if (!ad || !ad.adId) continue;
+    grid.appendChild(palantirRenderCard(ad));
+    palantirState.count += 1;
+  }
+
+  if (palantirState.count === 0) {
+    if (empty) empty.style.display = '';
+    palantirSetStatus(res.note || 'No ads found for this competitor. Try the root domain (example.com).', '');
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  if (palantirState.hasMore) {
+    palantirSetStatus(palantirState.count + ' ads · scroll for more', '');
+  } else {
+    palantirSetStatus(palantirState.count + ' ads · end of feed', '');
+  }
+
+  palantirEnsureObserver();
+  // Re-arm the observer so a still-visible sentinel pulls the next page
+  // even though its intersection boolean did not flip.
+  if (palantirObserver && palantirState.hasMore) {
+    const sentinel = palantirEl('palantir-sentinel');
+    if (sentinel) { palantirObserver.unobserve(sentinel); palantirObserver.observe(sentinel); }
+  }
+}
+
+function palantirDetailNote(msg) {
+  const n = palantirEl('palantir-detail-note');
+  if (n) { n.textContent = msg || ''; n.style.display = msg ? '' : 'none'; }
+}
+
+function openPalantirDetail(ad) {
+  if (!ad) return;
+  const overlay = palantirEl('palantir-detail');
+  const bodyEl = palantirEl('palantir-detail-body');
+  if (!overlay || !bodyEl) return;
+
+  const thumb = palantirThumbUrl(ad.thumbFile);
+  const days = palantirDaysRunning(ad.startedRunning);
+  const chips = [];
+  chips.push(ad.live
+    ? '<span class="palantir-badge palantir-badge-live">● Live</span>'
+    : '<span class="palantir-badge palantir-badge-off">Inactive</span>');
+  chips.push(`<span class="palantir-badge">${escapeHtml(ad.hasVideo ? 'Video' : palantirFormatLabel(ad.displayFormat))}</span>`);
+  if (ad.ctaType) chips.push(`<span class="palantir-badge">${escapeHtml(palantirCtaLabel(ad.ctaType))}</span>`);
+  if (days > 0) chips.push(`<span class="palantir-badge">${days} day${days === 1 ? '' : 's'} running</span>`);
+  if (Array.isArray(ad.platforms)) {
+    for (const p of ad.platforms) {
+      if (p) chips.push(`<span class="palantir-badge">${escapeHtml(palantirCtaLabel(p))}</span>`);
+    }
+  }
+  const headline = ad.headline || ad.name || '';
+  const mediaHtml = thumb
+    ? `<img class="palantir-detail-thumb" src="${escapeHtml(thumb)}" alt="">`
+    : `<div class="palantir-detail-noimg">${ad.hasVideo ? '▶ Video ad' : 'Ad creative'}</div>`;
+  bodyEl.innerHTML =
+    `<div class="palantir-detail-media" id="palantir-detail-media">${mediaHtml}` +
+      (ad.hasVideo ? `<button class="palantir-detail-play" id="palantir-detail-play">▶ Play video</button>` : '') +
+    `</div>` +
+    `<div class="palantir-detail-info">` +
+      (headline ? `<div class="palantir-detail-headline">${escapeHtml(headline)}</div>` : '') +
+      (ad.description ? `<div class="palantir-detail-copy">${escapeHtml(ad.description)}</div>` : '') +
+      `<div class="palantir-detail-chips">${chips.join('')}</div>` +
+      (ad.transcription ? `<details class="palantir-detail-transcript"><summary>Video transcript</summary><div>${escapeHtml(ad.transcription)}</div></details>` : '') +
+      (ad.linkUrl ? `<div class="palantir-detail-landing"><span class="palantir-detail-landing-label">Landing page</span><span class="palantir-detail-landing-url">${escapeHtml(ad.linkUrl)}</span></div>` : '') +
+      `<div class="palantir-detail-actions">` +
+        `<button class="palantir-action-primary" id="palantir-action-inspire">Use as inspiration</button>` +
+        (ad.linkUrl ? `<button class="palantir-action" id="palantir-action-landing">Open landing page</button>` : '') +
+      `</div>` +
+      `<div class="palantir-detail-note" id="palantir-detail-note" style="display:none"></div>` +
+    `</div>`;
+
+  const playBtn = bodyEl.querySelector('#palantir-detail-play');
+  if (playBtn) playBtn.addEventListener('click', () => palantirPlayVideo(ad, playBtn));
+  const inspireBtn = bodyEl.querySelector('#palantir-action-inspire');
+  if (inspireBtn) inspireBtn.addEventListener('click', () => palantirUseAsInspiration(ad));
+  const landingBtn = bodyEl.querySelector('#palantir-action-landing');
+  if (landingBtn) landingBtn.addEventListener('click', () => {
+    try { window.merlin.openExternal(ad.linkUrl); } catch (e) {}
+  });
+  overlay.classList.remove('hidden');
+}
+
+function closePalantirDetail() {
+  const overlay = palantirEl('palantir-detail');
+  if (overlay) overlay.classList.add('hidden');
+  const bodyEl = palantirEl('palantir-detail-body');
+  if (bodyEl) bodyEl.innerHTML = ''; // tears down any playing <video>
+}
+
+async function palantirPlayVideo(ad, btn) {
+  if (!ad || !ad.adId || !ad.hasVideo) return;
+  btn.disabled = true;
+  btn.textContent = 'Loading video…';
+  palantirDetailNote('');
+  let res;
+  try {
+    res = await window.merlin.palantirDownloadAd({ adId: ad.adId });
+  } catch (e) {
+    res = { error: 'Could not load the video.' };
+  }
+  if (!res || res.error || !res.path) {
+    btn.disabled = false;
+    btn.textContent = '▶ Play video';
+    palantirDetailNote((res && res.error) || 'Could not load the video.');
+    return;
+  }
+  const media = palantirEl('palantir-detail-media');
+  if (!media) return;
+  const vid = document.createElement('video');
+  vid.className = 'palantir-detail-video';
+  vid.src = merlinUrl(res.path);
+  vid.controls = true;
+  vid.autoplay = true;
+  vid.setAttribute('playsinline', '');
+  media.innerHTML = '';
+  media.appendChild(vid);
+}
+
+// palantirUseAsInspiration drops a competitor ad into the chat input as a
+// creative-brief seed. It populates (does not auto-send) so the user can
+// name the product / tweak before sending.
+function palantirUseAsInspiration(ad) {
+  if (!ad) return;
+  const bits = ["Here's a competitor ad I want to riff on for my brand."];
+  if (ad.headline) bits.push('Headline: "' + ad.headline + '".');
+  if (ad.description) bits.push('Primary text: "' + palantirTruncate(ad.description, 280) + '".');
+  if (ad.ctaType) bits.push('Call-to-action: ' + palantirCtaLabel(ad.ctaType) + '.');
+  bits.push(ad.hasVideo ? 'It is a video ad.' : 'It is a static image ad.');
+  bits.push('Give me 3 fresh ad concepts in this style — keep what works about the angle, but make the copy original to my product.');
+  closePalantirDetail();
+  const panel = palantirEl('palantir-panel');
+  if (panel) panel.classList.add('hidden');
+  if (typeof input !== 'undefined' && input) {
+    input.value = bits.join(' ');
+    try { autoResize(); } catch (e) {}
+    try { input.focus(); } catch (e) {}
+  }
+}
+
+document.getElementById('palantir-btn').addEventListener('click', () => {
+  // Mirror the archive/magic handlers: hide sibling sidebars and clear
+  // their pin state so the chat reflow stays in lockstep.
+  document.getElementById('magic-panel').classList.add('hidden');
+  setSidebarPinned('magic', false);
+  document.getElementById('archive-panel').classList.add('hidden');
+  setSidebarPinned('archive', false);
+  document.getElementById('wisdom-overlay').classList.add('hidden');
+  closeAgencyOverlay();
+  const panel = document.getElementById('palantir-panel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) {
+    const search = document.getElementById('palantir-search');
+    if (search) { try { search.focus(); } catch (e) {} }
+  } else {
+    closePalantirDetail();
+  }
+});
+
+document.getElementById('palantir-close').addEventListener('click', () => {
+  document.getElementById('palantir-panel').classList.add('hidden');
+  closePalantirDetail();
+});
+
+document.getElementById('palantir-search-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  loadPalantirFeed({ reset: true });
+});
+
+['palantir-format', 'palantir-live', 'palantir-order'].forEach((id) => {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener('change', () => {
+    const domain = ((document.getElementById('palantir-search') || {}).value || '').trim();
+    if (domain) loadPalantirFeed({ reset: true });
+  });
+});
+
+document.getElementById('palantir-detail-close').addEventListener('click', closePalantirDetail);
+document.getElementById('palantir-detail-backdrop').addEventListener('click', closePalantirDetail);
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const detail = document.getElementById('palantir-detail');
+  if (detail && !detail.classList.contains('hidden')) {
+    e.stopPropagation();
+    closePalantirDetail();
+  }
 });
 
 // Refresh button: only visible on the Live Ads tab. Click triggers a full

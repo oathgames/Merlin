@@ -181,6 +181,9 @@ contextBridge.exposeInMainWorld('merlin', {
   getArchiveItems: (filters) => ipcRenderer.invoke('get-archive-items', assertObj(filters)),
   getLiveAds: (brand) => ipcRenderer.invoke('get-live-ads', assertBrand(brand)),
   refreshLiveAds: (brand) => ipcRenderer.invoke('refresh-live-ads', assertBrand(brand)),
+  // Palantir tab — competitor ad feed (Foreplay-backed).
+  palantirFeed: (opts) => ipcRenderer.invoke('palantir-feed', assertObj(opts)),
+  palantirDownloadAd: (opts) => ipcRenderer.invoke('palantir-download-ad', assertObj(opts)),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', assertStr(folderPath, 500)),
   copyImage: (filePath) => ipcRenderer.invoke('copy-image', assertStr(filePath, 500)),
   // Copy an in-memory PNG data URL (e.g. the share card canvas) to the

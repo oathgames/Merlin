@@ -9870,6 +9870,94 @@ ipcMain.handle('refresh-live-ads', async (_, brandName) => {
   };
 });
 
+// ── Palantir tab — competitor ad feed ──────────────────────
+// The Palantir tab scrolls competitor ads pulled from Foreplay. The Go
+// binary's `palantir-feed` action fetches a page of ads AND caches every
+// thumbnail under results/competitor-ads/thumbs/ (the renderer's strict
+// CSP can't load remote ad media, but merlin:// already serves results/).
+// foreplayApiKey is a UNIVERSAL credential, so the plain global config is
+// enough — no per-brand tmp config needed.
+
+// extractPalantirResult pulls the single-line JSON the binary prints with
+// the PALANTIR_RESULT prefix. A single line is unambiguous to extract no
+// matter how deeply the payload nests.
+function extractPalantirResult(stdout) {
+  const lines = String(stdout || '').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].startsWith('PALANTIR_RESULT ')) {
+      try { return JSON.parse(lines[i].slice('PALANTIR_RESULT '.length)); }
+      catch { return null; }
+    }
+  }
+  return null;
+}
+
+ipcMain.handle('palantir-feed', async (_, opts) => {
+  const o = (opts && typeof opts === 'object' && !Array.isArray(opts)) ? opts : {};
+  const binaryPath = getBinaryPath();
+  try { fs.accessSync(binaryPath); } catch { return { error: 'Merlin engine not found. Restart Merlin and try again.' }; }
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(configPath); } catch { return { error: 'Merlin is not set up yet.' }; }
+
+  const cmdObj = { action: 'palantir-feed' };
+  for (const k of ['url', 'foreplayBrandIds', 'foreplayPageId', 'foreplayCursor', 'foreplayFormat', 'foreplayOrder', 'foreplayLive', 'brand']) {
+    if (typeof o[k] === 'string' && o[k].trim()) cmdObj[k] = o[k].trim().slice(0, 2000);
+  }
+  if (Number.isInteger(o.limit) && o.limit > 0 && o.limit <= 250) cmdObj.limit = o.limit;
+
+  try { await maybeHydrateBinaryLicenseToken('palantir'); } catch {}
+  const { execFile } = require('child_process');
+  return await new Promise((resolve) => {
+    const child = execFile(binaryPath, ['--config', configPath, '--cmd', JSON.stringify(cmdObj)], {
+      timeout: 90000, cwd: appRoot, windowsHide: true, maxBuffer: 32 * 1024 * 1024,
+    }, (err, stdout) => {
+      const parsed = extractPalantirResult(stdout);
+      if (parsed && typeof parsed === 'object') return resolve(parsed);
+      if (err && err.killed) return resolve({ error: 'Loading competitor ads timed out. Try again in a moment.' });
+      return resolve({ error: 'Merlin could not load the competitor ad feed. Check that your Foreplay key is connected.' });
+    });
+    activeChildProcesses.add(child);
+    child.on('exit', () => activeChildProcesses.delete(child));
+  });
+});
+
+// palantir-download-ad fetches one competitor ad's full video to
+// results/competitor-ads/ via the existing foreplay-download-ad action,
+// so the Palantir lightbox can play it through the merlin:// protocol.
+ipcMain.handle('palantir-download-ad', async (_, opts) => {
+  const o = (opts && typeof opts === 'object' && !Array.isArray(opts)) ? opts : {};
+  const adId = (typeof o.adId === 'string') ? o.adId.trim().slice(0, 200) : '';
+  if (!adId) return { error: 'Missing ad id.' };
+  const binaryPath = getBinaryPath();
+  try { fs.accessSync(binaryPath); } catch { return { error: 'Merlin engine not found.' }; }
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(configPath); } catch { return { error: 'Merlin is not set up yet.' }; }
+
+  try { await maybeHydrateBinaryLicenseToken('palantir'); } catch {}
+  const { execFile } = require('child_process');
+  return await new Promise((resolve) => {
+    const child = execFile(binaryPath, ['--config', configPath, '--cmd', JSON.stringify({ action: 'foreplay-download-ad', adId })], {
+      timeout: 150000, cwd: appRoot, windowsHide: true, maxBuffer: 16 * 1024 * 1024,
+    }, (err, stdout) => {
+      // foreplay-download-ad emits a flat {ad_id, path, source_url} block.
+      const s = String(stdout || '');
+      const a = s.indexOf('{'), b = s.lastIndexOf('}');
+      if (a >= 0 && b > a) {
+        try {
+          const r = JSON.parse(s.slice(a, b + 1));
+          if (r && typeof r.path === 'string' && r.path) {
+            return resolve({ path: r.path.replace(/\\/g, '/') });
+          }
+        } catch {}
+      }
+      if (err && err.killed) return resolve({ error: 'Downloading the ad timed out.' });
+      return resolve({ error: 'Merlin could not download that ad video.' });
+    });
+    activeChildProcesses.add(child);
+    child.on('exit', () => activeChildProcesses.delete(child));
+  });
+});
+
 // Read brands from filesystem
 ipcMain.handle('get-brands', () => {
   const brandsDir = path.join(appRoot, 'assets', 'brands');

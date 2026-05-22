@@ -1633,3 +1633,111 @@ test('RSI 3-3: connection-status reuses one tile NodeList across all branches', 
     'resolved branch must alias _preTiles to allTiles instead of re-querying');
 });
 
+// ─────────────────────────────────────────────────────────────────────
+// Palantir — competitor ad-feed tab
+// ─────────────────────────────────────────────────────────────────────
+
+// INDEX_HTML is already read once near the top of this file — reuse it.
+const MAIN_JS = fs.readFileSync(path.join(APP_DIR, 'main.js'), 'utf8');
+const PRELOAD_JS = fs.readFileSync(path.join(APP_DIR, 'preload.js'), 'utf8');
+const STYLE_CSS = fs.readFileSync(path.join(APP_DIR, 'style.css'), 'utf8');
+
+test('Palantir — index.html has the tab button, panel, and detail lightbox', () => {
+  assert.ok(INDEX_HTML.includes('id="palantir-btn"'), 'tab button exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-panel"'), 'panel exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-grid"'), 'feed grid exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-sentinel"'), 'infinite-scroll sentinel exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-search"'), 'competitor search input exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-detail"'), 'ad-detail lightbox exists');
+});
+
+test('Palantir — tab button is wired and toggles the panel', () => {
+  assert.ok(RENDERER_JS.includes("getElementById('palantir-btn').addEventListener"), 'btn handler bound');
+  const idx = RENDERER_JS.indexOf("getElementById('palantir-btn').addEventListener");
+  const handler = RENDERER_JS.slice(idx, idx + 700);
+  assert.ok(handler.includes("getElementById('palantir-panel')"), 'handler toggles the panel');
+  // Opening Palantir must hide the sibling sidebars (and clear their pins).
+  assert.ok(handler.includes("'magic-panel'") && handler.includes("'archive-panel'"),
+    'opening Palantir hides magic + archive sidebars');
+  assert.ok(handler.includes("setSidebarPinned('magic', false)") && handler.includes("setSidebarPinned('archive', false)"),
+    'sibling pins are cleared so the chat reflow stays in lockstep');
+});
+
+test('Palantir — archive and magic handlers hide the Palantir panel', () => {
+  // The symmetric invariant: every sidebar handler hides the others.
+  const archiveIdx = RENDERER_JS.indexOf("getElementById('archive-btn').addEventListener");
+  const magicIdx = RENDERER_JS.indexOf("getElementById('magic-btn').addEventListener");
+  // Slice generously — both handlers open with a multi-line REGRESSION
+  // GUARD comment before the cross-panel hides.
+  assert.ok(RENDERER_JS.slice(archiveIdx, archiveIdx + 1600).includes("'palantir-panel'"),
+    'archive-btn handler hides the Palantir panel');
+  assert.ok(RENDERER_JS.slice(magicIdx, magicIdx + 1600).includes("'palantir-panel'"),
+    'magic-btn handler hides the Palantir panel');
+});
+
+test('Palantir — infinite scroll uses an IntersectionObserver on the sentinel', () => {
+  assert.ok(RENDERER_JS.includes('function palantirEnsureObserver'), 'observer setup fn exists');
+  assert.ok(/palantirObserver\s*=\s*new IntersectionObserver/.test(RENDERER_JS),
+    'an IntersectionObserver drives pagination');
+  assert.ok(RENDERER_JS.includes("palantirState.hasMore") && RENDERER_JS.includes("loadPalantirFeed({ reset: false })"),
+    'the observer pages the next cursor when hasMore');
+});
+
+test('Palantir — feed loader paginates by cursor and guards re-entry', () => {
+  assert.ok(RENDERER_JS.includes('async function loadPalantirFeed'), 'loadPalantirFeed defined');
+  const idx = RENDERER_JS.indexOf('async function loadPalantirFeed');
+  const fn = RENDERER_JS.slice(idx, idx + 2600);
+  assert.ok(fn.includes('palantirState.loading'), 'guards concurrent loads via the loading flag');
+  assert.ok(fn.includes('foreplayCursor') && fn.includes('foreplayBrandIds'),
+    'page 2+ requests reuse the resolved brand ids + cursor');
+  assert.ok(fn.includes('window.merlin.palantirFeed'), 'calls the palantirFeed bridge');
+});
+
+test('Palantir — all ad media loads through the merlin:// protocol', () => {
+  // The renderer CSP cannot load remote ad-CDN media; thumbnails are cached
+  // locally by the binary and video is downloaded on demand. Both must be
+  // referenced via merlinUrl(), never a raw https URL.
+  assert.ok(RENDERER_JS.includes("merlinUrl('results/competitor-ads/thumbs/'"),
+    'thumbnails resolve through merlin:// under results/');
+  const playIdx = RENDERER_JS.indexOf('async function palantirPlayVideo');
+  assert.ok(playIdx >= 0, 'palantirPlayVideo defined');
+  assert.ok(RENDERER_JS.slice(playIdx, playIdx + 900).includes('merlinUrl(res.path)'),
+    'downloaded video plays via a merlin:// URL');
+});
+
+test('Palantir — "use as inspiration" seeds the chat input', () => {
+  assert.ok(RENDERER_JS.includes('function palantirUseAsInspiration'), 'inspiration fn exists');
+  const idx = RENDERER_JS.indexOf('function palantirUseAsInspiration');
+  const fn = RENDERER_JS.slice(idx, idx + 900);
+  assert.ok(fn.includes('input.value'), 'writes a brief into the chat input');
+  // Populates but does NOT auto-send — the user names the product first.
+  assert.ok(!/sendMessage\(\)/.test(fn), 'must not auto-send the message');
+});
+
+test('Palantir — preload exposes the bridge methods', () => {
+  assert.ok(/palantirFeed:\s*\(opts\)\s*=>\s*ipcRenderer\.invoke\('palantir-feed'/.test(PRELOAD_JS),
+    'palantirFeed bridge wired to the palantir-feed channel');
+  assert.ok(/palantirDownloadAd:\s*\(opts\)\s*=>\s*ipcRenderer\.invoke\('palantir-download-ad'/.test(PRELOAD_JS),
+    'palantirDownloadAd bridge wired');
+  // Options objects must be validated before crossing the IPC boundary.
+  assert.ok(/palantirFeed:[^\n]*assertObj\(opts\)/.test(PRELOAD_JS), 'palantirFeed validates its options object');
+});
+
+test('Palantir — main.js IPC handlers spawn the binary safely', () => {
+  assert.ok(MAIN_JS.includes("ipcMain.handle('palantir-feed'"), 'palantir-feed handler registered');
+  assert.ok(MAIN_JS.includes("ipcMain.handle('palantir-download-ad'"), 'palantir-download-ad handler registered');
+  assert.ok(MAIN_JS.includes("action: 'palantir-feed'"), 'feed handler invokes the palantir-feed binary action');
+  assert.ok(MAIN_JS.includes("action: 'foreplay-download-ad'"), 'download handler reuses the foreplay-download-ad action');
+  // The single-line result contract.
+  assert.ok(MAIN_JS.includes("function extractPalantirResult"), 'result extractor present');
+  assert.ok(MAIN_JS.includes("'PALANTIR_RESULT '"), 'extractor keys on the PALANTIR_RESULT prefix');
+});
+
+test('Palantir — has themed styles for the panel and lightbox', () => {
+  assert.ok(STYLE_CSS.includes('.palantir-panel'), 'panel styled');
+  assert.ok(STYLE_CSS.includes('.palantir-card'), 'ad card styled');
+  assert.ok(STYLE_CSS.includes('.palantir-detail'), 'detail lightbox styled');
+  // Uses theme variables, so it tracks dark/light mode for free.
+  assert.ok(/\.palantir-panel\s*{[^}]*var\(--/.test(STYLE_CSS), 'panel uses theme CSS variables');
+});
+
