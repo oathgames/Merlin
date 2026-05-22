@@ -10053,6 +10053,10 @@ const palantirState = {
   count: 0,
 };
 let palantirObserver = null;
+// Hard cap on feed cards in the DOM — an infinite scroll must not grow
+// without bound (mirrors the chat pane's MAX_VISIBLE_MESSAGES). Oldest
+// cards are pruned from the top once the cap is exceeded.
+const PALANTIR_MAX_CARDS = 300;
 
 function palantirEl(id) { return document.getElementById(id); }
 
@@ -10141,6 +10145,11 @@ function palantirEnsureObserver() {
   const panel = palantirEl('palantir-panel');
   const root = panel ? panel.querySelector('.palantir-scroll') : null;
   palantirObserver = new IntersectionObserver((entries) => {
+    // RSI guard: never page a hidden panel. A sibling tab reflowing
+    // #palantir-panel can re-intersect the sentinel — without this check
+    // that would fire a zombie binary spawn against an off-screen feed.
+    const p = palantirEl('palantir-panel');
+    if (!p || p.classList.contains('hidden')) return;
     for (const e of entries) {
       if (e.isIntersecting && palantirState.hasMore && !palantirState.loading) {
         loadPalantirFeed({ reset: false });
@@ -10149,6 +10158,28 @@ function palantirEnsureObserver() {
   }, { root: root || null, rootMargin: '500px 0px', threshold: 0.01 });
   palantirObserver.observe(sentinel);
 }
+
+// palantirCloseCleanup tears down the infinite-scroll observer when the
+// panel closes. Without it the IntersectionObserver survives the app's
+// whole lifetime and keeps firing against a hidden panel.
+function palantirCloseCleanup() {
+  if (palantirObserver) {
+    palantirObserver.disconnect();
+    palantirObserver = null;
+  }
+}
+
+// Disconnect the observer whenever #palantir-panel is hidden — by the
+// close button, a sibling tab, or any programmatic path. Single-point
+// lifecycle hook; mirrors ensureArchiveAutoRefreshOnVisible.
+(function ensurePalantirObserverLifecycle() {
+  const panel = document.getElementById('palantir-panel');
+  if (!panel || typeof MutationObserver !== 'function') return;
+  const obs = new MutationObserver(() => {
+    if (panel.classList.contains('hidden')) palantirCloseCleanup();
+  });
+  obs.observe(panel, { attributes: true, attributeFilter: ['class'] });
+})();
 
 // loadPalantirFeed fetches one page of competitor ads. reset:true starts
 // a fresh search from the domain input; reset:false appends the next
@@ -10216,7 +10247,8 @@ async function loadPalantirFeed(opts) {
     return;
   }
   if (res.error) {
-    palantirSetStatus(res.error, 'error');
+    // Defend locally — never render an upstream error string raw (Rule 6).
+    palantirSetStatus(friendlyError(res.error, 'Palantir'), 'error');
     if (reset && empty && palantirState.count === 0) empty.style.display = '';
     return;
   }
@@ -10236,6 +10268,10 @@ async function loadPalantirFeed(opts) {
     if (!ad || !ad.adId) continue;
     grid.appendChild(palantirRenderCard(ad));
     palantirState.count += 1;
+  }
+  // Cap the feed DOM — prune oldest cards from the top once over the cap.
+  while (grid.children.length > PALANTIR_MAX_CARDS) {
+    grid.removeChild(grid.firstChild);
   }
 
   if (palantirState.count === 0) {
@@ -10311,7 +10347,8 @@ function openPalantirDetail(ad) {
   if (inspireBtn) inspireBtn.addEventListener('click', () => palantirUseAsInspiration(ad));
   const landingBtn = bodyEl.querySelector('#palantir-action-landing');
   if (landingBtn) landingBtn.addEventListener('click', () => {
-    try { window.merlin.openExternal(ad.linkUrl); } catch (e) {}
+    try { window.merlin.openExternal(ad.linkUrl); }
+    catch (e) { palantirDetailNote('Could not open that link.'); }
   });
   overlay.classList.remove('hidden');
 }

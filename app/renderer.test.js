@@ -1741,3 +1741,47 @@ test('Palantir — has themed styles for the panel and lightbox', () => {
   assert.ok(/\.palantir-panel\s*{[^}]*var\(--/.test(STYLE_CSS), 'panel uses theme CSS variables');
 });
 
+// ── RSI Iteration 1 — Palantir renderer-hygiene regression locks ─────
+
+test('RSI — Palantir IntersectionObserver is torn down on panel close', () => {
+  // The observer must not survive a panel close, or it fires zombie
+  // binary spawns against a hidden panel on every sibling-tab reflow.
+  assert.ok(RENDERER_JS.includes('function palantirCloseCleanup'),
+    'palantirCloseCleanup teardown fn exists');
+  assert.ok(/palantirCloseCleanup\b[\s\S]{0,160}palantirObserver\.disconnect\(\)/.test(RENDERER_JS),
+    'cleanup disconnects the IntersectionObserver');
+  assert.ok(/palantirObserver\s*=\s*null/.test(RENDERER_JS),
+    'cleanup nulls the observer so it can be re-armed');
+  // A lifecycle hook disconnects it whenever the panel is hidden.
+  assert.ok(RENDERER_JS.includes('ensurePalantirObserverLifecycle'),
+    'a MutationObserver-based lifecycle hook exists');
+});
+
+test('RSI — Palantir observer callback refuses to page a hidden panel', () => {
+  const idx = RENDERER_JS.indexOf('palantirObserver = new IntersectionObserver');
+  const cb = RENDERER_JS.slice(idx, idx + 700);
+  assert.ok(cb.includes("classList.contains('hidden')"),
+    'the observer callback early-returns when the panel is hidden');
+});
+
+test('RSI — Palantir feed grid is capped (no unbounded infinite scroll)', () => {
+  assert.ok(/const PALANTIR_MAX_CARDS\s*=\s*\d+/.test(RENDERER_JS),
+    'a hard card cap constant is declared');
+  assert.ok(/grid\.children\.length\s*>\s*PALANTIR_MAX_CARDS[\s\S]{0,120}grid\.removeChild\(grid\.firstChild\)/.test(RENDERER_JS),
+    'oldest cards are pruned from the top once over the cap');
+});
+
+test('RSI — Palantir surfaces the binary error through friendlyError', () => {
+  // Rule 6 — never render an upstream error string raw.
+  assert.ok(/palantirSetStatus\(friendlyError\(res\.error/.test(RENDERER_JS),
+    'res.error is wrapped in friendlyError() before it reaches the DOM');
+});
+
+test('RSI — Palantir "open landing page" failure is not silent', () => {
+  const idx = RENDERER_JS.indexOf('window.merlin.openExternal(ad.linkUrl)');
+  assert.ok(idx >= 0, 'openExternal call present');
+  const slice = RENDERER_JS.slice(idx, idx + 160);
+  assert.ok(slice.includes('palantirDetailNote'),
+    'a failed openExternal shows the user a note instead of swallowing silently');
+});
+
