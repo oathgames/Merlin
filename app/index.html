@@ -216,7 +216,7 @@
     <div id="request-platform" class="request-platform">
       <button id="request-toggle" class="request-toggle">Request a platform</button>
       <div id="request-form" class="request-form hidden">
-        <input id="request-input" type="text" placeholder="e.g. Snapchat, X, LinkedIn..." maxlength="100">
+        <input id="request-input" type="text" aria-label="Request a platform" placeholder="e.g. Snapchat, X, LinkedIn..." maxlength="100">
         <button id="request-send" class="request-send">Send</button>
       </div>
       <div id="request-thanks" class="request-thanks hidden" role="status" aria-live="polite">✦ Sent! We'll look into it.</div>
@@ -239,7 +239,7 @@
 
       <div class="referral-sublabel">Got a friend's code?</div>
       <div class="referral-apply-row" id="referral-apply-row">
-        <input id="referral-apply-input" class="referral-apply-input" type="text" maxlength="8" placeholder="e.g. a1b2c3d4" autocomplete="off" spellcheck="false">
+        <input id="referral-apply-input" class="referral-apply-input" type="text" aria-label="Referral code" maxlength="8" placeholder="e.g. a1b2c3d4" autocomplete="off" spellcheck="false">
         <button id="referral-apply-btn" class="referral-apply-btn">Apply</button>
       </div>
       <div id="referral-apply-status" class="referral-apply-status"></div>
@@ -279,7 +279,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
         </button>
       </div>
-      <input id="archive-search" type="text" class="archive-search" placeholder="Search brand, product, model...">
+      <input id="archive-search" type="text" class="archive-search" aria-label="Search archived creatives" placeholder="Search brand, product, model...">
     </div>
     <div id="archive-grid" class="archive-grid"></div>
     <div id="archive-empty" class="archive-empty" style="display:none">
@@ -302,7 +302,7 @@
   <div class="palantir-scroll">
     <div class="palantir-controls">
       <form id="palantir-search-form" class="palantir-search-form" autocomplete="off">
-        <input id="palantir-search" type="text" class="palantir-search" placeholder="Competitor website — e.g. gymshark.com" spellcheck="false">
+        <input id="palantir-search" type="text" class="palantir-search" aria-label="Competitor website to spy on" placeholder="Competitor website — e.g. gymshark.com" spellcheck="false">
         <button type="submit" class="palantir-search-btn" aria-label="Load competitor ads">→</button>
       </form>
       <div class="palantir-filter-row">
@@ -515,7 +515,7 @@
     <button id="merlin-modal-close" class="merlin-modal-close">&times;</button>
     <div id="merlin-modal-title" class="merlin-modal-title"></div>
     <div id="merlin-modal-body" class="merlin-modal-body"></div>
-    <input id="merlin-modal-input" class="merlin-modal-input hidden" type="text" placeholder="">
+    <input id="merlin-modal-input" class="merlin-modal-input hidden" type="text" aria-label="Modal input" placeholder="">
     <div id="merlin-modal-error" class="merlin-modal-error"></div>
     <div class="merlin-modal-actions">
       <button id="merlin-modal-confirm" class="btn-action btn-approve-style">OK</button>
@@ -576,7 +576,7 @@
         <span style="font-size:13px;color:var(--muted)">Yes, I have a code from a friend</span>
       </label>
       <div id="tos-referral-wrap" class="hidden" style="margin-top:10px;display:flex;gap:6px">
-        <input id="tos-referral-input" class="referral-apply-input" type="text" maxlength="8" placeholder="e.g. a1b2c3d4" autocomplete="off" spellcheck="false" style="flex:1">
+        <input id="tos-referral-input" class="referral-apply-input" type="text" aria-label="Referral code (onboarding)" maxlength="8" placeholder="e.g. a1b2c3d4" autocomplete="off" spellcheck="false" style="flex:1">
       </div>
       <div id="tos-referral-status" class="referral-apply-status"></div>
     </div>

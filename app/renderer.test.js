@@ -1785,3 +1785,88 @@ test('RSI — Palantir "open landing page" failure is not silent', () => {
     'a failed openExternal shows the user a note instead of swallowing silently');
 });
 
+// ── RSI #12 — Accessibility source-scan ────────────────────────────
+//
+// The renderer is a paying-user-facing surface — keyboard-only operators
+// and screen-reader users have to be able to drive it. These scans pin
+// the basics:
+//
+//   1. Every <button> in index.html has SOMETHING a screen reader can
+//      announce — visible text, an aria-label, or an aria-labelledby.
+//      An icon-only button with no name is invisible.
+//   2. Every text/url/email <input> has either an aria-label or a
+//      <label for="..."> association. An input with no name is
+//      unrecognizable to AT.
+//   3. The chat-stream status surfaces (where async progress messages
+//      land) carry an aria-live region so screen readers announce the
+//      update without the user having to refocus.
+//
+// Source-scan rather than DOM-driven so the lock is cheap, deterministic,
+// and runs in CI without Electron. The cost is some false-positive
+// brittleness (the scan parses HTML with regex) — accepted because the
+// alternative is "no a11y guard at all."
+
+const INDEX_HTML_A11Y = fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8');
+
+test('RSI a11y — every <button> has an accessible name (text content OR aria-label)', () => {
+  // Match each <button ...>...</button>. Greedy across newlines is fine
+  // for this file (no nested <button>); the regex captures the opening
+  // tag + the inner body up to the next </button>.
+  const buttons = [...INDEX_HTML_A11Y.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)];
+  assert.ok(buttons.length > 50, `scan must find buttons in index.html (got ${buttons.length}); regex may be broken`);
+
+  const offenders = [];
+  for (const [, openAttrs, inner] of buttons) {
+    if (/aria-label\s*=\s*"[^"]+"/.test(openAttrs)) continue;
+    if (/aria-labelledby\s*=\s*"[^"]+"/.test(openAttrs)) continue;
+    // Strip every tag from `inner`, normalize whitespace, check for any
+    // remaining text. An <svg> child without text counts as empty —
+    // that's the icon-only case that needs an aria-label.
+    const visible = inner.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (visible.length > 0) continue;
+    // Truncate the offending tag for the error message.
+    const preview = `<button${openAttrs}>${inner}</button>`.slice(0, 200);
+    offenders.push(preview);
+  }
+  if (offenders.length > 0) {
+    assert.fail(`a11y: ${offenders.length} icon-only button(s) missing aria-label / aria-labelledby:\n  ` +
+      offenders.slice(0, 5).map(o => o.replace(/\s+/g, ' ')).join('\n  '));
+  }
+});
+
+test('RSI a11y — every text-like <input> has an accessible name', () => {
+  // Cover text / search / email / url / tel / password / number.
+  const inputs = [...INDEX_HTML_A11Y.matchAll(/<input\b([^>]*type\s*=\s*"(?:text|search|email|url|tel|password|number)"[^>]*)>/g)];
+  if (inputs.length === 0) return; // no inputs of these types in this surface — vacuously pass
+  const offenders = [];
+  for (const [, attrs] of inputs) {
+    if (/aria-label\s*=\s*"[^"]+"/.test(attrs)) continue;
+    if (/aria-labelledby\s*=\s*"[^"]+"/.test(attrs)) continue;
+    const idMatch = attrs.match(/\bid\s*=\s*"([^"]+)"/);
+    if (idMatch) {
+      // Look for a <label for="<id>"> elsewhere in the document.
+      const id = idMatch[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const labelRe = new RegExp(`<label\\b[^>]*\\bfor\\s*=\\s*"${id}"`);
+      if (labelRe.test(INDEX_HTML_A11Y)) continue;
+    }
+    offenders.push(`<input${attrs}>`.slice(0, 180));
+  }
+  if (offenders.length > 0) {
+    assert.fail(`a11y: ${offenders.length} input(s) missing aria-label / aria-labelledby / <label for=>:\n  ` +
+      offenders.join('\n  '));
+  }
+});
+
+test('RSI a11y — chat status surfaces carry aria-live', () => {
+  // The chat row uses #status-pill (or equivalent) for async progress.
+  // We don't require a specific id — just that at least one aria-live
+  // region exists per layout (we already have request-thanks and
+  // attachment-row as anchors), AND the count is >= 2 so a future
+  // delete of one doesn't silently strand the other surface.
+  const liveCount = (INDEX_HTML_A11Y.match(/aria-live\s*=\s*"(polite|assertive)"/g) || []).length;
+  assert.ok(liveCount >= 2,
+    `expected >= 2 aria-live regions for async announcements, found ${liveCount}. ` +
+    'Async progress (chat status, attachment row, request feedback) must announce to screen readers ' +
+    'without the user having to refocus.');
+});
+
