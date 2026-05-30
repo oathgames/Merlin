@@ -2521,6 +2521,7 @@ async function handleToolApproval(toolName, input) {
     // and friends fire real ad spend without the user-facing card.
     // See REGRESSION GUARD comment at the top of mcp-approval-policy.js.
     const approvalPolicy = require('./mcp-approval-policy');
+const { scaffoldBrandStub } = require('./brand-scaffold');
     const { effectiveAction: action, label: intentToolLabel } =
       approvalPolicy.resolveMerlinAction(toolName, input);
 
@@ -3253,17 +3254,36 @@ async function startSession(brandOverride) {
       // Single source of truth for SHA dedup, validation, matcher dispatch,
       // and rename — see the long comment block on runBulkUploadAssets.
       bulkUploadAssets: (args) => runBulkUploadAssets(args),
-      activateBrand: (brand) => {
+      activateBrand: (brand, opts) => {
         if (typeof brand !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(brand)) {
           return { ok: false, code: 'VALIDATION', message: 'invalid brand format' };
         }
         const brandDir = path.join(appRoot, 'assets', 'brands', brand);
-        try {
-          if (!fs.statSync(brandDir).isDirectory()) {
+        let created = false;
+        let exists = false;
+        try { exists = fs.statSync(brandDir).isDirectory(); } catch {}
+        if (!exists) {
+          // DROPDOWN-FIRST onboarding (zero-friction): when the caller passes
+          // displayName/url it is REGISTERING a new brand — scaffold a minimal
+          // switchable folder (stub brand.md + memory.md) so the brand lands in
+          // the dropdown BEFORE the website scrape + enrichment run. If setup is
+          // interrupted afterward, the brand is already saved + switchable and
+          // the user resumes instead of redoing everything.
+          //
+          // A bare activate (switch intent, no opts) keeps the old BRAND_MISSING
+          // guard so a typo'd slug on a SWITCH can't silently create an empty
+          // junk brand. Create-if-missing is gated on explicit registration
+          // intent (displayName or url present).
+          const wantsCreate = opts && (opts.url || opts.displayName);
+          if (!wantsCreate) {
             return { ok: false, code: 'BRAND_MISSING', message: `assets/brands/${brand} does not exist` };
           }
-        } catch {
-          return { ok: false, code: 'BRAND_MISSING', message: `assets/brands/${brand} does not exist` };
+          try {
+            const r = scaffoldBrandStub(path.join(appRoot, 'assets', 'brands'), brand, { displayName: opts.displayName, url: opts.url });
+            created = r.created;
+          } catch (e) {
+            return { ok: false, code: (e && e.code) || 'BRAND_CREATE_FAILED', message: `could not create brand: ${e && e.message ? e.message : e}` };
+          }
         }
         let prevBrand = '';
         try { prevBrand = readState().activeBrand || ''; } catch {}
@@ -3305,7 +3325,7 @@ async function startSession(brandOverride) {
             win.webContents.send('brand-activated', { brand, previousBrand: prevBrand });
           }
         } catch {}
-        return { ok: true, brand, previousBrand: prevBrand };
+        return { ok: true, brand, previousBrand: prevBrand, created };
       },
     };
     const merlinMcp = await createMerlinMcpServer(mcpCtx);

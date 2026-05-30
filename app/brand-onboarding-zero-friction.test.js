@@ -168,7 +168,9 @@ test('main.js auto-approves every mcp__scheduled-tasks__ tool call', () => {
 test('mcp-tools registers a brand_activate tool that calls ctx.activateBrand', () => {
   // Source-scan: name + handler signature.
   assert.match(SRC_MCP, /name:\s*'brand_activate'/);
-  assert.match(SRC_MCP, /ctx\.activateBrand\(brand\)/);
+  // Dropdown-first onboarding: brand_activate forwards displayName + url so
+  // the host can create the brand folder for the dropdown BEFORE the scrape.
+  assert.match(SRC_MCP, /ctx\.activateBrand\(brand,\s*\{\s*displayName,\s*url\s*\}\)/);
 });
 
 test('main.js wires ctx.activateBrand into the MCP server context', () => {
@@ -176,10 +178,13 @@ test('main.js wires ctx.activateBrand into the MCP server context', () => {
   // activateBrand. If a future refactor moves the wiring or renames the key,
   // the brand_activate tool returns the host-not-wired error envelope and
   // the skill loops on every onboarding.
-  assert.match(SRC_MAIN, /activateBrand:\s*\(brand\)\s*=>\s*\{/);
+  assert.match(SRC_MAIN, /activateBrand:\s*\(brand,\s*opts\)\s*=>\s*\{/);
   // The function persists state and fires the brand-activated IPC.
   assert.match(SRC_MAIN, /writeState\(\{\s*activeBrand:\s*brand\s*\}\)/);
   assert.match(SRC_MAIN, /'brand-activated'/);
+  // Dropdown-first onboarding: create-if-missing scaffolds the brand folder
+  // (via scaffoldBrandStub) when the caller signals registration intent.
+  assert.match(SRC_MAIN, /scaffoldBrandStub\(/);
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -201,11 +206,17 @@ test('merlin-setup SKILL.md does not call AskUserQuestion mid-setup (only the op
   assert.doesNotMatch(skill, /What's your revenue target for/);
 });
 
-test('merlin-setup SKILL.md instructs the agent to call brand_activate after brand.md', () => {
+// REGRESSION GUARD (2026-05-22, dropdown-first onboarding): the skill must
+// register the brand in the dropdown BEFORE the scrape, passing displayName +
+// url so the host create-if-missing path fires. A failure anywhere after this
+// leaves a switchable brand instead of forcing the user to redo setup.
+test('merlin-setup SKILL.md calls brand_activate FIRST with displayName + url (dropdown-first)', () => {
   const skillPath = path.join(__dirname, '..', '.claude', 'skills', 'merlin-setup', 'SKILL.md');
   const skill = fs.readFileSync(skillPath, 'utf8');
-  assert.match(skill, /brand_activate\(\{brand:/);
-  assert.match(skill, /IMMEDIATELY after writing brand\.md/i);
+  // The registration call includes displayName + url (create-if-missing intent).
+  assert.match(skill, /brand_activate\(\{brand:[^}]*displayName:[^}]*url:/);
+  // The instruction orders it before the scrape.
+  assert.match(skill, /FIRST,\s*BEFORE the scrape/i);
 });
 
 test('merlin-setup SKILL.md instructs parallel scheduled-task creation (no per-task narration)', () => {

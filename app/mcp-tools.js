@@ -2458,21 +2458,23 @@ function buildTools(tool, z, ctx) {
   // load an empty new-brand thread mid-onboarding would be terrible UX).
   tools.push(defineTool({
     name: 'brand_activate',
-    description: 'Promote a brand to active immediately after writing assets/brands/<brand>/brand.md. Updates the dropdown selector and refreshes connections / spells / perf bar. Idempotent — calling with the already-active brand is a no-op. Call ONCE per onboarding, after brand.md is written and before scheduled-task creation.',
+    description: 'Register + activate a brand so it appears in the dropdown. Call this FIRST during onboarding — right after the user gives their website URL and BEFORE scraping — passing {brand, displayName, url}. The host creates assets/brands/<brand>/ with a stub brand.md + memory.md and switches to it immediately, so if the scrape or any later step fails the brand is already saved + switchable and setup can resume (no redo). Updates the dropdown selector and refreshes connections / spells / perf bar. Idempotent — calling with the already-active brand is a no-op. On a later plain switch, call with just {brand}.',
     destructive: false,
     idempotent: true,
     costImpact: 'none',
     brandRequired: false,
     input: {
-      brand: z.string().regex(BRAND_NAME_PATTERN).describe('Brand folder name under assets/brands/ (lowercase, alphanumeric + hyphen/underscore)'),
+      brand: z.string().regex(BRAND_NAME_PATTERN).describe('Brand folder name under assets/brands/ (lowercase, alphanumeric + hyphen/underscore). Derive from the domain (gymshark.com → "gymshark") and keep it fixed for the life of the brand.'),
+      displayName: z.string().optional().describe('Human-readable brand name shown in the dropdown + stub brand.md. Pass on first registration; omit on a plain switch.'),
+      url: z.string().optional().describe('Brand website URL. Passing this (or displayName) tells the host to CREATE the brand if it does not exist yet — the dropdown-first registration. Omit on a plain switch to keep the switch-only guard.'),
     },
-    handler: async ({ brand }) => {
+    handler: async ({ brand, displayName, url }) => {
       if (typeof ctx.activateBrand !== 'function') {
         return envelope.fail(errors.makeError('INTERNAL_ERROR', {
           message: 'host did not wire ctx.activateBrand — brand_activate is unavailable in this build',
         }));
       }
-      const result = ctx.activateBrand(brand);
+      const result = ctx.activateBrand(brand, { displayName, url });
       if (!result || result.ok !== true) {
         const rawCode = (result && result.code) || 'INTERNAL_ERROR';
         // The host returns VALIDATION for malformed slugs; the canonical code
