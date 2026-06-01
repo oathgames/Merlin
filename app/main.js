@@ -13,6 +13,7 @@ const spellConfig = require('./spell-config');
 const scheduledTasksDaemon = require('./scheduled-tasks-daemon');
 const { runFastOpenOAuth, ACTIVE_PLATFORMS: FAST_OPEN_PLATFORMS } = require('./oauth-fast-open');
 const { scaffoldBrandManifest } = require('./brand-manifest-scaffolder');
+const { scaffoldBrandStub } = require('./brand-scaffold');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -2521,7 +2522,6 @@ async function handleToolApproval(toolName, input) {
     // and friends fire real ad spend without the user-facing card.
     // See REGRESSION GUARD comment at the top of mcp-approval-policy.js.
     const approvalPolicy = require('./mcp-approval-policy');
-const { scaffoldBrandStub } = require('./brand-scaffold');
     const { effectiveAction: action, label: intentToolLabel } =
       approvalPolicy.resolveMerlinAction(toolName, input);
 

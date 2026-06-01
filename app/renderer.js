@@ -10415,7 +10415,8 @@ async function palantirPlayVideo(ad, btn) {
   if (!res || res.error || !res.path) {
     btn.disabled = false;
     btn.textContent = '▶ Play video';
-    palantirDetailNote((res && res.error) || 'Could not load the video.');
+    // Rule 6 — friendlyError so raw Go error strings never reach the user.
+    palantirDetailNote(res && res.error ? friendlyError(res.error, 'Palantir') : 'Could not load the video.');
     return;
   }
   const media = palantirEl('palantir-detail-media');
