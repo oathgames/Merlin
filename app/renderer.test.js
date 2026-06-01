@@ -1870,3 +1870,73 @@ test('RSI a11y — chat status surfaces carry aria-live', () => {
     'without the user having to refocus.');
 });
 
+// ── Turn timer: human-readable duration (2026-05-22) ───────────────
+//
+// Mirror of renderer.js formatElapsed. The live ticker + post-turn stats
+// line used to print raw seconds ("160s..."); they now render h/m/s. Pin
+// both the formatting contract (mirror) AND that renderer.js actually uses
+// the helper at both call sites (source-scan) so a revert is caught.
+function formatElapsed(totalSeconds) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+test('timer — formatElapsed renders seconds / minutes / hours, not raw seconds', () => {
+  assert.equal(formatElapsed(0), '0s');
+  assert.equal(formatElapsed(45), '45s');
+  assert.equal(formatElapsed(60), '1m 0s');
+  assert.equal(formatElapsed(160), '2m 40s');   // the reported "160s..." case
+  assert.equal(formatElapsed(599), '9m 59s');
+  assert.equal(formatElapsed(3600), '1h 0m 0s');
+  assert.equal(formatElapsed(3725), '1h 2m 5s');
+  // Defensive: negatives / NaN floor to 0s, never throw or print "NaNs".
+  assert.equal(formatElapsed(-5), '0s');
+  assert.equal(formatElapsed(undefined), '0s');
+});
+
+test('timer — renderer.js uses formatElapsed for the live ticker AND the stats line (no raw ${elapsed}s)', () => {
+  // The live ticker must format, not print raw seconds.
+  assert.match(RENDERER_JS, /tickerEl\.textContent\s*=\s*`\$\{formatElapsed\(elapsed\)\}\.\.\.`/,
+    'live ticker must render formatElapsed(elapsed), not `${elapsed}s...`');
+  // The post-turn stats line must format the duration too.
+  assert.match(RENDERER_JS, /statsText\s*=\s*formatElapsed\(parseInt\(duration,\s*10\)\)/,
+    'post-turn stats line must render formatElapsed(duration), not `${duration}s`');
+  // Guard against regression: the old raw-seconds ticker write must be gone.
+  assert.doesNotMatch(RENDERER_JS, /tickerEl\.textContent\s*=\s*`\$\{elapsed\}s\.\.\.`/,
+    'raw `${elapsed}s...` ticker write must not return');
+});
+
+// ── Spinner verb persists on long turns (onboarding) (2026-05-22) ──
+//
+// showTypingIndicator() arms a 120s typingStuckTimeout → clearStatusLabel().
+// On any turn longer than 2 min (onboarding scrape + product import) that
+// timer wiped the live spinner verb, leaving just the bare ticker counting.
+// setStatusLabel now cancels that stuck-clear once a real progress verb is
+// set, so the verb survives the whole live turn. Pin the fix.
+test('status verb — setStatusLabel cancels the 120s stuck-clear on real progress', () => {
+  const fnIdx = RENDERER_JS.indexOf('function setStatusLabel(label)');
+  assert.ok(fnIdx > 0, 'setStatusLabel not found');
+  const body = RENDERER_JS.slice(fnIdx, fnIdx + 1200);
+  // The guard: any non-"Thinking" label clears typingStuckTimeout so a live
+  // long turn keeps its verb.
+  assert.match(body, /label !== 'Thinking'\s*&&\s*typingStuckTimeout/,
+    'setStatusLabel must cancel typingStuckTimeout when a real progress verb replaces "Thinking"');
+  assert.match(body, /clearTimeout\(typingStuckTimeout\)/,
+    'setStatusLabel must clearTimeout the stuck-clear');
+});
+
+test('status verb — onboarding/brand tools get real verbs, not generic "Channeling"', () => {
+  // The brand_scrape step is onboarding's longest; it (and the other brand
+  // tools) must surface a meaningful verb so the user sees progress instead
+  // of a generic "Channeling" or a bare timer.
+  assert.match(RENDERER_JS, /tool === 'brand_scrape'/);
+  assert.match(RENDERER_JS, /label = 'Studying your brand'/);
+  assert.match(RENDERER_JS, /tool === 'brand_activate'/);
+  assert.match(RENDERER_JS, /label = 'Setting up your brand'/);
+});
+

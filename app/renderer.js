@@ -2364,7 +2364,7 @@ merlin.onSdkMessage((msg) => {
         if (turnTokens > 0 || parseInt(duration) > 2) {
           const statsDiv = document.createElement('div');
           statsDiv.className = 'turn-stats';
-          let statsText = `${duration}s`;
+          let statsText = formatElapsed(parseInt(duration, 10));
           if (turnTokens > 0) {
             const formatted = turnTokens >= 1000 ? (turnTokens / 1000).toFixed(1) + 'K' : String(turnTokens);
             statsText += ` \u00b7 ${formatted} tokens`;
@@ -2471,6 +2471,16 @@ function handleStreamEvent(msg) {
           label = 'Checking connections';
         } else if (tool === 'config') {
           label = 'Updating config';
+        } else if (tool === 'brand_scrape') {
+          // Onboarding's longest step (up to 90s) — give it a real verb so
+          // the user isn't staring at a generic "Channeling" or a bare timer.
+          label = 'Studying your brand';
+        } else if (tool === 'brand_activate') {
+          label = 'Setting up your brand';
+        } else if (tool === 'brand_guide') {
+          label = 'Building your brand guide';
+        } else if (tool === 'bulk_upload') {
+          label = 'Filing your assets';
         } else {
           label = 'Channeling';
         }
@@ -7158,6 +7168,21 @@ let tickerEl = null;
 let _tickerStart = 0;
 let _tickerLastSec = -1;
 
+// formatElapsed renders an elapsed-seconds count as a compact human
+// duration: 45 → "45s", 160 → "2m 40s", 3725 → "1h 2m 5s". Used by the
+// live turn ticker AND the post-turn stats line so long onboarding /
+// render / batch turns read as minutes+seconds instead of a raw 3-digit
+// second count ("160s..." was confusing — see Ryan's report 2026-05-22).
+function formatElapsed(totalSeconds) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
 function _tickerLoop() {
   tickerRafHandle = null;
   if (!tickerEl) return;
@@ -7170,7 +7195,7 @@ function _tickerLoop() {
     // finalize will refresh the visible second. Always paint first
     // second so the ticker doesn't appear stuck at "0s" on turn start.
     if (!isStreaming || elapsed < 2) {
-      tickerEl.textContent = `${elapsed}s...`;
+      tickerEl.textContent = `${formatElapsed(elapsed)}...`;
       scrollToBottom();
     }
   }
@@ -7241,6 +7266,22 @@ function _onCancelButtonClick() {
 function setStatusLabel(label) {
   if (label === _currentStatusLabel) return; // no-op if same
   _currentStatusLabel = label;
+  // REGRESSION GUARD (2026-05-22, onboarding-verb-vanishes-at-2min):
+  // showTypingIndicator() arms a 120s `typingStuckTimeout` that calls
+  // clearStatusLabel() to wipe a stale "Thinking" if a turn silently dies.
+  // But a real progress verb (a tool label or "Weaving a response") proves
+  // the turn is ALIVE — so once we set one, cancel that stuck-clear. Without
+  // this, any turn longer than 2 minutes (onboarding scrape + product import,
+  // video render, large ad batch) had its spinner verb erased mid-flight,
+  // leaving just the bare timer counting (Ryan's "160s..., no verb" report).
+  // Genuine hangs are still caught by the session watchdog (TOOL_STALL_MS /
+  // TEXT_STALL_MS) + the Cancel button; turn end clears the label normally.
+  // The stuck-clear stays armed only while the label is still the initial
+  // "Thinking" (the turn has produced nothing yet).
+  if (label !== 'Thinking' && typingStuckTimeout) {
+    clearTimeout(typingStuckTimeout);
+    typingStuckTimeout = null;
+  }
   if (_statusDebounce) clearTimeout(_statusDebounce);
   if (_stuckTimer) clearTimeout(_stuckTimer);
   if (_cancelBtnTimer) clearTimeout(_cancelBtnTimer);
