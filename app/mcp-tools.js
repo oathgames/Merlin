@@ -717,9 +717,10 @@ function buildTools(tool, z, ctx) {
         'audit-events',
         'audit-frequency-caps',
         'audit-catalog',
-      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event EMQ scores (0-10, graded Great/Good/Low) plus actionable fix advice for any event below 8.0 — call this when the user asks about match quality, CAPI param coverage, or "is my pixel set up right".'),
+      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0 — call this when the user asks about match quality, CAPI param coverage, or "is my pixel set up right". For best results pass agentName (the Conversions API integration name).'),
       brand: brandSchema.describe('Brand name for vault-scoped Meta credentials.'),
       adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel and audit-events: optional pixel id override (defaults to brand cfg metaPixelId).'),
+      agentName: z.string().optional().describe('For audit-events: the Conversions API integration\'s agent name, used to scope Meta\'s Dataset Quality API EMQ query. Find it in Events Manager → Data Sources → your dataset → the integration\'s name (e.g. the Shopify/Stape/Elevar/GTM integration). Optional — if omitted Merlin still attempts the query and tells the user how to find it.'),
       catalogId: z.string().optional().describe('For audit-catalog: the Meta product catalog id (find it via mcp__merlin__meta_ads({action:"catalog"}) or in Commerce Manager).'),
       status: z.enum(['active', 'all']).optional().describe('For audit-retargeting-cascade and audit-frequency-caps: filter ad sets. Default "active" (paused ad sets are noise).'),
       limit: z.number().optional().describe('Max records to return per page. Defaults: list-audiences=250, list-conversions=100, audit-catalog=200. Hard caps: 500.'),
@@ -1228,6 +1229,64 @@ function buildTools(tool, z, ctx) {
       forceReimport: z.boolean().optional().describe('When true, bulk-import-flow bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'postscript-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── clarity ──────────────────────────────────────────────
+  // Microsoft Clarity behavioral analytics (read-only Data Export API).
+  // Brand-scoped: each brand connects its own Clarity project token.
+  //   connect  → opens the Clarity dashboard so the user can generate a
+  //              Data Export API token (Settings → Data Export).
+  //   verify   → validates a pasted token with a real API probe and, on
+  //              success, persists it for the brand + seeds the cache.
+  //   status   → reports connection state (no API call).
+  //   insights → pulls the behavioral snapshot (rage/dead clicks, scroll
+  //              depth, JS errors). Cache-aware — Clarity caps the API at
+  //              10 pulls/project/day, so clarity.go serves a 6h-TTL
+  //              per-brand snapshot rather than hitting the wire each call.
+  tools.push(defineTool({
+    name: 'clarity',
+    description: 'Microsoft Clarity behavioral analytics — connect a brand\'s Clarity project, then pull real visitor friction (rage clicks, dead clicks, scroll depth, JavaScript errors). connect → opens Clarity so the user can generate a Data Export API token. verify → validates and saves a pasted token. status → checks connection state. insights → pulls the behavioral snapshot (cached 6h to respect Clarity\'s 10-pulls/day limit). Clarity data also auto-enriches landing-audit and funnel-teardown for connected brands.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'clarity' },
+    input: {
+      action: z.enum(['connect', 'verify', 'status', 'insights']).describe('connect → open Clarity to generate a token. verify → validate + save a pasted token (requires apiKey). status → check connection. insights → pull the behavioral snapshot.'),
+      brand: brandSchema,
+      apiKey: z.string().optional().describe('The Clarity Data Export API token to validate (required for verify). Generated in Clarity → Settings → Data Export → Generate new API token by a project admin.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'clarity-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── posthog ──────────────────────────────────────────────
+  // PostHog product/ecommerce analytics (read-only HogQL Query API).
+  // Brand-scoped: each brand connects its own PostHog project.
+  //   connect  → opens PostHog so the user can mint a Personal API Key.
+  //   verify   → validates a pasted key, auto-detects the US/EU region,
+  //              resolves the project, and persists it for the brand.
+  //   status   → reports connection state (no API call).
+  //   insights → pulls the ecommerce snapshot — conversion funnel
+  //              (view → cart → checkout → purchase), revenue, orders,
+  //              top products, top pages. Cached 2h.
+  tools.push(defineTool({
+    name: 'posthog',
+    description: 'PostHog product & ecommerce analytics — connect a brand\'s PostHog project, then pull its real conversion funnel (product views → add-to-cart → checkout → orders), revenue, top products, and top pages. connect → opens PostHog to mint a Personal API Key. verify → validates a pasted key (auto-detects US/EU region, resolves the project); pass host for self-hosted PostHog and projectId to pin a specific project. status → checks connection. insights → pulls the ecommerce snapshot (cached 2h). PostHog data also auto-enriches landing-audit and funnel-teardown for connected brands.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'posthog' },
+    input: {
+      action: z.enum(['connect', 'verify', 'status', 'insights']).describe('connect → open PostHog to mint a Personal API Key. verify → validate + save a pasted key (requires apiKey). status → check connection. insights → pull the ecommerce analytics snapshot.'),
+      brand: brandSchema,
+      apiKey: z.string().optional().describe('The PostHog Personal API Key to validate (required for verify). Minted in PostHog → Settings → Personal API Keys with the "Query Read" and "Project Read" scopes.'),
+      host: z.string().optional().describe('Optional for verify: PostHog region or host — "us" (default), "eu", or a full base URL for self-hosted PostHog. Omit to auto-detect the region from the key.'),
+      projectId: z.string().optional().describe('Optional for verify: pin a specific PostHog project id. Omit to use the first project the key can access.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'posthog-' + args.action, args)),
   }, tool, z, ctx));
 
   // ── email ────────────────────────────────────────────────
@@ -1897,7 +1956,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'stripe', 'linkedin']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -1954,6 +2013,24 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'Postscript connects via API key',
           instructions: 'Click the Postscript tile in the Connections panel and paste your API key from app.postscript.io → Settings → API. Then use connection_status to verify.',
+        };
+      }
+      // Microsoft Clarity connects via the dedicated `clarity` tool: it
+      // owns the connect/verify flow (browser open + brand-scoped token
+      // persistence in the Go binary), so platform_login just routes there.
+      if (args.platform === 'clarity') {
+        return {
+          summary: 'Microsoft Clarity connects via the clarity tool',
+          instructions: 'Call mcp__merlin__clarity with action "connect" — it opens Clarity so the user can generate a Data Export API token (Settings → Data Export, project admin only). When they paste the token back, call clarity with action "verify" and the apiKey to save it for this brand. Then connection_status will show Clarity as connected.',
+        };
+      }
+      // PostHog connects via the dedicated `posthog` tool — it owns the
+      // connect/verify flow (browser open + brand-scoped persistence in
+      // the Go binary), so platform_login just routes there.
+      if (args.platform === 'posthog') {
+        return {
+          summary: 'PostHog connects via the posthog tool',
+          instructions: 'Call mcp__merlin__posthog with action "connect" — it opens PostHog so the user can mint a Personal API Key (Settings → Personal API Keys, scopes "Query Read" + "Project Read"). When they paste the key back, call posthog with action "verify" and the apiKey to save it for this brand (it auto-detects the US/EU region). Then connection_status will show PostHog as connected.',
         };
       }
       try {
@@ -2381,21 +2458,23 @@ function buildTools(tool, z, ctx) {
   // load an empty new-brand thread mid-onboarding would be terrible UX).
   tools.push(defineTool({
     name: 'brand_activate',
-    description: 'Promote a brand to active immediately after writing assets/brands/<brand>/brand.md. Updates the dropdown selector and refreshes connections / spells / perf bar. Idempotent — calling with the already-active brand is a no-op. Call ONCE per onboarding, after brand.md is written and before scheduled-task creation.',
+    description: 'Register + activate a brand so it appears in the dropdown. Call this FIRST during onboarding — right after the user gives their website URL and BEFORE scraping — passing {brand, displayName, url}. The host creates assets/brands/<brand>/ with a stub brand.md + memory.md and switches to it immediately, so if the scrape or any later step fails the brand is already saved + switchable and setup can resume (no redo). Updates the dropdown selector and refreshes connections / spells / perf bar. Idempotent — calling with the already-active brand is a no-op. On a later plain switch, call with just {brand}.',
     destructive: false,
     idempotent: true,
     costImpact: 'none',
     brandRequired: false,
     input: {
-      brand: z.string().regex(BRAND_NAME_PATTERN).describe('Brand folder name under assets/brands/ (lowercase, alphanumeric + hyphen/underscore)'),
+      brand: z.string().regex(BRAND_NAME_PATTERN).describe('Brand folder name under assets/brands/ (lowercase, alphanumeric + hyphen/underscore). Derive from the domain (gymshark.com → "gymshark") and keep it fixed for the life of the brand.'),
+      displayName: z.string().optional().describe('Human-readable brand name shown in the dropdown + stub brand.md. Pass on first registration; omit on a plain switch.'),
+      url: z.string().optional().describe('Brand website URL. Passing this (or displayName) tells the host to CREATE the brand if it does not exist yet — the dropdown-first registration. Omit on a plain switch to keep the switch-only guard.'),
     },
-    handler: async ({ brand }) => {
+    handler: async ({ brand, displayName, url }) => {
       if (typeof ctx.activateBrand !== 'function') {
         return envelope.fail(errors.makeError('INTERNAL_ERROR', {
           message: 'host did not wire ctx.activateBrand — brand_activate is unavailable in this build',
         }));
       }
-      const result = ctx.activateBrand(brand);
+      const result = ctx.activateBrand(brand, { displayName, url });
       if (!result || result.ok !== true) {
         const rawCode = (result && result.code) || 'INTERNAL_ERROR';
         // The host returns VALIDATION for malformed slugs; the canonical code

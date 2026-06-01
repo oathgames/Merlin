@@ -110,6 +110,8 @@ const TOOL_ROUTING = [
   { name: 'mailchimp', prefix: 'mailchimp' },
   { name: 'applovin', prefix: 'applovin' },
   { name: 'postscript', prefix: 'postscript' },
+  { name: 'clarity', prefix: 'clarity' },
+  { name: 'posthog', prefix: 'posthog' },
   { name: 'email', prefix: 'email' },
   { name: 'seo', prefix: 'seo',
     actionMap: {

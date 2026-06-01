@@ -1633,3 +1633,310 @@ test('RSI 3-3: connection-status reuses one tile NodeList across all branches', 
     'resolved branch must alias _preTiles to allTiles instead of re-querying');
 });
 
+// ─────────────────────────────────────────────────────────────────────
+// Palantir — competitor ad-feed tab
+// ─────────────────────────────────────────────────────────────────────
+
+// INDEX_HTML is already read once near the top of this file — reuse it.
+const MAIN_JS = fs.readFileSync(path.join(APP_DIR, 'main.js'), 'utf8');
+const PRELOAD_JS = fs.readFileSync(path.join(APP_DIR, 'preload.js'), 'utf8');
+const STYLE_CSS = fs.readFileSync(path.join(APP_DIR, 'style.css'), 'utf8');
+
+test('Palantir — index.html has the tab button, panel, and detail lightbox', () => {
+  assert.ok(INDEX_HTML.includes('id="palantir-btn"'), 'tab button exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-panel"'), 'panel exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-grid"'), 'feed grid exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-sentinel"'), 'infinite-scroll sentinel exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-search"'), 'competitor search input exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-detail"'), 'ad-detail lightbox exists');
+});
+
+test('Palantir — tab button is wired and toggles the panel', () => {
+  assert.ok(RENDERER_JS.includes("getElementById('palantir-btn').addEventListener"), 'btn handler bound');
+  const idx = RENDERER_JS.indexOf("getElementById('palantir-btn').addEventListener");
+  const handler = RENDERER_JS.slice(idx, idx + 700);
+  assert.ok(handler.includes("getElementById('palantir-panel')"), 'handler toggles the panel');
+  // Opening Palantir must hide the sibling sidebars (and clear their pins).
+  assert.ok(handler.includes("'magic-panel'") && handler.includes("'archive-panel'"),
+    'opening Palantir hides magic + archive sidebars');
+  assert.ok(handler.includes("setSidebarPinned('magic', false)") && handler.includes("setSidebarPinned('archive', false)"),
+    'sibling pins are cleared so the chat reflow stays in lockstep');
+});
+
+test('Palantir — archive and magic handlers hide the Palantir panel', () => {
+  // The symmetric invariant: every sidebar handler hides the others.
+  const archiveIdx = RENDERER_JS.indexOf("getElementById('archive-btn').addEventListener");
+  const magicIdx = RENDERER_JS.indexOf("getElementById('magic-btn').addEventListener");
+  // Slice generously — both handlers open with a multi-line REGRESSION
+  // GUARD comment before the cross-panel hides.
+  assert.ok(RENDERER_JS.slice(archiveIdx, archiveIdx + 1600).includes("'palantir-panel'"),
+    'archive-btn handler hides the Palantir panel');
+  assert.ok(RENDERER_JS.slice(magicIdx, magicIdx + 1600).includes("'palantir-panel'"),
+    'magic-btn handler hides the Palantir panel');
+});
+
+test('Palantir — infinite scroll uses an IntersectionObserver on the sentinel', () => {
+  assert.ok(RENDERER_JS.includes('function palantirEnsureObserver'), 'observer setup fn exists');
+  assert.ok(/palantirObserver\s*=\s*new IntersectionObserver/.test(RENDERER_JS),
+    'an IntersectionObserver drives pagination');
+  assert.ok(RENDERER_JS.includes("palantirState.hasMore") && RENDERER_JS.includes("loadPalantirFeed({ reset: false })"),
+    'the observer pages the next cursor when hasMore');
+});
+
+test('Palantir — feed loader paginates by cursor and guards re-entry', () => {
+  assert.ok(RENDERER_JS.includes('async function loadPalantirFeed'), 'loadPalantirFeed defined');
+  const idx = RENDERER_JS.indexOf('async function loadPalantirFeed');
+  const fn = RENDERER_JS.slice(idx, idx + 2600);
+  assert.ok(fn.includes('palantirState.loading'), 'guards concurrent loads via the loading flag');
+  assert.ok(fn.includes('foreplayCursor') && fn.includes('foreplayBrandIds'),
+    'page 2+ requests reuse the resolved brand ids + cursor');
+  assert.ok(fn.includes('window.merlin.palantirFeed'), 'calls the palantirFeed bridge');
+});
+
+test('Palantir — all ad media loads through the merlin:// protocol', () => {
+  // The renderer CSP cannot load remote ad-CDN media; thumbnails are cached
+  // locally by the binary and video is downloaded on demand. Both must be
+  // referenced via merlinUrl(), never a raw https URL.
+  assert.ok(RENDERER_JS.includes("merlinUrl('results/competitor-ads/thumbs/'"),
+    'thumbnails resolve through merlin:// under results/');
+  const playIdx = RENDERER_JS.indexOf('async function palantirPlayVideo');
+  assert.ok(playIdx >= 0, 'palantirPlayVideo defined');
+  assert.ok(RENDERER_JS.slice(playIdx, playIdx + 900).includes('merlinUrl(res.path)'),
+    'downloaded video plays via a merlin:// URL');
+});
+
+test('Palantir — "use as inspiration" seeds the chat input', () => {
+  assert.ok(RENDERER_JS.includes('function palantirUseAsInspiration'), 'inspiration fn exists');
+  const idx = RENDERER_JS.indexOf('function palantirUseAsInspiration');
+  const fn = RENDERER_JS.slice(idx, idx + 900);
+  assert.ok(fn.includes('input.value'), 'writes a brief into the chat input');
+  // Populates but does NOT auto-send — the user names the product first.
+  assert.ok(!/sendMessage\(\)/.test(fn), 'must not auto-send the message');
+});
+
+test('Palantir — preload exposes the bridge methods', () => {
+  assert.ok(/palantirFeed:\s*\(opts\)\s*=>\s*ipcRenderer\.invoke\('palantir-feed'/.test(PRELOAD_JS),
+    'palantirFeed bridge wired to the palantir-feed channel');
+  assert.ok(/palantirDownloadAd:\s*\(opts\)\s*=>\s*ipcRenderer\.invoke\('palantir-download-ad'/.test(PRELOAD_JS),
+    'palantirDownloadAd bridge wired');
+  // Options objects must be validated before crossing the IPC boundary.
+  assert.ok(/palantirFeed:[^\n]*assertObj\(opts\)/.test(PRELOAD_JS), 'palantirFeed validates its options object');
+});
+
+test('Palantir — main.js IPC handlers spawn the binary safely', () => {
+  assert.ok(MAIN_JS.includes("ipcMain.handle('palantir-feed'"), 'palantir-feed handler registered');
+  assert.ok(MAIN_JS.includes("ipcMain.handle('palantir-download-ad'"), 'palantir-download-ad handler registered');
+  assert.ok(MAIN_JS.includes("action: 'palantir-feed'"), 'feed handler invokes the palantir-feed binary action');
+  assert.ok(MAIN_JS.includes("action: 'foreplay-download-ad'"), 'download handler reuses the foreplay-download-ad action');
+  // The single-line result contract.
+  assert.ok(MAIN_JS.includes("function extractPalantirResult"), 'result extractor present');
+  assert.ok(MAIN_JS.includes("'PALANTIR_RESULT '"), 'extractor keys on the PALANTIR_RESULT prefix');
+});
+
+test('Palantir — has themed styles for the panel and lightbox', () => {
+  assert.ok(STYLE_CSS.includes('.palantir-panel'), 'panel styled');
+  assert.ok(STYLE_CSS.includes('.palantir-card'), 'ad card styled');
+  assert.ok(STYLE_CSS.includes('.palantir-detail'), 'detail lightbox styled');
+  // Uses theme variables, so it tracks dark/light mode for free.
+  assert.ok(/\.palantir-panel\s*{[^}]*var\(--/.test(STYLE_CSS), 'panel uses theme CSS variables');
+});
+
+// ── RSI Iteration 1 — Palantir renderer-hygiene regression locks ─────
+
+test('RSI — Palantir IntersectionObserver is torn down on panel close', () => {
+  // The observer must not survive a panel close, or it fires zombie
+  // binary spawns against a hidden panel on every sibling-tab reflow.
+  assert.ok(RENDERER_JS.includes('function palantirCloseCleanup'),
+    'palantirCloseCleanup teardown fn exists');
+  assert.ok(/palantirCloseCleanup\b[\s\S]{0,160}palantirObserver\.disconnect\(\)/.test(RENDERER_JS),
+    'cleanup disconnects the IntersectionObserver');
+  assert.ok(/palantirObserver\s*=\s*null/.test(RENDERER_JS),
+    'cleanup nulls the observer so it can be re-armed');
+  // A lifecycle hook disconnects it whenever the panel is hidden.
+  assert.ok(RENDERER_JS.includes('ensurePalantirObserverLifecycle'),
+    'a MutationObserver-based lifecycle hook exists');
+});
+
+test('RSI — Palantir observer callback refuses to page a hidden panel', () => {
+  const idx = RENDERER_JS.indexOf('palantirObserver = new IntersectionObserver');
+  const cb = RENDERER_JS.slice(idx, idx + 700);
+  assert.ok(cb.includes("classList.contains('hidden')"),
+    'the observer callback early-returns when the panel is hidden');
+});
+
+test('RSI — Palantir feed grid is capped (no unbounded infinite scroll)', () => {
+  assert.ok(/const PALANTIR_MAX_CARDS\s*=\s*\d+/.test(RENDERER_JS),
+    'a hard card cap constant is declared');
+  assert.ok(/grid\.children\.length\s*>\s*PALANTIR_MAX_CARDS[\s\S]{0,120}grid\.removeChild\(grid\.firstChild\)/.test(RENDERER_JS),
+    'oldest cards are pruned from the top once over the cap');
+});
+
+test('RSI — Palantir surfaces the binary error through friendlyError', () => {
+  // Rule 6 — never render an upstream error string raw.
+  assert.ok(/palantirSetStatus\(friendlyError\(res\.error/.test(RENDERER_JS),
+    'res.error is wrapped in friendlyError() before it reaches the DOM');
+});
+
+test('RSI — Palantir "open landing page" failure is not silent', () => {
+  const idx = RENDERER_JS.indexOf('window.merlin.openExternal(ad.linkUrl)');
+  assert.ok(idx >= 0, 'openExternal call present');
+  const slice = RENDERER_JS.slice(idx, idx + 160);
+  assert.ok(slice.includes('palantirDetailNote'),
+    'a failed openExternal shows the user a note instead of swallowing silently');
+});
+
+// ── RSI #12 — Accessibility source-scan ────────────────────────────
+//
+// The renderer is a paying-user-facing surface — keyboard-only operators
+// and screen-reader users have to be able to drive it. These scans pin
+// the basics:
+//
+//   1. Every <button> in index.html has SOMETHING a screen reader can
+//      announce — visible text, an aria-label, or an aria-labelledby.
+//      An icon-only button with no name is invisible.
+//   2. Every text/url/email <input> has either an aria-label or a
+//      <label for="..."> association. An input with no name is
+//      unrecognizable to AT.
+//   3. The chat-stream status surfaces (where async progress messages
+//      land) carry an aria-live region so screen readers announce the
+//      update without the user having to refocus.
+//
+// Source-scan rather than DOM-driven so the lock is cheap, deterministic,
+// and runs in CI without Electron. The cost is some false-positive
+// brittleness (the scan parses HTML with regex) — accepted because the
+// alternative is "no a11y guard at all."
+
+const INDEX_HTML_A11Y = fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8');
+
+test('RSI a11y — every <button> has an accessible name (text content OR aria-label)', () => {
+  // Match each <button ...>...</button>. Greedy across newlines is fine
+  // for this file (no nested <button>); the regex captures the opening
+  // tag + the inner body up to the next </button>.
+  const buttons = [...INDEX_HTML_A11Y.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)];
+  assert.ok(buttons.length > 50, `scan must find buttons in index.html (got ${buttons.length}); regex may be broken`);
+
+  const offenders = [];
+  for (const [, openAttrs, inner] of buttons) {
+    if (/aria-label\s*=\s*"[^"]+"/.test(openAttrs)) continue;
+    if (/aria-labelledby\s*=\s*"[^"]+"/.test(openAttrs)) continue;
+    // Strip every tag from `inner`, normalize whitespace, check for any
+    // remaining text. An <svg> child without text counts as empty —
+    // that's the icon-only case that needs an aria-label.
+    const visible = inner.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+    if (visible.length > 0) continue;
+    // Truncate the offending tag for the error message.
+    const preview = `<button${openAttrs}>${inner}</button>`.slice(0, 200);
+    offenders.push(preview);
+  }
+  if (offenders.length > 0) {
+    assert.fail(`a11y: ${offenders.length} icon-only button(s) missing aria-label / aria-labelledby:\n  ` +
+      offenders.slice(0, 5).map(o => o.replace(/\s+/g, ' ')).join('\n  '));
+  }
+});
+
+test('RSI a11y — every text-like <input> has an accessible name', () => {
+  // Cover text / search / email / url / tel / password / number.
+  const inputs = [...INDEX_HTML_A11Y.matchAll(/<input\b([^>]*type\s*=\s*"(?:text|search|email|url|tel|password|number)"[^>]*)>/g)];
+  if (inputs.length === 0) return; // no inputs of these types in this surface — vacuously pass
+  const offenders = [];
+  for (const [, attrs] of inputs) {
+    if (/aria-label\s*=\s*"[^"]+"/.test(attrs)) continue;
+    if (/aria-labelledby\s*=\s*"[^"]+"/.test(attrs)) continue;
+    const idMatch = attrs.match(/\bid\s*=\s*"([^"]+)"/);
+    if (idMatch) {
+      // Look for a <label for="<id>"> elsewhere in the document.
+      const id = idMatch[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const labelRe = new RegExp(`<label\\b[^>]*\\bfor\\s*=\\s*"${id}"`);
+      if (labelRe.test(INDEX_HTML_A11Y)) continue;
+    }
+    offenders.push(`<input${attrs}>`.slice(0, 180));
+  }
+  if (offenders.length > 0) {
+    assert.fail(`a11y: ${offenders.length} input(s) missing aria-label / aria-labelledby / <label for=>:\n  ` +
+      offenders.join('\n  '));
+  }
+});
+
+test('RSI a11y — chat status surfaces carry aria-live', () => {
+  // The chat row uses #status-pill (or equivalent) for async progress.
+  // We don't require a specific id — just that at least one aria-live
+  // region exists per layout (we already have request-thanks and
+  // attachment-row as anchors), AND the count is >= 2 so a future
+  // delete of one doesn't silently strand the other surface.
+  const liveCount = (INDEX_HTML_A11Y.match(/aria-live\s*=\s*"(polite|assertive)"/g) || []).length;
+  assert.ok(liveCount >= 2,
+    `expected >= 2 aria-live regions for async announcements, found ${liveCount}. ` +
+    'Async progress (chat status, attachment row, request feedback) must announce to screen readers ' +
+    'without the user having to refocus.');
+});
+
+// ── Turn timer: human-readable duration (2026-05-22) ───────────────
+//
+// Mirror of renderer.js formatElapsed. The live ticker + post-turn stats
+// line used to print raw seconds ("160s..."); they now render h/m/s. Pin
+// both the formatting contract (mirror) AND that renderer.js actually uses
+// the helper at both call sites (source-scan) so a revert is caught.
+function formatElapsed(totalSeconds) {
+  const s = Math.max(0, Math.floor(Number(totalSeconds) || 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+test('timer — formatElapsed renders seconds / minutes / hours, not raw seconds', () => {
+  assert.equal(formatElapsed(0), '0s');
+  assert.equal(formatElapsed(45), '45s');
+  assert.equal(formatElapsed(60), '1m 0s');
+  assert.equal(formatElapsed(160), '2m 40s');   // the reported "160s..." case
+  assert.equal(formatElapsed(599), '9m 59s');
+  assert.equal(formatElapsed(3600), '1h 0m 0s');
+  assert.equal(formatElapsed(3725), '1h 2m 5s');
+  // Defensive: negatives / NaN floor to 0s, never throw or print "NaNs".
+  assert.equal(formatElapsed(-5), '0s');
+  assert.equal(formatElapsed(undefined), '0s');
+});
+
+test('timer — renderer.js uses formatElapsed for the live ticker AND the stats line (no raw ${elapsed}s)', () => {
+  // The live ticker must format, not print raw seconds.
+  assert.match(RENDERER_JS, /tickerEl\.textContent\s*=\s*`\$\{formatElapsed\(elapsed\)\}\.\.\.`/,
+    'live ticker must render formatElapsed(elapsed), not `${elapsed}s...`');
+  // The post-turn stats line must format the duration too.
+  assert.match(RENDERER_JS, /statsText\s*=\s*formatElapsed\(parseInt\(duration,\s*10\)\)/,
+    'post-turn stats line must render formatElapsed(duration), not `${duration}s`');
+  // Guard against regression: the old raw-seconds ticker write must be gone.
+  assert.doesNotMatch(RENDERER_JS, /tickerEl\.textContent\s*=\s*`\$\{elapsed\}s\.\.\.`/,
+    'raw `${elapsed}s...` ticker write must not return');
+});
+
+// ── Spinner verb persists on long turns (onboarding) (2026-05-22) ──
+//
+// showTypingIndicator() arms a 120s typingStuckTimeout → clearStatusLabel().
+// On any turn longer than 2 min (onboarding scrape + product import) that
+// timer wiped the live spinner verb, leaving just the bare ticker counting.
+// setStatusLabel now cancels that stuck-clear once a real progress verb is
+// set, so the verb survives the whole live turn. Pin the fix.
+test('status verb — setStatusLabel cancels the 120s stuck-clear on real progress', () => {
+  const fnIdx = RENDERER_JS.indexOf('function setStatusLabel(label)');
+  assert.ok(fnIdx > 0, 'setStatusLabel not found');
+  const body = RENDERER_JS.slice(fnIdx, fnIdx + 1200);
+  // The guard: any non-"Thinking" label clears typingStuckTimeout so a live
+  // long turn keeps its verb.
+  assert.match(body, /label !== 'Thinking'\s*&&\s*typingStuckTimeout/,
+    'setStatusLabel must cancel typingStuckTimeout when a real progress verb replaces "Thinking"');
+  assert.match(body, /clearTimeout\(typingStuckTimeout\)/,
+    'setStatusLabel must clearTimeout the stuck-clear');
+});
+
+test('status verb — onboarding/brand tools get real verbs, not generic "Channeling"', () => {
+  // The brand_scrape step is onboarding's longest; it (and the other brand
+  // tools) must surface a meaningful verb so the user sees progress instead
+  // of a generic "Channeling" or a bare timer.
+  assert.match(RENDERER_JS, /tool === 'brand_scrape'/);
+  assert.match(RENDERER_JS, /label = 'Studying your brand'/);
+  assert.match(RENDERER_JS, /tool === 'brand_activate'/);
+  assert.match(RENDERER_JS, /label = 'Setting up your brand'/);
+});
+
