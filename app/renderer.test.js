@@ -1785,6 +1785,23 @@ test('RSI — Palantir "open landing page" failure is not silent', () => {
     'a failed openExternal shows the user a note instead of swallowing silently');
 });
 
+// REGRESSION GUARD (2026-06-01, pre-release review catch): Rule 6 — the
+// palantirPlayVideo error path must route the raw binary error through
+// friendlyError so internal Go error strings (file paths, network detail)
+// never reach a paying user. It previously passed res.error straight to
+// palantirDetailNote (the textContent write dodged the explicit BLOCK
+// trigger, but it still leaked).
+test('RSI — Palantir video-play failure routes through friendlyError (Rule 6)', () => {
+  const idx = RENDERER_JS.indexOf("btn.textContent = '▶ Play video';");
+  assert.ok(idx >= 0, 'palantirPlayVideo error branch present');
+  const slice = RENDERER_JS.slice(idx, idx + 400);
+  assert.ok(/friendlyError\(res\.error/.test(slice),
+    'the video-play error must be wrapped in friendlyError(res.error, ...) before display');
+  // The raw unwrapped pass-through must be gone.
+  assert.ok(!/palantirDetailNote\(\(res && res\.error\) \|\| 'Could not load the video\.'\)/.test(RENDERER_JS),
+    'the raw `(res && res.error) ||` pass-through must not return');
+});
+
 // ── RSI #12 — Accessibility source-scan ────────────────────────────
 //
 // The renderer is a paying-user-facing surface — keyboard-only operators
