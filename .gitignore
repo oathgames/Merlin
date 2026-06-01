@@ -97,3 +97,7 @@ Thumbs.db
 .session-review.md
 .session-review.json
 .session-review.json.err
+
+# Vendor-docs hash cache (regenerable runtime artifact from the docs-drift
+# checker — never source, must never block a session close).
+test/.vendor-docs-hashes.json
