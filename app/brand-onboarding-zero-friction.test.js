@@ -187,6 +187,34 @@ test('main.js wires ctx.activateBrand into the MCP server context', () => {
   assert.match(SRC_MAIN, /scaffoldBrandStub\(/);
 });
 
+// REGRESSION GUARD (2026-06-01, pre-release review catch): the
+// scaffoldBrandStub require MUST be module-scoped, not nested inside a
+// function. It was originally added zero-indented INSIDE handleToolApproval,
+// which makes it function-scoped in JS — so the activateBrand closure (a
+// different function) calling scaffoldBrandStub(...) threw
+// ReferenceError at runtime on every dropdown-first brand_activate,
+// silently breaking onboarding. The prior source-scan only checked the
+// string `scaffoldBrandStub(` appeared SOMEWHERE in main.js, which passed
+// even with the broken scope. This test pins the require to module level.
+test('main.js requires scaffoldBrandStub at MODULE scope (not nested in a function)', () => {
+  // The require must appear as a top-of-file statement (zero indentation,
+  // before the first function declaration).
+  assert.match(SRC_MAIN, /^const \{ scaffoldBrandStub \} = require\('\.\/brand-scaffold'\);$/m,
+    'scaffoldBrandStub require must be a module-level statement (zero-indented)');
+  // And it must come BEFORE handleToolApproval — i.e. not be the stray
+  // function-scoped copy that caused the bug.
+  const reqIdx = SRC_MAIN.search(/^const \{ scaffoldBrandStub \} = require/m);
+  const fnIdx = SRC_MAIN.indexOf('async function handleToolApproval');
+  assert.ok(reqIdx > 0 && reqIdx < fnIdx,
+    'the module-scoped scaffoldBrandStub require must appear before handleToolApproval, ' +
+    'proving it is not the function-nested copy');
+  // The module it requires must actually export scaffoldBrandStub — catches
+  // a rename on either side.
+  const scaffold = require('./brand-scaffold');
+  assert.equal(typeof scaffold.scaffoldBrandStub, 'function',
+    'brand-scaffold.js must export scaffoldBrandStub');
+});
+
 // ─────────────────────────────────────────────────────────────────
 // SKILL invariants: zero AskUserQuestion in setup body, brand_activate
 // referenced, parallel scheduled-task creation called out
