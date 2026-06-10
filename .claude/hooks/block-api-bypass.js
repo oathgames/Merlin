@@ -63,6 +63,26 @@ const BANNED_HOSTS = [
   // consent, 10DLC) before every send. A direct curl would bypass every one
   // of those guards and is a TCPA-compliance blocker, not a convenience issue.
   'api.postscript.io',
+  // Reddit Ads API. ads-api.reddit.com is the paid-ads surface; oauth.reddit.com
+  // is the authenticated organic surface (reddit_organic.go prospecting/posting).
+  // Both are rate-limited and route through PreflightCheck in the binary — a
+  // direct curl bypasses the preflight AND the organic dedup cache, landing the
+  // user in Reddit's automation review queue. Authorize uses www.reddit.com
+  // (browser flow), which stays allowed.
+  'ads-api.reddit.com',
+  'oauth.reddit.com',
+  // LinkedIn Ads API. api.linkedin.com is the campaign/creative surface; it is
+  // rate-limited and routes through PreflightCheck. Authorize uses
+  // www.linkedin.com (browser flow), which stays allowed.
+  'api.linkedin.com',
+  // Etsy Open API v3. openapi.etsy.com is the listing/shop surface; rate-limited
+  // and preflight-gated in the binary. Authorize uses www.etsy.com (browser
+  // flow), which stays allowed.
+  'openapi.etsy.com',
+  // Threads Graph API. graph.threads.net is the publish/insights surface;
+  // rate-limited and preflight-gated. Authorize uses threads.net (browser flow),
+  // which stays allowed.
+  'graph.threads.net',
 ];
 
 // Shopify Admin API is blocked but OAuth authorize URL stays allowed (user-facing).
