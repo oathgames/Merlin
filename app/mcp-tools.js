@@ -1843,6 +1843,7 @@ function buildTools(tool, z, ctx) {
       adHeadline: z.string().optional().describe('Ad headline'),
       adBody: z.string().optional().describe('Ad body text'),
       adLink: z.string().optional().describe('Destination URL'),
+      adImagePath: z.string().optional().describe('Path to an image for a single-image sponsored creative (push). When set, Merlin uploads the image to the sponsoring organization, creates a Direct Sponsored Content post, and builds the creative from it. Requires an organization-backed ad account. Omit for a text/link creative.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
     },
     handler: async (args) => {
