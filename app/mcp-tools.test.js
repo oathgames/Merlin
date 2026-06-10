@@ -1202,3 +1202,27 @@ test("brand_activate envelope carries nextSuggested:['connection_status'] (D003)
   assert.deepEqual(env.nextSuggested, ['connection_status'],
     'brand_activate must carry nextSuggested:["connection_status"] (D003)');
 });
+
+// REGRESSION GUARD (2026-06-XX, connector-hardening — klaviyo-email-send-wiring):
+// The klaviyo tool must expose campaign-send / campaign-schedule (the live email
+// sends) plus the params they need (campaignId, replyTo, scheduleTime, approved).
+// Pre-fix klaviyoSendCampaign/klaviyoScheduleCampaign were built + tested but
+// unrouted — no MCP action reached them, so the send button did not exist.
+test('klaviyo tool exposes campaign-send / campaign-schedule + their params', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  // Scope to the klaviyo tool block (from its name to the next tool's name).
+  const start = src.indexOf("name: 'klaviyo'");
+  assert.ok(start > 0, 'klaviyo tool must exist');
+  const after = src.indexOf("name: 'email'", start);
+  const block = src.slice(start, after > 0 ? after : start + 12000);
+  for (const action of ["'campaign-send'", "'campaign-schedule'"]) {
+    assert.ok(block.includes(action),
+      `klaviyo action enum must include ${action} (live email send)`);
+  }
+  for (const param of ['campaignId:', 'replyTo:', 'scheduleTime:', 'approved:']) {
+    assert.ok(block.includes(param),
+      `klaviyo tool must declare the ${param} input for campaign-send/schedule`);
+  }
+});

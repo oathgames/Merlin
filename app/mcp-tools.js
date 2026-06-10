@@ -1043,6 +1043,10 @@ function buildTools(tool, z, ctx) {
         // METADATA, not actual performance numbers. For real ROI numbers, use the
         // three "*-performance" actions below (added 2026-05-09 per live user feedback).
         'performance', 'lists', 'campaigns',
+        // Email campaign send / schedule (live sends to a real list). Both run the
+        // SPF/DKIM/DMARC email-auth preflight and require the approval card
+        // (campaign-send / campaign-schedule are in CARDED_DESTRUCTIVE_ACTIONS).
+        'campaign-send', 'campaign-schedule',
         // Performance reports — actual numbers a marketer evaluates flow ROI on.
         // All three are read-only POST-bodies-as-filter against Klaviyo's
         // 2024-10-15 reports API. flow-performance returns sends/opens/clicks/
@@ -1059,6 +1063,11 @@ function buildTools(tool, z, ctx) {
       ]).describe('Operation'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (performance/campaigns/flow-performance/flow-message-performance/metric-aggregate). Default 30.'),
+      // Campaign send / schedule fields (live email sends)
+      campaignId: z.string().optional().describe('Klaviyo campaign ID to send/schedule (campaign-send, campaign-schedule). The campaign must already exist as a draft in Klaviyo.'),
+      replyTo: z.string().optional().describe('From/reply-to email (e.g. hello@yourbrand.com) for campaign-send/campaign-schedule. REQUIRED — Merlin derives the sending domain from it to verify SPF/DKIM/DMARC before the send.'),
+      scheduleTime: z.string().optional().describe('RFC-3339 timestamp for campaign-schedule (e.g. 2026-06-01T14:00:00Z).'),
+      approved: z.boolean().optional().describe('Approval flag for live sends (campaign-send/campaign-schedule). Set by the Electron approval card on user click; the binary REFUSES the send without it. Do not set true unless the user explicitly approved sending to a real list.'),
       // Template fields (used by template-* + bulk-upload actions)
       templateId: z.string().optional().describe('Klaviyo template ID (get/update/delete)'),
       templateName: z.string().optional().describe('Display name for the template (create/update)'),
