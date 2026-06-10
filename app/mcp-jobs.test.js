@@ -216,6 +216,40 @@ test('runFn receives reportProgress, checkCancelled, registerCancel', async () =
   assert.ok(received.includes('registerCancel'));
 });
 
+// REGRESSION GUARD (2026-06-XX, connector-hardening): cancel() must actually
+// invoke the fn a runFn installed via registerCancel(). Pre-fix the registered
+// fn landed in a closure-local variable while cancel() read handle.cancelFn — a
+// property that was never set — so a cancel could not kill the underlying child
+// process; only cooperative checkCancelled() polling worked.
+test('cancel() invokes the fn registered via registerCancel', async () => {
+  const store = new JobStore({ dir: tmpDir() });
+  let cancelInvoked = false;
+  let resolveRun;
+  const runGate = new Promise((r) => { resolveRun = r; });
+  const { jobId } = store.start({
+    tool: 'cancellable_tool',
+    runFn: async ({ registerCancel }) => {
+      // Install a process-killer, then stay running on the gate so the
+      // cancel handle is still registered when the test calls cancel().
+      registerCancel(() => { cancelInvoked = true; resolveRun(); });
+      await runGate;
+      return { ok: true };
+    },
+  });
+  await waitForState(store, jobId, 'running');
+  const result = store.cancel(jobId);
+  assert.equal(result.cancelled, true, 'cancel() should report cancelled:true');
+  // The registered fn must fire; bound the wait so a regression fails loudly
+  // instead of hanging the suite.
+  const fired = await Promise.race([
+    runGate.then(() => true),
+    tick(1000).then(() => false),
+  ]);
+  assert.equal(fired, true, 'cancel() did not invoke the registered cancel fn within 1s');
+  assert.equal(cancelInvoked, true,
+    'cancel() must invoke the fn installed via registerCancel — pre-fix it read an always-undefined handle.cancelFn and the child was never killed');
+});
+
 test('TERMINAL_STATES contains the expected states', () => {
   assert.ok(TERMINAL_STATES.has('done'));
   assert.ok(TERMINAL_STATES.has('failed'));

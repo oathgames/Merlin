@@ -1957,3 +1957,38 @@ test('status verb — onboarding/brand tools get real verbs, not generic "Channe
   assert.match(RENDERER_JS, /label = 'Setting up your brand'/);
 });
 
+
+// REGRESSION GUARD (2026-06-XX, connector-hardening — Rule 6):
+// Two error-surfacing paths rendered the raw backend error string directly:
+// the perf-bar refresh handler (escapeHtml(result.error) → innerHTML) and the
+// Claude sign-in bubble (result.error → textContent). Both now route through
+// friendlyErrorPlain so a raw CLI/engine/stack-trace string never reaches a
+// paying user. friendlyErrorPlain is the compact variant (chip markup reduced
+// to labels, single line) for surfaces that don't run renderErrorToBubble.
+test('Rule 6 — friendlyErrorPlain helper exists and strips chip/deadend markup', () => {
+  const idx = RENDERER_JS.indexOf('function friendlyErrorPlain(');
+  assert.ok(idx > 0, 'friendlyErrorPlain must be defined');
+  const body = RENDERER_JS.slice(idx, idx + 600);
+  assert.ok(body.includes('friendlyError('),
+    'friendlyErrorPlain must delegate to friendlyError (Rule 6 humanization)');
+  assert.ok(body.includes('\\[\\[chip:'),
+    'friendlyErrorPlain must strip [[chip:...]] markup for plain-text surfaces');
+  assert.ok(body.includes('\\[\\[deadend:'),
+    'friendlyErrorPlain must strip [[deadend:...]] markup for plain-text surfaces');
+});
+
+test('Rule 6 — perf-bar refresh error routes through friendlyErrorPlain', () => {
+  // The perf-bar handler must NOT render the raw result.error.
+  assert.ok(!RENDERER_JS.includes('text.innerHTML = escapeHtml(result.error)'),
+    'perf-bar must not render the raw backend error string (Rule 6)');
+  assert.ok(RENDERER_JS.includes('escapeHtml(friendlyErrorPlain(result.error))'),
+    'perf-bar refresh error must route through friendlyErrorPlain before innerHTML');
+});
+
+test('Rule 6 — Claude sign-in bubble routes error through friendlyErrorPlain', () => {
+  // The pre-fix form assigned result.error straight to textContent.
+  assert.ok(!RENDERER_JS.includes("bubble.textContent = result.error || 'Sign-in failed"),
+    'sign-in bubble must not render the raw backend error string (Rule 6)');
+  assert.ok(RENDERER_JS.includes("friendlyErrorPlain(result.error, 'Claude sign-in')"),
+    'sign-in failure must route through friendlyErrorPlain');
+});
