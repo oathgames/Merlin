@@ -729,7 +729,14 @@ function transformGalleryToStack(galleryEl, openViewer) {
     } else {
       const im = document.createElement('img');
       im.alt = '';
-      im.loading = 'lazy';
+      // EAGER, not lazy. There are at most 4 visible stack cards
+      // (visibleCount), so eager loading costs nothing — and `loading="lazy"`
+      // actively breaks the retry path below: the browser may defer the fetch
+      // until the card scrolls near the viewport, and once the IMG is swapped
+      // for the "Image unavailable" fallback there is no IMG left to re-fetch.
+      // Eager + the widened retry budget is what makes batch thumbnails
+      // recover deterministically once their files finish writing.
+      im.loading = 'eager';
       im.decoding = 'async';
       // REGRESSION GUARD (2026-05-04, dpa-image-cards-render-broken
       // incident): when the IMG src fails to resolve (404 from the
@@ -754,14 +761,22 @@ function transformGalleryToStack(galleryEl, openViewer) {
       // the image dead. Live user report 2026-05-06: "Image still
       // appears as unavailable once rendered with the card style."
       //
-      // Retry budget: 2 attempts with 600ms then 1500ms backoff. After
-      // ~2.1s of cumulative wait, transient producer-side races have
-      // resolved (the binary's atomicWrite + fsync completes well
-      // within that window). Permanent 404s still surface the friendly
-      // placeholder, just 2.1s later.
+      // Retry budget: the OLD 2-attempt / ~2.1s budget was sized for a SINGLE
+      // image's atomicWrite+fsync window. It was too short for a BATCH (a
+      // 10-image creative run): the binary writes the files sequentially, and
+      // on Windows each new file is briefly locked while Defender scans it, so
+      // the later items (#9, #10) are still unreadable — merlin:// returns 404
+      // / 425 Too Early — well past 2.1s after the gallery renders. The
+      // thumbnail then gave up and showed "Image unavailable" even though the
+      // file landed seconds later (which is why opening the full-frame, which
+      // fetches on-demand a few seconds on, always worked). Widen to an
+      // escalating budget that covers a realistic batch write + AV-scan window
+      // (~36s total); the file WILL appear (it's mid-write, not missing), so
+      // the thumbnail recovers deterministically. A genuinely-missing file
+      // still surfaces the placeholder, just later.
       im.dataset.loadState = 'pending';
-      const STACK_IMG_MAX_RETRIES = 2;
-      const STACK_IMG_RETRY_DELAYS_MS = [600, 1500];
+      const STACK_IMG_MAX_RETRIES = 6;
+      const STACK_IMG_RETRY_DELAYS_MS = [600, 1500, 3000, 6000, 10000, 15000];
       let retriesLeft = STACK_IMG_MAX_RETRIES;
       let nextDelayIdx = 0;
       const onLoad = () => { im.dataset.loadState = 'loaded'; };

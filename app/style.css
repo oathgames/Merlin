@@ -2284,7 +2284,12 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 
 /* ── Image Context Menu ─────────────────────────────────── */
 .img-context-menu{
-  position:fixed;z-index:300;
+  /* z-index must sit ABOVE the full-frame viewer overlay (.gv-viewer, z-index
+     9998) and any modal/dialog (z-index 10000) — otherwise right-clicking an
+     image inside the open lightbox builds the menu but renders it BEHIND the
+     overlay, so the user sees no context menu at all. A context menu is
+     ephemeral (dismissed on click/Escape) so topmost is the correct stacking. */
+  position:fixed;z-index:100001;
   background:var(--bg-deep);
   border:1px solid var(--border);
   border-radius:10px;
