@@ -429,6 +429,22 @@ test('source-scan: stack IMG error handler retries before declaring dead', () =>
     'error listener must be {once:true} so it re-fires on each retry');
 });
 
+// REGRESSION GUARD (2026-06-18, RSI audit): the retry setTimeout must bail when
+// the IMG was detached during the delay (chat re-render / navigation). Without
+// the isConnected guard, a pending retry fires on a detached node and keeps the
+// closure (and chain) alive for the full ~36s backoff. The guard must sit
+// INSIDE the setTimeout callback (it bails the retry), and must NOT wrap the
+// initial load (which runs pre-attach by design — src is set before appendChild).
+test('source-scan: stack IMG retry bails on teardown via isConnected guard', () => {
+  // The guard lives inside the retry's setTimeout, before the listeners re-arm.
+  assert.ok(/setTimeout\(\(\)\s*=>\s*\{[\s\S]{0,600}?if\s*\(!im\.isConnected\)\s*return;[\s\S]{0,200}?im\.addEventListener/.test(SOURCE),
+    'retry setTimeout must early-return when !im.isConnected (before re-arming listeners) so a detached node does no work and the chain stops');
+  // The initial load (im.src = it.src; card.appendChild) must NOT be guarded by
+  // isConnected — that path runs before the element is attached.
+  const initialLoadIdx = SOURCE.indexOf('card.appendChild(im)');
+  assert.ok(initialLoadIdx > 0, 'initial load + appendChild path must exist');
+});
+
 test('source-scan: stack IMG fallback only renders after retries exhaust', () => {
   // The .merlin-stack-fallback replacement must live INSIDE the
   // `retriesLeft <= 0` branch — pre-fix it ran on the first error.

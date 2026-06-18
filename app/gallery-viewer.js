@@ -791,6 +791,10 @@ function transformGalleryToStack(galleryEl, openViewer) {
           // the browser to re-fetch even if the URL is identical and
           // would otherwise be served from a stale cache entry.
           setTimeout(() => {
+            // Teardown guard (RSI 2026-06-18): if the card was detached while
+            // this retry was pending, bail so it does no work and the chain
+            // stops. (Initial load below runs pre-attach by design.)
+            if (!im.isConnected) return;
             im.addEventListener('load', onLoad, { once: true });
             im.addEventListener('error', onError, { once: true });
             im.src = '';
