@@ -1703,6 +1703,48 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'merchant-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── triplewhale ───────────────────────────────────────────
+  // Triple Whale brand-specific analytics (read-only Summary Page pull).
+  // Surfaces the attribution metrics a CMO steers on that platform ROAS
+  // alone can't show — New-Customer ROAS (NC-ROAS), New-Customer CPA
+  // (NCPA), MER, blended ROAS, new-customer revenue/orders — plus Triple
+  // Whale's own peer benchmarks (benchmark NC-ROAS / NCPA / blended ROAS).
+  //
+  // TWO brand-specific credential paths, both Authorization: Bearer:
+  //   - OAuth sign-in (the primary path) via mcp__merlin__platform_login
+  //     platform "triplewhale" — available once the TW OAuth app is
+  //     registered + the TRIPLEWHALE_CLIENT_ID Worker secret is set.
+  //   - A personal API key (works today, no app registration): connect →
+  //     mint a key at app.triplewhale.com/api-keys; verify → validate +
+  //     save it. The Go connector prefers the OAuth token, falls back to
+  //     the key. Read-only by construction — triplewhale.go ships no writes.
+  tools.push(defineTool({
+    name: 'triplewhale',
+    description: 'Triple Whale analytics (read-only). Pulls the metrics platform ROAS can\'t show — NC-ROAS (new-customer ROAS), NCPA (new-customer CPA), MER, blended ROAS, new-customer revenue/orders, plus Triple Whale\'s peer benchmarks. Actions: summary (the metric pull for a date window — batchCount = days, default 30); status (connection check, no API call); connect (instructions to mint a personal API key); verify (validate + save a pasted personal API key, requires apiKey). OAuth sign-in is the primary connect path via platform_login platform "triplewhale"; the personal API key is the no-registration fallback. Read-only — no write surface.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'triplewhale' },
+    input: {
+      action: z.enum(['summary', 'status', 'connect', 'verify']).describe('summary → pull NC-ROAS / NCPA / MER / blended ROAS for the window. status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey).'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for summary (default 30).'),
+      apiKey: z.string().optional().describe('Personal API key to validate (required for verify). Minted at app.triplewhale.com/api-keys with the "Summary Page: Read" + "Pixel Attribution: Read" scopes.'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Triple Whale',
+          instructions: 'Mint a personal API key at app.triplewhale.com/api-keys (Create Key → select the "Summary Page: Read" and "Pixel Attribution: Read" scopes → save it somewhere safe). Then call mcp__merlin__triplewhale with action "verify" and apiKey set to that key. OAuth sign-in is the primary path and becomes available once the Triple Whale OAuth app is registered — use mcp__merlin__platform_login with platform "triplewhale" then.',
+        };
+      }
+      const actionMap = { summary: 'triplewhale-summary', status: 'triplewhale-status', verify: 'triplewhale-verify-key' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
   // ── reddit_organic + reddit_organic_post ──────────────────
   // Reddit organic prospecting. Split into TWO tools per Gitar review on
   // PR #224: the read+staging surface (scan, draft) is idempotent — same
@@ -1966,7 +2008,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -2041,6 +2083,22 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'PostHog connects via the posthog tool',
           instructions: 'Call mcp__merlin__posthog with action "connect" — it opens PostHog so the user can mint a Personal API Key (Settings → Personal API Keys, scopes "Query Read" + "Project Read"). When they paste the key back, call posthog with action "verify" and the apiKey to save it for this brand (it auto-detects the US/EU region). Then connection_status will show PostHog as connected.',
+        };
+      }
+      // Triple Whale — OAuth is the primary connect path, but its OAuth app
+      // registration is pending (TRIPLEWHALE_CLIENT_ID Worker secret not yet
+      // set), so the binary's triplewhale-login refuses with a guide-to-key
+      // message. Until then route to the dedicated triplewhale tool's personal
+      // API-key flow, which works today. WHEN THE TW OAUTH APP IS REGISTERED:
+      // delete this branch (the generic runOAuthFlow path below already handles
+      // 'triplewhale' via the legacy binary-login → triplewhale-login route,
+      // which picks up the BFF-injected clientId) AND add 'triplewhale' to
+      // ACTIVE_PLATFORMS in oauth-provider-config.js to graduate it to
+      // fast-open. Mirrors the clarity/posthog dedicated-tool pattern above.
+      if (args.platform === 'triplewhale') {
+        return {
+          summary: 'Triple Whale connects via the triplewhale tool',
+          instructions: 'Call mcp__merlin__triplewhale with action "connect" for the steps — mint a personal API key at app.triplewhale.com/api-keys (select the "Summary Page: Read" + "Pixel Attribution: Read" scopes), then call triplewhale with action "verify" and the apiKey to save it. Once connected, mcp__merlin__triplewhale action "summary" pulls NC-ROAS, NCPA, MER, and blended ROAS. (OAuth sign-in is the primary path and turns on once the Triple Whale OAuth app is registered.)',
         };
       }
       try {

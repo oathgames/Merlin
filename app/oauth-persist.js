@@ -94,6 +94,15 @@ const VAULT_SENSITIVE_KEYS = [
   // posthogProjectId / posthogHost fields are non-secret identifiers and
   // are NOT listed here (same treatment as shopifyStore).
   'posthogApiKey',
+  // Triple Whale — both credential paths are live Bearer tokens. The Go
+  // binary persists them via VaultPut on triplewhale-login / -verify-key, but
+  // they are listed here so isSensitiveConfigKey treats them as never-plaintext
+  // and the disconnect handler's vaultDelete fires. triplewhaleShopDomain is a
+  // non-secret identifier (same treatment as shopifyStore / posthogProjectId)
+  // and is intentionally NOT listed.
+  'triplewhaleAccessToken',
+  'triplewhaleRefreshToken',
+  'triplewhaleApiKey',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',

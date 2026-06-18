@@ -3888,6 +3888,7 @@ const PLATFORM_DISPLAY_NAMES = {
   fal: 'fal.ai', elevenlabs: 'ElevenLabs', heygen: 'HeyGen', arcads: 'Arcads',
   foreplay: 'Foreplay',
   applovin: 'AppLovin', postscript: 'Postscript',
+  triplewhale: 'Triple Whale',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';

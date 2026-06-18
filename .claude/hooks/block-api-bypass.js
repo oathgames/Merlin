@@ -41,6 +41,13 @@ const BANNED_HOSTS = [
   // user's browser and the BFF at merlingotme.com handles the token exchange —
   // Claude never needs to touch connect.stripe.com directly.
   'connect.stripe.com',
+  // Triple Whale — brand-specific analytics (NC-ROAS, NCPA, MER, blended ROAS).
+  // The Summary Page pull and the OAuth authorize/token endpoints all live under
+  // api.triplewhale.com. Every call MUST go through triplewhale.go (which wraps
+  // PreflightCheck + RecordSuccess and resolves the OAuth token / personal API
+  // key from the vault). A direct curl/WebFetch would bypass the rate-limit
+  // preflight and could leak the Bearer token via shell history.
+  'api.triplewhale.com',
   // Foreplay — competitor ad intelligence. Routed through the binary so every
   // credit-burning call passes PreflightCheck + shows up in the audit log.
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and

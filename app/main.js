@@ -2352,6 +2352,9 @@ function translateTool(toolName, input) {
       'tiktok-login':  { label: 'Connect to your TikTok Ads account', cost: 'Free' },
       'shopify-login': { label: 'Connect to your Shopify store', cost: 'Free' },
       'stripe-login':  { label: 'Connect Stripe (read-only revenue reporting)', cost: 'Free' },
+      'triplewhale-login':      { label: 'Connect Triple Whale (read-only analytics)', cost: 'Free' },
+      'triplewhale-verify-key': { label: 'Save your Triple Whale API key', cost: 'Free' },
+      'triplewhale-summary':    { label: 'Pull Triple Whale metrics (NC-ROAS, NCPA, MER)', cost: 'Free' },
       'slack-login':   { label: 'Connect Slack for notifications', cost: 'Free' },
       'discord-login': { label: 'Connect Discord for notifications', cost: 'Free' },
       'discord-setup': { label: 'Change Discord notification channel', cost: 'Free' },
@@ -8337,6 +8340,9 @@ const BRAND_KEYS = [
   // PostHog project). Mirror of brandScopedKeys in autocmo-core/vault.go.
   'posthogApiKey', 'posthogProjectId', 'posthogHost',
   'linkedinAccessToken', 'linkedinRefreshToken', 'linkedinAdAccountId',
+  // Triple Whale — brand-specific analytics (each brand connects its own TW
+  // account). Mirror of brandScopedKeys in autocmo-core/vault.go.
+  'triplewhaleAccessToken', 'triplewhaleRefreshToken', 'triplewhaleApiKey', 'triplewhaleShopDomain',
 ];
 
 // Universal credentials — shared across every brand on a single user's
@@ -9190,6 +9196,19 @@ function getConnections(brandName) {
         : !!phKey;
       if (hasVaultKey) connected.push({ platform: 'posthog', status: 'connected' });
     }
+    // Triple Whale — brand-specific analytics (NC-ROAS, NCPA, MER). Connected
+    // when EITHER the OAuth access token OR a personal API key is present; the
+    // Go connector resolves whichever exists. Both persist to the OAuth vault
+    // scope (global), like Stripe.
+    const twToken = brandName
+      ? (brandCfg.triplewhaleAccessToken || brandCfg.triplewhaleApiKey)
+      : (globalCfg.triplewhaleAccessToken || globalCfg.triplewhaleApiKey);
+    if (twToken) {
+      const twResolved = typeof twToken === 'string' && twToken.startsWith('@@VAULT:')
+        ? (!!vaultGet(brandName || '_global', 'triplewhaleAccessToken') || !!vaultGet(brandName || '_global', 'triplewhaleApiKey'))
+        : !!twToken;
+      if (twResolved) connected.push({ platform: 'triplewhale', status: 'connected' });
+    }
     // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
     const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
     const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
@@ -9307,6 +9326,11 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       clarity: ['clarityApiToken'],
       // PostHog — three brand-scoped fields (key + project id + host).
       posthog: ['posthogApiKey', 'posthogProjectId', 'posthogHost'],
+      // Triple Whale — OAuth tokens + the personal API-key fallback + the
+      // shop override. Clear every credential path so a reconnect (OAuth or
+      // a fresh key) starts clean. Mirror of platformVaultKeys["triplewhale"]
+      // in autocmo-core/oauth.go.
+      triplewhale: ['triplewhaleAccessToken', 'triplewhaleRefreshToken', 'triplewhaleTokenExpiresAt', 'triplewhaleApiKey', 'triplewhaleShopDomain'],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };
