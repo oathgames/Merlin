@@ -1720,7 +1720,7 @@ function buildTools(tool, z, ctx) {
   //     the key. Read-only by construction — triplewhale.go ships no writes.
   tools.push(defineTool({
     name: 'triplewhale',
-    description: 'Triple Whale analytics (read-only). Pulls the metrics platform ROAS can\'t show — NC-ROAS (new-customer ROAS), NCPA (new-customer CPA), MER, blended ROAS, new-customer revenue/orders, plus Triple Whale\'s peer benchmarks. Actions: summary (the metric pull for a date window — batchCount = days, default 30); status (connection check, no API call); connect (instructions to mint a personal API key); verify (validate + save a pasted personal API key, requires apiKey). OAuth sign-in is the primary connect path via platform_login platform "triplewhale"; the personal API key is the no-registration fallback. Read-only — no write surface.',
+    description: 'Triple Whale analytics (read-only). Pulls the full topline a CMO steers on: Blended Sales, Ad Spend, Net Profit, Net Margin, ROAS (attributed + blended), MER, NC-ROAS (new-customer ROAS), NCPA (new-customer CPA), new-customer revenue/orders, AOV, plus Triple Whale\'s peer benchmarks (NC-ROAS / NCPA / blended-ROAS). Actions: summary (the metric pull for a date window — batchCount = days, default 30); status (connection check, no API call); connect (instructions to mint a personal API key); verify (validate + save a pasted personal API key, requires apiKey). OAuth sign-in is the primary connect path via platform_login platform "triplewhale"; the personal API key is the no-registration fallback. Read-only — no write surface.',
     destructive: false,
     idempotent: true,
     preview: false,
