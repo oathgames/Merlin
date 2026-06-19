@@ -368,6 +368,25 @@ test('CARDED_DESTRUCTIVE_ACTIONS includes campaign-send + campaign-schedule', ()
     'campaign-schedule must be carded — queues a real email blast');
 });
 
+// REGRESSION GUARD (2026-06-XX, connector-hardening): Postscript names its
+// automation toggles activate/deactivate (NOT pause/start), and its flow CRUD
+// + bulk import are genuinely state-mutating SMS writes that can flip a
+// TCPA-gated flow LIVE to real subscribers. Pre-fix only campaign-send/-schedule
+// and the Klaviyo-style pause/start were carded, so every Postscript automation
+// write fell through main.js's catch-all auto-approve and fired without a card.
+test('CARDED_DESTRUCTIVE_ACTIONS covers Postscript automation writes', () => {
+  const required = [
+    'automation-create', 'automation-update', 'automation-delete',
+    'automation-activate', 'automation-deactivate',
+    'automation-step-create', 'automation-step-update', 'automation-step-delete',
+    'bulk-import-flow',
+  ];
+  for (const action of required) {
+    assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has(action),
+      `${action} must be carded — it mutates a customer-facing SMS flow (Postscript). Without it, the action auto-approves with no confirmation.`);
+  }
+});
+
 test('CARDED_DESTRUCTIVE_ACTIONS does not overlap READ_ONLY_ACTIONS', () => {
   // Overlap would mean the READ_ONLY auto-approve fires first and the
   // card never shows.

@@ -154,6 +154,13 @@ const TOOL_ROUTING = [
   { name: 'threads', prefix: 'threads' },
   { name: 'stripe', prefix: 'stripe' },
   { name: 'google_merchant', prefix: 'merchant' },
+  { name: 'triplewhale', prefix: 'triplewhale',
+    // summary → triplewhale-summary, status → triplewhale-status (prefix).
+    // verify → triplewhale-verify-key (not -verify). connect is handled
+    // entirely JS-side (returns instructions, no binary call) → exempt.
+    actionMap: { 'verify': 'triplewhale-verify-key' },
+    exemptions: ['connect'],
+  },
   { name: 'reddit_organic', prefix: 'reddit-prospect' },
   { name: 'reddit_organic_post', skip: true },  // single fixed action
   { name: 'trendtrack', prefix: 'trendtrack' },

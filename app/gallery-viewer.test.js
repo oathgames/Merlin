@@ -398,10 +398,23 @@ test('source-scan: stack IMG error handler retries before declaring dead', () =>
   // replaced the IMG with the placeholder.
   assert.ok(SOURCE.includes('STACK_IMG_MAX_RETRIES'),
     'expected STACK_IMG_MAX_RETRIES constant in stack IMG error path');
-  assert.ok(/STACK_IMG_MAX_RETRIES\s*=\s*2\b/.test(SOURCE),
-    'retry budget MUST be at least 2 (covers the producer-side write race window)');
+  // Budget widened (2026-06-XX, batch-thumbnail-unavailable): a 2-retry/~2.1s
+  // window covered a SINGLE image's write race but not a 10-image BATCH (later
+  // items are still being written + Windows-Defender-scanned well past 2.1s, so
+  // the thumbnail gave up and showed "Image unavailable" though the file landed
+  // seconds later). Require a generous budget that covers a realistic batch.
+  const retriesMatch = SOURCE.match(/STACK_IMG_MAX_RETRIES\s*=\s*(\d+)\b/);
+  assert.ok(retriesMatch && Number(retriesMatch[1]) >= 5,
+    'retry budget MUST be >= 5 to cover a multi-image batch write + AV-scan window');
   assert.ok(SOURCE.includes('STACK_IMG_RETRY_DELAYS_MS'),
     'expected STACK_IMG_RETRY_DELAYS_MS constant');
+  // Stack thumbnails must load EAGERLY, not lazily — lazy defers the fetch and,
+  // once the IMG is swapped for the fallback, leaves no IMG to re-fetch, which
+  // defeats the retry path. Only <=4 cards are visible so eager costs nothing.
+  assert.ok(/im\.loading\s*=\s*'eager'/.test(SOURCE),
+    "stack IMG must set loading='eager' (lazy breaks the batch retry recovery)");
+  assert.ok(!/im\.loading\s*=\s*'lazy'/.test(SOURCE),
+    "stack IMG must NOT be loading='lazy'");
   // The retry must use setTimeout (not synchronous re-fetch) so the
   // file-write race window has time to close.
   assert.ok(/retriesLeft\s*>\s*0[\s\S]*?setTimeout/.test(SOURCE),
@@ -414,6 +427,22 @@ test('source-scan: stack IMG error handler retries before declaring dead', () =>
   // it, the second error never fires.
   assert.ok(/im\.addEventListener\(['"]error['"],\s*onError,\s*\{\s*once:\s*true/.test(SOURCE),
     'error listener must be {once:true} so it re-fires on each retry');
+});
+
+// REGRESSION GUARD (2026-06-18, RSI audit): the retry setTimeout must bail when
+// the IMG was detached during the delay (chat re-render / navigation). Without
+// the isConnected guard, a pending retry fires on a detached node and keeps the
+// closure (and chain) alive for the full ~36s backoff. The guard must sit
+// INSIDE the setTimeout callback (it bails the retry), and must NOT wrap the
+// initial load (which runs pre-attach by design — src is set before appendChild).
+test('source-scan: stack IMG retry bails on teardown via isConnected guard', () => {
+  // The guard lives inside the retry's setTimeout, before the listeners re-arm.
+  assert.ok(/setTimeout\(\(\)\s*=>\s*\{[\s\S]{0,600}?if\s*\(!im\.isConnected\)\s*return;[\s\S]{0,200}?im\.addEventListener/.test(SOURCE),
+    'retry setTimeout must early-return when !im.isConnected (before re-arming listeners) so a detached node does no work and the chain stops');
+  // The initial load (im.src = it.src; card.appendChild) must NOT be guarded by
+  // isConnected — that path runs before the element is attached.
+  const initialLoadIdx = SOURCE.indexOf('card.appendChild(im)');
+  assert.ok(initialLoadIdx > 0, 'initial load + appendChild path must exist');
 });
 
 test('source-scan: stack IMG fallback only renders after retries exhaust', () => {
@@ -479,4 +508,23 @@ test('source-scan: stage pointer listeners only attach once per instance', () =>
   // do not re-add the same listeners.
   assert.ok(/!this\._stageListenersAttached/.test(SOURCE),
     'pointer listener attach must be guarded by !_stageListenersAttached');
+});
+
+// REGRESSION GUARD (2026-06-XX, lightbox-context-menu-hidden): right-clicking
+// an image while the full-frame viewer (.gv-viewer, z-index 9998) is open
+// builds the custom Copy Image / Save / Delete menu (.img-context-menu) and
+// appends it to <body> — but if its z-index sits BELOW the overlay the menu
+// renders behind the full-frame and the user sees no context menu at all. The
+// menu must stack ABOVE the viewer overlay (and any modal/dialog, z-index
+// 10000) so it's visible + clickable over the open lightbox.
+test('CSS: img-context-menu z-index sits above the full-frame viewer overlay', () => {
+  const css = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
+  const menuZ = css.match(/\.img-context-menu\s*\{[\s\S]*?z-index:\s*(\d+)/);
+  const viewerZ = css.match(/\.gv-viewer\s*\{[\s\S]*?z-index:\s*(\d+)/);
+  assert.ok(menuZ, 'img-context-menu must declare a z-index');
+  assert.ok(viewerZ, 'gv-viewer must declare a z-index');
+  assert.ok(Number(menuZ[1]) > Number(viewerZ[1]),
+    `img-context-menu z-index (${menuZ[1]}) must exceed gv-viewer z-index (${viewerZ[1]}) so the menu shows over the open lightbox`);
+  assert.ok(Number(menuZ[1]) >= 10000,
+    'img-context-menu z-index must clear modal/dialog overlays (z-index 10000) too');
 });

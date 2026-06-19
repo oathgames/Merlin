@@ -115,6 +115,21 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // exists) but a fat-fingered pause on a brand's welcome series
   // costs revenue until someone notices, so we card.
   'automation-pause', 'automation-start',
+  // Postscript SMS automation (flow) writes. These mutate customer-facing
+  // SMS flows — automation-create + automation-activate can flip a TCPA-gated
+  // flow LIVE to real subscribers, automation-delete destroys a flow, the
+  // step CRUD edits what live subscribers receive, and bulk-import-flow can
+  // create + activate several flows at once. The binary runs CheckFlowTCPA
+  // server-side, but per the Mailchimp precedent (rule above) that is
+  // defense-in-depth, NOT a substitute for the user confirming "yes, change
+  // this SMS flow." Postscript names its toggles activate/deactivate (not
+  // pause/start), so without these entries every Postscript automation write
+  // fell through to the catch-all auto-approve. costImpact is 'api' (no ad
+  // dollars) → carded WITHOUT budget context.
+  'automation-create', 'automation-update', 'automation-delete',
+  'automation-activate', 'automation-deactivate',
+  'automation-step-create', 'automation-step-update', 'automation-step-delete',
+  'bulk-import-flow',
 ]));
 
 // ── Intent-tool routing ─────────────────────────────────────────────

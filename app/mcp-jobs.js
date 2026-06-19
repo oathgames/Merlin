@@ -221,10 +221,14 @@ class JobStore {
 
     // Expose a cancel handle if the runFn registers one. This lets
     // jobs_cancel kill the underlying child process.
-    let cancelHandle = null;
-    this._cancelHandles.set(jobId, {
-      registerCancel: (fn) => { cancelHandle = fn; },
-    });
+    //
+    // The fn a runFn installs via registerCancel(fn) MUST land on this
+    // registry object so cancel() can reach it. Pre-fix, registerCancel
+    // assigned to a closure-local variable while cancel() read
+    // handle.cancelFn (a property that was never set) — so a registered
+    // canceller was never invoked and a cancel could not kill the child.
+    const cancelHandle = { cancelFn: null };
+    this._cancelHandles.set(jobId, cancelHandle);
 
     // Run on a microtask so the caller sees { jobId } immediately.
     queueMicrotask(async () => {
@@ -249,7 +253,7 @@ class JobStore {
         };
 
         const registerCancel = (fn) => {
-          cancelHandle = fn;
+          cancelHandle.cancelFn = fn;
         };
 
         const envelope = await opts.runFn({ reportProgress, checkCancelled, registerCancel });

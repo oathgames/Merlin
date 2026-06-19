@@ -278,6 +278,27 @@ const PROVIDERS = {
     usesPKCE: true,
     extraParams: {},
   },
+  // Triple Whale — brand-specific analytics (NC-ROAS, NCPA, MER). TODO/pending:
+  // clientId is empty until the TW OAuth app is registered at
+  // developers.triplewhale.com/register-new-app, so it is intentionally NOT in
+  // ACTIVE_PLATFORMS yet. runOAuthFlow('triplewhale') therefore takes the
+  // legacy binary-login path, where getTripleWhaleOAuth (oauth.go) pulls the
+  // canonical clientId from the BFF (cfg.OAuthTripleWhale.ClientID) the moment
+  // the TRIPLEWHALE_CLIENT_ID Cloudflare secret is set — no code change needed
+  // to go live. To graduate to fast-open later: paste the public clientId here
+  // AND add 'triplewhale' to ACTIVE_PLATFORMS (updating the parity test's
+  // expected list in the same PR). scopes MUST stay identical to
+  // tripleWhaleScopes in autocmo-core/triplewhale.go.
+  triplewhale: {
+    displayName: 'Triple Whale',
+    providerKey: 'triplewhale',
+    authUrl: 'https://api.triplewhale.com/api/v2/auth/oauth2/auth',
+    clientId: '', // pending TW app registration — injected via BFF
+    scopes: 'summary-page:read pixel-attribution:read',
+    redirectUri: 'https://merlingotme.com/auth/callback',
+    usesPKCE: false,
+    extraParams: {},
+  },
 };
 
 // ACTIVE_PLATFORMS — the subset of PROVIDERS that main.js's runOAuthFlow

@@ -100,3 +100,35 @@ test('PROTECTED_COMMAND_PATTERNS does not over-match unrelated .claude paths', (
   const matched = regexLiterals.some((r) => r.test(benign));
   assert.equal(matched, false, '/tmp/x.txt should NOT be matched by any protected pattern');
 });
+
+// ── (B3) Rate-limited platform API hosts in BANNED_HOSTS ────────────
+//
+// REGRESSION GUARD (2026-06-XX, connector-hardening): a direct curl/WebFetch
+// to a rate-limited platform API host bypasses the Go binary's PreflightCheck
+// (and, for Reddit organic, the dedup cache) — landing the user in the
+// platform's automation-review queue. These five API hosts were missing from
+// BANNED_HOSTS while the binary's connectors actively call them. Authorize
+// URLs use DIFFERENT hosts (www.reddit.com / www.linkedin.com / www.etsy.com /
+// threads.net) so the browser OAuth flow is unaffected by these entries.
+test('BANNED_HOSTS covers the rate-limited Reddit/LinkedIn/Etsy/Threads API hosts', () => {
+  const src = hookSrc();
+  const arrMatch = src.match(/const BANNED_HOSTS = \[([\s\S]*?)\];/);
+  assert.ok(arrMatch, 'BANNED_HOSTS array not found in block-api-bypass.js');
+  // Strip // line comments first (their prose apostrophes would otherwise
+  // confuse the quote scan), then pull hostname-shaped quoted literals.
+  const body = arrMatch[1].replace(/\/\/[^\n]*/g, '');
+  const hosts = [...body.matchAll(/'([a-z0-9.-]+\.[a-z]{2,})'/g)].map((m) => m[1]);
+  const required = [
+    'ads-api.reddit.com',
+    'oauth.reddit.com',
+    'api.linkedin.com',
+    'openapi.etsy.com',
+    'graph.threads.net',
+  ];
+  for (const h of required) {
+    assert.ok(
+      hosts.includes(h),
+      `BANNED_HOSTS must list '${h}' — the binary calls it through PreflightCheck; a direct curl bypasses the rate-limit preflight and lands the user in the platform's automation-review queue`,
+    );
+  }
+});

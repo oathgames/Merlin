@@ -1993,6 +1993,21 @@ function friendlyError(raw, platformName) {
   return s;
 }
 
+// friendlyErrorPlain is the compact, plain-text variant for status pills and
+// textContent surfaces that do NOT run renderErrorToBubble's chip upgrade
+// (the perf bar, the sign-in bubble). It reduces [[chip:LABEL:ACTION]] → LABEL
+// and drops [[deadend:CODE]] tokens, then collapses the "Try:" continuation to
+// a single line — so a surface that can't render real chips still shows clean
+// human copy instead of literal sentinel markup. Rule 6 still holds: the raw
+// error never reaches the user, friendlyError humanizes it first.
+function friendlyErrorPlain(raw, platformName) {
+  return friendlyError(raw, platformName)
+    .replace(/\[\[chip:([^:\]]+):[^\]]*\]\]/g, '$1')
+    .replace(/\[\[deadend:[^\]]*\]\]/g, '')
+    .replace(/\s*\n+\s*/g, ' ')
+    .trim();
+}
+
 // REGRESSION GUARD (2026-04-23, §3.11+§3.12):
 // Error rendering now goes through this helper so sentinel tokens emitted by
 // friendlyError ([[chip:...]], [[deadend:...]]) become real clickable chips
@@ -2767,8 +2782,13 @@ merlin.onSdkError((err) => {
               merlin.startSession();
               return;
             }
-            // Login failed — re-enable button with error
-            bubble.textContent = result.error || 'Sign-in failed. Click the button to try again.';
+            // Login failed — re-enable button with error.
+            // Rule 6: route the backend string through friendlyErrorPlain so a
+            // raw CLI/auth error (ENOENT, timeouts, stack traces) never reaches
+            // the user; fall back to a specific message when there's no detail.
+            bubble.textContent = result.error
+              ? friendlyErrorPlain(result.error, 'Claude sign-in')
+              : 'Sign-in failed. Click the button to try again.';
             loginBtn.textContent = 'Sign In to Claude';
             loginBtn.disabled = false;
             bubble.appendChild(loginBtn);
@@ -3868,6 +3888,7 @@ const PLATFORM_DISPLAY_NAMES = {
   fal: 'fal.ai', elevenlabs: 'ElevenLabs', heygen: 'HeyGen', arcads: 'Arcads',
   foreplay: 'Foreplay',
   applovin: 'AppLovin', postscript: 'Postscript',
+  triplewhale: 'Triple Whale',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -9081,8 +9102,11 @@ async function renderPerfBarEmpty(text) {
       // Surface backend errors (e.g. _binaryTooOld gate, binary missing,
       // stale config) so the user isn't left staring at a blank bar with
       // no explanation. The handler returns { error } on refusal.
+      // Rule 6: never render the raw backend string — friendlyErrorPlain
+      // humanizes known technical patterns (and passes through copy that's
+      // already friendly) into a clean one-liner for this compact status bar.
       if (result && result.error) {
-        text.innerHTML = escapeHtml(result.error);
+        text.innerHTML = escapeHtml(friendlyErrorPlain(result.error));
         return;
       }
 
