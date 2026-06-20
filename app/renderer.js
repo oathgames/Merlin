@@ -10875,6 +10875,7 @@ async function loadPalantirIdeas(opts) {
   if (niche) niche.textContent = res.niche || '';
 
   if (res.needConnect) {
+    if (niche) niche.textContent = ''; // no "tailored to X" while disconnected
     if (grid) grid.innerHTML = '';
     if (cta) {
       cta.style.display = '';
