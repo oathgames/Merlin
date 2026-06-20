@@ -5491,7 +5491,7 @@ const API_KEY_PLATFORMS = {
   postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx...', url: 'https://app.postscript.io/settings/api' },
   // OpenAI / ChatGPT Ads — paste the Ads API key minted at ads.openai.com.
   // Masked tile (not chat-pasted) because this key authorizes real ad spend.
-  openai_ads: { key: 'openaiAdsApiKey', label: 'OpenAI Ads', placeholder: 'sk-...', url: 'https://ads.openai.com' },
+  openai_ads: { key: 'openaiAdsApiKey', label: 'OpenAI Ads', placeholder: 'Ads API key from ads.openai.com (not your ChatGPT key)', url: 'https://ads.openai.com' },
   triplewhale: { key: 'triplewhaleApiKey', label: 'Triple Whale', placeholder: 'API key from Settings → API Keys', url: 'https://app.triplewhale.com/api-keys' },
   // Klaviyo Private API Key (pk_…). Marketplace OAuth requires a long
   // partner-review pipeline; private keys cover every scope Merlin uses
