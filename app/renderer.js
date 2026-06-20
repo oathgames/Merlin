@@ -4237,6 +4237,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
 
   if (swapResult && swapResult.success) {
     e.target.dataset.lastValue = newBrand || '';
+    updateBrandSwitcherLabel();
     paintBrandThread(swapResult.bubbles);
     // Only show the divider if we actually switched between distinct
     // brands — selecting the same brand again shouldn't pollute the chat.
@@ -4260,7 +4261,10 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
     }
     if (prevBrand) e.target.value = prevBrand;
     // lastValue already matches prevBrand (we didn't advance it above), so
-    // no rollback needed here.
+    // no rollback needed here. Re-sync the brand-switcher button label so it
+    // reverts to prevBrand too (the optimistic tile-swap label showed the
+    // new brand; setting .value above fires no change event) — Gitar #279.
+    updateBrandSwitcherLabel();
     return;
   }
 
