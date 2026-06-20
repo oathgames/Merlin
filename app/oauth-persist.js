@@ -132,6 +132,11 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // Magic-panel modal save click silently fails.
   'postscriptApiKey', 'applovinMaxReportKey', 'applovinAdReportKey',
   'openaiAdsApiKey',
+  // Triple Whale BYOK personal API key (Settings → API Keys). The brand can
+  // also connect via OAuth; this is the paste-a-key path used by the masked
+  // tile. Mirrored in VAULT_SENSITIVE_KEYS so the key is vaulted, never
+  // written to merlin-config.json in plaintext.
+  'triplewhaleApiKey',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',
