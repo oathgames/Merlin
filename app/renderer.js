@@ -10563,9 +10563,183 @@ function palantirUseAsInspiration(ad) {
   }
 }
 
+// ── Palantir winning-ideas wall (TrendTrack-backed, auto-tailored) ──────
+// The PRIMARY Palantir surface: with zero typing, it pulls the top-performing
+// ads in the brand's niche and renders each as an idea card with a one-click
+// "Generate for my brand" bridge into the creative engine. The competitor-spy
+// (Foreplay) lives in the collapsed <details> below as the secondary path.
+let palantirIdeasLoading = false;
+
+// palantirEsc — local HTML-escaper so portal copy can't inject markup (the
+// strings are our own friendly notes, but escape defensively).
+function palantirEsc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s == null ? '' : s);
+  return d.innerHTML;
+}
+
+// palantirPortalHTML renders the sci-fi portal states (loading / empty /
+// connect / error) — a glowing orb the media buyer scries into.
+function palantirPortalHTML(kind, msg) {
+  const orb = '<div class="palantir-portal-orb">✦</div>';
+  if (kind === 'loading') {
+    return '<div class="palantir-portal">' + orb +
+      '<div class="palantir-portal-title">Scrying the ad library…</div>' +
+      '<div class="palantir-portal-sub">Finding the top-performing ads in your niche.</div></div>';
+  }
+  if (kind === 'connect') {
+    return '<div class="palantir-portal">' + orb +
+      '<div class="palantir-portal-title">Light up your idea wall</div>' +
+      '<div class="palantir-portal-sub">' + palantirEsc(msg) + '</div>' +
+      '<button class="palantir-portal-cta" id="palantir-connect-btn">Connect TrendTrack</button></div>';
+  }
+  const title = kind === 'error' ? 'Could not load the wall' : 'No ideas yet';
+  return '<div class="palantir-portal">' + orb +
+    '<div class="palantir-portal-title">' + title + '</div>' +
+    '<div class="palantir-portal-sub">' + palantirEsc(msg) + '</div></div>';
+}
+
+// palantirRenderIdea builds one idea card with a one-click generate bridge.
+function palantirRenderIdea(idea) {
+  const card = document.createElement('div');
+  card.className = 'palantir-idea';
+
+  const thumb = idea.thumbnailUrl || idea.mediaUrl;
+  if (thumb) {
+    const img = document.createElement('img');
+    img.className = 'palantir-idea-thumb';
+    img.loading = 'lazy';
+    img.alt = idea.hook || 'Winning ad';
+    img.src = thumb;
+    img.addEventListener('error', () => {
+      const fb = document.createElement('div');
+      fb.className = 'palantir-idea-thumb-fallback';
+      fb.textContent = '✦';
+      img.replaceWith(fb);
+    });
+    card.appendChild(img);
+  } else {
+    const fb = document.createElement('div');
+    fb.className = 'palantir-idea-thumb-fallback';
+    fb.textContent = '✦';
+    card.appendChild(fb);
+  }
+
+  const badges = document.createElement('div');
+  badges.className = 'palantir-idea-badges';
+  const win = document.createElement('span');
+  win.className = 'palantir-idea-badge';
+  win.textContent = 'Winning';
+  badges.appendChild(win);
+  if (idea.format) {
+    const f = document.createElement('span');
+    f.className = 'palantir-idea-badge format';
+    f.textContent = idea.format;
+    badges.appendChild(f);
+  }
+  card.appendChild(badges);
+
+  const body = document.createElement('div');
+  body.className = 'palantir-idea-body';
+  const hook = document.createElement('div');
+  hook.className = 'palantir-idea-hook';
+  hook.textContent = idea.hook || 'Winning ad';
+  body.appendChild(hook);
+  if (idea.whyWinning) {
+    const why = document.createElement('div');
+    why.className = 'palantir-idea-why';
+    why.textContent = idea.whyWinning;
+    body.appendChild(why);
+  }
+  if (idea.advertiser) {
+    const m = document.createElement('div');
+    m.className = 'palantir-idea-meta';
+    m.textContent = 'by ' + idea.advertiser;
+    body.appendChild(m);
+  }
+  const gen = document.createElement('button');
+  gen.className = 'palantir-idea-gen';
+  gen.textContent = '✦ Generate for my brand';
+  gen.addEventListener('click', () => palantirGenerateFromIdea(idea));
+  body.appendChild(gen);
+  card.appendChild(body);
+  return card;
+}
+
+// palantirGenerateFromIdea closes the wall and seeds the chat with the idea's
+// on-brand generation instruction (auto-sends), so Claude produces a fresh riff
+// using the brand's guide + products + persona via the creative engine. Mirrors
+// startBrandSetupConversation's send pattern.
+function palantirGenerateFromIdea(idea) {
+  const seed = (idea && idea.generateSeed) ? idea.generateSeed : '';
+  if (!seed) return;
+  document.getElementById('palantir-panel').classList.add('hidden');
+  closePalantirDetail();
+  try {
+    addUserBubble(seed);
+    showTypingIndicator();
+    turnStartTime = Date.now();
+    turnTokens = 0;
+    sessionActive = true;
+    startTickingTimer();
+    merlin.sendMessage(seed);
+  } catch (e) { console.warn('[palantir-generate]', e); }
+}
+
+// loadPalantirIdeas auto-pulls the brand's niche winners and renders the wall.
+// No user input — the Go palantir-ideas action reads the active brand's niche.
+async function loadPalantirIdeas(opts) {
+  opts = opts || {};
+  if (palantirIdeasLoading) return;
+  palantirIdeasLoading = true;
+  const grid = document.getElementById('palantir-ideas-grid');
+  const cta = document.getElementById('palantir-connect-cta');
+  const niche = document.getElementById('palantir-niche');
+  if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
+  if (opts.reset && grid) grid.innerHTML = palantirPortalHTML('loading');
+
+  let res = null;
+  try {
+    const brand = (typeof getActiveBrandSelection === 'function' ? getActiveBrandSelection() : '') || '';
+    res = await merlin.palantirIdeas({ brand, batchCount: 24 });
+  } catch (err) { console.warn('[palantir-ideas]', err); }
+  palantirIdeasLoading = false;
+
+  if (!res || res.error) {
+    if (grid) grid.innerHTML = palantirPortalHTML('error', (res && res.error) || 'Could not load your idea wall. Try again in a moment.');
+    return;
+  }
+  if (niche) niche.textContent = res.niche || '';
+
+  if (res.needConnect) {
+    if (grid) grid.innerHTML = '';
+    if (cta) {
+      cta.style.display = '';
+      cta.innerHTML = palantirPortalHTML('connect', res.note || 'Connect TrendTrack to light up your idea wall.');
+      const cbtn = document.getElementById('palantir-connect-btn');
+      if (cbtn) cbtn.addEventListener('click', () => {
+        document.getElementById('palantir-panel').classList.add('hidden');
+        const magicBtn = document.getElementById('magic-btn');
+        if (magicBtn) magicBtn.click();
+      });
+    }
+    return;
+  }
+
+  const ideas = Array.isArray(res.ideas) ? res.ideas : [];
+  if (!grid) return;
+  if (ideas.length === 0) {
+    grid.innerHTML = palantirPortalHTML('empty', res.note || 'No standout ads in your niche right now. Try a competitor below.');
+    return;
+  }
+  grid.innerHTML = '';
+  for (const idea of ideas) grid.appendChild(palantirRenderIdea(idea));
+}
+
 document.getElementById('palantir-btn').addEventListener('click', () => {
-  // Mirror the archive/magic handlers: hide sibling sidebars and clear
-  // their pin state so the chat reflow stays in lockstep.
+  // Mirror the wisdom/archive/magic handlers: hide sibling surfaces + clear
+  // pin state so the chat reflow stays in lockstep. Palantir is now a
+  // FULL-FRAME takeover (toggled via .hidden = display:none in CSS).
   document.getElementById('magic-panel').classList.add('hidden');
   setSidebarPinned('magic', false);
   document.getElementById('archive-panel').classList.add('hidden');
@@ -10575,8 +10749,8 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
   const panel = document.getElementById('palantir-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) {
-    const search = document.getElementById('palantir-search');
-    if (search) { try { search.focus(); } catch (e) {} }
+    // Auto-load the brand-tailored winning-ideas wall — zero typing required.
+    loadPalantirIdeas({ reset: true });
   } else {
     closePalantirDetail();
   }
@@ -10585,6 +10759,22 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
 document.getElementById('palantir-close').addEventListener('click', () => {
   document.getElementById('palantir-panel').classList.add('hidden');
   closePalantirDetail();
+});
+
+// Refresh the wall (re-pull the niche winners).
+(function () {
+  const r = document.getElementById('palantir-refresh');
+  if (r) r.addEventListener('click', () => loadPalantirIdeas({ reset: true }));
+})();
+
+// Esc closes the full-frame takeover (after the detail lightbox, if open).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const panel = document.getElementById('palantir-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  const detail = document.getElementById('palantir-detail');
+  if (detail && !detail.classList.contains('hidden')) return;
+  panel.classList.add('hidden');
 });
 
 document.getElementById('palantir-search-form').addEventListener('submit', (e) => {

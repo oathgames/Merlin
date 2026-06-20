@@ -1651,6 +1651,62 @@ test('Palantir — index.html has the tab button, panel, and detail lightbox', (
   assert.ok(INDEX_HTML.includes('id="palantir-detail"'), 'ad-detail lightbox exists');
 });
 
+// ── PAL-4 (2026-06-20): winning-ideas wall + full takeover + button move ──
+test('Palantir — tooltip reads exactly "Palantir" (not "competitor ads")', () => {
+  const m = INDEX_HTML.match(/id="palantir-btn"[^>]*data-tip="([^"]*)"/);
+  assert.ok(m, 'palantir-btn has a data-tip');
+  assert.equal(m[1], 'Palantir', 'tooltip is exactly "Palantir"');
+});
+
+test('Palantir — button sits 1 slot to the right of Reports', () => {
+  const reports = INDEX_HTML.indexOf('id="agency-report-btn"');
+  const palantir = INDEX_HTML.indexOf('id="palantir-btn"');
+  const wisdom = INDEX_HTML.indexOf('id="wisdom-header-btn"');
+  assert.ok(reports > 0 && palantir > 0 && wisdom > 0, 'all three toolbar buttons exist');
+  assert.ok(reports < palantir, 'Palantir comes after Reports');
+  assert.ok(palantir < wisdom, 'Palantir comes immediately before Wisdom (i.e. one slot right of Reports)');
+});
+
+test('Palantir — full takeover with an auto idea wall + connect-CTA + secondary spy', () => {
+  assert.ok(INDEX_HTML.includes('id="palantir-ideas-grid"'), 'winning-ideas grid exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-connect-cta"'), 'connect-CTA container exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-niche"'), 'niche label exists');
+  assert.ok(INDEX_HTML.includes('id="palantir-refresh"'), 'refresh control exists');
+  // The competitor spy is now the SECONDARY path (collapsed <details>).
+  assert.ok(/<details id="palantir-spy"/.test(INDEX_HTML), 'competitor spy is a secondary <details> section');
+  // Full-frame: panel covers the window (left:0;right:0) like a takeover, not a 420px side panel.
+  assert.ok(/\.palantir-panel\s*\{[^}]*left:\s*0/.test(STYLE_CSS), 'panel is full-frame (left:0)');
+});
+
+test('Palantir — opening the panel auto-loads the ideas wall (zero typing)', () => {
+  const idx = RENDERER_JS.indexOf("getElementById('palantir-btn').addEventListener");
+  assert.ok(idx > 0, 'palantir-btn handler exists');
+  const handler = RENDERER_JS.slice(idx, idx + 900);
+  assert.ok(handler.includes('loadPalantirIdeas'), 'opening the panel auto-loads the ideas wall');
+  assert.ok(RENDERER_JS.includes('async function loadPalantirIdeas'), 'loadPalantirIdeas defined');
+  assert.ok(RENDERER_JS.includes('merlin.palantirIdeas'), 'calls the palantirIdeas bridge');
+});
+
+test('Palantir — idea card has a one-click on-brand generate bridge', () => {
+  assert.ok(RENDERER_JS.includes('function palantirRenderIdea'), 'idea-card renderer exists');
+  assert.ok(RENDERER_JS.includes('function palantirGenerateFromIdea'), 'generate bridge exists');
+  const idx = RENDERER_JS.indexOf('function palantirGenerateFromIdea');
+  const fn = RENDERER_JS.slice(idx, idx + 600);
+  assert.ok(fn.includes('generateSeed'), 'generate bridge uses the idea generateSeed');
+  assert.ok(fn.includes('merlin.sendMessage'), 'generate bridge sends the on-brand instruction to chat');
+});
+
+test('Palantir — connect-CTA (not a dead wall) when no ad-intel platform is connected', () => {
+  assert.ok(RENDERER_JS.includes('needConnect'), 'handles the needConnect state');
+  assert.ok(RENDERER_JS.includes("palantirPortalHTML('connect'"), 'renders a connect portal CTA');
+  assert.ok(RENDERER_JS.includes('palantir-connect-btn'), 'connect CTA has a button');
+});
+
+test('Palantir — preload exposes the palantirIdeas bridge', () => {
+  assert.ok(PRELOAD_JS.includes('palantirIdeas') && PRELOAD_JS.includes("ipcRenderer.invoke('palantir-ideas'"),
+    'preload exposes merlin.palantirIdeas → palantir-ideas IPC');
+});
+
 test('Palantir — tab button is wired and toggles the panel', () => {
   assert.ok(RENDERER_JS.includes("getElementById('palantir-btn').addEventListener"), 'btn handler bound');
   const idx = RENDERER_JS.indexOf("getElementById('palantir-btn').addEventListener");
