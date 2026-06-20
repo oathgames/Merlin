@@ -3889,6 +3889,7 @@ const PLATFORM_DISPLAY_NAMES = {
   foreplay: 'Foreplay',
   applovin: 'AppLovin', postscript: 'Postscript',
   triplewhale: 'Triple Whale',
+  openai_ads: 'OpenAI Ads',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -5474,6 +5475,9 @@ const API_KEY_PLATFORMS = {
   foreplay:   { key: 'foreplayApiKey', label: 'Foreplay', placeholder: 'fp_xxxx...', url: 'https://app.foreplay.co/settings/api' },
   trendtrack: { key: 'trendtrackApiKey', label: 'TrendTrack', placeholder: 'tt_xxxx...', url: 'https://app.trendtrack.io/workspace/settings/api' },
   postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx...', url: 'https://app.postscript.io/settings/api' },
+  // OpenAI / ChatGPT Ads — paste the Ads API key minted at ads.openai.com.
+  // Masked tile (not chat-pasted) because this key authorizes real ad spend.
+  openai_ads: { key: 'openaiAdsApiKey', label: 'OpenAI Ads', placeholder: 'sk-...', url: 'https://ads.openai.com' },
   // Klaviyo Private API Key (pk_…). Marketplace OAuth requires a long
   // partner-review pipeline; private keys cover every scope Merlin uses
   // (campaigns:read/write, flows:read, lists:read, metrics:read,

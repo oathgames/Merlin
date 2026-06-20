@@ -1745,6 +1745,57 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── openai_ads ────────────────────────────────────────────
+  // OpenAI / ChatGPT Ads — run + manage paid ads on OpenAI's ChatGPT ads
+  // platform (api.ads.openai.com). SPENDS REAL MONEY, so destructive:true +
+  // costImpact:'spend': the 'push' action routes through the host approval card
+  // (SPEND_ACTIONS) with the cents-detector + budget context, and the binary
+  // independently gates push with requireApproval + validateDailyBudget +
+  // enforceMonthlyCap + recordActiveSpend (openai_ads.go). Read actions
+  // (account/campaigns/insights) auto-approve; pause only reduces spend.
+  // Connect is BYOK: paste the key from ads.openai.com into the masked OpenAI
+  // Ads tile (never in chat — it authorizes spend); 'verify' tests it.
+  tools.push(defineTool({
+    name: 'openai_ads',
+    description: 'OpenAI / ChatGPT Ads — run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (impressions/clicks/spend/CTR/CPC/CPM — batchCount=days, campaignId/adId to scope), push (LAUNCH a live ad: builds campaign + ad group + uploads the creative + ad; needs adHeadline + adImagePath + a destination (adLink or the brand productUrl) + dailyBudget; SPENDS money — shows an approval card with budget), pause (pause a campaignId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked — it authorizes ad spend). US beta.',
+    destructive: true,
+    idempotent: false,
+    preview: false,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'openai_ads' },
+    input: {
+      action: z.enum(['account', 'campaigns', 'insights', 'push', 'pause', 'connect', 'verify']).describe('account/campaigns/insights → read. push → launch a live ad (spends, approval card). pause → pause a campaignId/adId. connect → how to paste the API key. verify → test a saved key.'),
+      brand: brandSchema,
+      apiKey: z.string().optional().describe('OpenAI Ads API key to validate (verify only); from ads.openai.com.'),
+      adHeadline: z.string().optional().describe('Ad title (push; truncated to 50 chars).'),
+      adBody: z.string().optional().describe('Ad body text (push; truncated to 100 chars).'),
+      adImagePath: z.string().optional().describe('Path to the creative image (push).'),
+      adLink: z.string().optional().describe('Destination URL (push; falls back to the brand productUrl).'),
+      dailyBudget: z.coerce.number().optional().describe('Daily budget in dollars (push). The campaign lifetime budget = dailyBudget × 30, validated against your caps.'),
+      campaignId: z.string().optional().describe('Campaign id (insights/pause).'),
+      adId: z.string().optional().describe('Ad id (insights/pause).'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for insights (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect OpenAI Ads',
+          instructions: 'Mint an Ads API key at ads.openai.com (Settings → API), then click the OpenAI Ads tile in the Connections panel and paste it into the masked field (never paste it in chat — it authorizes real ad spend). Then call mcp__merlin__openai_ads with action "verify" to confirm, or connection_status to check. US beta, no minimum spend.',
+        };
+      }
+      const actionMap = {
+        account: 'openai-ads-account',
+        campaigns: 'openai-ads-campaigns',
+        insights: 'openai-ads-insights',
+        push: 'openai-ads-push',
+        pause: 'openai-ads-pause',
+        verify: 'openai-ads-verify',
+      };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
   // ── reddit_organic + reddit_organic_post ──────────────────
   // Reddit organic prospecting. Split into TWO tools per Gitar review on
   // PR #224: the read+staging surface (scan, draft) is idempotent — same
@@ -2008,7 +2059,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -2065,6 +2116,12 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'Postscript connects via API key',
           instructions: 'Click the Postscript tile in the Connections panel and paste your API key from app.postscript.io → Settings → API. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'openai_ads') {
+        return {
+          summary: 'OpenAI Ads connects via API key',
+          instructions: 'Click the OpenAI Ads tile in the Connections panel and paste your Ads API key from ads.openai.com (Settings → API). It authorizes real ad spend, so it is entered in a masked field, never in chat. Then call mcp__merlin__openai_ads with action "verify" to confirm it works, or connection_status to check.',
         };
       }
       // Microsoft Clarity connects via the dedicated `clarity` tool: it

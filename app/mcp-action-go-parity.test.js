@@ -161,6 +161,11 @@ const TOOL_ROUTING = [
     actionMap: { 'verify': 'triplewhale-verify-key' },
     exemptions: ['connect'],
   },
+  { name: 'openai_ads', prefix: 'openai-ads',
+    // account/campaigns/insights/push/pause/verify map 1:1 via the prefix to
+    // openai-ads-*. connect is JS-only (returns instructions) → exempt.
+    exemptions: ['connect'],
+  },
   { name: 'reddit_organic', prefix: 'reddit-prospect' },
   { name: 'reddit_organic_post', skip: true },  // single fixed action
   { name: 'trendtrack', prefix: 'trendtrack' },

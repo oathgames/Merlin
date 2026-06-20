@@ -103,6 +103,8 @@ const VAULT_SENSITIVE_KEYS = [
   'triplewhaleAccessToken',
   'triplewhaleRefreshToken',
   'triplewhaleApiKey',
+  // OpenAI / ChatGPT Ads API key — authorizes real ad spend; never plaintext.
+  'openaiAdsApiKey',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',
@@ -129,6 +131,7 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // save-config-field handler returns 'Unknown config field' and the
   // Magic-panel modal save click silently fails.
   'postscriptApiKey', 'applovinMaxReportKey', 'applovinAdReportKey',
+  'openaiAdsApiKey',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',
