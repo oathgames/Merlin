@@ -105,6 +105,11 @@ const VAULT_SENSITIVE_KEYS = [
   'triplewhaleApiKey',
   // OpenAI / ChatGPT Ads API key — authorizes real ad spend; never plaintext.
   'openaiAdsApiKey',
+  // Rokt BYOK reporting credentials — the brand's own Rokt App ID/Secret +
+  // account id, vaulted brand-scoped (the App Secret signs the token exchange).
+  'roktAppId',
+  'roktAppSecret',
+  'roktAccountId',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',
@@ -137,6 +142,9 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // tile. Mirrored in VAULT_SENSITIVE_KEYS so the key is vaulted, never
   // written to merlin-config.json in plaintext.
   'triplewhaleApiKey',
+  // Rokt BYOK reporting credentials (App ID / App Secret / Account ID), saved
+  // by the 3-step Rokt connect modal. All three mirrored in VAULT_SENSITIVE_KEYS.
+  'roktAppId', 'roktAppSecret', 'roktAccountId',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',

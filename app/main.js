@@ -8353,6 +8353,9 @@ const BRAND_KEYS = [
   // OpenAI / ChatGPT Ads — brand-specific BYOK. Mirror of brandScopedKeys in
   // autocmo-core/vault.go.
   'openaiAdsApiKey', 'openaiAdsAccountId',
+  // Rokt — brand-specific BYOK reporting creds. Mirror of brandScopedKeys in
+  // autocmo-core/vault.go.
+  'roktAppId', 'roktAppSecret', 'roktAccountId',
 ];
 
 // Universal credentials — shared across every brand on a single user's
@@ -9228,6 +9231,18 @@ function getConnections(brandName) {
         : !!oaiKey;
       if (oaiResolved) connected.push({ platform: 'openai_ads', status: 'connected' });
     }
+    // Rokt — brand-specific BYOK reporting; connected when all three creds are
+    // present (App ID + App Secret + Account ID), brand-scoped with @@VAULT
+    // placeholder resolution on the secret.
+    const roktAppId = brandName ? brandCfg.roktAppId : globalCfg.roktAppId;
+    const roktSecret = brandName ? brandCfg.roktAppSecret : globalCfg.roktAppSecret;
+    const roktAcct = brandName ? brandCfg.roktAccountId : globalCfg.roktAccountId;
+    if (roktAppId && roktSecret && roktAcct) {
+      const roktResolved = typeof roktSecret === 'string' && roktSecret.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'roktAppSecret')
+        : !!roktSecret;
+      if (roktResolved) connected.push({ platform: 'rokt', status: 'connected' });
+    }
     // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
     const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
     const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
@@ -9353,6 +9368,9 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // OpenAI / ChatGPT Ads — clear the key + resolved account id on disconnect.
       // Mirror of platformVaultKeys["openai_ads"] in autocmo-core/oauth.go.
       openai_ads: ['openaiAdsApiKey', 'openaiAdsAccountId'],
+      // Rokt — clear all three BYOK creds on disconnect. Mirror of
+      // platformVaultKeys["rokt"] in autocmo-core/oauth.go.
+      rokt: ['roktAppId', 'roktAppSecret', 'roktAccountId'],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };

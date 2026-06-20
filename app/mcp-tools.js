@@ -1745,6 +1745,41 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── rokt ──────────────────────────────────────────────────
+  // Rokt network reporting (READ-ONLY). Rokt has NO campaign-management write
+  // API (dashboard-only), so this tool can only READ campaign performance — it
+  // cannot launch, pause, or change Rokt ads (hence destructive:false,
+  // costImpact:'api', no approval card). BYOK: the brand provisions an App ID +
+  // App Secret + Account ID in its OWN Rokt One Platform account (my.rokt.com);
+  // rokt.go exchanges them for a 1h Bearer token (OAuth2 client_credentials) and
+  // reads the Query API. Read-only by construction — rokt.go ships no write verbs
+  // (TestRoktSourceHasNoWriteVerbs).
+  tools.push(defineTool({
+    name: 'rokt',
+    description: 'Rokt network reporting (read-only). Pulls campaign performance (impressions, referrals, spend) from the Rokt ad network into the dashboard. Rokt has no campaign-management API, so this CANNOT launch or manage Rokt ads — reporting only. Actions: report (pull performance for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Rokt API credentials); verify (validate the saved App ID / App Secret / Account ID). Connect by entering your Rokt App ID, App Secret, and Account ID from my.rokt.com into the Rokt tile.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'rokt' },
+    input: {
+      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull impressions/referrals/spend for the window. status → check connection (no API call). connect → how to get Rokt API credentials. verify → validate the saved credentials.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Rokt',
+          instructions: 'In your Rokt One Platform account (my.rokt.com): create an integration App to get an App ID + App Secret, and note your Account ID. Then open the Rokt tile in the Connections panel and enter all three. Rokt access requires an active Rokt advertiser account (it is enterprise-onboarded). Note: Rokt has no campaign-management API, so Merlin can report on your Rokt performance but cannot launch or change Rokt campaigns.',
+        };
+      }
+      const actionMap = { report: 'rokt-report', status: 'rokt-status', verify: 'rokt-verify' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
   // ── openai_ads ────────────────────────────────────────────
   // OpenAI / ChatGPT Ads — run + manage paid ads on OpenAI's ChatGPT ads
   // platform (api.ads.openai.com). SPENDS REAL MONEY, so destructive:true +

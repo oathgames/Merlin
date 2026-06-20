@@ -53,6 +53,12 @@ const BANNED_HOSTS = [
   // validation + recordActiveSpend); a direct curl/WebFetch would bypass the
   // spend safety rails + rate-limit preflight and could leak the Bearer key.
   'api.ads.openai.com',
+  // Rokt — post-transaction ad network reporting (read-only). The OAuth token
+  // exchange + Query API reporting both live under api.rokt.com. Every call MUST
+  // go through rokt.go (PreflightCheck + RecordSuccess; resolves the brand's
+  // App ID/Secret from the vault). A direct curl/WebFetch would bypass the
+  // rate-limit preflight and could leak the Basic-auth credentials.
+  'api.rokt.com',
   // Foreplay — competitor ad intelligence. Routed through the binary so every
   // credit-burning call passes PreflightCheck + shows up in the audit log.
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and
