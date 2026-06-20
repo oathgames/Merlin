@@ -70,9 +70,18 @@
 <!-- Performance Status Bar -->
 <div id="perf-bar" class="perf-bar">
   <div class="perf-bar-content" id="perf-bar-content">
-    <select id="brand-select" class="brand-select-perf">
+    <!-- #brand-select is kept as a hidden value-source: every brand-aware
+         read (getActiveBrandSelection + ~25 call sites) + the proven swap
+         change-handler still drive off it. The visible affordance is now the
+         brand-switcher button, which opens a full-window tile takeover and
+         dispatches the swap through this select. -->
+    <select id="brand-select" class="brand-select-perf" style="display:none" aria-hidden="true" tabindex="-1">
       <option value="">No brand</option>
     </select>
+    <button id="brand-switcher-btn" class="brand-switcher-btn" aria-haspopup="dialog" aria-label="Switch or add a brand">
+      <span id="brand-switcher-label" class="brand-switcher-label">No brand</span>
+      <svg class="brand-switcher-caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
     <span id="perf-text" class="perf-text">Loading...</span>
     <div class="perf-period-group">
       <button class="perf-period-btn" data-days="1">1D</button>
@@ -507,6 +516,33 @@
   </div>
   <div class="wisdom-scroll">
     <div id="wisdom-grid" class="wisdom-grid"></div>
+  </div>
+</div>
+
+<!-- Brand Switcher — full-window tile takeover (replaces the old dropdown).
+     One click on a tile swaps brand instantly; the "+ New Brand" tile opens a
+     minimal Name/URL form whose Add creates + switches instantly and runs all
+     data ingestion async in the background. -->
+<div id="brand-switcher-overlay" class="brand-switcher-overlay hidden" role="dialog" aria-modal="true" aria-label="Your brands">
+  <div class="brand-switcher-topbar">
+    <span class="magic-title">Your Brands</span>
+    <button id="brand-switcher-close" class="magic-close" aria-label="Close brand switcher">&times;</button>
+  </div>
+  <div class="brand-switcher-scroll">
+    <div id="brand-switcher-grid" class="brand-switcher-grid" aria-label="Pick a brand"></div>
+    <div id="brand-new-form" class="brand-new-form hidden">
+      <div class="brand-new-title">Add a new brand</div>
+      <label class="brand-new-label" for="brand-new-name">Brand name</label>
+      <input id="brand-new-name" type="text" class="brand-new-input" placeholder="e.g. Gymshark" autocomplete="off" spellcheck="false">
+      <label class="brand-new-label" for="brand-new-url">Brand website</label>
+      <input id="brand-new-url" type="text" class="brand-new-input" placeholder="e.g. gymshark.com" autocomplete="off" spellcheck="false">
+      <div id="brand-new-error" class="brand-new-error" role="alert" style="display:none"></div>
+      <div class="brand-new-actions">
+        <button id="brand-new-back" class="brand-new-btn brand-new-back">Back</button>
+        <button id="brand-new-add" class="brand-new-btn brand-new-add">Add brand</button>
+      </div>
+      <p class="brand-new-hint">Merlin activates your brand instantly, then scrapes your site, builds your brand guide, and finds competitors in the background — no waiting.</p>
+    </div>
   </div>
 </div>
 

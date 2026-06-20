@@ -4103,6 +4103,7 @@ async function loadBrands() {
       select.value = '__add__';
       select.dataset.lastValue = '';
       updateVertical('');
+      updateBrandSwitcherLabel();
       return;
     }
     const savedBrand = state?.activeBrand || '';
@@ -4130,6 +4131,7 @@ async function loadBrands() {
     }
     select.dataset.lastValue = selectedBrand?.name || brands[0]?.name || '';
     if (selectedBrand?.vertical) updateVertical(selectedBrand.vertical);
+    updateBrandSwitcherLabel();
   } catch (err) { console.warn('[brands]', err); }
 }
 
@@ -4293,6 +4295,166 @@ function getActiveBrandSelection() {
   const value = document.getElementById('brand-select')?.value || '';
   return value && value !== '__add__' ? value : '';
 }
+
+// ── Brand switcher takeover (button + full-window tile grid) ────────────
+// Replaces the cramped dropdown. Tiles drive the swap through the hidden
+// #brand-select (reusing its proven change-handler), so a tile click is a
+// 1-click instant swap. "+ New Brand" opens a Name/URL form whose Add activates
+// the brand instantly and runs ALL ingestion async (zero friction / zero wait).
+function brandInitials(name) {
+  const s = String(name || '').trim();
+  if (!s) return '?';
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return s.slice(0, 2).toUpperCase();
+}
+
+function updateBrandSwitcherLabel() {
+  const label = document.getElementById('brand-switcher-label');
+  if (!label) return;
+  const sel = document.getElementById('brand-select');
+  const active = getActiveBrandSelection();
+  if (!active) { label.textContent = 'Set up a brand'; return; }
+  let text = active;
+  try {
+    const opt = sel && sel.querySelector(`option[value="${CSS.escape(active)}"]`);
+    if (opt && opt.textContent) text = opt.textContent.trim();
+  } catch {}
+  label.textContent = text;
+}
+
+function closeBrandSwitcher() {
+  document.getElementById('brand-switcher-overlay')?.classList.add('hidden');
+}
+
+function showBrandNewForm(show) {
+  const grid = document.getElementById('brand-switcher-grid');
+  const form = document.getElementById('brand-new-form');
+  const err = document.getElementById('brand-new-error');
+  if (form) form.classList.toggle('hidden', !show);
+  if (grid) grid.style.display = show ? 'none' : '';
+  if (err) { err.style.display = 'none'; err.textContent = ''; }
+  if (show) {
+    const n = document.getElementById('brand-new-name');
+    if (n) { n.value = ''; try { n.focus(); } catch {} }
+    const u = document.getElementById('brand-new-url');
+    if (u) u.value = '';
+  }
+}
+
+async function openBrandSwitcher() {
+  const ov = document.getElementById('brand-switcher-overlay');
+  const grid = document.getElementById('brand-switcher-grid');
+  if (!ov || !grid) return;
+  // Close sibling surfaces so they don't render behind the takeover.
+  document.getElementById('magic-panel')?.classList.add('hidden');
+  document.getElementById('archive-panel')?.classList.add('hidden');
+  document.getElementById('wisdom-overlay')?.classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeAgencyOverlay();
+  showBrandNewForm(false);
+  ov.classList.remove('hidden');
+  grid.innerHTML = '<div class="palantir-portal"><div class="palantir-portal-orb">✦</div><div class="palantir-portal-sub">Loading your brands…</div></div>';
+
+  let brands = [];
+  try { brands = await merlin.getBrands(); } catch (e) { console.warn('[brand-switcher]', e); }
+  const active = getActiveBrandSelection();
+  grid.innerHTML = '';
+  (brands || []).forEach((b) => {
+    const tile = document.createElement('button');
+    tile.className = 'brand-tile' + (b.name === active ? ' active' : '');
+    tile.setAttribute('aria-label', 'Switch to ' + (b.displayName || b.name));
+    const av = document.createElement('div');
+    av.className = 'brand-tile-avatar';
+    av.textContent = brandInitials(b.displayName || b.name);
+    tile.appendChild(av);
+    const nm = document.createElement('div');
+    nm.className = 'brand-tile-name';
+    nm.textContent = b.displayName || b.name;
+    tile.appendChild(nm);
+    if (b.name === active) {
+      const badge = document.createElement('div');
+      badge.className = 'brand-tile-active-badge';
+      badge.textContent = 'Active';
+      tile.appendChild(badge);
+    }
+    tile.addEventListener('click', () => chooseBrandFromTakeover(b.name));
+    grid.appendChild(tile);
+  });
+  // "+ New Brand" tile — always last.
+  const addTile = document.createElement('button');
+  addTile.className = 'brand-tile brand-tile-add';
+  addTile.id = 'brand-tile-add';
+  addTile.setAttribute('aria-label', 'Add a new brand');
+  const aav = document.createElement('div');
+  aav.className = 'brand-tile-avatar';
+  aav.textContent = '+';
+  addTile.appendChild(aav);
+  const anm = document.createElement('div');
+  anm.className = 'brand-tile-name';
+  anm.textContent = 'New Brand';
+  addTile.appendChild(anm);
+  addTile.addEventListener('click', () => showBrandNewForm(true));
+  grid.appendChild(addTile);
+}
+
+// chooseBrandFromTakeover swaps brand in ONE click by driving the hidden
+// #brand-select's proven change handler, then closes the overlay immediately so
+// the swap feels instant (the handler's optimistic preseed paints right away).
+function chooseBrandFromTakeover(name) {
+  const sel = document.getElementById('brand-select');
+  if (!sel) return;
+  closeBrandSwitcher();
+  if (name === getActiveBrandSelection()) return; // already active — no-op
+  sel.value = name;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  setTimeout(updateBrandSwitcherLabel, 0);
+}
+
+// addBrandFromForm validates Name + URL, then activates the brand INSTANTLY and
+// runs ALL ingestion async (scrape / guide / products / competitors) in the
+// background via the proven brand_activate-first flow — zero friction, zero
+// wait, zero mid-flow approvals (honors the Brand Onboarding Zero-Friction rule).
+function addBrandFromForm() {
+  const nameEl = document.getElementById('brand-new-name');
+  const urlEl = document.getElementById('brand-new-url');
+  const err = document.getElementById('brand-new-error');
+  const addBtn = document.getElementById('brand-new-add');
+  const name = (nameEl?.value || '').trim();
+  let url = (urlEl?.value || '').trim();
+  const fail = (msg) => { if (err) { err.textContent = msg; err.style.display = ''; } };
+  if (!name) { fail('Enter a brand name.'); try { nameEl.focus(); } catch {} return; }
+  if (!url) { fail('Enter your brand website.'); try { urlEl.focus(); } catch {} return; }
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url; // accept "gymshark.com"
+  try { new URL(url); } catch { fail('That website doesn’t look right. Try e.g. gymshark.com'); return; }
+  if (addBtn) addBtn.disabled = true;
+  closeBrandSwitcher();
+  const prompt = `Set up a new brand named "${name}" with the website ${url}. Activate it immediately so I can use it right now, then scrape the site, build the brand guide, import products, and find competitors in the background. Don't ask me any questions — use sensible defaults.`;
+  try { startBrandSetupConversation(prompt); } catch (e) { console.warn('[brand-new]', e); }
+  if (addBtn) setTimeout(() => { addBtn.disabled = false; }, 1500);
+}
+
+(function wireBrandSwitcher() {
+  document.getElementById('brand-switcher-btn')?.addEventListener('click', openBrandSwitcher);
+  document.getElementById('brand-switcher-close')?.addEventListener('click', closeBrandSwitcher);
+  document.getElementById('brand-new-back')?.addEventListener('click', () => showBrandNewForm(false));
+  document.getElementById('brand-new-add')?.addEventListener('click', addBrandFromForm);
+  ['brand-new-name', 'brand-new-url'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addBrandFromForm(); }
+    });
+  });
+  // Keep the button label in sync with any brand change (swap or programmatic).
+  document.getElementById('brand-select')?.addEventListener('change', () => setTimeout(updateBrandSwitcherLabel, 0));
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const ov = document.getElementById('brand-switcher-overlay');
+    if (!ov || ov.classList.contains('hidden')) return;
+    const form = document.getElementById('brand-new-form');
+    if (form && !form.classList.contains('hidden')) { showBrandNewForm(false); return; }
+    closeBrandSwitcher();
+  });
+})();
 
 function getBrandRequiredMessage(platform) {
   if (platform === 'shopify') {
@@ -9388,6 +9550,7 @@ if (merlin && typeof merlin.onBrandActivated === 'function') {
         select.value = brand;
         select.dataset.lastValue = brand;
       }
+      updateBrandSwitcherLabel();
       // Vertical chip — read fresh from get-brands so the just-written
       // brand.md vertical lands in the chip without a race against the
       // host's filesystem write.

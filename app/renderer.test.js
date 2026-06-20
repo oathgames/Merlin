@@ -1707,6 +1707,55 @@ test('Palantir — preload exposes the palantirIdeas bridge', () => {
     'preload exposes merlin.palantirIdeas → palantir-ideas IPC');
 });
 
+// ── TARGET 2 (2026-06-20): brand switcher button + full-window tile takeover ──
+test('Brand switcher — dropdown replaced by a button; select kept hidden as value-source', () => {
+  assert.ok(INDEX_HTML.includes('id="brand-switcher-btn"'), 'brand-switcher button exists');
+  assert.ok(INDEX_HTML.includes('id="brand-switcher-label"'), 'button shows the active brand label');
+  // The select is preserved (25+ call sites + the proven swap handler) but hidden.
+  const m = INDEX_HTML.match(/<select id="brand-select"[^>]*>/);
+  assert.ok(m, 'brand-select still exists');
+  assert.ok(/display:\s*none/.test(m[0]), 'brand-select is hidden (button is the affordance now)');
+});
+
+test('Brand switcher — full-window tile takeover with a + New Brand form', () => {
+  assert.ok(INDEX_HTML.includes('id="brand-switcher-overlay"'), 'takeover overlay exists');
+  assert.ok(INDEX_HTML.includes('id="brand-switcher-grid"'), 'brand tile grid exists');
+  assert.ok(INDEX_HTML.includes('id="brand-new-form"'), 'new-brand form exists');
+  assert.ok(INDEX_HTML.includes('id="brand-new-name"'), 'new-brand Name field exists');
+  assert.ok(INDEX_HTML.includes('id="brand-new-url"'), 'new-brand URL field exists');
+  assert.ok(INDEX_HTML.includes('id="brand-new-back"') && INDEX_HTML.includes('id="brand-new-add"'), 'Back + Add buttons exist');
+  // Full-frame takeover styling (like Reports/Wisdom): covers the window.
+  assert.ok(/\.brand-switcher-overlay\s*\{[^}]*left:\s*0/.test(STYLE_CSS), 'overlay is full-frame');
+  assert.ok(/\.brand-tile\s*\{/.test(STYLE_CSS), 'brand tiles are styled');
+});
+
+test('Brand switcher — tile click is a 1-click swap that drives the hidden select', () => {
+  assert.ok(RENDERER_JS.includes('function openBrandSwitcher'), 'opener exists');
+  assert.ok(RENDERER_JS.includes('function chooseBrandFromTakeover'), '1-click swap fn exists');
+  const idx = RENDERER_JS.indexOf('function chooseBrandFromTakeover');
+  const fn = RENDERER_JS.slice(idx, idx + 500);
+  assert.ok(fn.includes("getElementById('brand-select')"), 'reuses the hidden brand-select');
+  assert.ok(fn.includes("dispatchEvent(new Event('change'") , 'fires the proven swap handler');
+  assert.ok(fn.includes('closeBrandSwitcher'), 'closes the takeover immediately (instant feel)');
+});
+
+test('Brand switcher — New Brand activates instantly + ingests async (zero friction)', () => {
+  assert.ok(RENDERER_JS.includes('function addBrandFromForm'), 'add-brand fn exists');
+  const idx = RENDERER_JS.indexOf('function addBrandFromForm');
+  const fn = RENDERER_JS.slice(idx, idx + 1800);
+  assert.ok(fn.includes('Enter a brand name') && fn.includes('Enter your brand website'), 'validates name + url');
+  assert.ok(fn.includes('startBrandSetupConversation'), 'kicks off activation + async ingestion');
+  assert.ok(fn.includes('Activate it immediately') && /background/i.test(fn), 'instant activate + async background ingestion');
+  assert.ok(/Don.t ask me any questions/i.test(fn), 'zero mid-flow approvals (no questions)');
+});
+
+test('Brand switcher — button label stays in sync with the active brand', () => {
+  assert.ok(RENDERER_JS.includes('function updateBrandSwitcherLabel'), 'label sync fn exists');
+  // Synced from loadBrands (initial), brand-activated (new brand), and on swap.
+  const occurrences = (RENDERER_JS.match(/updateBrandSwitcherLabel\(\)/g) || []).length;
+  assert.ok(occurrences >= 3, `label sync called from multiple paths (got ${occurrences})`);
+});
+
 test('Palantir — tab button is wired and toggles the panel', () => {
   assert.ok(RENDERER_JS.includes("getElementById('palantir-btn').addEventListener"), 'btn handler bound');
   const idx = RENDERER_JS.indexOf("getElementById('palantir-btn').addEventListener");
