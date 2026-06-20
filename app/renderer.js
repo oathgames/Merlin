@@ -3889,6 +3889,8 @@ const PLATFORM_DISPLAY_NAMES = {
   foreplay: 'Foreplay',
   applovin: 'AppLovin', postscript: 'Postscript',
   triplewhale: 'Triple Whale',
+  openai_ads: 'OpenAI Ads',
+  rokt: 'Rokt',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -3922,7 +3924,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -3933,7 +3935,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'MRR',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','google','linkedin','stripe','klaviyo','reddit','twitter', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','google','linkedin','stripe','klaviyo','mailchimp','reddit','twitter','openai_ads', ...BASE_CREATIVE_TOOLS],
   },
   games: {
     key: 'games',
@@ -3944,7 +3946,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'installs',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','tiktok','google','applovin','stripe','reddit','snapchat','twitter', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','google','applovin','stripe','reddit','snapchat','twitter','openai_ads', ...BASE_CREATIVE_TOOLS],
   },
   creator: {
     key: 'creator',
@@ -3955,7 +3957,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'enrollments',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','tiktok','google','twitter','reddit','klaviyo','postscript','stripe', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','google','twitter','reddit','klaviyo','mailchimp','postscript','stripe','openai_ads', ...BASE_CREATIVE_TOOLS],
   },
   local: {
     key: 'local',
@@ -3966,7 +3968,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'leads',
     defaultRevenueConnector: '',
     hasShoppableCatalog: false,
-    integrations: ['meta','google','reddit', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','google','reddit','openai_ads', ...BASE_CREATIVE_TOOLS],
   },
   agency: {
     key: 'agency',
@@ -3977,7 +3979,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'qualified leads',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['linkedin','meta','google','twitter','reddit','stripe','klaviyo', ...BASE_CREATIVE_TOOLS],
+    integrations: ['linkedin','meta','google','twitter','reddit','stripe','klaviyo','mailchimp','openai_ads', ...BASE_CREATIVE_TOOLS],
   },
   b2b: {
     key: 'b2b',
@@ -3988,7 +3990,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'pipeline',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['linkedin','google','meta','twitter','reddit','stripe', ...BASE_CREATIVE_TOOLS],
+    integrations: ['linkedin','google','meta','twitter','reddit','stripe','openai_ads', ...BASE_CREATIVE_TOOLS],
   },
 };
 
@@ -4162,8 +4164,22 @@ function updateVertical(vertical) {
   // Tile filter: only hide tiles when we recognize the vertical. Unknown
   // vertical → show everything (user hasn't picked yet, don't amputate
   // the UI based on a guess).
+  //
+  // REGRESSION GUARD (2026-06-19): data-scope="universal" tiles are NEVER
+  // vertical-filtered. They are tools that apply to every brand regardless
+  // of vertical — creative generation (fal/elevenlabs/heygen/arcads),
+  // cross-brand intelligence (foreplay/trendtrack), and notification
+  // channels (slack/discord). Previously a universal tile only survived the
+  // filter by being duplicated into a vertical's integrations list (via
+  // BASE_CREATIVE_TOOLS). foreplay + trendtrack were never added to that
+  // spread, so on every RECOGNIZED vertical (ecommerce/saas/...) they got
+  // display:none and silently vanished — they only showed for brands whose
+  // vertical was unknown (the integrations:null branch below). Scoping the
+  // filter to brand tiles fixes the class of bug, not just the two symptoms.
+  // Guarded by app/magic-tiles.test.js.
   if (profile.integrations) {
     tiles.forEach(tile => {
+      if (tile.dataset.scope === 'universal') { tile.style.display = ''; return; }
       tile.style.display = profile.integrations.includes(tile.dataset.platform) ? '' : 'none';
     });
   } else {
@@ -5474,6 +5490,10 @@ const API_KEY_PLATFORMS = {
   foreplay:   { key: 'foreplayApiKey', label: 'Foreplay', placeholder: 'fp_xxxx...', url: 'https://app.foreplay.co/settings/api' },
   trendtrack: { key: 'trendtrackApiKey', label: 'TrendTrack', placeholder: 'tt_xxxx...', url: 'https://app.trendtrack.io/workspace/settings/api' },
   postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx...', url: 'https://app.postscript.io/settings/api' },
+  // OpenAI / ChatGPT Ads — paste the Ads API key minted at ads.openai.com.
+  // Masked tile (not chat-pasted) because this key authorizes real ad spend.
+  openai_ads: { key: 'openaiAdsApiKey', label: 'OpenAI Ads', placeholder: 'Ads API key from ads.openai.com (not your ChatGPT key)', url: 'https://ads.openai.com' },
+  triplewhale: { key: 'triplewhaleApiKey', label: 'Triple Whale', placeholder: 'API key from Settings → API Keys', url: 'https://app.triplewhale.com/api-keys' },
   // Klaviyo Private API Key (pk_…). Marketplace OAuth requires a long
   // partner-review pipeline; private keys cover every scope Merlin uses
   // (campaigns:read/write, flows:read, lists:read, metrics:read,
@@ -5654,6 +5674,12 @@ document.addEventListener('click', async (e) => {
     }).finally(() => {
       _oauthInFlight.delete(inFlightKey);
     });
+    return;
+  }
+
+  const customConnect = CUSTOM_CONNECT_HANDLERS[platform];
+  if (customConnect) {
+    customConnect(activeBrand);
     return;
   }
 
@@ -6155,6 +6181,67 @@ function showApplovinApiKeyModal(activeBrand) {
     },
   });
 }
+
+// Rokt connect modal — three chained steps (App ID -> App Secret -> Account ID),
+// because Rokt's BYOK reporting credentials are three fields, not one (so it
+// can't use the generic single-field API_KEY_PLATFORMS modal). Each field is
+// saved via save-config-field; the App Secret is vaulted (VAULT_SENSITIVE_KEYS).
+// Like every other API-key tile, the connection dot lights on save; a live
+// validation pass is the tracked verify-on-save follow-up (the user can also run
+// mcp__merlin__rokt action "verify" to validate immediately).
+function showRoktConnectModal(activeBrand) {
+  showModal({
+    title: 'Rokt — App ID',
+    body: 'Enter your Rokt App ID from my.rokt.com (One Platform → your integration App). Requires an active Rokt advertiser account. (Step 1 of 3)',
+    inputPlaceholder: 'Rokt App ID',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const appId = (v1 || '').trim();
+      if (!appId) { showModalError('Enter your App ID'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'Rokt — App Secret',
+          body: 'Enter your Rokt App Secret. It is stored encrypted and never shown again. (Step 2 of 3)',
+          inputPlaceholder: 'Rokt App Secret',
+          confirmLabel: 'Next',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const appSecret = (v2 || '').trim();
+            if (!appSecret) { showModalError('Enter your App Secret'); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: 'Rokt — Account ID',
+                body: 'Enter your Rokt Account ID (the advertiser account these reports cover). (Step 3 of 3)',
+                inputPlaceholder: 'Rokt Account ID',
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v3) => {
+                  const accountId = (v3 || '').trim();
+                  if (!accountId) { showModalError('Enter your Account ID'); throw new Error('validation'); }
+                  let r = await merlin.saveConfigField('roktAppId', appId, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save App ID'); throw new Error('save'); }
+                  r = await merlin.saveConfigField('roktAppSecret', appSecret, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save App Secret'); throw new Error('save'); }
+                  r = await merlin.saveConfigField('roktAccountId', accountId, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save Account ID'); throw new Error('save'); }
+                  loadConnections();
+                },
+              });
+            }, 0);
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
+// Platforms whose tile LEFT-CLICK opens a custom multi-field connect modal
+// instead of OAuth or the single-field API_KEY_PLATFORMS modal. Checked in the
+// tile click handler before the API_KEY_PLATFORMS fallback.
+const CUSTOM_CONNECT_HANDLERS = {
+  rokt: showRoktConnectModal,
+};
 
 // Platforms that support a "Use my API key" right-click override. Each entry
 // maps the platform data attribute to its manual-credential modal.

@@ -170,6 +170,10 @@ Every write action requires an approval card (`cmd.Approved` must be true); the 
 
 When BOTH Shopify and GA4 report revenue: Shopify wins per Hard-Won Security Rule 10 (`pickRevenueSource`). GA4 attribution is shown as a diagnostic side panel, never as the topline number.
 
+## Rokt network reporting (`mcp__merlin__rokt`) — read-only
+
+Use when the brand runs ads on the Rokt post-transaction network and wants their Rokt performance (impressions, referrals, spend) surfaced. `action: "report"` (batchCount = days, default 30) pulls the Query API; `status` checks the connection; `verify` validates the saved credentials. Connect is BYOK 3-field (App ID + App Secret + Account ID from `my.rokt.com`) via the Rokt tile. **Rokt has no campaign-management API**, so Merlin can REPORT on Rokt performance but cannot launch, pause, or change Rokt campaigns (dashboard-only at Rokt). Requires an active Rokt advertiser account (enterprise-onboarded). Read-only by construction — `rokt.go` ships no write verbs.
+
 <!-- Updated 2026-05-10 (v1.22.0 RSI fixes B001/B002/B004/D004/D005/E003) -->
 ## Email/SMS performance (Klaviyo flow analytics)
 

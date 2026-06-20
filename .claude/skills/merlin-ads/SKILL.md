@@ -270,6 +270,10 @@ Connector OAuth via `platform_login({platform: "etsy"})`. Same listing/insights 
 
 Connect + campaign ops. **Budget validation runs on the final scaled value** — if the code scales budget (e.g. 3× for LinkedIn scaling), `validateDailyBudget(cfg, scaledBudget, "linkedin")` must run on the scaled number. This is a regression guard — see `linkedin.go`.
 
+### OpenAI / ChatGPT Ads (`mcp__merlin__openai_ads`)
+
+Run + manage paid ads inside ChatGPT (api.ads.openai.com; US self-serve beta). BYOK — connect by pasting the Ads API key from ads.openai.com into the masked OpenAI Ads tile (never in chat — it authorizes spend), then `action:"verify"`. Actions: `account` / `campaigns` / `insights` (read), `push` (LAUNCH a live ad — builds campaign → ad group → uploads the creative → ad; needs `adHeadline` (≤50 chars), `adImagePath`, a destination (`adLink` or the brand `productUrl`), and `dailyBudget`), `pause` (a `campaignId`/`adId`). **`push` SPENDS money** and shows an approval card; the binary independently gates it with `requireApproval` + `validateDailyBudget` + `enforceMonthlyCap` + `recordActiveSpend`. Budgets are LIFETIME in micros (1,000,000 = $1): the campaign lifetime = `dailyBudget × 30`, validated against `maxDailyAdBudget` (implied daily) AND `maxMonthlyAdSpend`. Bidding is per-impression (CPM-style). See `openai_ads.go`.
+
 ### Competitor ad research (`mcp__merlin__competitor_spy`) — Foreplay global discovery
 
 Foreplay indexes 100M+ Meta/TikTok/LinkedIn ads worldwide. **Covers the US and all other regions** — fills the gap where Meta Ads Library previews are EU-only. **Always use the global-discovery flow, never Spyder.** Spyder requires pre-subscribing to each brand in the Foreplay UI; it is deliberately unsupported here.
@@ -290,7 +294,7 @@ Foreplay indexes 100M+ Meta/TikTok/LinkedIn ads worldwide. **Covers the US and a
 
 ## Rate limits
 
-**Every outbound call to a rate-limited platform routes through `PreflightCheck` + `RecordSuccess`/`RecordRateLimitHit`.** A direct HTTP call to `graph.facebook.com`, `business-api.tiktok.com`, `googleads.googleapis.com`, `api.klaviyo.com`, `ads-api.reddit.com`, `openapi.etsy.com`, or an Amazon Ads host is blocked by the user-side hook. Always route through `mcp__merlin__*` tools.
+**Every outbound call to a rate-limited platform routes through `PreflightCheck` + `RecordSuccess`/`RecordRateLimitHit`.** A direct HTTP call to `graph.facebook.com`, `business-api.tiktok.com`, `googleads.googleapis.com`, `api.klaviyo.com`, `ads-api.reddit.com`, `openapi.etsy.com`, `api.ads.openai.com`, or an Amazon Ads host is blocked by the user-side hook. Always route through `mcp__merlin__*` tools.
 
 ## Routing hints
 

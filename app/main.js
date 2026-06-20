@@ -2355,6 +2355,18 @@ function translateTool(toolName, input) {
       'triplewhale-login':      { label: 'Connect Triple Whale (read-only analytics)', cost: 'Free' },
       'triplewhale-verify-key': { label: 'Save your Triple Whale API key', cost: 'Free' },
       'triplewhale-summary':    { label: 'Pull Triple Whale metrics (NC-ROAS, NCPA, MER)', cost: 'Free' },
+      'openai-ads-verify':      { label: 'Verify your OpenAI Ads API key', cost: 'Free' },
+      'openai-ads-account':     { label: 'Check your OpenAI Ads account', cost: 'Free' },
+      'openai-ads-campaigns':   { label: 'List your ChatGPT ad campaigns', cost: 'Free' },
+      'openai-ads-insights':    { label: 'Pull ChatGPT ads performance', cost: 'Free' },
+      'openai-ads-push':        { label: 'Launch a ChatGPT ad', cost: 'Sets ad spend' },
+      'openai-ads-pause':       { label: 'Pause a ChatGPT ad/campaign', cost: 'Free' },
+      // No 'openai-ads-kill' label: the MCP tool exposes pause, not kill. The
+      // binary's kill action (archive — terminal) stays CLI-reachable; if it is
+      // ever exposed via MCP it needs a destructive-confirm card (it has no
+      // budget), so wiring is a deliberate follow-up, not a stray label here.
+      'rokt-report':            { label: 'Pull Rokt network performance', cost: 'Free' },
+      'rokt-verify':            { label: 'Verify your Rokt credentials', cost: 'Free' },
       'slack-login':   { label: 'Connect Slack for notifications', cost: 'Free' },
       'discord-login': { label: 'Connect Discord for notifications', cost: 'Free' },
       'discord-setup': { label: 'Change Discord notification channel', cost: 'Free' },
@@ -8343,6 +8355,12 @@ const BRAND_KEYS = [
   // Triple Whale — brand-specific analytics (each brand connects its own TW
   // account). Mirror of brandScopedKeys in autocmo-core/vault.go.
   'triplewhaleAccessToken', 'triplewhaleRefreshToken', 'triplewhaleApiKey', 'triplewhaleShopDomain',
+  // OpenAI / ChatGPT Ads — brand-specific BYOK. Mirror of brandScopedKeys in
+  // autocmo-core/vault.go.
+  'openaiAdsApiKey', 'openaiAdsAccountId',
+  // Rokt — brand-specific BYOK reporting creds. Mirror of brandScopedKeys in
+  // autocmo-core/vault.go.
+  'roktAppId', 'roktAppSecret', 'roktAccountId',
 ];
 
 // Universal credentials — shared across every brand on a single user's
@@ -9209,6 +9227,27 @@ function getConnections(brandName) {
         : !!twToken;
       if (twResolved) connected.push({ platform: 'triplewhale', status: 'connected' });
     }
+    // OpenAI / ChatGPT Ads — brand-specific BYOK; connected when the Ads API
+    // key is present (brand-scoped, with @@VAULT placeholder resolution).
+    const oaiKey = brandName ? brandCfg.openaiAdsApiKey : globalCfg.openaiAdsApiKey;
+    if (oaiKey) {
+      const oaiResolved = typeof oaiKey === 'string' && oaiKey.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'openaiAdsApiKey')
+        : !!oaiKey;
+      if (oaiResolved) connected.push({ platform: 'openai_ads', status: 'connected' });
+    }
+    // Rokt — brand-specific BYOK reporting; connected when all three creds are
+    // present (App ID + App Secret + Account ID), brand-scoped with @@VAULT
+    // placeholder resolution on the secret.
+    const roktAppId = brandName ? brandCfg.roktAppId : globalCfg.roktAppId;
+    const roktSecret = brandName ? brandCfg.roktAppSecret : globalCfg.roktAppSecret;
+    const roktAcct = brandName ? brandCfg.roktAccountId : globalCfg.roktAccountId;
+    if (roktAppId && roktSecret && roktAcct) {
+      const roktResolved = typeof roktSecret === 'string' && roktSecret.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'roktAppSecret')
+        : !!roktSecret;
+      if (roktResolved) connected.push({ platform: 'rokt', status: 'connected' });
+    }
     // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
     const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
     const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
@@ -9331,6 +9370,12 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // a fresh key) starts clean. Mirror of platformVaultKeys["triplewhale"]
       // in autocmo-core/oauth.go.
       triplewhale: ['triplewhaleAccessToken', 'triplewhaleRefreshToken', 'triplewhaleTokenExpiresAt', 'triplewhaleApiKey', 'triplewhaleShopDomain'],
+      // OpenAI / ChatGPT Ads — clear the key + resolved account id on disconnect.
+      // Mirror of platformVaultKeys["openai_ads"] in autocmo-core/oauth.go.
+      openai_ads: ['openaiAdsApiKey', 'openaiAdsAccountId'],
+      // Rokt — clear all three BYOK creds on disconnect. Mirror of
+      // platformVaultKeys["rokt"] in autocmo-core/oauth.go.
+      rokt: ['roktAppId', 'roktAppSecret', 'roktAccountId'],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };
