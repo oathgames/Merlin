@@ -2361,7 +2361,12 @@ function translateTool(toolName, input) {
       'openai-ads-insights':    { label: 'Pull ChatGPT ads performance', cost: 'Free' },
       'openai-ads-push':        { label: 'Launch a ChatGPT ad', cost: 'Sets ad spend' },
       'openai-ads-pause':       { label: 'Pause a ChatGPT ad/campaign', cost: 'Free' },
-      'openai-ads-kill':        { label: 'Stop a ChatGPT ad/campaign', cost: 'Free' },
+      // No 'openai-ads-kill' label: the MCP tool exposes pause, not kill. The
+      // binary's kill action (archive — terminal) stays CLI-reachable; if it is
+      // ever exposed via MCP it needs a destructive-confirm card (it has no
+      // budget), so wiring is a deliberate follow-up, not a stray label here.
+      'rokt-report':            { label: 'Pull Rokt network performance', cost: 'Free' },
+      'rokt-verify':            { label: 'Verify your Rokt credentials', cost: 'Free' },
       'slack-login':   { label: 'Connect Slack for notifications', cost: 'Free' },
       'discord-login': { label: 'Connect Discord for notifications', cost: 'Free' },
       'discord-setup': { label: 'Change Discord notification channel', cost: 'Free' },
