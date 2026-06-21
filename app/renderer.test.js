@@ -1739,6 +1739,18 @@ test('Brand switcher — tile click is a 1-click swap that drives the hidden sel
   assert.ok(fn.includes('closeBrandSwitcher'), 'closes the takeover immediately (instant feel)');
 });
 
+test('Brand switcher — toolbar button toggles the takeover (open <-> close), 3 exits', () => {
+  // RSI lock: full-window takeover has no backdrop to click outside, so the
+  // button toggles. Three intentional exits = button toggle, ✕ close, Esc.
+  const idx = RENDERER_JS.indexOf('function wireBrandSwitcher');
+  assert.ok(idx >= 0, 'wireBrandSwitcher exists');
+  const fn = RENDERER_JS.slice(idx, idx + 2000);
+  assert.ok(/brand-switcher-btn'\)\?\.addEventListener\('click'/.test(fn), 'button has a click handler');
+  assert.ok(fn.includes('closeBrandSwitcher') && fn.includes('openBrandSwitcher'), 'toggles open<->close');
+  assert.ok(fn.includes("contains('hidden')"), 'toggle decision keys on overlay visibility');
+  assert.ok(fn.includes("brand-switcher-close") && /Escape/.test(fn), 'also closes via ✕ and Esc');
+});
+
 test('Brand switcher — New Brand activates instantly + ingests async (zero friction)', () => {
   assert.ok(RENDERER_JS.includes('function addBrandFromForm'), 'add-brand fn exists');
   const idx = RENDERER_JS.indexOf('function addBrandFromForm');

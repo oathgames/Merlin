@@ -4439,7 +4439,15 @@ function addBrandFromForm() {
 }
 
 (function wireBrandSwitcher() {
-  document.getElementById('brand-switcher-btn')?.addEventListener('click', openBrandSwitcher);
+  // The brand switcher is a full-window takeover (like Wisdom/Palantir), so it
+  // has no distinct backdrop to "click outside" — a backdrop-click-to-close
+  // would be a footgun. Instead the toolbar button TOGGLES (open <-> close),
+  // giving three consistent, intentional exits: the button, the ✕, and Esc.
+  document.getElementById('brand-switcher-btn')?.addEventListener('click', () => {
+    const ov = document.getElementById('brand-switcher-overlay');
+    if (ov && !ov.classList.contains('hidden')) closeBrandSwitcher();
+    else openBrandSwitcher();
+  });
   document.getElementById('brand-switcher-close')?.addEventListener('click', closeBrandSwitcher);
   document.getElementById('brand-new-back')?.addEventListener('click', () => showBrandNewForm(false));
   document.getElementById('brand-new-add')?.addEventListener('click', addBrandFromForm);
@@ -5416,7 +5424,7 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   closeAgencyOverlay();
   // Palantir is a sibling sidebar — hide it when Magic opens (it is never
   // pinned, so no setSidebarPinned pairing is needed).
-  document.getElementById('palantir-panel').classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
   const panel = document.getElementById('magic-panel');
   panel.classList.toggle('hidden');
   // If we're hiding magic via toggle, also clear its pinned state so
@@ -10304,7 +10312,7 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   document.getElementById('wisdom-overlay').classList.add('hidden');
   closeAgencyOverlay();
   // Palantir is a sibling sidebar — hide it when Archive opens.
-  document.getElementById('palantir-panel').classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
   const panel = document.getElementById('archive-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) { showArchiveView(); }
@@ -10840,7 +10848,7 @@ function palantirRenderIdea(idea) {
 function palantirGenerateFromIdea(idea) {
   const seed = (idea && idea.generateSeed) ? idea.generateSeed : '';
   if (!seed) return;
-  document.getElementById('palantir-panel').classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
   closePalantirDetail();
   try {
     addUserBubble(seed);
@@ -10886,7 +10894,7 @@ async function loadPalantirIdeas(opts) {
       cta.innerHTML = palantirPortalHTML('connect', res.note || 'Connect TrendTrack to light up your idea wall.');
       const cbtn = document.getElementById('palantir-connect-btn');
       if (cbtn) cbtn.addEventListener('click', () => {
-        document.getElementById('palantir-panel').classList.add('hidden');
+        document.getElementById('palantir-panel')?.classList.add('hidden');
         const magicBtn = document.getElementById('magic-btn');
         if (magicBtn) magicBtn.click();
       });
@@ -10925,7 +10933,7 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
 });
 
 document.getElementById('palantir-close').addEventListener('click', () => {
-  document.getElementById('palantir-panel').classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
   closePalantirDetail();
 });
 
