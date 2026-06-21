@@ -39,11 +39,13 @@ Post-iOS 14.5, platform-reported ROAS over-credits paid channels by 20–60% dep
 
 ## Performance table rules
 
-Render only fields that exist in the JSON output. For `meta-insights`, the `campaign_summary` block has **exactly**:
+Render only fields that exist in the JSON output. `meta-insights` returns three pre-computed granularities from one pull — pick the tier the user asked for:
 
-`campaign_name`, `category`, `spend`, `revenue`, `roas`, `purchases`, `impressions`, `clicks`, `ctr`, `cost_per_purchase`, `ad_count`
+- `campaign_summary` (one row per campaign): `campaign_name`, `category`, `spend`, `revenue`, `roas`, `purchases`, `impressions`, `clicks`, `ctr`, `cost_per_purchase`, `ad_count`
+- `adset_summary` (one row per ad set): `adset_name`, `campaign_name`, `category`, `spend`, `revenue`, `roas`, `purchases`, `impressions`, `clicks`, `ctr`, `cost_per_purchase`, `ad_count`
+- `ads` (one row per ad): raw ad-level array
 
-Never invent columns like Status, Reach, Results, or Budget. Use pre-computed summaries verbatim — don't re-sum the `ads` array. One label per metric (`Cost/Purchase` OR `CPP`, not both). **Max 6 columns.** Campaign names are authoritative — never flatten "Merlin - Testing" to "merlin."
+Use `adset_summary` for budget decisions — the ad set is the meaningful-volume unit between campaign and ad (scale/kill happens at ad-set level). Each ad-set row carries its parent `campaign_name`, so you can group ad sets under campaigns. Never invent columns like Status, Reach, Results, or Budget. Use the pre-computed summaries verbatim — don't re-sum the `ads` array to build campaign or ad-set totals. One label per metric (`Cost/Purchase` OR `CPP`, not both). **Max 6 columns.** Campaign and ad-set names are authoritative — never flatten "Merlin - Testing" to "merlin."
 
 ## Data integrity rules
 

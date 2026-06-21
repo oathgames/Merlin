@@ -127,7 +127,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   // ── meta_review_performance ───────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_review_performance',
-    description: 'Read Meta ad performance — spend, CTR, ROAS, CPC, purchases. Read-only; does not change campaigns.',
+    description: 'Read Meta ad performance at campaign, ad-set, AND ad granularity — spend, CTR, ROAS, CPC, purchases. One pull returns pre-aggregated campaign_summary + adset_summary rollups plus the raw ad-level array, so you can quote any tier without summing rows yourself. Use adset_summary for budget decisions (ad set is the meaningful-volume unit). Read-only; does not change campaigns.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
