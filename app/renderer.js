@@ -4103,6 +4103,7 @@ async function loadBrands() {
       select.value = '__add__';
       select.dataset.lastValue = '';
       updateVertical('');
+      updateBrandSwitcherLabel();
       return;
     }
     const savedBrand = state?.activeBrand || '';
@@ -4130,6 +4131,7 @@ async function loadBrands() {
     }
     select.dataset.lastValue = selectedBrand?.name || brands[0]?.name || '';
     if (selectedBrand?.vertical) updateVertical(selectedBrand.vertical);
+    updateBrandSwitcherLabel();
   } catch (err) { console.warn('[brands]', err); }
 }
 
@@ -4235,6 +4237,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
 
   if (swapResult && swapResult.success) {
     e.target.dataset.lastValue = newBrand || '';
+    updateBrandSwitcherLabel();
     paintBrandThread(swapResult.bubbles);
     // Only show the divider if we actually switched between distinct
     // brands — selecting the same brand again shouldn't pollute the chat.
@@ -4258,7 +4261,10 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
     }
     if (prevBrand) e.target.value = prevBrand;
     // lastValue already matches prevBrand (we didn't advance it above), so
-    // no rollback needed here.
+    // no rollback needed here. Re-sync the brand-switcher button label so it
+    // reverts to prevBrand too (the optimistic tile-swap label showed the
+    // new brand; setting .value above fires no change event) — Gitar #279.
+    updateBrandSwitcherLabel();
     return;
   }
 
@@ -4293,6 +4299,174 @@ function getActiveBrandSelection() {
   const value = document.getElementById('brand-select')?.value || '';
   return value && value !== '__add__' ? value : '';
 }
+
+// ── Brand switcher takeover (button + full-window tile grid) ────────────
+// Replaces the cramped dropdown. Tiles drive the swap through the hidden
+// #brand-select (reusing its proven change-handler), so a tile click is a
+// 1-click instant swap. "+ New Brand" opens a Name/URL form whose Add activates
+// the brand instantly and runs ALL ingestion async (zero friction / zero wait).
+function brandInitials(name) {
+  const s = String(name || '').trim();
+  if (!s) return '?';
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return s.slice(0, 2).toUpperCase();
+}
+
+function updateBrandSwitcherLabel() {
+  const label = document.getElementById('brand-switcher-label');
+  if (!label) return;
+  const sel = document.getElementById('brand-select');
+  const active = getActiveBrandSelection();
+  if (!active) { label.textContent = 'Set up a brand'; return; }
+  let text = active;
+  try {
+    const opt = sel && sel.querySelector(`option[value="${CSS.escape(active)}"]`);
+    if (opt && opt.textContent) text = opt.textContent.trim();
+  } catch {}
+  label.textContent = text;
+}
+
+function closeBrandSwitcher() {
+  document.getElementById('brand-switcher-overlay')?.classList.add('hidden');
+}
+
+function showBrandNewForm(show) {
+  const grid = document.getElementById('brand-switcher-grid');
+  const form = document.getElementById('brand-new-form');
+  const err = document.getElementById('brand-new-error');
+  if (form) form.classList.toggle('hidden', !show);
+  if (grid) grid.style.display = show ? 'none' : '';
+  if (err) { err.style.display = 'none'; err.textContent = ''; }
+  if (show) {
+    const n = document.getElementById('brand-new-name');
+    if (n) { n.value = ''; try { n.focus(); } catch {} }
+    const u = document.getElementById('brand-new-url');
+    if (u) u.value = '';
+  }
+}
+
+async function openBrandSwitcher() {
+  const ov = document.getElementById('brand-switcher-overlay');
+  const grid = document.getElementById('brand-switcher-grid');
+  if (!ov || !grid) return;
+  // Close sibling surfaces so they don't render behind the takeover.
+  document.getElementById('magic-panel')?.classList.add('hidden');
+  document.getElementById('archive-panel')?.classList.add('hidden');
+  document.getElementById('wisdom-overlay')?.classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeAgencyOverlay();
+  showBrandNewForm(false);
+  ov.classList.remove('hidden');
+  grid.innerHTML = '<div class="palantir-portal"><div class="palantir-portal-orb">✦</div><div class="palantir-portal-sub">Loading your brands…</div></div>';
+
+  let brands = [];
+  try { brands = await merlin.getBrands(); } catch (e) { console.warn('[brand-switcher]', e); }
+  const active = getActiveBrandSelection();
+  grid.innerHTML = '';
+  (brands || []).forEach((b) => {
+    const tile = document.createElement('button');
+    tile.className = 'brand-tile' + (b.name === active ? ' active' : '');
+    tile.setAttribute('aria-label', 'Switch to ' + (b.displayName || b.name));
+    const av = document.createElement('div');
+    av.className = 'brand-tile-avatar';
+    av.textContent = brandInitials(b.displayName || b.name);
+    tile.appendChild(av);
+    const nm = document.createElement('div');
+    nm.className = 'brand-tile-name';
+    nm.textContent = b.displayName || b.name;
+    tile.appendChild(nm);
+    if (b.name === active) {
+      const badge = document.createElement('div');
+      badge.className = 'brand-tile-active-badge';
+      badge.textContent = 'Active';
+      tile.appendChild(badge);
+    }
+    tile.addEventListener('click', () => chooseBrandFromTakeover(b.name));
+    grid.appendChild(tile);
+  });
+  // "+ New Brand" tile — always last.
+  const addTile = document.createElement('button');
+  addTile.className = 'brand-tile brand-tile-add';
+  addTile.id = 'brand-tile-add';
+  addTile.setAttribute('aria-label', 'Add a new brand');
+  const aav = document.createElement('div');
+  aav.className = 'brand-tile-avatar';
+  aav.textContent = '+';
+  addTile.appendChild(aav);
+  const anm = document.createElement('div');
+  anm.className = 'brand-tile-name';
+  anm.textContent = 'New Brand';
+  addTile.appendChild(anm);
+  addTile.addEventListener('click', () => showBrandNewForm(true));
+  grid.appendChild(addTile);
+}
+
+// chooseBrandFromTakeover swaps brand in ONE click by driving the hidden
+// #brand-select's proven change handler, then closes the overlay immediately so
+// the swap feels instant (the handler's optimistic preseed paints right away).
+function chooseBrandFromTakeover(name) {
+  const sel = document.getElementById('brand-select');
+  if (!sel) return;
+  closeBrandSwitcher();
+  if (name === getActiveBrandSelection()) return; // already active — no-op
+  sel.value = name;
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  setTimeout(updateBrandSwitcherLabel, 0);
+}
+
+// addBrandFromForm validates Name + URL, then activates the brand INSTANTLY and
+// runs ALL ingestion async (scrape / guide / products / competitors) in the
+// background via the proven brand_activate-first flow — zero friction, zero
+// wait, zero mid-flow approvals (honors the Brand Onboarding Zero-Friction rule).
+function addBrandFromForm() {
+  const nameEl = document.getElementById('brand-new-name');
+  const urlEl = document.getElementById('brand-new-url');
+  const err = document.getElementById('brand-new-error');
+  const addBtn = document.getElementById('brand-new-add');
+  const name = (nameEl?.value || '').trim();
+  let url = (urlEl?.value || '').trim();
+  const fail = (msg) => { if (err) { err.textContent = msg; err.style.display = ''; } };
+  if (!name) { fail('Enter a brand name.'); try { nameEl.focus(); } catch {} return; }
+  if (!url) { fail('Enter your brand website.'); try { urlEl.focus(); } catch {} return; }
+  if (!/^https?:\/\//i.test(url)) url = 'https://' + url; // accept "gymshark.com"
+  try { new URL(url); } catch { fail('That website doesn’t look right. Try e.g. gymshark.com'); return; }
+  if (addBtn) addBtn.disabled = true;
+  closeBrandSwitcher();
+  const prompt = `Set up a new brand named "${name}" with the website ${url}. Activate it immediately so I can use it right now, then scrape the site, build the brand guide, import products, and find competitors in the background. Don't ask me any questions — use sensible defaults.`;
+  try { startBrandSetupConversation(prompt); } catch (e) { console.warn('[brand-new]', e); }
+  if (addBtn) setTimeout(() => { addBtn.disabled = false; }, 1500);
+}
+
+(function wireBrandSwitcher() {
+  // The brand switcher is a full-window takeover (like Wisdom/Palantir), so it
+  // has no distinct backdrop to "click outside" — a backdrop-click-to-close
+  // would be a footgun. Instead the toolbar button TOGGLES (open <-> close),
+  // giving three consistent, intentional exits: the button, the ✕, and Esc.
+  document.getElementById('brand-switcher-btn')?.addEventListener('click', () => {
+    const ov = document.getElementById('brand-switcher-overlay');
+    if (ov && !ov.classList.contains('hidden')) closeBrandSwitcher();
+    else openBrandSwitcher();
+  });
+  document.getElementById('brand-switcher-close')?.addEventListener('click', closeBrandSwitcher);
+  document.getElementById('brand-new-back')?.addEventListener('click', () => showBrandNewForm(false));
+  document.getElementById('brand-new-add')?.addEventListener('click', addBrandFromForm);
+  ['brand-new-name', 'brand-new-url'].forEach((id) => {
+    document.getElementById(id)?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); addBrandFromForm(); }
+    });
+  });
+  // Keep the button label in sync with any brand change (swap or programmatic).
+  document.getElementById('brand-select')?.addEventListener('change', () => setTimeout(updateBrandSwitcherLabel, 0));
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    const ov = document.getElementById('brand-switcher-overlay');
+    if (!ov || ov.classList.contains('hidden')) return;
+    const form = document.getElementById('brand-new-form');
+    if (form && !form.classList.contains('hidden')) { showBrandNewForm(false); return; }
+    closeBrandSwitcher();
+  });
+})();
 
 function getBrandRequiredMessage(platform) {
   if (platform === 'shopify') {
@@ -5250,7 +5424,7 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   closeAgencyOverlay();
   // Palantir is a sibling sidebar — hide it when Magic opens (it is never
   // pinned, so no setSidebarPinned pairing is needed).
-  document.getElementById('palantir-panel').classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
   const panel = document.getElementById('magic-panel');
   panel.classList.toggle('hidden');
   // If we're hiding magic via toggle, also clear its pinned state so
@@ -9388,6 +9562,7 @@ if (merlin && typeof merlin.onBrandActivated === 'function') {
         select.value = brand;
         select.dataset.lastValue = brand;
       }
+      updateBrandSwitcherLabel();
       // Vertical chip — read fresh from get-brands so the just-written
       // brand.md vertical lands in the chip without a race against the
       // host's filesystem write.
@@ -10137,7 +10312,7 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   document.getElementById('wisdom-overlay').classList.add('hidden');
   closeAgencyOverlay();
   // Palantir is a sibling sidebar — hide it when Archive opens.
-  document.getElementById('palantir-panel').classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
   const panel = document.getElementById('archive-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) { showArchiveView(); }
@@ -10563,9 +10738,184 @@ function palantirUseAsInspiration(ad) {
   }
 }
 
+// ── Palantir winning-ideas wall (TrendTrack-backed, auto-tailored) ──────
+// The PRIMARY Palantir surface: with zero typing, it pulls the top-performing
+// ads in the brand's niche and renders each as an idea card with a one-click
+// "Generate for my brand" bridge into the creative engine. The competitor-spy
+// (Foreplay) lives in the collapsed <details> below as the secondary path.
+let palantirIdeasLoading = false;
+
+// palantirEsc — local HTML-escaper so portal copy can't inject markup (the
+// strings are our own friendly notes, but escape defensively).
+function palantirEsc(s) {
+  const d = document.createElement('div');
+  d.textContent = String(s == null ? '' : s);
+  return d.innerHTML;
+}
+
+// palantirPortalHTML renders the sci-fi portal states (loading / empty /
+// connect / error) — a glowing orb the media buyer scries into.
+function palantirPortalHTML(kind, msg) {
+  const orb = '<div class="palantir-portal-orb">✦</div>';
+  if (kind === 'loading') {
+    return '<div class="palantir-portal">' + orb +
+      '<div class="palantir-portal-title">Scrying the ad library…</div>' +
+      '<div class="palantir-portal-sub">Finding the top-performing ads in your niche.</div></div>';
+  }
+  if (kind === 'connect') {
+    return '<div class="palantir-portal">' + orb +
+      '<div class="palantir-portal-title">Light up your idea wall</div>' +
+      '<div class="palantir-portal-sub">' + palantirEsc(msg) + '</div>' +
+      '<button class="palantir-portal-cta" id="palantir-connect-btn">Connect TrendTrack</button></div>';
+  }
+  const title = kind === 'error' ? 'Could not load the wall' : 'No ideas yet';
+  return '<div class="palantir-portal">' + orb +
+    '<div class="palantir-portal-title">' + title + '</div>' +
+    '<div class="palantir-portal-sub">' + palantirEsc(msg) + '</div></div>';
+}
+
+// palantirRenderIdea builds one idea card with a one-click generate bridge.
+function palantirRenderIdea(idea) {
+  const card = document.createElement('div');
+  card.className = 'palantir-idea';
+
+  const thumb = idea.thumbnailUrl || idea.mediaUrl;
+  if (thumb) {
+    const img = document.createElement('img');
+    img.className = 'palantir-idea-thumb';
+    img.loading = 'lazy';
+    img.alt = idea.hook || 'Winning ad';
+    img.src = thumb;
+    img.addEventListener('error', () => {
+      const fb = document.createElement('div');
+      fb.className = 'palantir-idea-thumb-fallback';
+      fb.textContent = '✦';
+      img.replaceWith(fb);
+    });
+    card.appendChild(img);
+  } else {
+    const fb = document.createElement('div');
+    fb.className = 'palantir-idea-thumb-fallback';
+    fb.textContent = '✦';
+    card.appendChild(fb);
+  }
+
+  const badges = document.createElement('div');
+  badges.className = 'palantir-idea-badges';
+  const win = document.createElement('span');
+  win.className = 'palantir-idea-badge';
+  win.textContent = 'Winning';
+  badges.appendChild(win);
+  if (idea.format) {
+    const f = document.createElement('span');
+    f.className = 'palantir-idea-badge format';
+    f.textContent = idea.format;
+    badges.appendChild(f);
+  }
+  card.appendChild(badges);
+
+  const body = document.createElement('div');
+  body.className = 'palantir-idea-body';
+  const hook = document.createElement('div');
+  hook.className = 'palantir-idea-hook';
+  hook.textContent = idea.hook || 'Winning ad';
+  body.appendChild(hook);
+  if (idea.whyWinning) {
+    const why = document.createElement('div');
+    why.className = 'palantir-idea-why';
+    why.textContent = idea.whyWinning;
+    body.appendChild(why);
+  }
+  if (idea.advertiser) {
+    const m = document.createElement('div');
+    m.className = 'palantir-idea-meta';
+    m.textContent = 'by ' + idea.advertiser;
+    body.appendChild(m);
+  }
+  const gen = document.createElement('button');
+  gen.className = 'palantir-idea-gen';
+  gen.textContent = '✦ Generate for my brand';
+  gen.addEventListener('click', () => palantirGenerateFromIdea(idea));
+  body.appendChild(gen);
+  card.appendChild(body);
+  return card;
+}
+
+// palantirGenerateFromIdea closes the wall and seeds the chat with the idea's
+// on-brand generation instruction (auto-sends), so Claude produces a fresh riff
+// using the brand's guide + products + persona via the creative engine. Mirrors
+// startBrandSetupConversation's send pattern.
+function palantirGenerateFromIdea(idea) {
+  const seed = (idea && idea.generateSeed) ? idea.generateSeed : '';
+  if (!seed) return;
+  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closePalantirDetail();
+  try {
+    addUserBubble(seed);
+    showTypingIndicator();
+    turnStartTime = Date.now();
+    turnTokens = 0;
+    sessionActive = true;
+    startTickingTimer();
+    merlin.sendMessage(seed);
+  } catch (e) { console.warn('[palantir-generate]', e); }
+}
+
+// loadPalantirIdeas auto-pulls the brand's niche winners and renders the wall.
+// No user input — the Go palantir-ideas action reads the active brand's niche.
+async function loadPalantirIdeas(opts) {
+  opts = opts || {};
+  if (palantirIdeasLoading) return;
+  palantirIdeasLoading = true;
+  const grid = document.getElementById('palantir-ideas-grid');
+  const cta = document.getElementById('palantir-connect-cta');
+  const niche = document.getElementById('palantir-niche');
+  if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
+  if (opts.reset && grid) grid.innerHTML = palantirPortalHTML('loading');
+
+  let res = null;
+  try {
+    const brand = (typeof getActiveBrandSelection === 'function' ? getActiveBrandSelection() : '') || '';
+    res = await merlin.palantirIdeas({ brand, batchCount: 24 });
+  } catch (err) { console.warn('[palantir-ideas]', err); }
+  palantirIdeasLoading = false;
+
+  if (!res || res.error) {
+    if (grid) grid.innerHTML = palantirPortalHTML('error', (res && res.error) || 'Could not load your idea wall. Try again in a moment.');
+    return;
+  }
+  if (niche) niche.textContent = res.niche || '';
+
+  if (res.needConnect) {
+    if (niche) niche.textContent = ''; // no "tailored to X" while disconnected
+    if (grid) grid.innerHTML = '';
+    if (cta) {
+      cta.style.display = '';
+      cta.innerHTML = palantirPortalHTML('connect', res.note || 'Connect TrendTrack to light up your idea wall.');
+      const cbtn = document.getElementById('palantir-connect-btn');
+      if (cbtn) cbtn.addEventListener('click', () => {
+        document.getElementById('palantir-panel')?.classList.add('hidden');
+        const magicBtn = document.getElementById('magic-btn');
+        if (magicBtn) magicBtn.click();
+      });
+    }
+    return;
+  }
+
+  const ideas = Array.isArray(res.ideas) ? res.ideas : [];
+  if (!grid) return;
+  if (ideas.length === 0) {
+    grid.innerHTML = palantirPortalHTML('empty', res.note || 'No standout ads in your niche right now. Try a competitor below.');
+    return;
+  }
+  grid.innerHTML = '';
+  for (const idea of ideas) grid.appendChild(palantirRenderIdea(idea));
+}
+
 document.getElementById('palantir-btn').addEventListener('click', () => {
-  // Mirror the archive/magic handlers: hide sibling sidebars and clear
-  // their pin state so the chat reflow stays in lockstep.
+  // Mirror the wisdom/archive/magic handlers: hide sibling surfaces + clear
+  // pin state so the chat reflow stays in lockstep. Palantir is now a
+  // FULL-FRAME takeover (toggled via .hidden = display:none in CSS).
   document.getElementById('magic-panel').classList.add('hidden');
   setSidebarPinned('magic', false);
   document.getElementById('archive-panel').classList.add('hidden');
@@ -10575,16 +10925,32 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
   const panel = document.getElementById('palantir-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) {
-    const search = document.getElementById('palantir-search');
-    if (search) { try { search.focus(); } catch (e) {} }
+    // Auto-load the brand-tailored winning-ideas wall — zero typing required.
+    loadPalantirIdeas({ reset: true });
   } else {
     closePalantirDetail();
   }
 });
 
 document.getElementById('palantir-close').addEventListener('click', () => {
-  document.getElementById('palantir-panel').classList.add('hidden');
+  document.getElementById('palantir-panel')?.classList.add('hidden');
   closePalantirDetail();
+});
+
+// Refresh the wall (re-pull the niche winners).
+(function () {
+  const r = document.getElementById('palantir-refresh');
+  if (r) r.addEventListener('click', () => loadPalantirIdeas({ reset: true }));
+})();
+
+// Esc closes the full-frame takeover (after the detail lightbox, if open).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const panel = document.getElementById('palantir-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  const detail = document.getElementById('palantir-detail');
+  if (detail && !detail.classList.contains('hidden')) return;
+  panel.classList.add('hidden');
 });
 
 document.getElementById('palantir-search-form').addEventListener('submit', (e) => {

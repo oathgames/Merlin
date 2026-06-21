@@ -57,9 +57,9 @@
       <svg class="theme-icon-moon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
     </button>
     <button id="agency-report-btn" class="magic-btn-inline" aria-label="Reports" data-tip="Reports" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></button>
+    <button id="palantir-btn" class="magic-btn-inline" aria-label="Palantir" data-tip="Palantir" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
     <button id="wisdom-header-btn" class="magic-btn-inline" aria-label="Wisdom" data-tip="Wisdom" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg></button>
     <button id="archive-btn" class="magic-btn-inline" aria-label="Archive" data-tip="Archive" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></button>
-    <button id="palantir-btn" class="magic-btn-inline" aria-label="Palantir" data-tip="Palantir — competitor ads" data-tip-pos="bottom"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
     <button id="magic-btn" class="magic-btn-inline" aria-label="Magic" data-tip="Magic" data-tip-pos="bottom">✦</button>
     <button id="btn-min" class="win-ctrl" aria-label="Minimize">&#x2013;</button>
     <button id="btn-max" class="win-ctrl" aria-label="Maximize">&#x25A1;</button>
@@ -70,9 +70,18 @@
 <!-- Performance Status Bar -->
 <div id="perf-bar" class="perf-bar">
   <div class="perf-bar-content" id="perf-bar-content">
-    <select id="brand-select" class="brand-select-perf">
+    <!-- #brand-select is kept as a hidden value-source: every brand-aware
+         read (getActiveBrandSelection + ~25 call sites) + the proven swap
+         change-handler still drive off it. The visible affordance is now the
+         brand-switcher button, which opens a full-window tile takeover and
+         dispatches the swap through this select. -->
+    <select id="brand-select" class="brand-select-perf" style="display:none" aria-hidden="true" tabindex="-1">
       <option value="">No brand</option>
     </select>
+    <button id="brand-switcher-btn" class="brand-switcher-btn" aria-haspopup="dialog" aria-label="Switch or add a brand">
+      <span id="brand-switcher-label" class="brand-switcher-label">No brand</span>
+      <svg class="brand-switcher-caret" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+    </button>
     <span id="perf-text" class="perf-text">Loading...</span>
     <div class="perf-period-group">
       <button class="perf-period-btn" data-days="1">1D</button>
@@ -307,47 +316,67 @@
   </div>
 </div>
 
-<!-- Palantir Panel — infinite-scroll wall of competitor ads (Foreplay-backed) -->
-<div id="palantir-panel" class="palantir-panel hidden">
-  <div class="magic-header">
-    <span class="magic-title">✦ Palantir</span>
-    <div class="magic-header-right">
-      <button id="palantir-close" class="magic-close" aria-label="Close Palantir panel">&times;</button>
+<!-- Palantir — full-window "winning ad ideas wall" (TrendTrack-backed, brand-
+     tailored, auto-loaded) + a secondary competitor-spy (Foreplay). Full-frame
+     takeover (mirrors the Wisdom overlay), opened from the toolbar Palantir
+     button which sits one slot right of Reports. -->
+<div id="palantir-panel" class="palantir-panel hidden" role="dialog" aria-modal="true" aria-label="Palantir">
+  <div class="palantir-topbar">
+    <div class="palantir-title-row">
+      <span class="magic-title palantir-title">✦ Palantir</span>
+      <span id="palantir-niche" class="palantir-niche" aria-live="polite"></span>
+    </div>
+    <div class="palantir-topbar-actions">
+      <button id="palantir-refresh" class="wisdom-icon-btn" aria-label="Refresh the idea wall" title="Refresh" data-tip="Refresh the wall" data-tip-pos="bottom">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/></svg>
+      </button>
+      <button id="palantir-close" class="magic-close" aria-label="Close Palantir">&times;</button>
     </div>
   </div>
   <div class="palantir-scroll">
-    <div class="palantir-controls">
-      <form id="palantir-search-form" class="palantir-search-form" autocomplete="off">
-        <input id="palantir-search" type="text" class="palantir-search" aria-label="Competitor website to spy on" placeholder="Competitor website — e.g. gymshark.com" spellcheck="false">
-        <button type="submit" class="palantir-search-btn" aria-label="Load competitor ads">→</button>
-      </form>
-      <div class="palantir-filter-row">
-        <select id="palantir-format" class="palantir-filter-select" aria-label="Ad format">
-          <option value="">All formats</option>
-          <option value="video">Video</option>
-          <option value="image">Image</option>
-        </select>
-        <select id="palantir-live" class="palantir-filter-select" aria-label="Ad status">
-          <option value="">Live + inactive</option>
-          <option value="true">Live only</option>
-          <option value="false">Inactive only</option>
-        </select>
-        <select id="palantir-order" class="palantir-filter-select" aria-label="Sort order">
-          <option value="">Newest first</option>
-          <option value="oldest">Oldest first</option>
-          <option value="longest_running">Longest-running</option>
-        </select>
+    <!-- PRIMARY: the auto-tailored winning-ideas wall (the portal) -->
+    <section id="palantir-ideas-section" class="palantir-ideas-section" aria-label="Winning ad ideas tailored to your brand">
+      <div id="palantir-connect-cta" class="palantir-connect-cta" style="display:none"></div>
+      <div id="palantir-ideas-status" class="palantir-ideas-status" aria-live="polite" style="display:none"></div>
+      <div id="palantir-ideas-grid" class="palantir-ideas-grid"></div>
+    </section>
+
+    <!-- SECONDARY: spy on a specific competitor (Foreplay global ad library) -->
+    <details id="palantir-spy" class="palantir-spy">
+      <summary class="palantir-spy-summary">Spy on a specific competitor</summary>
+      <div class="palantir-controls">
+        <form id="palantir-search-form" class="palantir-search-form" autocomplete="off">
+          <input id="palantir-search" type="text" class="palantir-search" aria-label="Competitor website to spy on" placeholder="Competitor website — e.g. gymshark.com" spellcheck="false">
+          <button type="submit" class="palantir-search-btn" aria-label="Load competitor ads">→</button>
+        </form>
+        <div class="palantir-filter-row">
+          <select id="palantir-format" class="palantir-filter-select" aria-label="Ad format">
+            <option value="">All formats</option>
+            <option value="video">Video</option>
+            <option value="image">Image</option>
+          </select>
+          <select id="palantir-live" class="palantir-filter-select" aria-label="Ad status">
+            <option value="">Live + inactive</option>
+            <option value="true">Live only</option>
+            <option value="false">Inactive only</option>
+          </select>
+          <select id="palantir-order" class="palantir-filter-select" aria-label="Sort order">
+            <option value="">Newest first</option>
+            <option value="oldest">Oldest first</option>
+            <option value="longest_running">Longest-running</option>
+          </select>
+        </div>
       </div>
-    </div>
-    <div id="palantir-brands" class="palantir-brands"></div>
-    <div id="palantir-grid" class="palantir-grid"></div>
-    <div id="palantir-sentinel" class="palantir-sentinel" aria-hidden="true"></div>
-    <div id="palantir-status" class="palantir-status" style="display:none"></div>
-    <div id="palantir-empty" class="palantir-empty">
-      <div class="empty-icon">✦</div>
-      <p>See what the competition is running</p>
-      <p class="palantir-empty-sub">Type a competitor's website above to scroll an infinite wall of their live ads — straight from the global ad library.</p>
-    </div>
+      <div id="palantir-brands" class="palantir-brands"></div>
+      <div id="palantir-grid" class="palantir-grid"></div>
+      <div id="palantir-sentinel" class="palantir-sentinel" aria-hidden="true"></div>
+      <div id="palantir-status" class="palantir-status" style="display:none"></div>
+      <div id="palantir-empty" class="palantir-empty" style="display:none">
+        <div class="empty-icon">🔭</div>
+        <p>See exactly what one competitor is running</p>
+        <p class="palantir-empty-sub">Type a competitor's website above to scroll an infinite wall of their live ads — straight from the global ad library.</p>
+      </div>
+    </details>
   </div>
 </div>
 
@@ -487,6 +516,33 @@
   </div>
   <div class="wisdom-scroll">
     <div id="wisdom-grid" class="wisdom-grid"></div>
+  </div>
+</div>
+
+<!-- Brand Switcher — full-window tile takeover (replaces the old dropdown).
+     One click on a tile swaps brand instantly; the "+ New Brand" tile opens a
+     minimal Name/URL form whose Add creates + switches instantly and runs all
+     data ingestion async in the background. -->
+<div id="brand-switcher-overlay" class="brand-switcher-overlay hidden" role="dialog" aria-modal="true" aria-label="Your brands">
+  <div class="brand-switcher-topbar">
+    <span class="magic-title">Your Brands</span>
+    <button id="brand-switcher-close" class="magic-close" aria-label="Close brand switcher">&times;</button>
+  </div>
+  <div class="brand-switcher-scroll">
+    <div id="brand-switcher-grid" class="brand-switcher-grid" aria-label="Pick a brand"></div>
+    <div id="brand-new-form" class="brand-new-form hidden">
+      <div class="brand-new-title">Add a new brand</div>
+      <label class="brand-new-label" for="brand-new-name">Brand name</label>
+      <input id="brand-new-name" type="text" class="brand-new-input" placeholder="e.g. Gymshark" autocomplete="off" spellcheck="false">
+      <label class="brand-new-label" for="brand-new-url">Brand website</label>
+      <input id="brand-new-url" type="text" class="brand-new-input" placeholder="e.g. gymshark.com" autocomplete="off" spellcheck="false">
+      <div id="brand-new-error" class="brand-new-error" role="alert" style="display:none"></div>
+      <div class="brand-new-actions">
+        <button id="brand-new-back" class="brand-new-btn brand-new-back">Back</button>
+        <button id="brand-new-add" class="brand-new-btn brand-new-add">Add brand</button>
+      </div>
+      <p class="brand-new-hint">Merlin activates your brand instantly, then scrapes your site, builds your brand guide, and finds competitors in the background — no waiting.</p>
+    </div>
   </div>
 </div>
 

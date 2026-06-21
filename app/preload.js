@@ -183,6 +183,8 @@ contextBridge.exposeInMainWorld('merlin', {
   refreshLiveAds: (brand) => ipcRenderer.invoke('refresh-live-ads', assertBrand(brand)),
   // Palantir tab — competitor ad feed (Foreplay-backed).
   palantirFeed: (opts) => ipcRenderer.invoke('palantir-feed', assertObj(opts)),
+  // Palantir — auto-discovery "winning ad ideas wall" (TrendTrack-backed).
+  palantirIdeas: (opts) => ipcRenderer.invoke('palantir-ideas', assertObj(opts)),
   palantirDownloadAd: (opts) => ipcRenderer.invoke('palantir-download-ad', assertObj(opts)),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', assertStr(folderPath, 500)),
   copyImage: (filePath) => ipcRenderer.invoke('copy-image', assertStr(filePath, 500)),

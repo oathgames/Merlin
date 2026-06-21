@@ -3071,6 +3071,77 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 .brand-select-perf:focus{border-color:var(--accent-border)}
 .brand-select-perf option{background:var(--bg-deep);color:var(--text);font-size:11px}
 
+/* ── Brand switcher button + full-window tile takeover ──────────── */
+.brand-switcher-btn {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); font-size: 10px; font-weight: 700;
+  cursor: pointer; max-width: 160px; flex-shrink: 0;
+  transition: border-color .15s, background .15s;
+}
+.brand-switcher-btn:hover { border-color: var(--accent-border); background: var(--surface-hover); }
+.brand-switcher-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brand-switcher-caret { opacity: .6; flex-shrink: 0; }
+
+.brand-switcher-overlay {
+  position: fixed; top: 40px; left: 0; right: 0; bottom: 0;
+  background: radial-gradient(1000px 500px at 50% -10%, rgba(139,92,246,.08), transparent 60%), var(--bg);
+  z-index: 210; display: flex; flex-direction: column;
+}
+.brand-switcher-overlay.hidden { display: none; }
+.brand-switcher-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 24px; flex-shrink: 0; border-bottom: 1px solid var(--border);
+}
+.brand-switcher-scroll {
+  flex: 1; overflow-y: auto; padding: 28px 24px;
+  scrollbar-width: thin; scrollbar-color: var(--hover-8) transparent;
+}
+.brand-switcher-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 14px; max-width: 920px; margin: 0 auto;
+}
+.brand-tile {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; padding: 24px 14px; min-height: 122px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 16px;
+  color: var(--text); cursor: pointer; text-align: center;
+  transition: border-color .18s, transform .12s, box-shadow .18s, background .18s;
+}
+.brand-tile:hover { border-color: rgba(139,92,246,.5); transform: translateY(-2px); box-shadow: 0 10px 30px rgba(139,92,246,.14); }
+.brand-tile.active { border-color: var(--accent); background: linear-gradient(135deg, rgba(139,92,246,.14), rgba(34,211,238,.05)); }
+.brand-tile-avatar {
+  width: 46px; height: 46px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 18px; font-weight: 700; color: #fff;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+}
+.brand-tile-name { font-size: 13px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.brand-tile-active-badge { font-size: 10px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: .04em; }
+.brand-tile-add { border-style: dashed; color: var(--text-muted); }
+.brand-tile-add .brand-tile-avatar { background: var(--hover-8); color: var(--accent); font-size: 26px; }
+.brand-tile-add:hover { color: var(--text); }
+
+.brand-new-form { max-width: 420px; margin: 0 auto; display: flex; flex-direction: column; gap: 6px; }
+.brand-new-form.hidden { display: none; }
+.brand-new-title { font-size: 16px; font-weight: 650; margin-bottom: 8px; color: var(--text); }
+.brand-new-label { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-top: 8px; }
+.brand-new-input {
+  padding: 11px 12px; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font-size: 14px; outline: none;
+}
+.brand-new-input:focus { border-color: var(--accent-border); }
+.brand-new-error { font-size: 12px; color: #f87171; padding: 2px 0; }
+.brand-new-actions { display: flex; gap: 10px; margin-top: 16px; }
+.brand-new-btn { flex: 1; padding: 11px; border-radius: 10px; border: none; font-size: 13px; font-weight: 650; cursor: pointer; }
+.brand-new-back { background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); }
+.brand-new-back:hover { color: var(--text); border-color: var(--accent-border); }
+.brand-new-add { background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff; }
+.brand-new-add:hover { filter: brightness(1.08); }
+.brand-new-add:disabled { opacity: .55; cursor: default; filter: none; }
+.brand-new-hint { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; margin-top: 14px; }
+
 /* Budget indicator */
 .budget-indicator{cursor:default;position:relative}
 .perf-updated{color:var(--text-dim);font-size:11px}
@@ -3609,22 +3680,135 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 }
 
 /* ── Palantir — competitor ad feed ───────────────────────────────── */
+/* Full-window takeover (mirrors .wisdom-fullframe), not the old 420px side
+   panel — Palantir is now a portal you scry into, full-frame. */
 .palantir-panel {
   position: fixed;
   top: 40px;
+  left: 0;
   right: 0;
   bottom: 0;
-  width: 420px;
-  background: var(--bg-deep);
-  border-left: 1px solid var(--border);
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(139,92,246,.10), transparent 60%),
+    radial-gradient(900px 500px at 110% 120%, rgba(34,211,238,.06), transparent 55%),
+    var(--bg);
   z-index: 60;
   overflow: hidden;
-  transform: translateX(100%);
-  transition: transform .3s cubic-bezier(.4,0,.2,1);
   display: flex;
   flex-direction: column;
 }
-.palantir-panel:not(.hidden) { transform: translateX(0); }
+.palantir-panel.hidden { display: none; }
+
+/* ── Palantir full-frame top bar ───────────────────────── */
+.palantir-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 16px 24px; flex-shrink: 0;
+  border-bottom: 1px solid rgba(139,92,246,.18);
+  background: linear-gradient(135deg, rgba(139,92,246,.10), rgba(34,211,238,.04));
+}
+.palantir-title-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.palantir-title { font-size: 15px; }
+.palantir-niche {
+  font-size: 12px; color: var(--text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.palantir-niche::before { content: "tailored to "; opacity: .7; }
+.palantir-niche:empty { display: none; }
+.palantir-topbar-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* ── The winning-ideas wall (the portal) ───────────────── */
+.palantir-ideas-section { padding: 4px 0 8px; }
+.palantir-ideas-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+}
+.palantir-idea {
+  display: flex; flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: default;
+  transition: border-color .18s, transform .12s, box-shadow .18s;
+}
+.palantir-idea:hover {
+  border-color: rgba(139,92,246,.5);
+  transform: translateY(-2px);
+  box-shadow: 0 10px 30px rgba(139,92,246,.14);
+}
+.palantir-idea-thumb {
+  width: 100%; aspect-ratio: 1 / 1; object-fit: cover;
+  background: var(--bg-deep); display: block;
+}
+.palantir-idea-thumb-fallback {
+  width: 100%; aspect-ratio: 1 / 1;
+  display: flex; align-items: center; justify-content: center;
+  background: radial-gradient(circle at 50% 40%, rgba(139,92,246,.18), var(--bg-deep) 70%);
+  color: var(--accent); font-size: 28px;
+}
+.palantir-idea-badges {
+  display: flex; gap: 6px; flex-wrap: wrap;
+  padding: 8px 10px 0;
+}
+.palantir-idea-badge {
+  font-size: 10px; font-weight: 600; letter-spacing: .02em;
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(34,211,238,.12); color: #22d3ee;
+  text-transform: uppercase;
+}
+.palantir-idea-badge.format { background: var(--hover-8); color: var(--text-muted); }
+.palantir-idea-body { padding: 8px 12px 12px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.palantir-idea-hook { font-size: 13px; font-weight: 650; color: var(--text); line-height: 1.3; }
+.palantir-idea-why { font-size: 11px; color: var(--accent); font-weight: 600; }
+.palantir-idea-meta { font-size: 11px; color: var(--text-muted); }
+.palantir-idea-gen {
+  margin-top: 6px; width: 100%;
+  padding: 9px 10px; border: none; border-radius: 10px;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9);
+  color: #fff; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: filter .15s, transform .1s;
+}
+.palantir-idea-gen:hover { filter: brightness(1.08); }
+.palantir-idea-gen:active { transform: scale(.98); }
+
+/* Sci-fi portal — loading + empty + connect states */
+.palantir-portal {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; gap: 12px; padding: 64px 24px; color: var(--text-muted);
+}
+.palantir-portal-orb {
+  width: 84px; height: 84px; border-radius: 50%;
+  background: radial-gradient(circle at 50% 45%, rgba(139,92,246,.55), rgba(34,211,238,.12) 60%, transparent 72%);
+  box-shadow: 0 0 48px rgba(139,92,246,.45), inset 0 0 28px rgba(34,211,238,.25);
+  display: flex; align-items: center; justify-content: center;
+  color: #cbb6ff; font-size: 30px;
+  animation: palantir-orb-pulse 2.4s ease-in-out infinite;
+}
+@keyframes palantir-orb-pulse {
+  0%,100% { transform: scale(1); opacity: .92; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+.palantir-portal-title { font-size: 15px; font-weight: 650; color: var(--text); }
+.palantir-portal-sub { font-size: 12.5px; max-width: 380px; line-height: 1.5; }
+.palantir-portal-cta {
+  margin-top: 6px; padding: 10px 18px; border: none; border-radius: 10px;
+  background: linear-gradient(135deg, #8b5cf6, #6d28d9); color: #fff;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.palantir-portal-cta:hover { filter: brightness(1.08); }
+.palantir-ideas-status { padding: 10px 4px; font-size: 12px; color: var(--text-muted); }
+
+/* Secondary: spy on a specific competitor (collapsed by default) */
+.palantir-spy { margin-top: 20px; border-top: 1px solid var(--border); padding-top: 12px; }
+.palantir-spy-summary {
+  cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--text-muted);
+  padding: 6px 2px; list-style: none; user-select: none;
+}
+.palantir-spy-summary::before { content: "🔭 "; }
+.palantir-spy-summary:hover { color: var(--text); }
+.palantir-spy[open] .palantir-spy-summary { color: var(--text); margin-bottom: 8px; }
+
 .palantir-scroll {
   flex: 1;
   overflow-y: auto;
@@ -3632,19 +3816,16 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
   scrollbar-gutter: stable;
   scrollbar-width: thin;
   scrollbar-color: var(--hover-8) transparent;
-  padding: 12px;
+  padding: 16px 24px 28px;
 }
-.palantir-scroll::-webkit-scrollbar { width: 4px; }
-.palantir-scroll::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 2px; }
+.palantir-scroll::-webkit-scrollbar { width: 6px; }
+.palantir-scroll::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 3px; }
 
+/* Competitor-spy controls now live inside the collapsed <details>, so no
+   panel-top sticky positioning. */
 .palantir-controls {
-  position: sticky;
-  top: -12px;
-  z-index: 2;
-  margin: -12px -12px 10px;
-  padding: 12px;
-  background: var(--bg-deep);
-  border-bottom: 1px solid var(--border);
+  margin: 0 0 12px;
+  padding: 0;
 }
 .palantir-search-form { display: flex; gap: 6px; }
 .palantir-search {
