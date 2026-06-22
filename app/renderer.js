@@ -4333,6 +4333,22 @@ function closeBrandSwitcher() {
   document.getElementById('brand-switcher-overlay')?.classList.add('hidden');
 }
 
+// anyModalTakeoverOpen reports whether a full-window modal takeover (brand
+// switcher, Wisdom, Palantir, Agency) is currently visible. Base-layer click
+// handlers (e.g. the perf-bar -> Revenue overlay opener) consult this so a click
+// can never open a window BEHIND an already-open takeover. The perf-bar sits
+// above the takeovers (perf-bar at top:0, takeovers start at top:40px), so
+// without this a stray bar click while a takeover is up would open the Revenue
+// overlay behind it. Handles both toggle styles: .hidden-class overlays and the
+// agency overlay (created-on-open / removed-on-close, so presence == open).
+// RSI 2026-06-22 (overlay click-fallthrough).
+function anyModalTakeoverOpen() {
+  return ['brand-switcher-overlay', 'wisdom-overlay', 'palantir-panel', 'agency-overlay'].some((id) => {
+    const el = document.getElementById(id);
+    return !!el && !el.classList.contains('hidden');
+  });
+}
+
 function showBrandNewForm(show) {
   const grid = document.getElementById('brand-switcher-grid');
   const form = document.getElementById('brand-new-form');
@@ -4445,7 +4461,14 @@ function addBrandFromForm() {
   // has no distinct backdrop to "click outside" — a backdrop-click-to-close
   // would be a footgun. Instead the toolbar button TOGGLES (open <-> close),
   // giving three consistent, intentional exits: the button, the ✕, and Esc.
-  document.getElementById('brand-switcher-btn')?.addEventListener('click', () => {
+  document.getElementById('brand-switcher-btn')?.addEventListener('click', (e) => {
+    // The brand-switcher button is a CHILD of #perf-bar, whose click handler
+    // opens the Revenue (stats) overlay. Without stopPropagation the
+    // open-switcher click ALSO bubbles to the perf-bar handler and opens the
+    // Revenue window BEHIND the takeover; clicking a brand tile then closes the
+    // takeover and reveals it (the reported bug). Stop the bubble at the source.
+    // RSI 2026-06-22 (overlay click-fallthrough).
+    e.stopPropagation();
     const ov = document.getElementById('brand-switcher-overlay');
     if (ov && !ov.classList.contains('hidden')) closeBrandSwitcher();
     else openBrandSwitcher();
@@ -10011,7 +10034,13 @@ function buildReportHtml(report, allBrands) {
 
 // Click bar to open revenue tracker (load brands first if needed)
 document.getElementById('perf-bar').addEventListener('click', async (e) => {
-  if (e.target.closest('.perf-period-group') || e.target.closest('#agency-report-btn') || e.target.closest('#brand-select') || e.target.id === 'brand-select') return;
+  // Don't open the Revenue overlay from a click that belongs to a control inside
+  // the bar (period toggle, agency report, brand select, brand-switcher button),
+  // or while a full-window modal takeover is open on top. The brand-switcher
+  // button bubbling here used to open the Revenue window behind the takeover.
+  // RSI 2026-06-22 (overlay click-fallthrough).
+  if (e.target.closest('.perf-period-group') || e.target.closest('#agency-report-btn') || e.target.closest('#brand-select') || e.target.id === 'brand-select' || e.target.closest('#brand-switcher-btn')) return;
+  if (anyModalTakeoverOpen()) return;
   const overlay = document.getElementById('stats-overlay');
   if (!overlay) return;
 
