@@ -6444,6 +6444,10 @@ function showPosthogConnectModal(activeBrand) {
           onConfirm: async (v2) => {
             const projectId = (v2 || '').trim();
             if (!projectId) { showModalError('Enter your Project ID'); throw new Error('validation'); }
+            // PostHog project ids are numeric; reject anything else so a pasted
+            // project NAME or URL fails here (in the modal) instead of silently
+            // 404-ing on the first insights pull (per Gitar review on PR #284).
+            if (!/^\d+$/.test(projectId)) { showModalError('Project ID must be a number (e.g. 12345), found in PostHog -> Settings -> Project'); throw new Error('validation'); }
             setTimeout(() => {
               showModal({
                 title: 'PostHog: Host (optional)',

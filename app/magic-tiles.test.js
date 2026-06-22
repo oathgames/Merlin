@@ -158,6 +158,11 @@ test('PostHog has a working connect path (custom 3-field modal + CONFIG_FIELD_AL
   // single-field API_KEY_PLATFORMS path.
   assert.match(renderer, /posthog:\s*showPosthogConnectModal/, 'posthog missing from CUSTOM_CONNECT_HANDLERS; the tile click would do nothing');
   assert.ok(renderer.includes('function showPosthogConnectModal('), 'showPosthogConnectModal not defined');
+  // The project-id step must reject non-numeric input in the modal (a pasted
+  // project name/URL would otherwise 404 on the first insights pull).
+  const modalStart = renderer.indexOf('function showPosthogConnectModal(');
+  const modalBlock = renderer.slice(modalStart, modalStart + 2500);
+  assert.match(modalBlock, /\/\^\\d\+\$\/\.test\(projectId\)/, 'showPosthogConnectModal must validate the Project ID is numeric');
   const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
   assert.ok(allowlistStart >= 0, 'CONFIG_FIELD_ALLOWLIST definition not found');
   const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
