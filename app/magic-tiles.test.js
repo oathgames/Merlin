@@ -118,3 +118,27 @@ test('Triple Whale + OpenAI Ads have a working connect path (API_KEY_PLATFORMS +
   assert.ok(oauthPersist.includes("'triplewhaleApiKey'"), 'triplewhaleApiKey not in oauth-persist allowlists');
   assert.ok(oauthPersist.includes("'openaiAdsApiKey'"), 'openaiAdsApiKey not in oauth-persist allowlists');
 });
+
+test('Microsoft Clarity brand tile exists, is brand-scope, and is on every vertical', () => {
+  const t = tiles.find((x) => x.platform === 'clarity');
+  assert.ok(t, 'clarity brand tile missing from index.html');
+  assert.equal(t.scope, 'brand', 'clarity must be data-scope="brand" (each brand connects its own Clarity project)');
+  assert.ok(!t.stubbed, 'clarity tile must not be stubbed; the connector ships (clarity.go)');
+  for (const v of verticals) {
+    assert.ok(v.includes('clarity'), 'a vertical is missing clarity (behavioral analytics applies to every web brand)');
+  }
+});
+
+test('Microsoft Clarity has a working connect path (API_KEY_PLATFORMS + CONFIG_FIELD_ALLOWLIST + vaulted)', () => {
+  assert.match(renderer, /clarity:\s*\{\s*key:\s*'clarityApiToken'/, 'clarity missing from API_KEY_PLATFORMS; the tile click would do nothing');
+  // The allowlist membership is the load-bearing fix: clarityApiToken was already
+  // in VAULT_SENSITIVE_KEYS but NOT in CONFIG_FIELD_ALLOWLIST, so a tile save would
+  // hit "Unknown config field" (the postscript-save-broken incident class).
+  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
+  assert.ok(allowlistStart >= 0, 'CONFIG_FIELD_ALLOWLIST definition not found');
+  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
+  assert.ok(allowlistBlock.includes("'clarityApiToken'"), 'clarityApiToken not in CONFIG_FIELD_ALLOWLIST; save-config-field would reject the paste with "Unknown config field"');
+  // And it must be vaulted (sensitive), never written to merlin-config.json in plaintext.
+  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
+  assert.ok(sensitiveBlock.includes("'clarityApiToken'"), 'clarityApiToken not in VAULT_SENSITIVE_KEYS; would be written to config in plaintext');
+});
