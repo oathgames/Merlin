@@ -43,3 +43,26 @@ test('anyModalTakeoverOpen covers every full-window takeover', () => {
     assert.ok(block.includes(`'${id}'`), `anyModalTakeoverOpen missing ${id}`);
   }
 });
+
+// closeOtherOverlays(keepId) is the single source of truth that replaced five
+// drifted hand-maintained sibling-hide lists (Wisdom didn't close Palantir,
+// Agency didn't close the brand switcher, no opener closed the brand switcher,
+// the Revenue opener didn't close the sidebars). Lock both the helper coverage
+// and that every opener delegates to it.
+test('closeOtherOverlays covers every overlay surface', () => {
+  const i = renderer.indexOf('function closeOtherOverlays(');
+  assert.ok(i >= 0, 'closeOtherOverlays() not defined');
+  const block = renderer.slice(i, i + 900);
+  for (const surface of ['magic', 'archive', 'wisdom-overlay', 'palantir-panel', 'closeBrandSwitcher', 'stats-overlay', 'closeAgencyOverlay']) {
+    assert.ok(block.includes(surface), `closeOtherOverlays missing ${surface}`);
+  }
+});
+
+test('every overlay opener delegates sibling-hiding to closeOtherOverlays', () => {
+  for (const keep of ['brand-switcher-overlay', 'wisdom-overlay', 'magic-panel', 'archive-panel', 'palantir-panel', 'agency-overlay', 'stats-overlay']) {
+    assert.ok(
+      renderer.includes(`closeOtherOverlays('${keep}')`),
+      `no opener calls closeOtherOverlays('${keep}'); that surface no longer closes its siblings (drift risk)`
+    );
+  }
+});

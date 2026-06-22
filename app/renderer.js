@@ -4349,6 +4349,29 @@ function anyModalTakeoverOpen() {
   });
 }
 
+// closeOtherOverlays(keepId) hides every full-window takeover + sidebar panel
+// EXCEPT keepId, using each surface's canonical close path (hideSidebarPanel
+// clears pin state, closeWisdom tears down its Esc handler, etc.). Single source
+// of truth that replaces five hand-maintained sibling-hide lists which had
+// drifted out of sync (RSI 2026-06-22): Wisdom didn't close Palantir, Agency
+// didn't close Palantir or the brand switcher, NO opener closed the brand
+// switcher (z-index 210, the highest), and the Revenue opener didn't close the
+// sidebars. The symptom in every case: opening surface B left surface A stacked
+// behind it, and closing B revealed A unexpectedly. Centralizing the list means
+// adding a new overlay updates one place, not six.
+function closeOtherOverlays(keepId) {
+  if (keepId !== 'magic-panel') hideSidebarPanel('magic');
+  if (keepId !== 'archive-panel') hideSidebarPanel('archive');
+  if (keepId !== 'wisdom-overlay') closeWisdom();
+  if (keepId !== 'palantir-panel') {
+    document.getElementById('palantir-panel')?.classList.add('hidden');
+    try { closePalantirDetail(); } catch {}
+  }
+  if (keepId !== 'brand-switcher-overlay') closeBrandSwitcher();
+  if (keepId !== 'stats-overlay') document.getElementById('stats-overlay')?.classList.add('hidden');
+  if (keepId !== 'agency-overlay') closeAgencyOverlay();
+}
+
 function showBrandNewForm(show) {
   const grid = document.getElementById('brand-switcher-grid');
   const form = document.getElementById('brand-new-form');
@@ -4368,12 +4391,8 @@ async function openBrandSwitcher() {
   const ov = document.getElementById('brand-switcher-overlay');
   const grid = document.getElementById('brand-switcher-grid');
   if (!ov || !grid) return;
-  // Close sibling surfaces so they don't render behind the takeover.
-  document.getElementById('magic-panel')?.classList.add('hidden');
-  document.getElementById('archive-panel')?.classList.add('hidden');
-  document.getElementById('wisdom-overlay')?.classList.add('hidden');
-  document.getElementById('palantir-panel')?.classList.add('hidden');
-  closeAgencyOverlay();
+  // Close every sibling surface so none renders behind the takeover.
+  closeOtherOverlays('brand-switcher-overlay');
   showBrandNewForm(false);
   ov.classList.remove('hidden');
   grid.innerHTML = '<div class="palantir-portal"><div class="palantir-portal-orb">✦</div><div class="palantir-portal-sub">Loading your brands…</div></div>';
@@ -5010,11 +5029,7 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
   // overlay. Same invariant as magic-btn / archive-btn handlers:
   // every sidebar `classList.add('hidden')` is paired with
   // setSidebarPinned(id, false).
-  document.getElementById('magic-panel').classList.add('hidden');
-  setSidebarPinned('magic', false);
-  document.getElementById('archive-panel').classList.add('hidden');
-  setSidebarPinned('archive', false);
-  closeAgencyOverlay();
+  closeOtherOverlays('wisdom-overlay');
   const overlay = document.getElementById('wisdom-overlay');
 
   if (!overlay.classList.contains('hidden')) {
@@ -5443,13 +5458,7 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   // sidebar pinned at a time) is enforced inside setSidebarPinned —
   // we explicitly clear archive here so opening magic doesn't inherit
   // a stranded pin.
-  document.getElementById('archive-panel').classList.add('hidden');
-  setSidebarPinned('archive', false);
-  document.getElementById('wisdom-overlay').classList.add('hidden');
-  closeAgencyOverlay();
-  // Palantir is a sibling sidebar — hide it when Magic opens (it is never
-  // pinned, so no setSidebarPinned pairing is needed).
-  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeOtherOverlays('magic-panel');
   const panel = document.getElementById('magic-panel');
   panel.classList.toggle('hidden');
   // If we're hiding magic via toggle, also clear its pinned state so
@@ -6755,7 +6764,7 @@ document.getElementById('referral-copy').addEventListener('click', () => {
         document.getElementById('referral-apply-row').style.display = 'none';
         await loadReferralInfo();
       } else {
-        status.textContent = (result && result.error) || 'Could not apply code';
+        status.textContent = (result && result.error) ? friendlyErrorPlain(result.error, 'referral') : 'Could not apply that code.';
         status.className = 'referral-apply-status error';
         btn.disabled = false;
         input.disabled = false;
@@ -7290,7 +7299,7 @@ async function activateSpell(template, row) {
     row.querySelector('.spell-meta').textContent = 'Saved — open Claude Code Desktop to start running';
     row.style.pointerEvents = '';
     const firstHint = (results.find(r => r.daemonError) || {}).daemonError;
-    if (firstHint) showSpellToast('Spell saved', firstHint, 'info');
+    if (firstHint) showSpellToast('Spell saved', friendlyErrorPlain(firstHint, 'spell'), 'info');
     setTimeout(() => loadSpells(), 2000);
   } else if (okCount > 0) {
     // Partial success — show both counts so the user knows some worked
@@ -7301,7 +7310,7 @@ async function activateSpell(template, row) {
     setTimeout(() => loadSpells(), 2000);
   } else {
     row.querySelector('.spell-dot').className = 'spell-dot dot-error';
-    row.querySelector('.spell-meta').textContent = `Failed — ${failed[0]?.error || 'tap to retry'}`;
+    row.querySelector('.spell-meta').textContent = failed[0]?.error ? friendlyErrorPlain(failed[0].error, 'spell') : 'Failed, tap to retry';
     row.style.pointerEvents = '';
     console.warn('[spell] All creations failed:', failed);
   }
@@ -9701,10 +9710,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
   // Escape/Tab document listeners are torn down cleanly.
   if (document.getElementById('agency-overlay')) { closeAgencyOverlay(); return; }
   // Close sibling surfaces so they don't render behind the modal.
-  hideSidebarPanel('magic');
-  hideSidebarPanel('archive');
-  document.getElementById('wisdom-overlay').classList.add('hidden');
-  document.getElementById('stats-overlay')?.classList.add('hidden');
+  closeOtherOverlays('agency-overlay');
 
   let brands = [];
   try { brands = await merlin.getBrands(); } catch {}
@@ -10058,6 +10064,9 @@ document.getElementById('perf-bar').addEventListener('click', async (e) => {
     document.getElementById('stats-brand-name').textContent = cleanBrand;
   }
 
+  // Hide any sibling surface (sidebars, takeovers) before showing Revenue, so
+  // closing Revenue never reveals a panel left open behind it. RSI 2026-06-22.
+  closeOtherOverlays('stats-overlay');
   overlay.classList.remove('hidden');
   // REGRESSION GUARD (2026-04-15, codex per-brand revenue audit — findings #3 + #5):
   // Use perfState.cache as the SINGLE source of truth for this overlay.
@@ -10403,12 +10412,7 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   // around an invisible 340px sidebar reservation. Symmetric pairing
   // is the invariant: every `panel.classList.add('hidden')` for a
   // sidebar gets a matching `setSidebarPinned(id, false)`.
-  document.getElementById('magic-panel').classList.add('hidden');
-  setSidebarPinned('magic', false);
-  document.getElementById('wisdom-overlay').classList.add('hidden');
-  closeAgencyOverlay();
-  // Palantir is a sibling sidebar — hide it when Archive opens.
-  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeOtherOverlays('archive-panel');
   const panel = document.getElementById('archive-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) { showArchiveView(); }
@@ -10977,7 +10981,7 @@ async function loadPalantirIdeas(opts) {
   palantirIdeasLoading = false;
 
   if (!res || res.error) {
-    if (grid) grid.innerHTML = palantirPortalHTML('error', (res && res.error) || 'Could not load your idea wall. Try again in a moment.');
+    if (grid) grid.innerHTML = palantirPortalHTML('error', (res && res.error) ? friendlyError(res.error, 'Palantir') : 'Could not load your idea wall. Try again in a moment.');
     return;
   }
   if (niche) niche.textContent = res.niche || '';
@@ -11012,12 +11016,7 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
   // Mirror the wisdom/archive/magic handlers: hide sibling surfaces + clear
   // pin state so the chat reflow stays in lockstep. Palantir is now a
   // FULL-FRAME takeover (toggled via .hidden = display:none in CSS).
-  document.getElementById('magic-panel').classList.add('hidden');
-  setSidebarPinned('magic', false);
-  document.getElementById('archive-panel').classList.add('hidden');
-  setSidebarPinned('archive', false);
-  document.getElementById('wisdom-overlay').classList.add('hidden');
-  closeAgencyOverlay();
+  closeOtherOverlays('palantir-panel');
   const panel = document.getElementById('palantir-panel');
   panel.classList.toggle('hidden');
   if (!panel.classList.contains('hidden')) {
@@ -13164,7 +13163,7 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
             refStatus.textContent = `✦ Applied — your friend gets the bonus when you subscribe`;
             refStatus.className = 'referral-apply-status success';
           } else if (refStatus) {
-            refStatus.textContent = (result && result.error) || 'Could not apply code — you can retry in the Share Merlin panel';
+            refStatus.textContent = (result && result.error) ? friendlyErrorPlain(result.error, 'referral') : 'Could not apply that code. You can retry in the Share Merlin panel.';
             refStatus.className = 'referral-apply-status error';
             await new Promise(r => setTimeout(r, 800));
           }

@@ -594,9 +594,9 @@
 </div>
 
 <!-- Inline modal (replaces native prompt/alert) -->
-<div id="merlin-modal" class="overlay hidden">
+<div id="merlin-modal" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="merlin-modal-title">
   <div class="merlin-modal-card">
-    <button id="merlin-modal-close" class="merlin-modal-close">&times;</button>
+    <button id="merlin-modal-close" class="merlin-modal-close" aria-label="Close">&times;</button>
     <div id="merlin-modal-title" class="merlin-modal-title"></div>
     <div id="merlin-modal-body" class="merlin-modal-body"></div>
     <input id="merlin-modal-input" class="merlin-modal-input hidden" type="text" aria-label="Modal input" placeholder="">
@@ -612,7 +612,7 @@
 <div id="help-nudge" class="help-nudge hidden">
   <span class="help-nudge-icon">✦</span>
   <span class="help-nudge-text">Stuck? Just ask Merlin — he can troubleshoot anything.</span>
-  <button id="help-nudge-close" class="help-nudge-close">&times;</button>
+  <button id="help-nudge-close" class="help-nudge-close" aria-label="Dismiss">&times;</button>
 </div>
 
 <!-- ToS acceptance (first launch only) -->
