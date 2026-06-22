@@ -1728,10 +1728,11 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'triplewhale' },
     input: {
-      action: z.enum(['summary', 'status', 'connect', 'verify']).describe('summary → pull NC-ROAS / NCPA / MER / blended ROAS for the window. status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey).'),
+      action: z.enum(['summary', 'status', 'connect', 'verify']).describe('summary → pull NC-ROAS / NCPA / MER / blended ROAS for the window. status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey; also pass shopDomain when the brand has no Shopify connected, so the shop scope is saved).'),
       brand: brandSchema.optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data for summary (default 30).'),
       apiKey: z.string().optional().describe('Personal API key to validate (required for verify). Minted at app.triplewhale.com/api-keys with the "Summary Page: Read" + "Pixel Attribution: Read" scopes.'),
+      shopDomain: z.string().optional().describe('The store\'s .myshopify.com domain (e.g. "apotheke.myshopify.com"). Pass this when the brand has NO Shopify connected so Triple Whale knows which shop to report on. On "verify" it is saved so every future pull (including scheduled ones) stays scoped automatically; on "summary" it scopes that one pull. If Shopify IS connected, omit it (the connected store is used automatically).'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
