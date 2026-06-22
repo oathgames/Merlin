@@ -7784,17 +7784,25 @@ ipcMain.handle('get-decrypted-config-path', (_, brandName) => {
   // Config is plaintext now — return path directly (no temp file needed)
   // For brand-specific, still need a merged temp file since brand tokens are in a separate file
   if (brandName) {
-    const cfg = readBrandConfig(brandName);
-    if (!cfg || Object.keys(cfg).length === 0) return null;
-    const tmpPath = path.join(os.tmpdir(), `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
-    fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-    // Clean up temp config aggressively — 10s grace for binary to read it, then delete
-    setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch (e) { console.error('[config-cleanup]', e.message); } }, 10000);
-    // Failsafe: also register for process exit cleanup
-    const cleanup = () => { try { fs.unlinkSync(tmpPath); } catch {} };
-    process.once('exit', cleanup);
-    setTimeout(() => { process.removeListener('exit', cleanup); }, 15000);
-    return tmpPath;
+    // A malformed brand (readBrandConfig -> assertBrandSafe throws) or a disk
+    // error (ENOSPC/EACCES on writeFileSync) must return null, not reject the
+    // renderer promise unhandled. RSI 2026-06-22.
+    try {
+      const cfg = readBrandConfig(brandName);
+      if (!cfg || Object.keys(cfg).length === 0) return null;
+      const tmpPath = path.join(os.tmpdir(), `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
+      fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+      // Clean up temp config aggressively: 10s grace for binary to read it, then delete
+      setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch (e) { console.error('[config-cleanup]', e.message); } }, 10000);
+      // Failsafe: also register for process exit cleanup
+      const cleanup = () => { try { fs.unlinkSync(tmpPath); } catch {} };
+      process.once('exit', cleanup);
+      setTimeout(() => { process.removeListener('exit', cleanup); }, 15000);
+      return tmpPath;
+    } catch (e) {
+      console.warn('[get-decrypted-config-path]', e && e.message);
+      return null;
+    }
   }
   const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   try { fs.accessSync(configPath); return configPath; } catch { return null; }
@@ -10091,9 +10099,24 @@ ipcMain.handle('palantir-download-ad', async (_, opts) => {
   });
 });
 
-// Read brands from filesystem
+// Read brands from filesystem. Short-TTL memo keyed on the brands-dir mtime:
+// get-brands is called from ~14 renderer sites (a brand switch fires loadBrands
+// at several of them near-simultaneously, plus the progress-bar refresh), and
+// each call is a synchronous readdir + per-brand brand.md parse + products count
+// + MD5 over all brands. Adding/removing a brand bumps the dir mtime (instant
+// refresh); a brand.md edit reflects within the 1.5s TTL. This collapses the
+// call burst on a brand switch into one filesystem pass. RSI 2026-06-22.
+let _brandsMemo = null;
+let _brandsMemoTime = 0;
+let _brandsMemoDirMtime = -1;
+const BRANDS_MEMO_MS = 1500;
 ipcMain.handle('get-brands', () => {
   const brandsDir = path.join(appRoot, 'assets', 'brands');
+  let _dirMtime = 0;
+  try { _dirMtime = fs.statSync(brandsDir).mtimeMs; } catch {}
+  if (_brandsMemo && _brandsMemoDirMtime === _dirMtime && (Date.now() - _brandsMemoTime) < BRANDS_MEMO_MS) {
+    return _brandsMemo;
+  }
   try {
     const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
       .filter(d => d.isDirectory() && d.name !== 'example')
@@ -10179,7 +10202,11 @@ ipcMain.handle('get-brands', () => {
       }
     } catch {}
 
-    return dirs.filter(b => b.status !== 'archived');
+    const out = dirs.filter(b => b.status !== 'archived');
+    _brandsMemo = out;
+    _brandsMemoTime = Date.now();
+    _brandsMemoDirMtime = _dirMtime;
+    return out;
   } catch { return []; }
 });
 
@@ -10233,8 +10260,12 @@ const WISDOM_CACHE_MS = 10 * 60 * 1000; // 10 minutes
 
 ipcMain.handle('get-wisdom', async (_, brandName, opts) => {
   if (!brandName) try { brandName = readState().activeBrand || ''; } catch {}
-  const cfg = brandName ? readBrandConfig(brandName) : readConfig();
-  const vertical = cfg.vertical || 'general';
+  // readBrandConfig -> assertBrandSafe throws on a malformed brand; default to
+  // the global config so a bad brand can't reject this handler unhandled (this
+  // call previously sat above the try below). RSI 2026-06-22.
+  let cfg;
+  try { cfg = brandName ? readBrandConfig(brandName) : readConfig(); } catch { cfg = readConfig(); }
+  const vertical = (cfg && cfg.vertical) || 'general';
 
   const force = opts && opts.force === true;
   if (!force && _wisdomCache[vertical] && (Date.now() - (_wisdomCacheTime[vertical] || 0)) < WISDOM_CACHE_MS) {
@@ -10345,9 +10376,16 @@ ipcMain.handle('get-mobile-qr', async () => {
 
 ipcMain.handle('get-relay-state', () => relayClient.getState());
 ipcMain.handle('rotate-relay-pairing', async () => {
-  const pair = await relayClient.rotatePairing();
-  const qrDataUri = await generateQRDataUri(pair.pairUrl);
-  return { qrDataUri, pwaUrl: pair.pairUrl, sessionId: pair.sessionId, expiresInSec: pair.expiresInSec };
+  // A relay outage must not reject the "Refresh pairing" button's renderer
+  // promise unhandled. RSI 2026-06-22.
+  try {
+    const pair = await relayClient.rotatePairing();
+    const qrDataUri = await generateQRDataUri(pair.pairUrl);
+    return { qrDataUri, pwaUrl: pair.pairUrl, sessionId: pair.sessionId, expiresInSec: pair.expiresInSec };
+  } catch (e) {
+    console.warn('[rotate-relay-pairing]', e && e.message);
+    return { error: 'Could not refresh the pairing code. Check your connection and try again.' };
+  }
 });
 
 // REGRESSION GUARD (2026-04-23, codex audit session/security-quick-wins):
