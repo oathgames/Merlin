@@ -6891,9 +6891,17 @@ async function autoSeedMorningBriefing() {
 }
 
 async function loadSpells() {
-  let spells;
+  // Brand-switch race guard (mirrors loadConnections): a slow listSpells for
+  // brand A must not paint A's spells into B's open Spellbook on a fast A->B
+  // switch. Bail after each await if the sequence moved or the brand changed.
+  // RSI 2026-06-22.
+  const mySeq = (window._spellLoadSeq = (window._spellLoadSeq || 0) + 1);
   const activeBrand = document.getElementById('brand-select')?.value || '';
+  const spellLoadStale = () => window._spellLoadSeq !== mySeq
+    || (document.getElementById('brand-select')?.value || '') !== activeBrand;
+  let spells;
   try { spells = await merlin.listSpells(activeBrand); } catch { spells = []; }
+  if (spellLoadStale()) return;
   const list = document.getElementById('spellbook-list');
   const warning = document.getElementById('spellbook-warning');
 
@@ -6906,6 +6914,7 @@ async function loadSpells() {
   } else {
     warning.style.display = 'none';
   }
+  if (spellLoadStale()) return;
 
   list.innerHTML = '';
 
@@ -7924,6 +7933,12 @@ function removeTypingIndicator() {
 }
 
 function sendMessage() {
+  // Double-submit guard: Enter held, or Enter+click before the input gets
+  // disabled, can call this several times and fire multiple real agent turns.
+  // sessionActive is set synchronously below (before this returns) and cleared
+  // by the existing finalize/error lifecycle, so re-entry while a turn is in
+  // flight is a safe no-op that reuses managed state. RSI 2026-06-22.
+  if (isStreaming || sessionActive) return;
   const rawText = input.value.trim();
   const attachments = (typeof _getAttachmentsForSend === 'function') ? _getAttachmentsForSend() : [];
   // Allow sending with attachments-only (no typed text) — common pattern when
@@ -11331,7 +11346,16 @@ async function loadArchive(opts = {}) {
   if (typeFilter === 'live') {
     // Show live ads instead of archive items
     const activeBrand = activeBrandRaw || null;
-    let ads = await merlin.getLiveAds(activeBrand);
+    // Guard the IPC like the sibling branches (swipes/all): a rejected or hung
+    // get-live-ads must not skip the `loading` clear (stuck spinner) or escape
+    // as an unhandled rejection; fall back to an empty state. RSI 2026-06-22.
+    let ads = [];
+    try {
+      ads = await merlin.getLiveAds(activeBrand);
+    } catch (e) {
+      console.warn('[archive] getLiveAds failed', e);
+      ads = [];
+    }
     if (isStale()) return;
     loading.style.display = 'none';
 
