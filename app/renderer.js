@@ -11081,9 +11081,11 @@ function tsNum(n) {
   return String(Math.round(n));
 }
 
+let tsReqSeq = 0; // monotonic request id — drops stale responses when the window is toggled rapidly (Gitar #287)
 async function loadTruesightData() {
   const panel = document.getElementById('truesight-panel');
   if (!panel || panel.classList.contains('hidden')) return;
+  const myReq = ++tsReqSeq;
   const funnel = document.getElementById('truesight-funnel');
   const cta = document.getElementById('truesight-connect-cta');
   const status = document.getElementById('truesight-status');
@@ -11098,6 +11100,7 @@ async function loadTruesightData() {
   } catch (e) {
     res = { error: 'Could not load your funnel just now. Please try again.' };
   }
+  if (myReq !== tsReqSeq) return; // a newer window/refresh request superseded this one — don't render stale data
   if (status) status.style.display = 'none';
   if (!res || typeof res !== 'object') res = { error: 'Could not load your funnel just now.' };
   if (periodLabel) periodLabel.textContent = res.period_label || '';

@@ -2177,6 +2177,14 @@ test('Truesight — 7/30/90 window toggle defaults to 7 days', () => {
   assert.ok(RENDERER_JS.includes('let tsWindowDays = 7'), 'default window is 7 days');
 });
 
+test('Truesight — concurrent window toggles drop stale responses (req-seq token)', () => {
+  assert.ok(RENDERER_JS.includes('let tsReqSeq = 0'), 'request-sequence token declared');
+  const idx = RENDERER_JS.indexOf('async function loadTruesightData');
+  const fn = RENDERER_JS.slice(idx, idx + 1200);
+  assert.ok(fn.includes('const myReq = ++tsReqSeq'), 'captures a request id before the await');
+  assert.ok(fn.includes('if (myReq !== tsReqSeq) return'), 'bails before render if a newer request superseded this one');
+});
+
 test('Truesight — RSI hardening: non-finite guard, focus restore, attr-escaped key', () => {
   assert.ok(RENDERER_JS.includes('Number.isFinite(n)'), 'tsNum guards non-finite (no Infinity/NaN in the DOM)');
   const idx = RENDERER_JS.indexOf("getElementById('truesight-btn')?.addEventListener");
