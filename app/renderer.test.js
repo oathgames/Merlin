@@ -2176,3 +2176,12 @@ test('Truesight — 7/30/90 window toggle defaults to 7 days', () => {
     'window toggle buttons exist');
   assert.ok(RENDERER_JS.includes('let tsWindowDays = 7'), 'default window is 7 days');
 });
+
+test('Truesight — RSI hardening: non-finite guard, focus restore, attr-escaped key', () => {
+  assert.ok(RENDERER_JS.includes('Number.isFinite(n)'), 'tsNum guards non-finite (no Infinity/NaN in the DOM)');
+  const idx = RENDERER_JS.indexOf("getElementById('truesight-btn')?.addEventListener");
+  const fn = RENDERER_JS.slice(idx, idx + 600);
+  assert.ok(fn.includes("getElementById('truesight-close')?.focus()"), 'focus moves into the modal on open');
+  assert.ok(RENDERER_JS.includes("getElementById('truesight-btn')?.focus()"), 'focus restores to the opener on close');
+  assert.ok(RENDERER_JS.includes("replace(/\"/g, '&quot;')"), 'data-key attribute sink is quote-escaped');
+});

@@ -11073,6 +11073,7 @@ let tsWindowDays = 7;
 // tsNum renders a compact human number (1234 -> "1.2K", 1.5e6 -> "1.5M").
 function tsNum(n) {
   n = Number(n) || 0;
+  if (!Number.isFinite(n)) n = 0; // never leak "Infinity"/"NaN" into the DOM
   const abs = Math.abs(n);
   if (abs >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
   if (abs >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
@@ -11134,7 +11135,11 @@ function renderTruesightFunnel(data) {
   stages.forEach((stage, i) => {
     const avail = !!stage.available;
     const pct = (avail && maxVal > 0) ? Math.max(6, (stage.value / maxVal) * 100) : 0;
-    html += '<div class="ts-stage' + (avail ? '' : ' unavailable') + '" data-key="' + escapeHtml(stage.key || '') + '">';
+    // stage.key lands in an HTML attribute; escapeHtml doesn't escape quotes,
+    // so also neutralize them (defense-in-depth — keys are fixed today, but the
+    // renderer must be safe regardless of payload source).
+    const keyAttr = escapeHtml(stage.key || '').replace(/"/g, '&quot;');
+    html += '<div class="ts-stage' + (avail ? '' : ' unavailable') + '" data-key="' + keyAttr + '">';
     html += '<div class="ts-stage-head"><span class="ts-stage-label">' + escapeHtml(stage.label || '') + '</span>';
     if (avail) {
       html += '<span class="ts-stage-num">' + tsNum(stage.value) + '</span>';
@@ -11173,11 +11178,18 @@ document.getElementById('truesight-btn')?.addEventListener('click', () => {
   const panel = document.getElementById('truesight-panel');
   if (!panel) return;
   panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) loadTruesightData();
+  if (!panel.classList.contains('hidden')) {
+    loadTruesightData();
+    // a11y: move focus into the aria-modal takeover so keyboard/SR users land inside it.
+    document.getElementById('truesight-close')?.focus();
+  } else {
+    document.getElementById('truesight-btn')?.focus();
+  }
 });
 
 document.getElementById('truesight-close')?.addEventListener('click', () => {
   document.getElementById('truesight-panel')?.classList.add('hidden');
+  document.getElementById('truesight-btn')?.focus(); // a11y: restore focus to the opener
 });
 
 (function wireTruesightControls() {
@@ -11200,7 +11212,10 @@ document.getElementById('truesight-close')?.addEventListener('click', () => {
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const panel = document.getElementById('truesight-panel');
-  if (panel && !panel.classList.contains('hidden')) panel.classList.add('hidden');
+  if (panel && !panel.classList.contains('hidden')) {
+    panel.classList.add('hidden');
+    document.getElementById('truesight-btn')?.focus(); // a11y: restore focus to the opener
+  }
 });
 
 document.getElementById('palantir-search-form').addEventListener('submit', (e) => {
