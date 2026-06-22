@@ -1773,23 +1773,23 @@ test('Palantir — tab button is wired and toggles the panel', () => {
   const idx = RENDERER_JS.indexOf("getElementById('palantir-btn').addEventListener");
   const handler = RENDERER_JS.slice(idx, idx + 700);
   assert.ok(handler.includes("getElementById('palantir-panel')"), 'handler toggles the panel');
-  // Opening Palantir must hide the sibling sidebars (and clear their pins).
-  assert.ok(handler.includes("'magic-panel'") && handler.includes("'archive-panel'"),
-    'opening Palantir hides magic + archive sidebars');
-  assert.ok(handler.includes("setSidebarPinned('magic', false)") && handler.includes("setSidebarPinned('archive', false)"),
-    'sibling pins are cleared so the chat reflow stays in lockstep');
+  // Opening Palantir must hide every sibling surface (and clear sidebar pins).
+  // Centralized in closeOtherOverlays (RSI 2026-06-22), which clears pins via
+  // hideSidebarPanel; see overlay-fallthrough.test.js for helper coverage.
+  assert.ok(handler.includes("closeOtherOverlays('palantir-panel')"),
+    'opening Palantir delegates sibling-hiding to closeOtherOverlays');
 });
 
 test('Palantir — archive and magic handlers hide the Palantir panel', () => {
-  // The symmetric invariant: every sidebar handler hides the others.
+  // The symmetric invariant: every sidebar handler hides the others, now
+  // centralized via closeOtherOverlays (RSI 2026-06-22) instead of per-handler
+  // explicit hides, which had drifted (the helper hides palantir-panel).
   const archiveIdx = RENDERER_JS.indexOf("getElementById('archive-btn').addEventListener");
   const magicIdx = RENDERER_JS.indexOf("getElementById('magic-btn').addEventListener");
-  // Slice generously — both handlers open with a multi-line REGRESSION
-  // GUARD comment before the cross-panel hides.
-  assert.ok(RENDERER_JS.slice(archiveIdx, archiveIdx + 1600).includes("'palantir-panel'"),
-    'archive-btn handler hides the Palantir panel');
-  assert.ok(RENDERER_JS.slice(magicIdx, magicIdx + 1600).includes("'palantir-panel'"),
-    'magic-btn handler hides the Palantir panel');
+  assert.ok(RENDERER_JS.slice(archiveIdx, archiveIdx + 1600).includes("closeOtherOverlays('archive-panel')"),
+    'archive-btn handler closes siblings (incl. Palantir) via closeOtherOverlays');
+  assert.ok(RENDERER_JS.slice(magicIdx, magicIdx + 1600).includes("closeOtherOverlays('magic-panel')"),
+    'magic-btn handler closes siblings (incl. Palantir) via closeOtherOverlays');
 });
 
 test('Palantir — infinite scroll uses an IntersectionObserver on the sentinel', () => {

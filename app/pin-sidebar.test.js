@@ -366,31 +366,31 @@ test('every inline magic/archive panel hide is paired with setSidebarPinned(fals
 });
 
 test('cross-panel buttons clear the OTHER sidebar pin when force-hiding it', () => {
-  // REGRESSION GUARD (2026-05-05, pin-sidebar bugfix — cross-panel-hide):
+  // REGRESSION GUARD (2026-05-05, pin-sidebar bugfix; updated 2026-06-22 RSI):
   //
-  // magic-btn forcibly hides the archive panel (and vice versa) so the
-  // active panel surface is clean. Pre-fix this left the archive's pin
-  // body class set even though the panel was hidden — chat stayed
-  // reflowed for an invisible sidebar. magic-btn click → assert
-  // archive's setSidebarPinned(false) call lives in the same handler
-  // (and vice versa for archive-btn).
-  const magicBtnIdx = rendererSrc.indexOf("getElementById('magic-btn').addEventListener");
-  assert.ok(magicBtnIdx > 0, 'magic-btn click handler must exist');
-  const magicBtnRegion = rendererSrc.slice(magicBtnIdx, magicBtnIdx + 2500);
-  assert.match(magicBtnRegion, /setSidebarPinned\(\s*['"]archive['"]\s*,\s*false\s*\)/,
-    'magic-btn handler MUST call setSidebarPinned("archive", false) when force-hiding the archive panel');
+  // Force-hiding a sibling sidebar must ALSO clear its pin, else the chat stays
+  // reflowed around an invisible sidebar. The per-handler setSidebarPinned calls
+  // were centralized into closeOtherOverlays -> hideSidebarPanel (which clears
+  // the pin). Assert (a) every opener delegates to closeOtherOverlays, (b) the
+  // helper force-hides both sidebars via hideSidebarPanel, and (c)
+  // hideSidebarPanel clears the pin. The invariant is preserved, now in one place.
+  for (const [btn, keep] of [['magic-btn', 'magic-panel'], ['archive-btn', 'archive-panel'], ['wisdom-header-btn', 'wisdom-overlay']]) {
+    const idx = rendererSrc.indexOf(`getElementById('${btn}').addEventListener`);
+    assert.ok(idx > 0, `${btn} click handler must exist`);
+    const region = rendererSrc.slice(idx, idx + 2500);
+    assert.ok(region.includes(`closeOtherOverlays('${keep}')`),
+      `${btn} handler MUST delegate sibling-hiding to closeOtherOverlays('${keep}')`);
+  }
 
-  const archiveBtnIdx = rendererSrc.indexOf("getElementById('archive-btn').addEventListener");
-  assert.ok(archiveBtnIdx > 0, 'archive-btn click handler must exist');
-  const archiveBtnRegion = rendererSrc.slice(archiveBtnIdx, archiveBtnIdx + 2500);
-  assert.match(archiveBtnRegion, /setSidebarPinned\(\s*['"]magic['"]\s*,\s*false\s*\)/,
-    'archive-btn handler MUST call setSidebarPinned("magic", false) when force-hiding the magic panel');
+  const cooIdx = rendererSrc.indexOf('function closeOtherOverlays(');
+  assert.ok(cooIdx > 0, 'closeOtherOverlays must exist');
+  const cooRegion = rendererSrc.slice(cooIdx, cooIdx + 900);
+  assert.match(cooRegion, /hideSidebarPanel\('magic'\)/, 'closeOtherOverlays must force-hide the magic sidebar');
+  assert.match(cooRegion, /hideSidebarPanel\('archive'\)/, 'closeOtherOverlays must force-hide the archive sidebar');
 
-  const wisdomBtnIdx = rendererSrc.indexOf("getElementById('wisdom-header-btn').addEventListener");
-  assert.ok(wisdomBtnIdx > 0, 'wisdom-header-btn click handler must exist');
-  const wisdomBtnRegion = rendererSrc.slice(wisdomBtnIdx, wisdomBtnIdx + 2500);
-  assert.match(wisdomBtnRegion, /setSidebarPinned\(\s*['"]magic['"]\s*,\s*false\s*\)/,
-    'wisdom-header-btn handler MUST clear magic pin when force-hiding the magic panel');
-  assert.match(wisdomBtnRegion, /setSidebarPinned\(\s*['"]archive['"]\s*,\s*false\s*\)/,
-    'wisdom-header-btn handler MUST clear archive pin when force-hiding the archive panel');
+  const hspIdx = rendererSrc.indexOf('function hideSidebarPanel(');
+  assert.ok(hspIdx > 0, 'hideSidebarPanel must exist');
+  const hspRegion = rendererSrc.slice(hspIdx, hspIdx + 300);
+  assert.match(hspRegion, /setSidebarPinned\(\s*id\s*,\s*false\s*\)/,
+    'hideSidebarPanel MUST clear the pin when hiding a sidebar (the cross-panel-hide invariant)');
 });
