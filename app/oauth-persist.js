@@ -142,6 +142,13 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // tile. Mirrored in VAULT_SENSITIVE_KEYS so the key is vaulted, never
   // written to merlin-config.json in plaintext.
   'triplewhaleApiKey',
+  // Microsoft Clarity Data Export API token (brand-scoped). Saved by the masked
+  // API_KEY_PLATFORMS tile (renderer.js). Already in VAULT_SENSITIVE_KEYS so it
+  // is vaulted, never plaintext; it was previously absent HERE because Clarity
+  // only connected via the agent (clarity-verify); adding the tile requires it
+  // in this allowlist or save-config-field rejects the paste with "Unknown
+  // config field" (the postscript-save-broken incident class above).
+  'clarityApiToken',
   // Rokt BYOK reporting credentials (App ID / App Secret / Account ID), saved
   // by the 3-step Rokt connect modal. All three mirrored in VAULT_SENSITIVE_KEYS.
   'roktAppId', 'roktAppSecret', 'roktAccountId',
