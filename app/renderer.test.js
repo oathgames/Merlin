@@ -2109,3 +2109,70 @@ test('Rule 6 — Claude sign-in bubble routes error through friendlyErrorPlain',
   assert.ok(RENDERER_JS.includes("friendlyErrorPlain(result.error, 'Claude sign-in')"),
     'sign-in failure must route through friendlyErrorPlain');
 });
+
+// ── Truesight funnel view ───────────────────────────────────────────
+test('Truesight — index.html has the button, panel, and funnel container', () => {
+  assert.ok(INDEX_HTML.includes('id="truesight-btn"'), 'toolbar button exists');
+  assert.ok(INDEX_HTML.includes('id="truesight-panel"'), 'full-window panel exists');
+  assert.ok(INDEX_HTML.includes('id="truesight-funnel"'), 'funnel container exists');
+  assert.ok(INDEX_HTML.includes('id="truesight-connect-cta"'), 'connect CTA container exists');
+});
+
+test('Truesight — button sits one slot to the RIGHT of Palantir', () => {
+  const palantir = INDEX_HTML.indexOf('id="palantir-btn"');
+  const truesight = INDEX_HTML.indexOf('id="truesight-btn"');
+  const wisdom = INDEX_HTML.indexOf('id="wisdom-header-btn"');
+  assert.ok(palantir > 0 && truesight > 0 && wisdom > 0, 'all three buttons exist');
+  assert.ok(palantir < truesight && truesight < wisdom, 'order must be Palantir → Truesight → Wisdom');
+});
+
+test('Truesight — panel is a full-window takeover (fixed, top:40px, z-index:60)', () => {
+  assert.ok(/\.truesight-panel\s*\{[^}]*position:\s*fixed/.test(STYLE_CSS), 'panel is position:fixed');
+  assert.ok(/\.truesight-panel\s*\{[^}]*top:\s*40px/.test(STYLE_CSS), 'panel sits below the titlebar');
+  assert.ok(/\.truesight-panel\s*\{[^}]*z-index:\s*60/.test(STYLE_CSS), 'panel z-index is 60 (matches Palantir layer)');
+  assert.ok(/\.truesight-panel\.hidden\s*\{\s*display:\s*none/.test(STYLE_CSS), '.hidden toggles display:none');
+});
+
+test('Truesight — opening the panel loads via the IPC bridge + closeOtherOverlays', () => {
+  const idx = RENDERER_JS.indexOf("getElementById('truesight-btn')");
+  assert.ok(idx > 0, 'truesight-btn handler exists');
+  const handler = RENDERER_JS.slice(idx, idx + 400);
+  assert.ok(handler.includes("closeOtherOverlays('truesight-panel')"), 'closes sibling overlays first');
+  assert.ok(handler.includes('loadTruesightData'), 'loads funnel data on open');
+  // closeOtherOverlays must also hide the truesight panel when another opens.
+  const co = RENDERER_JS.indexOf('function closeOtherOverlays');
+  const cofn = RENDERER_JS.slice(co, co + 700);
+  assert.ok(cofn.includes("truesight-panel"), 'closeOtherOverlays manages the truesight panel');
+});
+
+test('Truesight — preload exposes the truesight bridge', () => {
+  assert.ok(PRELOAD_JS.includes("truesight: (opts) => ipcRenderer.invoke('truesight'"),
+    'preload exposes merlin.truesight → truesight IPC');
+});
+
+test('Truesight — renders funnel via escaped sinks (no raw innerHTML of source/label)', () => {
+  const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
+  assert.ok(idx > 0, 'renderTruesightFunnel exists');
+  const fn = RENDERER_JS.slice(idx, idx + 2600);
+  // every dynamic field is wrapped in escapeHtml; numbers go through tsNum
+  assert.ok(fn.includes('escapeHtml(stage.label'), 'stage label is escaped');
+  assert.ok(fn.includes('escapeHtml(stage.source'), 'stage source is escaped');
+  assert.ok(/escapeHtml\(stage\.key/.test(fn), 'stage key is escaped into the data attribute');
+  assert.ok(fn.includes('tsNum(stage.value)'), 'numbers render through tsNum (digits + K/M/B only)');
+});
+
+test('Truesight — empty state shows a connect CTA, never a broken funnel', () => {
+  const idx = RENDERER_JS.indexOf('async function loadTruesightData');
+  assert.ok(idx > 0, 'loadTruesightData exists');
+  const fn = RENDERER_JS.slice(idx, idx + 2000);
+  assert.ok(fn.includes('any_connected'), 'checks any_connected before rendering');
+  assert.ok(fn.includes('ts-connect-btn') && fn.includes("getElementById('magic-btn')"),
+    'no-source state offers a Connect button that opens the Magic panel');
+  assert.ok(fn.includes('res.error'), 'surfaces a friendly error (not a crash)');
+});
+
+test('Truesight — 7/30/90 window toggle defaults to 7 days', () => {
+  assert.ok(INDEX_HTML.includes('truesight-window-btn') && INDEX_HTML.includes('data-days="7"'),
+    'window toggle buttons exist');
+  assert.ok(RENDERER_JS.includes('let tsWindowDays = 7'), 'default window is 7 days');
+});

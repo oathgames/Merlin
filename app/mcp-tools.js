@@ -1552,7 +1552,7 @@ function buildTools(tool, z, ctx) {
   // ── dashboard ────────────────────────────────────────────
   tools.push(defineTool({
     name: 'dashboard',
-    description: 'Analytics and intelligence — cross-platform dashboard, calendar analysis, collective wisdom, landing page audit, competitor scan.',
+    description: 'Analytics and intelligence — cross-platform dashboard, the Truesight full funnel (awareness → visits → add-to-cart → bought, aggregated from every connected source), calendar analysis, collective wisdom, landing page audit, competitor scan.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -1565,15 +1565,17 @@ function buildTools(tool, z, ctx) {
     // audit P2 #1).
     brandRequired: false,
     input: {
-      action: z.enum(['dashboard', 'calendar', 'wisdom', 'report', 'competitor-scan', 'landing-audit', 'funnel-teardown']).describe('Operation'),
+      action: z.enum(['dashboard', 'truesight', 'calendar', 'wisdom', 'report', 'competitor-scan', 'landing-audit', 'funnel-teardown']).describe('Operation. Use "truesight" for the full marketing funnel (awareness → site visits → add-to-cart → conversions) aggregated across every connected source for the brand.'),
       brand: brandSchema.optional(),
-      batchCount: z.coerce.number().int().optional().describe('Days of data'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (truesight: 7/30/90 typical; defaults to 7)'),
       url: z.string().optional().describe('URL (for landing-audit and funnel-teardown — funnel-teardown grades the page against Stefan Georgi RMBC rubric)'),
     },
     handler: async (args) => {
       const actionMap = { 'competitor-scan': 'competitor-scan', 'landing-audit': 'landing-audit', 'funnel-teardown': 'funnel-teardown' };
       const action = actionMap[args.action] || args.action;
-      return toEnvelope(await runBinary(ctx, action, args, { timeout: 60000 }));
+      // truesight fans out to every connected source — give it the longer window.
+      const timeout = args.action === 'truesight' ? 120000 : 60000;
+      return toEnvelope(await runBinary(ctx, action, args, { timeout }));
     },
   }, tool, z, ctx));
 

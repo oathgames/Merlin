@@ -4367,6 +4367,7 @@ function closeOtherOverlays(keepId) {
     document.getElementById('palantir-panel')?.classList.add('hidden');
     try { closePalantirDetail(); } catch {}
   }
+  if (keepId !== 'truesight-panel') document.getElementById('truesight-panel')?.classList.add('hidden');
   if (keepId !== 'brand-switcher-overlay') closeBrandSwitcher();
   if (keepId !== 'stats-overlay') document.getElementById('stats-overlay')?.classList.add('hidden');
   if (keepId !== 'agency-overlay') closeAgencyOverlay();
@@ -11061,6 +11062,145 @@ document.addEventListener('keydown', (e) => {
   const detail = document.getElementById('palantir-detail');
   if (detail && !detail.classList.contains('hidden')) return;
   panel.classList.add('hidden');
+});
+
+// ── Truesight: full-funnel takeover ────────────────────────────────
+// Opens a full-window view of the whole brand funnel (awareness -> visits ->
+// add to cart -> bought) aggregated from every connected source by the Go
+// `truesight` action. Zero config; default 7-day window with a 7/30/90 toggle.
+let tsWindowDays = 7;
+
+// tsNum renders a compact human number (1234 -> "1.2K", 1.5e6 -> "1.5M").
+function tsNum(n) {
+  n = Number(n) || 0;
+  const abs = Math.abs(n);
+  if (abs >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (abs >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (abs >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(Math.round(n));
+}
+
+async function loadTruesightData() {
+  const panel = document.getElementById('truesight-panel');
+  if (!panel || panel.classList.contains('hidden')) return;
+  const funnel = document.getElementById('truesight-funnel');
+  const cta = document.getElementById('truesight-connect-cta');
+  const status = document.getElementById('truesight-status');
+  const periodLabel = document.getElementById('truesight-period-label');
+  if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
+  if (funnel) funnel.innerHTML = '';
+  if (status) { status.style.display = ''; status.textContent = 'Reading your funnel…'; }
+
+  let res;
+  try {
+    res = await merlin.truesight({ brand: getActiveBrandSelection(), batchCount: tsWindowDays });
+  } catch (e) {
+    res = { error: 'Could not load your funnel just now. Please try again.' };
+  }
+  if (status) status.style.display = 'none';
+  if (!res || typeof res !== 'object') res = { error: 'Could not load your funnel just now.' };
+  if (periodLabel) periodLabel.textContent = res.period_label || '';
+
+  if (res.error) {
+    if (status) { status.style.display = ''; status.textContent = res.error; }
+    return;
+  }
+  if (!res.any_connected) {
+    if (cta) {
+      cta.style.display = '';
+      cta.innerHTML = '<div class="ts-portal-title">See your whole funnel</div>' +
+        '<div>Connect your ad platforms, Google Analytics, and store to light up every stage — from awareness to purchase.</div>' +
+        '<button class="ts-portal-cta" id="ts-connect-btn">Connect your data</button>';
+      const b = document.getElementById('ts-connect-btn');
+      if (b) b.addEventListener('click', () => { panel.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
+    }
+    return;
+  }
+  renderTruesightFunnel(res);
+}
+
+function renderTruesightFunnel(data) {
+  const funnel = document.getElementById('truesight-funnel');
+  if (!funnel) return;
+  const stages = Array.isArray(data.stages) ? data.stages : [];
+  const steps = Array.isArray(data.steps) ? data.steps : [];
+  const stepByFrom = {};
+  steps.forEach((s) => { if (s && s.from) stepByFrom[s.from] = s; });
+  // Bar width is proportional to the largest AVAILABLE stage (the funnel top).
+  let maxVal = 0;
+  stages.forEach((s) => { if (s.available && s.value > maxVal) maxVal = s.value; });
+
+  let html = '';
+  stages.forEach((stage, i) => {
+    const avail = !!stage.available;
+    const pct = (avail && maxVal > 0) ? Math.max(6, (stage.value / maxVal) * 100) : 0;
+    html += '<div class="ts-stage' + (avail ? '' : ' unavailable') + '" data-key="' + escapeHtml(stage.key || '') + '">';
+    html += '<div class="ts-stage-head"><span class="ts-stage-label">' + escapeHtml(stage.label || '') + '</span>';
+    if (avail) {
+      html += '<span class="ts-stage-num">' + tsNum(stage.value) + '</span>';
+    } else {
+      html += '<button class="ts-connect-inline" type="button">Connect</button>';
+    }
+    html += '</div>';
+    if (avail) {
+      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:' + pct.toFixed(1) + '%"><span class="ts-bar-num">' + tsNum(stage.value) + '</span></div></div>';
+      if (stage.source) html += '<div class="ts-stage-source">' + escapeHtml(stage.source) + '</div>';
+    } else if (stage.note) {
+      html += '<div class="ts-stage-source">' + escapeHtml(stage.note) + '</div>';
+    }
+    html += '</div>';
+    const step = stepByFrom[stage.key];
+    if (step && i < stages.length - 1) {
+      const pctTxt = (typeof step.pct === 'number') ? step.pct.toFixed(1) + '%' : '—';
+      html += '<div class="ts-step"><span class="ts-step-pct">' + pctTxt + '</span>';
+      if (step.soft) html += '<span class="ts-step-soft" title="These two stages come from different measurement sources, so this rate is directional.">directional</span>';
+      html += '</div>';
+    }
+  });
+  if (typeof data.revenue === 'number' && data.revenue > 0) {
+    html += '<div class="ts-revenue">Revenue this period: <strong>$' + tsNum(data.revenue) + '</strong>' +
+      (data.revenue_source ? ' <span style="opacity:.7">(' + escapeHtml(data.revenue_source) + ')</span>' : '') + '</div>';
+  }
+  funnel.innerHTML = html;
+  // Inline "Connect" buttons (for a missing stage) open the Magic panel.
+  funnel.querySelectorAll('.ts-connect-inline').forEach((b) => {
+    b.addEventListener('click', () => { document.getElementById('truesight-panel')?.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
+  });
+}
+
+document.getElementById('truesight-btn')?.addEventListener('click', () => {
+  closeOtherOverlays('truesight-panel');
+  const panel = document.getElementById('truesight-panel');
+  if (!panel) return;
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden')) loadTruesightData();
+});
+
+document.getElementById('truesight-close')?.addEventListener('click', () => {
+  document.getElementById('truesight-panel')?.classList.add('hidden');
+});
+
+(function wireTruesightControls() {
+  const r = document.getElementById('truesight-refresh');
+  if (r) r.addEventListener('click', loadTruesightData);
+  document.querySelectorAll('.truesight-window-btn').forEach((b) => {
+    b.addEventListener('click', () => {
+      const d = parseInt(b.getAttribute('data-days'), 10);
+      if (!d) return;
+      tsWindowDays = d;
+      document.querySelectorAll('.truesight-window-btn').forEach((x) => x.classList.toggle('active', x === b));
+      loadTruesightData();
+    });
+  });
+  const first = document.querySelector('.truesight-window-btn[data-days="7"]');
+  if (first) first.classList.add('active');
+})();
+
+// Esc closes the Truesight takeover.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const panel = document.getElementById('truesight-panel');
+  if (panel && !panel.classList.contains('hidden')) panel.classList.add('hidden');
 });
 
 document.getElementById('palantir-search-form').addEventListener('submit', (e) => {
