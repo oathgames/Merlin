@@ -142,3 +142,38 @@ test('Microsoft Clarity has a working connect path (API_KEY_PLATFORMS + CONFIG_F
   const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
   assert.ok(sensitiveBlock.includes("'clarityApiToken'"), 'clarityApiToken not in VAULT_SENSITIVE_KEYS; would be written to config in plaintext');
 });
+
+test('PostHog brand tile exists, is brand-scope, and is on every vertical', () => {
+  const t = tiles.find((x) => x.platform === 'posthog');
+  assert.ok(t, 'posthog brand tile missing from index.html');
+  assert.equal(t.scope, 'brand', 'posthog must be data-scope="brand" (each brand connects its own PostHog project)');
+  assert.ok(!t.stubbed, 'posthog tile must not be stubbed; the connector ships (posthog.go)');
+  for (const v of verticals) {
+    assert.ok(v.includes('posthog'), 'a vertical is missing posthog (product analytics applies to every brand with a site/app)');
+  }
+});
+
+test('PostHog has a working connect path (custom 3-field modal + CONFIG_FIELD_ALLOWLIST + vaulted key)', () => {
+  // PostHog needs 3 fields, so it uses the custom modal (like Rokt), NOT the
+  // single-field API_KEY_PLATFORMS path.
+  assert.match(renderer, /posthog:\s*showPosthogConnectModal/, 'posthog missing from CUSTOM_CONNECT_HANDLERS; the tile click would do nothing');
+  assert.ok(renderer.includes('function showPosthogConnectModal('), 'showPosthogConnectModal not defined');
+  // The project-id step must reject non-numeric input in the modal (a pasted
+  // project name/URL would otherwise 404 on the first insights pull).
+  const modalStart = renderer.indexOf('function showPosthogConnectModal(');
+  const modalBlock = renderer.slice(modalStart, modalStart + 2500);
+  assert.match(modalBlock, /\/\^\\d\+\$\/\.test\(projectId\)/, 'showPosthogConnectModal must validate the Project ID is numeric');
+  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
+  assert.ok(allowlistStart >= 0, 'CONFIG_FIELD_ALLOWLIST definition not found');
+  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
+  // Every field the modal saves via save-config-field must be allowlisted, or
+  // that field hits "Unknown config field" (postscript-save-broken class).
+  for (const k of ['posthogApiKey', 'posthogProjectId', 'posthogHost']) {
+    assert.ok(allowlistBlock.includes(`'${k}'`), `${k} not in CONFIG_FIELD_ALLOWLIST; save-config-field would reject it`);
+  }
+  // The API key is the secret and must be vaulted; the project id / host are
+  // non-secret identifiers and must NOT be in VAULT_SENSITIVE_KEYS (plaintext is fine).
+  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
+  assert.ok(sensitiveBlock.includes("'posthogApiKey'"), 'posthogApiKey not in VAULT_SENSITIVE_KEYS; the secret would be written to config in plaintext');
+  assert.ok(!sensitiveBlock.includes("'posthogProjectId'"), 'posthogProjectId should NOT be in VAULT_SENSITIVE_KEYS (non-secret identifier)');
+});
