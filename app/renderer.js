@@ -3892,6 +3892,7 @@ const PLATFORM_DISPLAY_NAMES = {
   openai_ads: 'OpenAI Ads',
   rokt: 'Rokt',
   clarity: 'Microsoft Clarity',
+  posthog: 'PostHog',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -3925,7 +3926,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -3936,7 +3937,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'MRR',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','google','linkedin','stripe','klaviyo','mailchimp','reddit','twitter','openai_ads', 'clarity', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','google','linkedin','stripe','klaviyo','mailchimp','reddit','twitter','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
   },
   games: {
     key: 'games',
@@ -3947,7 +3948,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'installs',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','tiktok','google','applovin','stripe','reddit','snapchat','twitter','openai_ads', 'clarity', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','google','applovin','stripe','reddit','snapchat','twitter','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
   },
   creator: {
     key: 'creator',
@@ -3958,7 +3959,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'enrollments',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','tiktok','google','twitter','reddit','klaviyo','mailchimp','postscript','stripe','openai_ads', 'clarity', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','google','twitter','reddit','klaviyo','mailchimp','postscript','stripe','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
   },
   local: {
     key: 'local',
@@ -3969,7 +3970,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'leads',
     defaultRevenueConnector: '',
     hasShoppableCatalog: false,
-    integrations: ['meta','google','reddit','openai_ads', 'clarity', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','google','reddit','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
   },
   agency: {
     key: 'agency',
@@ -3980,7 +3981,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'qualified leads',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['linkedin','meta','google','twitter','reddit','stripe','klaviyo','mailchimp','openai_ads', 'clarity', ...BASE_CREATIVE_TOOLS],
+    integrations: ['linkedin','meta','google','twitter','reddit','stripe','klaviyo','mailchimp','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
   },
   b2b: {
     key: 'b2b',
@@ -3991,7 +3992,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'pipeline',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['linkedin','google','meta','twitter','reddit','stripe','openai_ads', 'clarity', ...BASE_CREATIVE_TOOLS],
+    integrations: ['linkedin','google','meta','twitter','reddit','stripe','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
   },
 };
 
@@ -6416,11 +6417,67 @@ function showRoktConnectModal(activeBrand) {
   });
 }
 
+// PostHog needs three brand-scoped fields (Personal API Key + numeric Project
+// ID + optional host), so like Rokt it can't use the single-field
+// API_KEY_PLATFORMS modal. posthogApiKey is vaulted (VAULT_SENSITIVE_KEYS);
+// projectId/host are non-secret identifiers (CONFIG_FIELD_ALLOWLIST only). Host
+// is optional and defaults to US Cloud server-side (posthog.go). The connection
+// dot lights on save; the token is validated on the first insights pull
+// (posthog.go returns a friendly "missing permissions" message on a bad key).
+function showPosthogConnectModal(activeBrand) {
+  showModal({
+    title: 'PostHog: Personal API Key',
+    body: 'Paste a PostHog Personal API Key with the "Query Read" + "Project Read" scopes (PostHog -> Settings -> Personal API Keys). It is stored encrypted and never shown again. (Step 1 of 3)',
+    inputPlaceholder: 'phx_... (Personal API Key)',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const apiKey = (v1 || '').trim();
+      if (!apiKey) { showModalError('Enter your Personal API Key'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'PostHog: Project ID',
+          body: 'Enter your numeric PostHog Project ID (PostHog -> Settings -> Project -> Project ID). (Step 2 of 3)',
+          inputPlaceholder: 'e.g. 12345',
+          confirmLabel: 'Next',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const projectId = (v2 || '').trim();
+            if (!projectId) { showModalError('Enter your Project ID'); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: 'PostHog: Host (optional)',
+                body: 'Enter your PostHog host ONLY if you self-host or use EU Cloud (e.g. https://eu.posthog.com). Leave blank for US Cloud (us.posthog.com). (Step 3 of 3)',
+                inputPlaceholder: 'Leave blank for US Cloud',
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v3) => {
+                  const host = (v3 || '').trim();
+                  let r = await merlin.saveConfigField('posthogApiKey', apiKey, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save API Key'); throw new Error('save'); }
+                  r = await merlin.saveConfigField('posthogProjectId', projectId, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save Project ID'); throw new Error('save'); }
+                  if (host) {
+                    r = await merlin.saveConfigField('posthogHost', host, activeBrand);
+                    if (!r.success) { showModalError(r.error || 'Failed to save Host'); throw new Error('save'); }
+                  }
+                  loadConnections();
+                },
+              });
+            }, 0);
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
 // Platforms whose tile LEFT-CLICK opens a custom multi-field connect modal
 // instead of OAuth or the single-field API_KEY_PLATFORMS modal. Checked in the
 // tile click handler before the API_KEY_PLATFORMS fallback.
 const CUSTOM_CONNECT_HANDLERS = {
   rokt: showRoktConnectModal,
+  posthog: showPosthogConnectModal,
 };
 
 // Platforms that support a "Use my API key" right-click override. Each entry

@@ -203,6 +203,12 @@
            API_KEY_PLATFORMS modal → clarityApiToken (vaulted). Auto-enriches
            landing-audit + funnel-teardown for connected brands. See clarity.go. -->
       <button class="magic-tile" data-platform="clarity" data-scope="brand" data-tip="Connect Microsoft Clarity (free heatmaps + session insights)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#1A91D6"/><circle cx="12" cy="12" r="6.5" fill="none" stroke="#fff" stroke-width="1.6"/><circle cx="12" cy="12" r="2.4" fill="#fff"/><path d="M12 3.4v2.2M12 18.4v2.2M3.4 12h2.2M18.4 12h2.2" stroke="#fff" stroke-width="1.4" stroke-linecap="round"/></svg></div><div class="tile-name">Clarity</div></button>
+      <!-- PostHog: product analytics (events, conversion funnels, retention,
+           pageviews, top paths). Brand-specific BYOK: Personal API Key + numeric
+           Project ID (+ optional self-host URL) via the custom
+           showPosthogConnectModal (left-click). posthogApiKey is vaulted;
+           projectId/host are non-secret identifiers (allowlist only). See posthog.go. -->
+      <button class="magic-tile" data-platform="posthog" data-scope="brand" data-tip="Connect PostHog (product analytics: funnels, retention, events)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#1D1D1D"/><circle cx="7.5" cy="16.5" r="2" fill="#F9BD2B"/><path d="M5.5 13a6 6 0 016 6H9.3A3.8 3.8 0 005.5 15.2zM5.5 8.4A10.6 10.6 0 0116.1 19H13.9A8.4 8.4 0 005.5 10.6z" fill="#F9BD2B"/></svg></div><div class="tile-name">PostHog</div></button>
       <!-- Rokt: post-transaction ad-network reporting (READ-ONLY). BYOK 3-field
            connect (App ID + App Secret + Account ID from my.rokt.com) via the
            custom showRoktConnectModal (left-click). Rokt has no campaign-

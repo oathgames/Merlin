@@ -149,6 +149,13 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // in this allowlist or save-config-field rejects the paste with "Unknown
   // config field" (the postscript-save-broken incident class above).
   'clarityApiToken',
+  // PostHog BYOK product-analytics creds, saved by the 3-step PostHog connect
+  // modal (renderer.js showPosthogConnectModal). posthogApiKey is the secret
+  // (also in VAULT_SENSITIVE_KEYS, vaulted); posthogProjectId + posthogHost are
+  // non-secret identifiers (NOT in VAULT_SENSITIVE_KEYS, same as shopifyStore).
+  // All three must be HERE or save-config-field rejects the paste with "Unknown
+  // config field" (the postscript-save-broken incident class above).
+  'posthogApiKey', 'posthogProjectId', 'posthogHost',
   // Rokt BYOK reporting credentials (App ID / App Secret / Account ID), saved
   // by the 3-step Rokt connect modal. All three mirrored in VAULT_SENSITIVE_KEYS.
   'roktAppId', 'roktAppSecret', 'roktAccountId',
