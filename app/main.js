@@ -6295,6 +6295,27 @@ ipcMain.handle('open-external-url', (_, url) => {
 });
 ipcMain.handle('open-merlin-folder', () => { shell.openPath(appRoot); });
 
+// Open a generated agency report. The renderer builds the report HTML
+// (buildReportHtml) but CANNOT open it itself: setWindowOpenHandler denies
+// every renderer window.open by design ("Never open new Electron windows"), so
+// window.open() returns null 100% of the time and the old code mislabeled it as
+// a popup blocker. Main writes the report to a temp .html file and opens it with
+// the OS default browser via shell.openPath — nothing a popup blocker can stop.
+// The HTML is our own (no inline handlers, brand data escaped in buildReportHtml)
+// and is written to the OS temp dir, never executed in-app.
+ipcMain.handle('open-agency-report', async (_, html) => {
+  try {
+    if (typeof html !== 'string' || !html.trim()) return { ok: false, error: 'The report came back empty.' };
+    const file = path.join(os.tmpdir(), `Merlin-Report-${Date.now()}.html`);
+    await fs.promises.writeFile(file, html, 'utf8');
+    const err = await shell.openPath(file); // '' on success, a message on failure
+    if (err) return { ok: false, error: err };
+    return { ok: true, path: file };
+  } catch (e) {
+    return { ok: false, error: (e && e.message) || 'Could not open the report.' };
+  }
+});
+
 // ── Spell SKILL.md builder ──────────────────────────────────
 //
 // The spell SKILL.md body has a specific structure that matters for

@@ -2231,6 +2231,31 @@ test('Palantir — loading/empty portal spans the full grid (no off-center load 
     'the single portal child spans every column so it is centered from first paint');
 });
 
+test('Agency report — opens via main IPC, never a renderer window.open (popup-blocker bug)', () => {
+  // setWindowOpenHandler denies every renderer window.open, so window.open()
+  // returned null 100% of the time and surfaced a bogus popup-blocker error.
+  // The report must be opened by main. Guard against reintroducing the popup path.
+  const idx = RENDERER_JS.indexOf('const reportHtml = buildReportHtml(report, brands)');
+  assert.ok(idx > 0, 'report build site exists');
+  // Scope to the handler flow only — buildReportHtml's generated report HTML may
+  // legitimately use window.open (it runs in the real browser now, not Electron).
+  const fn = RENDERER_JS.slice(idx, RENDERER_JS.indexOf('function buildReportHtml', idx));
+  assert.ok(fn.includes('merlin.openAgencyReport(reportHtml)'), 'report HTML is handed to main to open');
+  assert.ok(!fn.includes('window.open('), 'no renderer window.open in the report flow');
+  assert.ok(!RENDERER_JS.includes('Your popup blocker prevented'), 'the bogus popup-blocker message is gone');
+});
+
+test('Agency report — preload bridges it; main writes a temp file + shell.openPath', () => {
+  assert.ok(PRELOAD_JS.includes("openAgencyReport: (html) => ipcRenderer.invoke('open-agency-report'"),
+    'preload bridges open-agency-report');
+  const idx = MAIN_JS.indexOf("ipcMain.handle('open-agency-report'");
+  assert.ok(idx > 0, 'main handles open-agency-report');
+  const h = MAIN_JS.slice(idx, idx + 800);
+  assert.ok(h.includes('os.tmpdir()') && h.includes('writeFile'), 'writes the report to a temp file');
+  assert.ok(h.includes('shell.openPath'), 'opens it with the OS default browser (no popup blocker)');
+  assert.ok(h.includes("typeof html !== 'string'"), 'guards a non-string / empty payload');
+});
+
 test('Truesight — RSI hardening: non-finite guard, focus restore, attr-escaped key', () => {
   assert.ok(RENDERER_JS.includes('Number.isFinite(n)'), 'tsNum guards non-finite (no Infinity/NaN in the DOM)');
   const idx = RENDERER_JS.indexOf("getElementById('truesight-btn')?.addEventListener");

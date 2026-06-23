@@ -162,6 +162,7 @@ contextBridge.exposeInMainWorld('merlin', {
   // Performance + Activity
   getPerfSummary: (days, brand) => ipcRenderer.invoke('get-perf-summary', assertInt(days, 7), assertBrand(brand)),
   getAgencyReport: (days, brands) => ipcRenderer.invoke('get-agency-report', assertInt(days, 7), assertBrandArray(brands)),
+  openAgencyReport: (html) => ipcRenderer.invoke('open-agency-report', assertStr(html, 16000000)),
   refreshPerf: (brand, days) => ipcRenderer.invoke('refresh-perf', assertBrand(brand), Number.isInteger(days) && days > 0 && days <= 365 ? days : undefined),
   getPerfUpdated: (brand) => ipcRenderer.invoke('get-perf-updated', assertBrand(brand)),
   getActivityFeed: (brand, limit) => ipcRenderer.invoke('get-activity-feed', assertBrand(brand), assertInt(limit, 50)),

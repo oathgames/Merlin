@@ -9916,28 +9916,23 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
     }
 
     const reportHtml = buildReportHtml(report, brands);
-    // Unique window name per click so two reports can coexist instead of
-    // clobbering each other.
-    const windowName = `Merlin_Report_${Date.now()}`;
-    const reportWindow = window.open('', windowName, 'width=900,height=1100,resizable=yes,scrollbars=yes');
-    if (!reportWindow) {
-      setStatus('Your popup blocker prevented the report from opening. Allow popups for Merlin and try again.', 'error');
+    // The renderer cannot open a browser window — setWindowOpenHandler denies
+    // every renderer-initiated window open by design, so the old popup returned
+    // null every time and surfaced a bogus "popup blocker" error. Hand the HTML
+    // to main, which writes it to a temp file and opens it in the OS browser
+    // (shell.openPath) — nothing a popup blocker can intercept.
+    let opened;
+    try {
+      opened = await merlin.openAgencyReport(reportHtml);
+    } catch (err) {
+      console.error('[report]', err);
+      setStatus(friendlyError(err?.message || String(err), 'report'), 'error');
       updateGenState();
       return;
     }
-    try {
-      reportWindow.document.open();
-      reportWindow.document.write(reportHtml);
-      reportWindow.document.close();
-      // Belt-and-suspenders: sever opener so the popup can't navigate this
-      // window. The HTML we wrote is ours, but this guards against a future
-      // change adding user-controlled href content.
-      try { reportWindow.opener = null; } catch {}
-      reportWindow.focus?.();
-    } catch (err) {
-      console.error('[report]', err);
-      try { reportWindow.close(); } catch {}
-      setStatus(friendlyError(err?.message || String(err), 'report'), 'error');
+    if (!opened || !opened.ok) {
+      console.error('[report]', opened && opened.error);
+      setStatus(friendlyError((opened && opened.error) || 'Could not open the report.', 'report'), 'error');
       updateGenState();
       return;
     }
