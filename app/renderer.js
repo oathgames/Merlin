@@ -4283,6 +4283,11 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   if (cached) renderPerfBar(cached);
   else renderPerfBarSkeleton();
   loadPerfBar(parseInt(activePeriod), newBrand);
+  // Keep Truesight in step with the active brand: reload it if open, else warm
+  // the cache so the next open is instant for the brand just switched to.
+  const tsPanel = document.getElementById('truesight-panel');
+  if (tsPanel && !tsPanel.classList.contains('hidden')) loadTruesightData();
+  else prefetchTruesight();
 });
 
 // add-brand-btn moved into brand dropdown as "+ New Brand" option
@@ -11068,7 +11073,37 @@ document.addEventListener('keydown', (e) => {
 // Opens a full-window view of the whole brand funnel (awareness -> visits ->
 // add to cart -> bought) aggregated from every connected source by the Go
 // `truesight` action. Zero config; default 7-day window with a 7/30/90 toggle.
-let tsWindowDays = 7;
+// ── Truesight funnel: caching + prefetch + revenue-bar window ──────
+const tsCache = new Map(); // key "brand|days" -> last funnel result (instant re-open)
+// Fixed funnel-bar widths by stage index: a clean, always-legible narrowing
+// shape. The big numbers + conversion %s carry the exact values; widths are
+// deliberately NOT data-proportional so a ~500:1 impressions->orders range can
+// never collapse the lower stages into slivers (matches the reviewed mockup).
+const TS_BAR_WIDTHS = [100, 66, 44, 28];
+// Truesight always follows the window picked in the revenue (perf) bar.
+function tsCurrentDays() {
+  return parseInt(document.querySelector('.perf-period-btn.active')?.dataset.days || '7', 10) || 7;
+}
+function tsKey(brand, days) { return (brand || '') + '|' + days; }
+function truesightWindowLabel(days) {
+  if (days <= 1) return 'Today';
+  if (days >= 365) return 'Last 12 months';
+  if (days % 30 === 0) { const m = days / 30; return 'Last ' + m + (m === 1 ? ' month' : ' months'); }
+  return 'Last ' + days + ' days';
+}
+// Fire the funnel pull + cache the result (the stale-while-revalidate source).
+async function tsFetch(brand, days) {
+  let res;
+  try { res = await merlin.truesight({ brand, batchCount: days }); }
+  catch (e) { res = { error: 'Could not load your funnel just now. Please try again.' }; }
+  if (res && typeof res === 'object' && !res.error) tsCache.set(tsKey(brand, days), res);
+  return res;
+}
+// Background prefetch so the tab opens instantly (warms the cache, no render).
+function prefetchTruesight() {
+  const brand = getActiveBrandSelection();
+  if (brand) tsFetch(brand, tsCurrentDays());
+}
 
 // tsNum renders a compact human number (1234 -> "1.2K", 1.5e6 -> "1.5M").
 function tsNum(n) {
@@ -11081,42 +11116,64 @@ function tsNum(n) {
   return String(Math.round(n));
 }
 
-let tsReqSeq = 0; // monotonic request id — drops stale responses when the window is toggled rapidly (Gitar #287)
+let tsReqSeq = 0; // monotonic request id — drops stale renders on rapid re-opens / window changes (Gitar #287)
 async function loadTruesightData() {
   const panel = document.getElementById('truesight-panel');
   if (!panel || panel.classList.contains('hidden')) return;
+  const brand = getActiveBrandSelection();
+  const days = tsCurrentDays();
   const myReq = ++tsReqSeq;
+  // Instant render from cache (stale-while-revalidate); only show the loading
+  // state when nothing is cached for this brand+window yet, so re-opening a
+  // window we've already pulled never flashes a spinner.
+  const cached = tsCache.get(tsKey(brand, days));
+  if (cached) renderTruesightResult(cached, days);
+  else showTruesightLoading(days);
+
+  const res = await tsFetch(brand, days);
+  if (myReq !== tsReqSeq) return; // superseded by a newer open / window change — don't render stale data
+  // Stale-while-revalidate must never DOWNGRADE: if we already showed good
+  // cached data and the background refresh failed transiently, keep the cache
+  // on screen rather than replacing a real funnel with an error message.
+  if (cached && res && res.error) return;
+  renderTruesightResult(res, days);
+}
+
+function showTruesightLoading(days) {
   const funnel = document.getElementById('truesight-funnel');
   const cta = document.getElementById('truesight-connect-cta');
   const status = document.getElementById('truesight-status');
   const periodLabel = document.getElementById('truesight-period-label');
+  if (periodLabel) periodLabel.textContent = truesightWindowLabel(days);
   if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
   if (funnel) funnel.innerHTML = '';
   if (status) { status.style.display = ''; status.textContent = 'Reading your funnel…'; }
+}
 
-  let res;
-  try {
-    res = await merlin.truesight({ brand: getActiveBrandSelection(), batchCount: tsWindowDays });
-  } catch (e) {
-    res = { error: 'Could not load your funnel just now. Please try again.' };
-  }
-  if (myReq !== tsReqSeq) return; // a newer window/refresh request superseded this one — don't render stale data
-  if (status) status.style.display = 'none';
+function renderTruesightResult(res, days) {
+  const funnel = document.getElementById('truesight-funnel');
+  const cta = document.getElementById('truesight-connect-cta');
+  const status = document.getElementById('truesight-status');
+  const periodLabel = document.getElementById('truesight-period-label');
   if (!res || typeof res !== 'object') res = { error: 'Could not load your funnel just now.' };
-  if (periodLabel) periodLabel.textContent = res.period_label || '';
+  if (periodLabel) periodLabel.textContent = res.period_label || truesightWindowLabel(days);
+  if (status) status.style.display = 'none';
+  if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
 
   if (res.error) {
+    if (funnel) funnel.innerHTML = '';
     if (status) { status.style.display = ''; status.textContent = res.error; }
     return;
   }
   if (!res.any_connected) {
+    if (funnel) funnel.innerHTML = '';
     if (cta) {
       cta.style.display = '';
       cta.innerHTML = '<div class="ts-portal-title">See your whole funnel</div>' +
         '<div>Connect your ad platforms, Google Analytics, and store to light up every stage — from awareness to purchase.</div>' +
         '<button class="ts-portal-cta" id="ts-connect-btn">Connect your data</button>';
       const b = document.getElementById('ts-connect-btn');
-      if (b) b.addEventListener('click', () => { panel.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
+      if (b) b.addEventListener('click', () => { document.getElementById('truesight-panel')?.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
     }
     return;
   }
@@ -11130,22 +11187,15 @@ function renderTruesightFunnel(data) {
   const steps = Array.isArray(data.steps) ? data.steps : [];
   const stepByFrom = {};
   steps.forEach((s) => { if (s && s.from) stepByFrom[s.from] = s; });
-  // Bar width is relative to the largest AVAILABLE stage (the funnel top).
-  let maxVal = 0;
-  stages.forEach((s) => { if (s.available && s.value > maxVal) maxVal = s.value; });
-
   let html = '';
   stages.forEach((stage, i) => {
     const avail = !!stage.available;
-    // Readable funnel scale: a power curve (exp 0.32) compresses the very wide
-    // impressions->orders range (often ~500:1) so every stage stays legible
-    // while still narrowing by true magnitude. The big numbers + conversion %s
-    // carry the exact values; the bar is a relative cue, not a precise ratio.
-    // (Linear width would collapse every stage below awareness into a sliver.)
-    let pct = 0;
-    if (avail) {
-      pct = (stage.value > 0 && maxVal > 0) ? Math.max(14, Math.pow(stage.value / maxVal, 0.32) * 100) : 10;
-    }
+    // Fixed funnel-bar widths by stage position (TS_BAR_WIDTHS): always a clean
+    // narrowing shape, matching the reviewed mockup. Deliberately NOT
+    // data-proportional — a ~500:1 impressions->orders range would otherwise
+    // collapse the lower stages into slivers. The big numbers + conversion %s
+    // carry the exact values; the bar is just an at-a-glance funnel cue.
+    const pct = avail ? TS_BAR_WIDTHS[Math.min(i, TS_BAR_WIDTHS.length - 1)] : 0;
     // stage.key lands in an HTML attribute; escapeHtml doesn't escape quotes,
     // so also neutralize them (defense-in-depth — keys are fixed today, but the
     // renderer must be safe regardless of payload source).
@@ -11177,6 +11227,15 @@ function renderTruesightFunnel(data) {
     html += '<div class="ts-revenue">Revenue this period: <strong>$' + tsNum(data.revenue) + '</strong>' +
       (data.revenue_source ? ' <span style="opacity:.7">(' + escapeHtml(data.revenue_source) + ')</span>' : '') + '</div>';
   }
+  // Honesty: when the upper-funnel stages fall back to ad pixels (Google
+  // Analytics not connected), the visit / add-to-cart counts are ad-attributed
+  // only — a sliver of true site-wide totals. Say so plainly and offer the fix,
+  // so a low number reads as "connect GA4" rather than "the math is wrong".
+  const adAttributed = stages.some((s) => s && s.available && s.provider === 'ads' && (s.key === 'visits' || s.key === 'add_to_cart'));
+  if (adAttributed) {
+    html += '<div class="ts-note">Some stages show <strong>ad-attributed</strong> activity only. ' +
+      '<button class="ts-connect-inline" type="button">Connect Google Analytics</button> for site-wide totals.</div>';
+  }
   funnel.innerHTML = html;
   // Inline "Connect" buttons (for a missing stage) open the Magic panel.
   funnel.querySelectorAll('.ts-connect-inline').forEach((b) => {
@@ -11204,19 +11263,21 @@ document.getElementById('truesight-close')?.addEventListener('click', () => {
 });
 
 (function wireTruesightControls() {
-  const r = document.getElementById('truesight-refresh');
-  if (r) r.addEventListener('click', loadTruesightData);
-  document.querySelectorAll('.truesight-window-btn').forEach((b) => {
-    b.addEventListener('click', () => {
-      const d = parseInt(b.getAttribute('data-days'), 10);
-      if (!d) return;
-      tsWindowDays = d;
-      document.querySelectorAll('.truesight-window-btn').forEach((x) => x.classList.toggle('active', x === b));
-      loadTruesightData();
-    });
+  // Truesight has no window selector or refresh button of its own — it follows
+  // the window picked in the revenue (perf) bar. When that window changes,
+  // refresh Truesight if it's open, otherwise warm the cache so the next open
+  // is instant. The setTimeout(0) defers past the perf-bar's own click handler
+  // so the .active class is already updated when tsCurrentDays() reads it.
+  document.querySelectorAll('.perf-period-btn').forEach((b) => {
+    b.addEventListener('click', () => setTimeout(() => {
+      const tp = document.getElementById('truesight-panel');
+      if (tp && !tp.classList.contains('hidden')) loadTruesightData();
+      else prefetchTruesight();
+    }, 0));
   });
-  const first = document.querySelector('.truesight-window-btn[data-days="7"]');
-  if (first) first.classList.add('active');
+  // Warm the cache shortly after launch (once brands + the perf bar have
+  // settled) so the very first open of Truesight is instant too.
+  setTimeout(prefetchTruesight, 2500);
 })();
 
 // Esc closes the Truesight takeover.

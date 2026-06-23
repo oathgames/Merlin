@@ -2162,33 +2162,73 @@ test('Truesight — renders funnel via escaped sinks (no raw innerHTML of source
 });
 
 test('Truesight — empty state shows a connect CTA, never a broken funnel', () => {
-  const idx = RENDERER_JS.indexOf('async function loadTruesightData');
-  assert.ok(idx > 0, 'loadTruesightData exists');
-  const fn = RENDERER_JS.slice(idx, idx + 2000);
+  const idx = RENDERER_JS.indexOf('function renderTruesightResult');
+  assert.ok(idx > 0, 'renderTruesightResult exists');
+  const fn = RENDERER_JS.slice(idx, idx + 1600);
   assert.ok(fn.includes('any_connected'), 'checks any_connected before rendering');
   assert.ok(fn.includes('ts-connect-btn') && fn.includes("getElementById('magic-btn')"),
     'no-source state offers a Connect button that opens the Magic panel');
   assert.ok(fn.includes('res.error'), 'surfaces a friendly error (not a crash)');
 });
 
-test('Truesight — 7/30/90 window toggle defaults to 7 days', () => {
-  assert.ok(INDEX_HTML.includes('truesight-window-btn') && INDEX_HTML.includes('data-days="7"'),
-    'window toggle buttons exist');
-  assert.ok(RENDERER_JS.includes('let tsWindowDays = 7'), 'default window is 7 days');
+test('Truesight — follows the revenue (perf) bar window; no own toggle or refresh', () => {
+  // The redundant 7/30/90 selector + refresh button were removed: Truesight
+  // reads whatever window the perf bar has active.
+  assert.ok(!INDEX_HTML.includes('truesight-window-btn'), 'no separate window toggle in the topbar');
+  assert.ok(!INDEX_HTML.includes('id="truesight-refresh"'), 'no separate refresh button in the topbar');
+  assert.ok(RENDERER_JS.includes("querySelector('.perf-period-btn.active')") &&
+    RENDERER_JS.includes('function tsCurrentDays'),
+    'tsCurrentDays reads the active perf-bar period');
 });
 
-test('Truesight — bars use a readable power-scale, not linear slivers', () => {
+test('Truesight — bars use fixed funnel widths (always legible, never slivers)', () => {
+  assert.ok(/const TS_BAR_WIDTHS = \[/.test(RENDERER_JS), 'fixed per-stage bar widths declared');
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
   const fn = RENDERER_JS.slice(idx, idx + 2800);
-  assert.ok(fn.includes('Math.pow(stage.value / maxVal'), 'bar width uses a power-curve scale so lower stages stay legible across a wide impressions->orders range');
+  assert.ok(fn.includes('TS_BAR_WIDTHS[Math.min(i'), 'bar width comes from the fixed-width table by stage index');
+  assert.ok(!fn.includes('Math.pow(stage.value'), 'the old data-proportional power-scale is gone');
 });
 
-test('Truesight — concurrent window toggles drop stale responses (req-seq token)', () => {
+test('Truesight — caches per brand+window and renders stale-while-revalidate', () => {
+  assert.ok(RENDERER_JS.includes('const tsCache = new Map()'), 'a brand|window cache exists');
+  const idx = RENDERER_JS.indexOf('async function loadTruesightData');
+  const fn = RENDERER_JS.slice(idx, idx + 1300);
+  assert.ok(fn.includes('tsCache.get(tsKey(brand, days))'), 'reads the cache first');
+  assert.ok(fn.includes('renderTruesightResult(cached') && fn.includes('showTruesightLoading('),
+    'renders cache instantly, else shows the loading state');
+  assert.ok(fn.includes('await tsFetch(brand, days)') && fn.includes('renderTruesightResult(res'),
+    'always revalidates in the background and re-renders');
+  assert.ok(fn.includes('if (cached && res && res.error) return'),
+    'a transient revalidate error never downgrades good cached data to an error');
+});
+
+test('Truesight — prefetches so the tab opens instantly (startup + brand + window change)', () => {
+  assert.ok(RENDERER_JS.includes('function prefetchTruesight'), 'prefetch helper exists');
+  assert.ok(RENDERER_JS.includes('setTimeout(prefetchTruesight, 2500)'), 'warms cache shortly after launch');
+  const count = (RENDERER_JS.match(/prefetchTruesight\(\)/g) || []).length;
+  assert.ok(count >= 2, 'prefetch is invoked from the brand-switch and perf-window-change paths');
+});
+
+test('Truesight — ad-attributed stages show an honest "connect GA" note', () => {
+  const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
+  const fn = RENDERER_JS.slice(idx, idx + 4600);
+  assert.ok(fn.includes("s.provider === 'ads'") && fn.includes("s.key === 'visits'") && fn.includes("s.key === 'add_to_cart'"),
+    'detects upper-funnel stages that fell back to ad pixels');
+  assert.ok(fn.includes('ts-note') && fn.includes('Connect Google Analytics'),
+    'surfaces a site-wide-totals nudge wired to the Magic panel');
+});
+
+test('Truesight — concurrent re-opens / window changes drop stale renders (req-seq token)', () => {
   assert.ok(RENDERER_JS.includes('let tsReqSeq = 0'), 'request-sequence token declared');
   const idx = RENDERER_JS.indexOf('async function loadTruesightData');
   const fn = RENDERER_JS.slice(idx, idx + 1200);
   assert.ok(fn.includes('const myReq = ++tsReqSeq'), 'captures a request id before the await');
   assert.ok(fn.includes('if (myReq !== tsReqSeq) return'), 'bails before render if a newer request superseded this one');
+});
+
+test('Palantir — loading/empty portal spans the full grid (no off-center load jump)', () => {
+  assert.ok(/\.palantir-ideas-grid\s*>\s*\.palantir-portal\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/.test(STYLE_CSS),
+    'the single portal child spans every column so it is centered from first paint');
 });
 
 test('Truesight — RSI hardening: non-finite guard, focus restore, attr-escaped key', () => {
