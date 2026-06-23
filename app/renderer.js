@@ -11130,14 +11130,22 @@ function renderTruesightFunnel(data) {
   const steps = Array.isArray(data.steps) ? data.steps : [];
   const stepByFrom = {};
   steps.forEach((s) => { if (s && s.from) stepByFrom[s.from] = s; });
-  // Bar width is proportional to the largest AVAILABLE stage (the funnel top).
+  // Bar width is relative to the largest AVAILABLE stage (the funnel top).
   let maxVal = 0;
   stages.forEach((s) => { if (s.available && s.value > maxVal) maxVal = s.value; });
 
   let html = '';
   stages.forEach((stage, i) => {
     const avail = !!stage.available;
-    const pct = (avail && maxVal > 0) ? Math.max(6, (stage.value / maxVal) * 100) : 0;
+    // Readable funnel scale: a power curve (exp 0.32) compresses the very wide
+    // impressions->orders range (often ~500:1) so every stage stays legible
+    // while still narrowing by true magnitude. The big numbers + conversion %s
+    // carry the exact values; the bar is a relative cue, not a precise ratio.
+    // (Linear width would collapse every stage below awareness into a sliver.)
+    let pct = 0;
+    if (avail) {
+      pct = (stage.value > 0 && maxVal > 0) ? Math.max(14, Math.pow(stage.value / maxVal, 0.32) * 100) : 10;
+    }
     // stage.key lands in an HTML attribute; escapeHtml doesn't escape quotes,
     // so also neutralize them (defense-in-depth — keys are fixed today, but the
     // renderer must be safe regardless of payload source).

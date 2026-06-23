@@ -2177,6 +2177,12 @@ test('Truesight — 7/30/90 window toggle defaults to 7 days', () => {
   assert.ok(RENDERER_JS.includes('let tsWindowDays = 7'), 'default window is 7 days');
 });
 
+test('Truesight — bars use a readable power-scale, not linear slivers', () => {
+  const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
+  const fn = RENDERER_JS.slice(idx, idx + 2800);
+  assert.ok(fn.includes('Math.pow(stage.value / maxVal'), 'bar width uses a power-curve scale so lower stages stay legible across a wide impressions->orders range');
+});
+
 test('Truesight — concurrent window toggles drop stale responses (req-seq token)', () => {
   assert.ok(RENDERER_JS.includes('let tsReqSeq = 0'), 'request-sequence token declared');
   const idx = RENDERER_JS.indexOf('async function loadTruesightData');
