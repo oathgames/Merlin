@@ -10062,6 +10062,37 @@ ipcMain.handle('palantir-ideas', async (_, opts) => {
   });
 });
 
+// truesight — the full-funnel aggregator. Zero input beyond brand + window: the
+// Go `truesight` action pulls every connected source and resolves each funnel
+// stage (awareness -> visits -> add to cart -> bought) to its authoritative
+// source. Read-only; emits TRUESIGHT_RESULT <json>.
+ipcMain.handle('truesight', async (_, opts) => {
+  const o = (opts && typeof opts === 'object' && !Array.isArray(opts)) ? opts : {};
+  const binaryPath = getBinaryPath();
+  try { fs.accessSync(binaryPath); } catch { return { error: 'Merlin engine not found. Restart Merlin and try again.' }; }
+  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  try { fs.accessSync(configPath); } catch { return { error: 'Merlin is not set up yet.' }; }
+
+  const cmdObj = { action: 'truesight' };
+  if (typeof o.brand === 'string' && o.brand.trim()) cmdObj.brand = o.brand.trim().slice(0, 200);
+  if (Number.isInteger(o.batchCount) && o.batchCount > 0 && o.batchCount <= 365) cmdObj.batchCount = o.batchCount;
+
+  try { await maybeHydrateBinaryLicenseToken('truesight'); } catch {}
+  const { execFile } = require('child_process');
+  return await new Promise((resolve) => {
+    const child = execFile(binaryPath, ['--config', configPath, '--cmd', JSON.stringify(cmdObj)], {
+      timeout: 120000, cwd: appRoot, windowsHide: true, maxBuffer: 32 * 1024 * 1024,
+    }, (err, stdout) => {
+      const parsed = extractPrefixedJSON(stdout, 'TRUESIGHT_RESULT ');
+      if (parsed && typeof parsed === 'object') return resolve(parsed);
+      if (err && err.killed) return resolve({ error: 'Building your funnel timed out. Try a shorter window, then try again.' });
+      return resolve({ error: 'Merlin could not build your funnel just now. Please try again in a moment.' });
+    });
+    activeChildProcesses.add(child);
+    child.on('exit', () => activeChildProcesses.delete(child));
+  });
+});
+
 // palantir-download-ad fetches one competitor ad's full video to
 // results/competitor-ads/ via the existing foreplay-download-ad action,
 // so the Palantir lightbox can play it through the merlin:// protocol.

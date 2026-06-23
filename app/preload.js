@@ -186,6 +186,8 @@ contextBridge.exposeInMainWorld('merlin', {
   // Palantir — auto-discovery "winning ad ideas wall" (TrendTrack-backed).
   palantirIdeas: (opts) => ipcRenderer.invoke('palantir-ideas', assertObj(opts)),
   palantirDownloadAd: (opts) => ipcRenderer.invoke('palantir-download-ad', assertObj(opts)),
+  // Truesight — full-funnel aggregator (awareness -> visits -> ATC -> bought).
+  truesight: (opts) => ipcRenderer.invoke('truesight', assertObj(opts)),
   openFolder: (folderPath) => ipcRenderer.invoke('open-folder', assertStr(folderPath, 500)),
   copyImage: (filePath) => ipcRenderer.invoke('copy-image', assertStr(filePath, 500)),
   // Copy an in-memory PNG data URL (e.g. the share card canvas) to the
