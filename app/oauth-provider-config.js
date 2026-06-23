@@ -67,7 +67,12 @@ const PROVIDERS = {
     providerKey: 'meta',
     authUrl: 'https://www.facebook.com/v22.0/dialog/oauth',
     clientId: '823058806852722',
-    scopes: 'ads_management,pages_manage_ads,pages_read_engagement,business_management,pages_show_list',
+    // catalog_management appended 2026-06-22 to match autocmo-core/oauth.go
+    // getMetaOAuth (v1.29.0 added it to the binary but not here, so the
+    // fast-open browser flow was requesting 5 scopes while the binary requested
+    // 6 — catalog_management was silently never consented). The parity guard in
+    // oauth-provider-config.test.js catches this when both repos are checked out.
+    scopes: 'ads_management,pages_manage_ads,pages_read_engagement,business_management,pages_show_list,catalog_management',
     redirectUri: 'https://merlingotme.com/auth/callback',
     usesPKCE: false,
     // REGRESSION GUARD (2026-05-09, meta-config-id-fast-open):
