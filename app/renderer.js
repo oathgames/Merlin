@@ -11086,19 +11086,34 @@ function truesightWindowLabel(days) {
   if (days % 30 === 0) { const m = days / 30; return 'Last ' + m + (m === 1 ? ' month' : ' months'); }
   return 'Last ' + days + ' days';
 }
-// Fire the funnel pull + cache the result (the stale-while-revalidate source).
+// Consecutive all-disconnected refreshes (per brand|window) before we trust a
+// downgrade. One blip is treated as transient (keep the good funnel); a
+// PERSISTENT disconnect surfaces so a genuinely revoked OAuth / removed store
+// isn't hidden until app restart (Gitar #288).
+const TS_DISCONNECT_STREAK_TO_TRUST = 2;
+const tsDisconnectStreak = new Map();
+// Fire the funnel pull. tsFetch is the single authority on the no-downgrade
+// rule: it decides whether a fresh result replaces the cached one, and returns
+// exactly what loadTruesightData should render (the fresh result, or the kept
+// cached funnel when a downgrade is being suppressed).
 async function tsFetch(brand, days) {
+  const key = tsKey(brand, days);
   let res;
   try { res = await merlin.truesight({ brand, batchCount: days }); }
   catch (e) { res = { error: 'Could not load your funnel just now. Please try again.' }; }
-  if (res && typeof res === 'object' && !res.error) {
-    // Don't let a transient "all disconnected" blip overwrite a known-good
-    // connected funnel in the cache — that's the same downgrade class the
-    // no-downgrade render guard prevents, and a cached bad state would persist
-    // across re-opens (Gitar #288).
-    const prev = tsCache.get(tsKey(brand, days));
-    if (!(prev && prev.any_connected && !res.any_connected)) tsCache.set(tsKey(brand, days), res);
+  if (!res || typeof res !== 'object' || res.error) return res; // error: leave cache + streak alone
+
+  const prev = tsCache.get(key);
+  if (prev && prev.any_connected && !res.any_connected) {
+    // Cached funnel was connected but this refresh says all-disconnected.
+    const streak = (tsDisconnectStreak.get(key) || 0) + 1;
+    tsDisconnectStreak.set(key, streak);
+    if (streak < TS_DISCONNECT_STREAK_TO_TRUST) return prev; // transient blip: keep the good funnel, don't cache the downgrade
+    // Persistent disconnect — accept it (fall through to cache + return res).
+  } else {
+    tsDisconnectStreak.delete(key); // connected (or no prior good funnel): reset the streak
   }
+  tsCache.set(key, res);
   return res;
 }
 // Background prefetch so the tab opens instantly (warms the cache, no render).
@@ -11134,13 +11149,12 @@ async function loadTruesightData() {
 
   const res = await tsFetch(brand, days);
   if (myReq !== tsReqSeq) return; // superseded by a newer open / window change — don't render stale data
-  // Stale-while-revalidate must never DOWNGRADE: if we already showed good
-  // cached data and the background refresh failed transiently, keep the cache
-  // on screen rather than replacing a real funnel with an error message...
+  // No-downgrade on a transient REFRESH ERROR: keep the cached funnel rather
+  // than replacing it with an error message. (The all-disconnected downgrade is
+  // handled inside tsFetch via the consecutive-disconnect streak — it returns
+  // the kept funnel while suppressing, and the fresh disconnected result once a
+  // disconnect is confirmed persistent, so this path just renders what it gets.)
   if (cached && res && res.error) return;
-  // ...or with the connect-CTA when a transient brand/credential blip reports
-  // "all disconnected" while the cached funnel was connected (Gitar #288).
-  if (cached && cached.any_connected && res && !res.any_connected) return;
   renderTruesightResult(res, days);
 }
 

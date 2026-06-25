@@ -2200,11 +2200,14 @@ test('Truesight — caches per brand+window and renders stale-while-revalidate',
     'always revalidates in the background and re-renders');
   assert.ok(fn.includes('if (cached && res && res.error) return'),
     'a transient revalidate error never downgrades good cached data to an error');
-  assert.ok(fn.includes('cached.any_connected && res && !res.any_connected'),
-    'a transient all-disconnected refresh never downgrades a connected cached funnel to the connect-CTA (Gitar #288)');
-  // ...and tsFetch must not poison the cache with that downgrade either.
+  // The all-disconnected no-downgrade decision lives in tsFetch via a
+  // consecutive-disconnect streak: a transient blip keeps the good funnel, but a
+  // PERSISTENT disconnect surfaces rather than being hidden until restart (Gitar #288).
+  assert.ok(/const TS_DISCONNECT_STREAK_TO_TRUST = \d/.test(RENDERER_JS), 'consecutive-disconnect threshold declared');
   assert.ok(/prev && prev\.any_connected && !res\.any_connected/.test(RENDERER_JS),
-    'tsFetch refuses to overwrite a connected cached funnel with an all-disconnected blip');
+    'tsFetch suppresses a transient all-disconnected blip (keeps the connected funnel)');
+  assert.ok(RENDERER_JS.includes('streak < TS_DISCONNECT_STREAK_TO_TRUST'),
+    'a persistent disconnect (>= N consecutive) surfaces, not hidden until restart');
 });
 
 test('Truesight — prefetches so the tab opens instantly (startup + brand + window change)', () => {
