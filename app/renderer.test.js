@@ -2162,33 +2162,108 @@ test('Truesight — renders funnel via escaped sinks (no raw innerHTML of source
 });
 
 test('Truesight — empty state shows a connect CTA, never a broken funnel', () => {
-  const idx = RENDERER_JS.indexOf('async function loadTruesightData');
-  assert.ok(idx > 0, 'loadTruesightData exists');
-  const fn = RENDERER_JS.slice(idx, idx + 2000);
+  const idx = RENDERER_JS.indexOf('function renderTruesightResult');
+  assert.ok(idx > 0, 'renderTruesightResult exists');
+  const fn = RENDERER_JS.slice(idx, idx + 1600);
   assert.ok(fn.includes('any_connected'), 'checks any_connected before rendering');
   assert.ok(fn.includes('ts-connect-btn') && fn.includes("getElementById('magic-btn')"),
     'no-source state offers a Connect button that opens the Magic panel');
   assert.ok(fn.includes('res.error'), 'surfaces a friendly error (not a crash)');
 });
 
-test('Truesight — 7/30/90 window toggle defaults to 7 days', () => {
-  assert.ok(INDEX_HTML.includes('truesight-window-btn') && INDEX_HTML.includes('data-days="7"'),
-    'window toggle buttons exist');
-  assert.ok(RENDERER_JS.includes('let tsWindowDays = 7'), 'default window is 7 days');
+test('Truesight — follows the revenue (perf) bar window; no own toggle or refresh', () => {
+  // The redundant 7/30/90 selector + refresh button were removed: Truesight
+  // reads whatever window the perf bar has active.
+  assert.ok(!INDEX_HTML.includes('truesight-window-btn'), 'no separate window toggle in the topbar');
+  assert.ok(!INDEX_HTML.includes('id="truesight-refresh"'), 'no separate refresh button in the topbar');
+  assert.ok(RENDERER_JS.includes("querySelector('.perf-period-btn.active')") &&
+    RENDERER_JS.includes('function tsCurrentDays'),
+    'tsCurrentDays reads the active perf-bar period');
 });
 
-test('Truesight — bars use a readable power-scale, not linear slivers', () => {
+test('Truesight — bars use fixed funnel widths (always legible, never slivers)', () => {
+  assert.ok(/const TS_BAR_WIDTHS = \[/.test(RENDERER_JS), 'fixed per-stage bar widths declared');
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
   const fn = RENDERER_JS.slice(idx, idx + 2800);
-  assert.ok(fn.includes('Math.pow(stage.value / maxVal'), 'bar width uses a power-curve scale so lower stages stay legible across a wide impressions->orders range');
+  assert.ok(fn.includes('TS_BAR_WIDTHS[Math.min(i'), 'bar width comes from the fixed-width table by stage index');
+  assert.ok(!fn.includes('Math.pow(stage.value'), 'the old data-proportional power-scale is gone');
 });
 
-test('Truesight — concurrent window toggles drop stale responses (req-seq token)', () => {
+test('Truesight — caches per brand+window and renders stale-while-revalidate', () => {
+  assert.ok(RENDERER_JS.includes('const tsCache = new Map()'), 'a brand|window cache exists');
+  const idx = RENDERER_JS.indexOf('async function loadTruesightData');
+  const fn = RENDERER_JS.slice(idx, idx + 1700);
+  assert.ok(fn.includes('tsCache.get(tsKey(brand, days))'), 'reads the cache first');
+  assert.ok(fn.includes('renderTruesightResult(cached') && fn.includes('showTruesightLoading('),
+    'renders cache instantly, else shows the loading state');
+  assert.ok(fn.includes('await tsFetch(brand, days)') && fn.includes('renderTruesightResult(res'),
+    'always revalidates in the background and re-renders');
+  assert.ok(fn.includes('if (cached && res && res.error) return'),
+    'a transient revalidate error never downgrades good cached data to an error');
+  // The all-disconnected no-downgrade decision lives in tsFetch via a
+  // consecutive-disconnect streak: a transient blip keeps the good funnel, but a
+  // PERSISTENT disconnect surfaces rather than being hidden until restart (Gitar #288).
+  assert.ok(/const TS_DISCONNECT_STREAK_TO_TRUST = \d/.test(RENDERER_JS), 'consecutive-disconnect threshold declared');
+  assert.ok(/prev && prev\.any_connected && !res\.any_connected/.test(RENDERER_JS),
+    'tsFetch suppresses a transient all-disconnected blip (keeps the connected funnel)');
+  assert.ok(RENDERER_JS.includes('streak < TS_DISCONNECT_STREAK_TO_TRUST'),
+    'a persistent disconnect (>= N consecutive) surfaces, not hidden until restart');
+});
+
+test('Truesight — prefetches so the tab opens instantly (startup + brand + window change)', () => {
+  assert.ok(RENDERER_JS.includes('function prefetchTruesight'), 'prefetch helper exists');
+  assert.ok(RENDERER_JS.includes('setTimeout(prefetchTruesight, 2500)'), 'warms cache shortly after launch');
+  const count = (RENDERER_JS.match(/prefetchTruesight\(\)/g) || []).length;
+  assert.ok(count >= 2, 'prefetch is invoked from the brand-switch and perf-window-change paths');
+});
+
+test('Truesight — ad-attributed stages show an honest "connect GA" note', () => {
+  const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
+  const fn = RENDERER_JS.slice(idx, idx + 4600);
+  assert.ok(fn.includes("s.provider === 'ads'") && fn.includes("s.key === 'visits'") && fn.includes("s.key === 'add_to_cart'"),
+    'detects upper-funnel stages that fell back to ad pixels');
+  assert.ok(fn.includes('ts-note') && fn.includes('Connect Google Analytics'),
+    'surfaces a site-wide-totals nudge wired to the Magic panel');
+});
+
+test('Truesight — concurrent re-opens / window changes drop stale renders (req-seq token)', () => {
   assert.ok(RENDERER_JS.includes('let tsReqSeq = 0'), 'request-sequence token declared');
   const idx = RENDERER_JS.indexOf('async function loadTruesightData');
   const fn = RENDERER_JS.slice(idx, idx + 1200);
   assert.ok(fn.includes('const myReq = ++tsReqSeq'), 'captures a request id before the await');
   assert.ok(fn.includes('if (myReq !== tsReqSeq) return'), 'bails before render if a newer request superseded this one');
+});
+
+test('Palantir — loading/empty portal spans the full grid (no off-center load jump)', () => {
+  assert.ok(/\.palantir-ideas-grid\s*>\s*\.palantir-portal\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/.test(STYLE_CSS),
+    'the single portal child spans every column so it is centered from first paint');
+});
+
+test('Agency report — opens via main IPC, never a renderer window.open (popup-blocker bug)', () => {
+  // setWindowOpenHandler denies every renderer window.open, so window.open()
+  // returned null 100% of the time and surfaced a bogus popup-blocker error.
+  // The report must be opened by main. Guard against reintroducing the popup path.
+  const idx = RENDERER_JS.indexOf('const reportHtml = buildReportHtml(report, brands)');
+  assert.ok(idx > 0, 'report build site exists');
+  // Scope to the handler flow only — buildReportHtml's generated report HTML may
+  // legitimately use window.open (it runs in the real browser now, not Electron).
+  const fn = RENDERER_JS.slice(idx, RENDERER_JS.indexOf('function buildReportHtml', idx));
+  assert.ok(fn.includes('merlin.openAgencyReport(reportHtml)'), 'report HTML is handed to main to open');
+  assert.ok(!fn.includes('window.open('), 'no renderer window.open in the report flow');
+  assert.ok(!RENDERER_JS.includes('Your popup blocker prevented'), 'the bogus popup-blocker message is gone');
+});
+
+test('Agency report — preload bridges it; main writes a temp file + shell.openPath', () => {
+  assert.ok(PRELOAD_JS.includes("openAgencyReport: (html) => ipcRenderer.invoke('open-agency-report'"),
+    'preload bridges open-agency-report');
+  const idx = MAIN_JS.indexOf("ipcMain.handle('open-agency-report'");
+  assert.ok(idx > 0, 'main handles open-agency-report');
+  const h = MAIN_JS.slice(idx, idx + 1000);
+  assert.ok(h.includes('mkdtemp') && h.includes('os.tmpdir()'), 'writes into a per-call temp subdir');
+  assert.ok(h.includes('mode: 0o600'), 'report file is 0600 (not world-readable — sensitive revenue data)');
+  assert.ok(h.includes('shell.openPath'), 'opens it with the OS default browser (no popup blocker)');
+  assert.ok(/setTimeout\([^)]*fs\.promises\.rm/.test(h) || h.includes('fs.promises.rm('), 'best-effort cleanup so reports never accumulate in tmpdir');
+  assert.ok(h.includes("typeof html !== 'string'"), 'guards a non-string / empty payload');
 });
 
 test('Truesight — RSI hardening: non-finite guard, focus restore, attr-escaped key', () => {
