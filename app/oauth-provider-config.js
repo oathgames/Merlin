@@ -151,7 +151,7 @@ const PROVIDERS = {
     // resolveShopifyStore in autocmo-core/oauth.go).
     authUrlTemplate: 'https://{shop}.myshopify.com/admin/oauth/authorize',
     clientId: '79e0cd99d736273d5c3d7341e99942e5',
-    scopes: 'read_analytics,read_customers,read_orders,read_products,write_products,read_content,write_content',
+    scopes: 'read_analytics,read_orders,read_products,write_products,read_content,write_content',
     // Worker relay — the Shopify Partner Dashboard pins the redirect URI
     // to merlingotme.com/auth/callback, NOT localhost. The Worker does a
     // 302 back to localhost:<port> with the port extracted from the
