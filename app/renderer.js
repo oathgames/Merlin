@@ -11091,7 +11091,14 @@ async function tsFetch(brand, days) {
   let res;
   try { res = await merlin.truesight({ brand, batchCount: days }); }
   catch (e) { res = { error: 'Could not load your funnel just now. Please try again.' }; }
-  if (res && typeof res === 'object' && !res.error) tsCache.set(tsKey(brand, days), res);
+  if (res && typeof res === 'object' && !res.error) {
+    // Don't let a transient "all disconnected" blip overwrite a known-good
+    // connected funnel in the cache — that's the same downgrade class the
+    // no-downgrade render guard prevents, and a cached bad state would persist
+    // across re-opens (Gitar #288).
+    const prev = tsCache.get(tsKey(brand, days));
+    if (!(prev && prev.any_connected && !res.any_connected)) tsCache.set(tsKey(brand, days), res);
+  }
   return res;
 }
 // Background prefetch so the tab opens instantly (warms the cache, no render).
@@ -11129,8 +11136,11 @@ async function loadTruesightData() {
   if (myReq !== tsReqSeq) return; // superseded by a newer open / window change — don't render stale data
   // Stale-while-revalidate must never DOWNGRADE: if we already showed good
   // cached data and the background refresh failed transiently, keep the cache
-  // on screen rather than replacing a real funnel with an error message.
+  // on screen rather than replacing a real funnel with an error message...
   if (cached && res && res.error) return;
+  // ...or with the connect-CTA when a transient brand/credential blip reports
+  // "all disconnected" while the cached funnel was connected (Gitar #288).
+  if (cached && cached.any_connected && res && !res.any_connected) return;
   renderTruesightResult(res, days);
 }
 
@@ -11226,6 +11236,12 @@ function renderTruesightFunnel(data) {
   // Analytics not connected), the visit / add-to-cart counts are ad-attributed
   // only — a sliver of true site-wide totals. Say so plainly and offer the fix,
   // so a low number reads as "connect GA4" rather than "the math is wrong".
+  // Contract: the Go truesight aggregator (autocmo-core/truesight.go) sets
+  // FunnelStage.Provider (json "provider") to "ads" on the visits + add_to_cart
+  // stages ONLY when they fall back to ad-pixel events (GA4 not connected); a
+  // GA4-sourced stage carries "ga4". So provider==='ads' on those two stages is
+  // exactly the "thin data" signal. Verified against truesight.go (provider
+  // values: ads | ga4 | shopify | stripe | triplewhale).
   const adAttributed = stages.some((s) => s && s.available && s.provider === 'ads' && (s.key === 'visits' || s.key === 'add_to_cart'));
   if (adAttributed) {
     html += '<div class="ts-note">Some stages show <strong>ad-attributed</strong> activity only. ' +

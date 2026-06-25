@@ -2192,7 +2192,7 @@ test('Truesight — bars use fixed funnel widths (always legible, never slivers)
 test('Truesight — caches per brand+window and renders stale-while-revalidate', () => {
   assert.ok(RENDERER_JS.includes('const tsCache = new Map()'), 'a brand|window cache exists');
   const idx = RENDERER_JS.indexOf('async function loadTruesightData');
-  const fn = RENDERER_JS.slice(idx, idx + 1300);
+  const fn = RENDERER_JS.slice(idx, idx + 1700);
   assert.ok(fn.includes('tsCache.get(tsKey(brand, days))'), 'reads the cache first');
   assert.ok(fn.includes('renderTruesightResult(cached') && fn.includes('showTruesightLoading('),
     'renders cache instantly, else shows the loading state');
@@ -2200,6 +2200,11 @@ test('Truesight — caches per brand+window and renders stale-while-revalidate',
     'always revalidates in the background and re-renders');
   assert.ok(fn.includes('if (cached && res && res.error) return'),
     'a transient revalidate error never downgrades good cached data to an error');
+  assert.ok(fn.includes('cached.any_connected && res && !res.any_connected'),
+    'a transient all-disconnected refresh never downgrades a connected cached funnel to the connect-CTA (Gitar #288)');
+  // ...and tsFetch must not poison the cache with that downgrade either.
+  assert.ok(/prev && prev\.any_connected && !res\.any_connected/.test(RENDERER_JS),
+    'tsFetch refuses to overwrite a connected cached funnel with an all-disconnected blip');
 });
 
 test('Truesight — prefetches so the tab opens instantly (startup + brand + window change)', () => {
@@ -2250,9 +2255,11 @@ test('Agency report — preload bridges it; main writes a temp file + shell.open
     'preload bridges open-agency-report');
   const idx = MAIN_JS.indexOf("ipcMain.handle('open-agency-report'");
   assert.ok(idx > 0, 'main handles open-agency-report');
-  const h = MAIN_JS.slice(idx, idx + 800);
-  assert.ok(h.includes('os.tmpdir()') && h.includes('writeFile'), 'writes the report to a temp file');
+  const h = MAIN_JS.slice(idx, idx + 1000);
+  assert.ok(h.includes('mkdtemp') && h.includes('os.tmpdir()'), 'writes into a per-call temp subdir');
+  assert.ok(h.includes('mode: 0o600'), 'report file is 0600 (not world-readable — sensitive revenue data)');
   assert.ok(h.includes('shell.openPath'), 'opens it with the OS default browser (no popup blocker)');
+  assert.ok(/setTimeout\([^)]*fs\.promises\.rm/.test(h) || h.includes('fs.promises.rm('), 'best-effort cleanup so reports never accumulate in tmpdir');
   assert.ok(h.includes("typeof html !== 'string'"), 'guards a non-string / empty payload');
 });
 

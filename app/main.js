@@ -6301,14 +6301,19 @@ ipcMain.handle('open-merlin-folder', () => { shell.openPath(appRoot); });
 // window.open() returns null 100% of the time and the old code mislabeled it as
 // a popup blocker. Main writes the report to a temp .html file and opens it with
 // the OS default browser via shell.openPath — nothing a popup blocker can stop.
-// The HTML is our own (no inline handlers, brand data escaped in buildReportHtml)
-// and is written to the OS temp dir, never executed in-app.
+// The HTML is our own (no inline handlers, brand data escaped in buildReportHtml).
+// It carries sensitive aggregated revenue data, so it is written into a per-call
+// 0700 temp subdir with a 0600 file (not world-readable on a shared /tmp) and the
+// whole subdir is best-effort removed ~60s later, once the browser has loaded it,
+// so reports never accumulate in tmpdir (Gitar #288).
 ipcMain.handle('open-agency-report', async (_, html) => {
   try {
     if (typeof html !== 'string' || !html.trim()) return { ok: false, error: 'The report came back empty.' };
-    const file = path.join(os.tmpdir(), `Merlin-Report-${Date.now()}.html`);
-    await fs.promises.writeFile(file, html, 'utf8');
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'merlin-report-'));
+    const file = path.join(dir, `Merlin-Report-${Date.now()}.html`);
+    await fs.promises.writeFile(file, html, { encoding: 'utf8', mode: 0o600 });
     const err = await shell.openPath(file); // '' on success, a message on failure
+    setTimeout(() => { fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {}); }, 60000);
     if (err) return { ok: false, error: err };
     return { ok: true, path: file };
   } catch (e) {
