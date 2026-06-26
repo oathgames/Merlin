@@ -9759,7 +9759,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
 
   const brandRows = brands.map(b => `
     <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;font-size:13px;color:var(--text-muted)">
-      <input type="checkbox" checked data-brand="${escapeHtml(b.name)}" style="accent-color:var(--accent)">
+      <input type="checkbox" checked data-brand="${escapeHtml(b.name).replace(/"/g, '&quot;')}" style="accent-color:var(--accent)">
       ${escapeHtml(b.displayName || b.name)}
     </label>
   `).join('');
@@ -9925,14 +9925,18 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
     try {
       opened = await merlin.openAgencyReport(reportHtml);
     } catch (err) {
+      // Raw err → console for debugging; user gets a friendly, actionable
+      // message, never a raw IPC/OS string (RSI 2026-06-26, Rule 6).
       console.error('[report]', err);
-      setStatus(friendlyError(err?.message || String(err), 'report'), 'error');
+      setStatus('Something interrupted opening your report. Please try generating it again.', 'error');
       updateGenState();
       return;
     }
     if (!opened || !opened.ok) {
+      // opened.error is a raw shell.openPath / fs string that friendlyError
+      // does not humanize — show fixed actionable copy instead of leaking it.
       console.error('[report]', opened && opened.error);
-      setStatus(friendlyError((opened && opened.error) || 'Could not open the report.', 'report'), 'error');
+      setStatus('Your report was created, but your computer could not open it automatically. Make sure a default web browser is set, then try generating it again.', 'error');
       updateGenState();
       return;
     }
