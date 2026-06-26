@@ -2319,6 +2319,10 @@ test('Agency report — opens via main IPC, never a renderer window.open (popup-
   assert.ok(fn.includes('merlin.openAgencyReport(reportHtml)'), 'report HTML is handed to main to open');
   assert.ok(!fn.includes('window.open('), 'no renderer window.open in the report flow');
   assert.ok(!RENDERER_JS.includes('Your popup blocker prevented'), 'the bogus popup-blocker message is gone');
+  // RSI 2026-06-26: the open-failure paths show fixed, friendly, actionable copy
+  // and never feed the raw shell.openPath / IPC string through friendlyError.
+  assert.ok(fn.includes('could not open it automatically'), 'open-failure shows friendly, actionable copy');
+  assert.ok(!/friendlyError\(\s*(opened|err)/.test(fn), 'raw shell.openPath/IPC error is not passed through friendlyError');
 });
 
 test('Agency report — preload bridges it; main writes a temp file + shell.openPath', () => {
@@ -2332,6 +2336,14 @@ test('Agency report — preload bridges it; main writes a temp file + shell.open
   assert.ok(h.includes('shell.openPath'), 'opens it with the OS default browser (no popup blocker)');
   assert.ok(/setTimeout\([^)]*fs\.promises\.rm/.test(h) || h.includes('fs.promises.rm('), 'best-effort cleanup so reports never accumulate in tmpdir');
   assert.ok(h.includes("typeof html !== 'string'"), 'guards a non-string / empty payload');
+});
+
+test('Agency report — brand-row data-brand attribute is quote-neutralized (no attr injection)', () => {
+  // escapeHtml is a textContent→innerHTML round-trip and does NOT escape quotes,
+  // so an attribute sink needs the explicit .replace(/"/g,'&quot;') the Truesight
+  // code already uses. Defense-in-depth (brand slugs reject "), RSI 2026-06-26.
+  assert.ok(RENDERER_JS.includes(`escapeHtml(b.name).replace(/"/g, '&quot;')`),
+    'data-brand attribute value escapes double-quotes, not just HTML entities');
 });
 
 test('Truesight — RSI hardening: non-finite guard, focus restore, attr-escaped key', () => {
