@@ -2260,8 +2260,18 @@ test('Truesight WoW — growth header leads with Reach + Mindshare (mindshare pr
     'header carries the "mindshare precedes revenue" framing');
   assert.ok(fn.includes('hasLeading') || /Reach.*Mindshare/.test(fn),
     'header requires at least one leading indicator (reach/mindshare) before showing');
-  assert.ok(fn.includes('wowDays === 7') && fn.includes('Week over week'),
-    'labels the comparison "Week over week" for the default 7-day window');
+  assert.ok(fn.includes('truesightCompareLabel(wowDays)'),
+    'header titles via the per-window compare-label helper');
+});
+
+test('Truesight WoW — compare label adapts to the selected window (7d vs prev 7d, 30d vs prev 30d, …)', () => {
+  const idx = RENDERER_JS.indexOf('function truesightCompareLabel');
+  assert.ok(idx > 0, 'truesightCompareLabel helper exists');
+  const fn = RENDERER_JS.slice(idx, idx + 600);
+  assert.ok(fn.includes('days === 7') && fn.includes('Week over week'), '7d → "Week over week"');
+  assert.ok(fn.includes('days % 30 === 0') && fn.includes('vs the previous '),
+    '30d/90d → "vs the previous N month(s)" (mirrors the Truesight window label)');
+  assert.ok(fn.includes('vs yesterday'), '1d → "vs yesterday"');
 });
 
 test('Truesight WoW — funnel prepends the growth header and badges each stage', () => {

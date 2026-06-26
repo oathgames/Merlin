@@ -11224,6 +11224,17 @@ function tsDeltaBadge(stage) {
   return '<span class="ts-delta ts-delta-flat" title="no change vs the previous period">no change</span>';
 }
 
+// truesightCompareLabel names the WoW comparison for whatever window is active
+// (the funnel follows the revenue-bar window), mirroring truesightWindowLabel so
+// "Last 3 months" pairs with "vs the previous 3 months". Always reads as
+// current-period vs the immediately-preceding same-length period.
+function truesightCompareLabel(days) {
+  if (days <= 1) return 'vs yesterday';
+  if (days === 7) return 'Week over week';
+  if (days % 30 === 0) { const m = days / 30; return 'vs the previous ' + m + (m === 1 ? ' month' : ' months'); }
+  return 'vs the previous ' + days + ' days';
+}
+
 // truesightGrowthHeader leads the funnel with the LEADING indicators — Reach
 // (awareness) and Mindshare (visits) — because those climb before revenue does.
 // It is the "here is how your brand is growing" story the funnel bars then back
@@ -11244,7 +11255,7 @@ function truesightGrowthHeader(stages, wowDays) {
   // the growth-before-revenue story; otherwise skip the header entirely.
   const hasLeading = have.some((t) => t.label === 'Reach' || t.label === 'Mindshare');
   if (!have.length || !hasLeading) return '';
-  const title = wowDays === 7 ? 'Week over week' : ('vs the previous ' + wowDays + ' days');
+  const title = truesightCompareLabel(wowDays);
   let h = '<div class="ts-growth">';
   h += '<div class="ts-growth-title">' + escapeHtml(title) + '</div>';
   h += '<div class="ts-growth-row">';
