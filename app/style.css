@@ -3786,6 +3786,49 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 }
 .ts-note .ts-connect-inline { vertical-align: baseline; }
 
+/* ── Week-over-week growth ─────────────────────────────────
+   Leads the funnel: how reach + mindshare are GROWING, not just
+   where they stand. Mindshare precedes revenue, so these tiles
+   are the headline; the funnel bars below back them up. */
+.ts-growth {
+  max-width: 760px; margin: 0 auto 26px; padding: 18px 20px 16px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(34,211,238,.06), rgba(139,92,246,.08));
+  border: 1px solid rgba(139,92,246,.22);
+}
+.ts-growth-title {
+  font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--text-muted); margin-bottom: 12px;
+}
+.ts-growth-row {
+  display: flex; flex-wrap: wrap; gap: 14px; align-items: stretch;
+}
+.ts-growth-tile {
+  flex: 1 1 0; min-width: 120px; text-align: center;
+  padding: 10px 8px; border-radius: 10px;
+  background: rgba(127,127,127,.06);
+}
+.ts-growth-metric {
+  font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--text); margin-bottom: 6px;
+}
+.ts-growth-delta { font-size: 22px; font-weight: 800; line-height: 1.1; min-height: 26px; }
+.ts-growth-delta .ts-delta { font-size: 22px; padding: 0; background: none; }
+.ts-growth-sub { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
+.ts-growth-note {
+  font-size: 12px; color: var(--text-muted); margin-top: 12px; text-align: center; line-height: 1.5;
+}
+/* per-stage WoW chip, sits next to the big stage number */
+.ts-delta {
+  display: inline-block; margin-left: 10px; font-size: 13px; font-weight: 700;
+  vertical-align: middle; font-variant-numeric: tabular-nums;
+  padding: 2px 8px; border-radius: 999px;
+}
+.ts-delta-up { color: #34d399; background: rgba(52,211,153,.12); }
+.ts-delta-down { color: #f87171; background: rgba(248,113,113,.12); }
+.ts-delta-new { color: #22d3ee; background: rgba(34,211,238,.14); text-transform: uppercase; letter-spacing: .04em; }
+.ts-delta-flat { color: var(--text-muted); background: rgba(127,127,127,.1); font-weight: 600; }
+
 /* ── Palantir full-frame top bar ───────────────────────── */
 .palantir-topbar {
   display: flex; align-items: center; justify-content: space-between;

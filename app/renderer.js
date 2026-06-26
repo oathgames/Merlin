@@ -4572,7 +4572,7 @@ function setStatsEmpty() {
   const pill = document.getElementById('stats-trend-pill');
   if (pill) { pill.classList.add('hidden'); pill.textContent = ''; pill.classList.remove('up','down','flat'); }
   const label = document.getElementById('stats-revenue-label');
-  if (label) label.textContent = 'revenue from Merlin\u2019s ads';
+  if (label) label.textContent = 'revenue generated with Merlin';
   setStatsPeriodActive(null);
 }
 
@@ -4663,8 +4663,8 @@ function renderStatsCard(perf, days) {
   const revLabel = document.getElementById('stats-revenue-label');
   if (revLabel) {
     revLabel.textContent = heroIsAdRev
-      ? 'revenue from Merlin\u2019s ads'
-      : (heroVal > 0 ? 'revenue tracked' : 'revenue from Merlin\u2019s ads');
+      ? 'revenue generated with Merlin'
+      : (heroVal > 0 ? 'revenue tracked' : 'revenue generated with Merlin');
   }
 
   document.getElementById('stats-period').textContent = STATS_PERIOD_LABELS[days] || `Last ${days} days`;
@@ -11199,6 +11199,79 @@ function renderTruesightResult(res, days) {
   renderTruesightFunnel(res);
 }
 
+// tsPctFmt renders an already-rounded (1-decimal, from the Go side) percentage
+// without a trailing ".0" — "20" not "20.0", but "12.3" stays.
+function tsPctFmt(n) {
+  const v = Math.abs(Number(n) || 0);
+  return Number.isInteger(v) ? String(v) : v.toFixed(1);
+}
+
+// tsDeltaBadge renders a stage's week-over-week growth chip. Contract (set by
+// autocmo-core/truesight.go): has_prior=true means a prior-window value exists;
+// prior=0 with value>0 means the stage is brand-new this period ("new"); a
+// positive/negative delta_pct is the rounded % change. Arrow + color carries the
+// direction so the magnitude reads clean without a redundant sign.
+function tsDeltaBadge(stage) {
+  if (!stage || !stage.has_prior) return '';
+  const v = Number(stage.value) || 0;
+  const prior = Number(stage.prior) || 0;
+  if (prior === 0) {
+    return v > 0 ? '<span class="ts-delta ts-delta-new">new</span>' : '';
+  }
+  const d = Number(stage.delta_pct) || 0;
+  if (d > 0) return '<span class="ts-delta ts-delta-up" title="up vs the previous period">&#9650; ' + tsPctFmt(d) + '%</span>';
+  if (d < 0) return '<span class="ts-delta ts-delta-down" title="down vs the previous period">&#9660; ' + tsPctFmt(d) + '%</span>';
+  return '<span class="ts-delta ts-delta-flat" title="no change vs the previous period">no change</span>';
+}
+
+// truesightCompareLabel names the WoW comparison for whatever window is active
+// (the funnel follows the revenue-bar window), mirroring truesightWindowLabel so
+// "Last 3 months" pairs with "vs the previous 3 months". Always reads as
+// current-period vs the immediately-preceding same-length period.
+function truesightCompareLabel(days) {
+  if (days <= 1) return 'vs yesterday';
+  if (days === 7) return 'Week over week';
+  if (days % 30 === 0) { const m = days / 30; return 'vs the previous ' + m + (m === 1 ? ' month' : ' months'); }
+  return 'vs the previous ' + days + ' days';
+}
+
+// truesightGrowthHeader leads the funnel with the LEADING indicators — Reach
+// (awareness) and Mindshare (visits) — because those climb before revenue does.
+// It is the "here is how your brand is growing" story the funnel bars then back
+// up stage-by-stage. Returns '' when no leading stage has a prior window yet
+// (first-ever week, or a window too long for week-over-week).
+function truesightGrowthHeader(stages, wowDays) {
+  if (!Array.isArray(stages) || !wowDays) return '';
+  const byKey = {};
+  stages.forEach((s) => { if (s && s.key) byKey[s.key] = s; });
+  const tiles = [
+    { stage: byKey.awareness, label: 'Reach', sub: 'people who saw you' },
+    { stage: byKey.visits, label: 'Mindshare', sub: 'came to your site' },
+    { stage: byKey.add_to_cart, label: 'Intent', sub: 'added to cart' },
+    { stage: byKey.converted, label: 'Revenue', sub: 'bought' },
+  ];
+  const have = tiles.filter((t) => t.stage && t.stage.available && t.stage.has_prior);
+  // Need at least one of the two LEADING indicators (reach/mindshare) to tell
+  // the growth-before-revenue story; otherwise skip the header entirely.
+  const hasLeading = have.some((t) => t.label === 'Reach' || t.label === 'Mindshare');
+  if (!have.length || !hasLeading) return '';
+  const title = truesightCompareLabel(wowDays);
+  let h = '<div class="ts-growth">';
+  h += '<div class="ts-growth-title">' + escapeHtml(title) + '</div>';
+  h += '<div class="ts-growth-row">';
+  have.forEach((t) => {
+    h += '<div class="ts-growth-tile">' +
+      '<div class="ts-growth-metric">' + escapeHtml(t.label) + '</div>' +
+      '<div class="ts-growth-delta">' + tsDeltaBadge(t.stage) + '</div>' +
+      '<div class="ts-growth-sub">' + escapeHtml(t.sub) + '</div>' +
+      '</div>';
+  });
+  h += '</div>';
+  h += '<div class="ts-growth-note">Mindshare precedes revenue — watch reach and site visits climb before sales follow.</div>';
+  h += '</div>';
+  return h;
+}
+
 function renderTruesightFunnel(data) {
   const funnel = document.getElementById('truesight-funnel');
   if (!funnel) return;
@@ -11206,7 +11279,8 @@ function renderTruesightFunnel(data) {
   const steps = Array.isArray(data.steps) ? data.steps : [];
   const stepByFrom = {};
   steps.forEach((s) => { if (s && s.from) stepByFrom[s.from] = s; });
-  let html = '';
+  // Lead with the growth story (reach + mindshare WoW), then the funnel bars.
+  let html = truesightGrowthHeader(stages, data.wow_days);
   stages.forEach((stage, i) => {
     const avail = !!stage.available;
     // Fixed funnel-bar widths by stage position (TS_BAR_WIDTHS): always a clean
@@ -11222,7 +11296,7 @@ function renderTruesightFunnel(data) {
     html += '<div class="ts-stage' + (avail ? '' : ' unavailable') + '" data-key="' + keyAttr + '">';
     html += '<div class="ts-stage-head"><span class="ts-stage-label">' + escapeHtml(stage.label || '') + '</span>';
     if (avail) {
-      html += '<span class="ts-stage-num">' + tsNum(stage.value) + '</span>';
+      html += '<span class="ts-stage-num">' + tsNum(stage.value) + tsDeltaBadge(stage) + '</span>';
     } else {
       html += '<button class="ts-connect-inline" type="button">Connect</button>';
     }

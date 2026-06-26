@@ -2234,6 +2234,74 @@ test('Truesight — concurrent re-opens / window changes drop stale renders (req
   assert.ok(fn.includes('if (myReq !== tsReqSeq) return'), 'bails before render if a newer request superseded this one');
 });
 
+test('Truesight WoW — delta badge helper handles up / down / new / flat', () => {
+  const idx = RENDERER_JS.indexOf('function tsDeltaBadge');
+  assert.ok(idx > 0, 'tsDeltaBadge helper exists');
+  const fn = RENDERER_JS.slice(idx, idx + 1100);
+  assert.ok(fn.includes('if (!stage || !stage.has_prior) return') || fn.includes('!stage.has_prior'),
+    'no badge when the stage has no prior window');
+  assert.ok(fn.includes('ts-delta-new') && fn.includes("prior === 0"),
+    'prior 0 with a positive value renders "new" (no infinite percent)');
+  assert.ok(fn.includes('ts-delta-up') && fn.includes('ts-delta-down'),
+    'positive vs negative deltas render distinct up/down chips');
+  assert.ok(fn.includes('ts-delta-flat'), 'zero change renders a flat chip, not a fake +0%');
+  assert.ok(fn.includes('delta_pct'), 'reads the rounded delta_pct from the Go payload');
+});
+
+test('Truesight WoW — growth header leads with Reach + Mindshare (mindshare precedes revenue)', () => {
+  const idx = RENDERER_JS.indexOf('function truesightGrowthHeader');
+  assert.ok(idx > 0, 'truesightGrowthHeader helper exists');
+  const fn = RENDERER_JS.slice(idx, idx + 1700);
+  assert.ok(fn.includes("label: 'Reach'") && fn.includes('byKey.awareness'),
+    'Reach tile is the awareness stage');
+  assert.ok(fn.includes("label: 'Mindshare'") && fn.includes('byKey.visits'),
+    'Mindshare tile is the visits stage');
+  assert.ok(/Mindshare precedes revenue/i.test(fn),
+    'header carries the "mindshare precedes revenue" framing');
+  assert.ok(fn.includes('hasLeading') || /Reach.*Mindshare/.test(fn),
+    'header requires at least one leading indicator (reach/mindshare) before showing');
+  assert.ok(fn.includes('truesightCompareLabel(wowDays)'),
+    'header titles via the per-window compare-label helper');
+});
+
+test('Truesight WoW — compare label adapts to the selected window (7d vs prev 7d, 30d vs prev 30d, …)', () => {
+  const idx = RENDERER_JS.indexOf('function truesightCompareLabel');
+  assert.ok(idx > 0, 'truesightCompareLabel helper exists');
+  const fn = RENDERER_JS.slice(idx, idx + 600);
+  assert.ok(fn.includes('days === 7') && fn.includes('Week over week'), '7d → "Week over week"');
+  assert.ok(fn.includes('days % 30 === 0') && fn.includes('vs the previous '),
+    '30d/90d → "vs the previous N month(s)" (mirrors the Truesight window label)');
+  assert.ok(fn.includes('vs yesterday'), '1d → "vs yesterday"');
+});
+
+test('Truesight WoW — funnel prepends the growth header and badges each stage', () => {
+  const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
+  const fn = RENDERER_JS.slice(idx, idx + 2400);
+  assert.ok(fn.includes('truesightGrowthHeader(stages, data.wow_days)'),
+    'the funnel opens with the WoW growth header, fed the engine wow_days');
+  assert.ok(fn.includes('tsNum(stage.value) + tsDeltaBadge(stage)'),
+    'every available stage number carries its own WoW delta chip');
+});
+
+test('Truesight WoW — styles exist for the growth header and delta chips', () => {
+  assert.ok(/\.ts-growth\s*\{/.test(STYLE_CSS), '.ts-growth header card styled');
+  assert.ok(/\.ts-growth-note\s*\{/.test(STYLE_CSS), '.ts-growth-note framing line styled');
+  assert.ok(/\.ts-delta-up\s*\{/.test(STYLE_CSS) && /\.ts-delta-down\s*\{/.test(STYLE_CSS),
+    'up + down delta chips styled distinctly');
+  assert.ok(/\.ts-delta-new\s*\{/.test(STYLE_CSS), '"new" delta chip styled');
+});
+
+test('Revenue hero label reads "revenue generated with Merlin" (not "from Merlin’s ads")', () => {
+  // The ad-attributed hero label was broadened from "from Merlin's ads" to the
+  // more accurate "generated with Merlin" (Merlin drives more than just ads).
+  assert.ok(INDEX_HTML.includes('>revenue generated with Merlin<'),
+    'static index.html label updated');
+  assert.ok(RENDERER_JS.includes("'revenue generated with Merlin'"),
+    'runtime label updated in renderer.js');
+  assert.ok(!RENDERER_JS.includes("from Merlin’s ads") && !INDEX_HTML.includes("from Merlin's ads"),
+    'no stale "from Merlin’s ads" copy remains');
+});
+
 test('Palantir — loading/empty portal spans the full grid (no off-center load jump)', () => {
   assert.ok(/\.palantir-ideas-grid\s*>\s*\.palantir-portal\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/.test(STYLE_CSS),
     'the single portal child spans every column so it is centered from first paint');
