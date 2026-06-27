@@ -2707,6 +2707,10 @@ merlin.onSdkError((err) => {
   checkFrustration('');
   isStreaming = false;
   setInputDisabled(false);
+  // A dead/errored turn must not leave its "Sending to Claude…" spinner frozen
+  // on screen — query-start cancelled the 120s stuck-clear, so clear it here
+  // (matches the onAuthRequired fix; covers the "not logged in" re-auth branch).
+  clearStatusLabel();
 
   _restartAttempts++;
 
@@ -3406,6 +3410,14 @@ if (merlin.onAuthRequired) {
     sessionActive = false;
     isStreaming = false;
     setInputDisabled(false);
+    // REGRESSION GUARD (2026-06-27): the auth flow OWNS the UI now, so wipe the
+    // stale session-phase bar that query-start left set to "Sending to Claude…".
+    // Without this it freezes on screen alongside the sign-in bubble — query-start
+    // already cancelled its 120s stuck-clear (the label isn't "Thinking"), so
+    // nothing else clears it, and the app LOOKS hung mid-send when it is really
+    // just waiting for the user to finish the browser sign-in. Live incident:
+    // "Set up North Swell" stuck on SENDING TO CLAUDE behind a sign-in prompt.
+    clearStatusLabel();
 
     // Show a live status bubble that updates as auth progresses
     const bubble = addClaudeBubble();
@@ -3419,7 +3431,9 @@ if (merlin.onAuthRequired) {
         statusEl.textContent = text;
       }
     }
-    setStatus('Opening Claude sign-in in your browser...');
+    // Be explicit that the ball is in the user's court — a silent "Opening…"
+    // for up to the 5-minute login timeout reads as a hang.
+    setStatus('Opening Claude sign-in in your browser — finish signing in there and I’ll pick up right where you left off.');
 
     try {
       if (!merlin.triggerClaudeLogin) {

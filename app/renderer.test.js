@@ -2110,6 +2110,27 @@ test('Rule 6 — Claude sign-in bubble routes error through friendlyErrorPlain',
     'sign-in failure must route through friendlyErrorPlain');
 });
 
+test('Auth-required + SDK-error clear the stale "Sending to Claude…" phase bar', () => {
+  // Live incident (2026-06-27): an expired Claude credential fired the sign-in
+  // flow mid-send, but the handler never cleared the session-phase label that
+  // query-start had set, so a frozen "SENDING TO CLAUDE… [Cancel]" bar sat behind
+  // the sign-in prompt and the app looked hung. Both handlers must clear it.
+  const authIdx = RENDERER_JS.indexOf('merlin.onAuthRequired(async');
+  assert.ok(authIdx > 0, 'onAuthRequired handler exists');
+  assert.ok(RENDERER_JS.slice(authIdx, authIdx + 1600).includes('clearStatusLabel()'),
+    'onAuthRequired must clear the stale phase label so it does not look stuck mid-send');
+
+  const errIdx = RENDERER_JS.indexOf('merlin.onSdkError((err)');
+  assert.ok(errIdx > 0, 'onSdkError handler exists');
+  assert.ok(RENDERER_JS.slice(errIdx, errIdx + 700).includes('clearStatusLabel()'),
+    'onSdkError must clear the stale phase label so a dead turn never leaves a frozen spinner');
+
+  // The sign-in copy must make clear the ball is in the user's court (a silent
+  // "Opening…" for up to the 5-minute login timeout reads as a hang).
+  assert.ok(/finish signing in/i.test(RENDERER_JS),
+    'the sign-in bubble copy must tell the user to complete the browser sign-in');
+});
+
 // ── Truesight funnel view ───────────────────────────────────────────
 test('Truesight — index.html has the button, panel, and funnel container', () => {
   assert.ok(INDEX_HTML.includes('id="truesight-btn"'), 'toolbar button exists');
