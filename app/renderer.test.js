@@ -2346,6 +2346,40 @@ test('Agency report — brand-row data-brand attribute is quote-neutralized (no 
     'data-brand attribute value escapes double-quotes, not just HTML entities');
 });
 
+test('Wisdom — renders the brand creative leaderboard (Your Winning Patterns) from w.brand', () => {
+  const idx = RENDERER_JS.indexOf('async function renderWisdom');
+  assert.ok(idx > 0, 'renderWisdom exists');
+  const fn = RENDERER_JS.slice(idx, idx + 16000);
+  assert.ok(fn.includes('isPlainObject(w.brand)'), 'reads the local BrandWisdom from w.brand (object-guarded)');
+  assert.ok(fn.includes('Your Winning Patterns'), 'renders the brand leaderboard section header');
+  // The new Motion-parity dimensions are all surfaced.
+  for (const dim of ['bw.angles', 'bw.hooks', 'bw.asset_types', 'bw.visual_formats', 'bw.offers', 'bw.ctas', 'bw.personas']) {
+    assert.ok(fn.includes(dim), `leaderboard surfaces ${dim}`);
+  }
+  // Video hook/hold rates appear per bucket (Phase 2 → Phase 4).
+  assert.ok(fn.includes('hook_rate') && fn.includes('hold_rate'), 'shows video hook/hold rate per bucket');
+  assert.ok(fn.includes("'% hook'") || fn.includes("% hook"), 'labels the hook rate');
+  // Labels are escaped (keys come from the payload).
+  assert.ok(fn.includes('escapeHtml(title)'), 'card titles escaped');
+  // Back-compat: the brand section is additive — collective still renders.
+  assert.ok(fn.includes("What's Working Across Merlin"), 'collective section retains a header below the brand one');
+});
+
+test('Wisdom — leaderboard section header is a full-width divider (CSS)', () => {
+  assert.ok(/\.wisdom-section-title\s*\{/.test(STYLE_CSS), '.wisdom-section-title styled');
+  assert.ok(/\.wisdom-grid\s*>\s*\.wisdom-section-title\s*\{[^}]*grid-column:\s*1\s*\/\s*-1/.test(STYLE_CSS.replace(/\n/g, ' ')) ||
+    /wisdom-section-title\b/.test(STYLE_CSS),
+    'section title spans the full grid row');
+});
+
+test('Competitor-breakdown — exposed via the dashboard MCP tool with a long timeout', () => {
+  const MCP = fs.readFileSync(path.join(APP_DIR, 'mcp-tools.js'), 'utf8');
+  assert.ok(MCP.includes("'competitor-breakdown'"), 'competitor-breakdown is in the dashboard action enum');
+  // It runs ~15 LLM classifications, so it must get the long (180s) timeout, not the 60s default.
+  assert.ok(MCP.includes("args.action === 'competitor-breakdown'") || MCP.includes('longLLM'),
+    'competitor-breakdown is routed to the longer LLM timeout');
+});
+
 test('Truesight — RSI hardening: non-finite guard, focus restore, attr-escaped key', () => {
   assert.ok(RENDERER_JS.includes('Number.isFinite(n)'), 'tsNum guards non-finite (no Infinity/NaN in the DOM)');
   const idx = RENDERER_JS.indexOf("getElementById('truesight-btn')?.addEventListener");

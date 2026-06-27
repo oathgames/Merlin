@@ -1565,7 +1565,7 @@ function buildTools(tool, z, ctx) {
     // audit P2 #1).
     brandRequired: false,
     input: {
-      action: z.enum(['dashboard', 'truesight', 'calendar', 'wisdom', 'wisdom-categorize', 'report', 'competitor-scan', 'landing-audit', 'funnel-teardown']).describe('Operation. Use "truesight" for the full marketing funnel (awareness → site visits → add-to-cart → conversions) aggregated across every connected source for the brand. "wisdom" returns collective insights AND this brand\'s own winning patterns (angle/hook/format that win for it). "wisdom-categorize" reads the creative of this brand\'s still-uncategorized live ads and tags each with its angle/hook via Gemini (confidence-gated) so both your patterns and the collective learn from ads Merlin did not create — requires a brand.'),
+      action: z.enum(['dashboard', 'truesight', 'calendar', 'wisdom', 'wisdom-categorize', 'competitor-breakdown', 'report', 'competitor-scan', 'landing-audit', 'funnel-teardown']).describe('Operation. Use "truesight" for the full marketing funnel (awareness → site visits → add-to-cart → conversions) aggregated across every connected source for the brand. "wisdom" returns collective insights AND this brand\'s own winning patterns (angle/hook/format/asset-type/persona that win for it, with video hook/hold rates). "wisdom-categorize" reads the creative of this brand\'s still-uncategorized live ads and tags each across 8 dimensions (angle/hook/asset-type/visual-format/offer/seasonality/cta/persona) via Gemini (confidence-gated) so both your patterns and the collective learn from ads Merlin did not create — requires a brand. "competitor-breakdown" reads the top-performing ads in the brand\'s niche (via TrendTrack) and returns what competitors are doing — the most common hooks, angles, offers, CTAs, and formats — needs TrendTrack + a Google AI key.'),
       brand: brandSchema.optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data (truesight: 7/30/90 typical; defaults to 7)'),
       url: z.string().optional().describe('URL (for landing-audit and funnel-teardown — funnel-teardown grades the page against Stefan Georgi RMBC rubric)'),
@@ -1573,9 +1573,11 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => {
       const actionMap = { 'competitor-scan': 'competitor-scan', 'landing-audit': 'landing-audit', 'funnel-teardown': 'funnel-teardown' };
       const action = actionMap[args.action] || args.action;
-      // truesight fans out to every connected source; wisdom-categorize runs an
-      // LLM pass over up to 40 uncategorized ads — both need a longer window.
-      const timeout = args.action === 'truesight' ? 120000 : args.action === 'wisdom-categorize' ? 180000 : 60000;
+      // truesight fans out to every connected source; wisdom-categorize +
+      // competitor-breakdown each run an LLM pass over many ads — all need a
+      // longer window than the default 60s.
+      const longLLM = args.action === 'wisdom-categorize' || args.action === 'competitor-breakdown';
+      const timeout = args.action === 'truesight' ? 120000 : longLLM ? 180000 : 60000;
       return toEnvelope(await runBinary(ctx, action, args, { timeout }));
     },
   }, tool, z, ctx));

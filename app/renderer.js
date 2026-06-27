@@ -4993,10 +4993,52 @@ async function renderWisdom(w) {
   const imgMax  = maxVal(imgItems);
   const vidMax  = maxVal(vidItems);
 
+  // "Your Winning Patterns" — the brand's OWN creative leaderboard from its live
+  // ads (BrandWisdom, w.brand). Each tagged dimension is ranked by ROAS, with
+  // the video hook/hold rates shown per bucket where present (Motion parity).
+  // Renders only when the active brand has tagged live ads; otherwise the
+  // overlay shows the collective wisdom exactly as before (back-compat).
+  let brandHtml = '';
+  const bw = isPlainObject(w.brand) ? w.brand : null;
+  if (bw) {
+    const prettify = (s) => String(s || '').replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+    const dimCard = (title, obj, colorClass) => {
+      if (!isPlainObject(obj)) return '';
+      const items = Object.entries(obj).map(([key, v]) => {
+        const n = Number(v && v.n) || 0;
+        const roas = Number(v && v.roas) || 0;
+        const hook = Number(v && v.hook_rate) || 0;
+        const hold = Number(v && v.hold_rate) || 0;
+        const subParts = [n + ' ad' + (n === 1 ? '' : 's')];
+        if (hook > 0) subParts.push(hook.toFixed(0) + '% hook');
+        if (hold > 0) subParts.push(hold.toFixed(0) + '% hold');
+        return { label: prettify(key), display: roas > 0 ? roas.toFixed(2) + 'x' : (n + ' ads'), sub: subParts.join(' · '), val: roas, n };
+      }).filter(it => it.label).sort((a, b) => (b.val - a.val) || (b.n - a.n)).slice(0, 4);
+      if (!items.length) return '';
+      const mx = items.reduce((m, it) => Math.max(m, it.val), 0.0001);
+      return `<div class="wisdom-card"><div class="wisdom-card-title">${escapeHtml(title)} <span class="wisdom-card-unit">avg ROAS</span></div>${rankRows(items, i => i.val, colorClass, mx)}</div>`;
+    };
+    const cards = [
+      dimCard('Your Top Angles', bw.angles, 'color-hooks'),
+      dimCard('Your Top Hooks', bw.hooks, 'color-formats'),
+      dimCard('Your Asset Types', bw.asset_types, 'color-platforms'),
+      dimCard('Your Visual Formats', bw.visual_formats, 'color-vid'),
+      dimCard('Your Offers', bw.offers, 'color-img'),
+      dimCard('Your CTAs', bw.ctas, 'color-hooks'),
+      dimCard('Your Personas', bw.personas, 'color-platforms'),
+    ].filter(Boolean).join('');
+    if (cards) {
+      const total = Number(bw.ads_total) || 0;
+      const tagged = Number(bw.ads_categorized) || 0;
+      brandHtml = `<div class="wisdom-section-title">Your Winning Patterns <span class="wisdom-card-unit">${tagged} of ${total} live ads tagged</span></div>${cards}<div class="wisdom-section-title">What's Working Across Merlin</div>`;
+    }
+  }
+
   grid.innerHTML = `
     ${benchmarkHtml}
     ${intelHtml}
     ${seasonalHtml}
+    ${brandHtml}
     <div class="wisdom-card">
       <div class="wisdom-card-title">Top Hooks <span class="wisdom-card-unit">avg ROAS</span></div>
       ${rankRows(hookItems, i => i.val, 'color-hooks', hookMax)}

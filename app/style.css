@@ -1934,9 +1934,19 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
   min-width:0;
 }
 .wisdom-grid > .wisdom-benchmark,
-.wisdom-grid > .wisdom-callout{
+.wisdom-grid > .wisdom-callout,
+.wisdom-grid > .wisdom-section-title{
   grid-column:1 / -1;
 }
+/* Full-width section divider in the Wisdom overlay: "Your Winning Patterns"
+   (this brand's live-ad leaderboard) above "What's Working Across Merlin"
+   (the collective). */
+.wisdom-section-title{
+  font-size:13px;font-weight:700;letter-spacing:.3px;
+  color:var(--text);margin:6px 0 2px;
+  padding-top:8px;border-top:1px solid var(--border);
+}
+.wisdom-grid > .wisdom-section-title:first-child{border-top:none;padding-top:0}
 .wisdom-card-title{
   font-size:11px;font-weight:600;
   text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;
