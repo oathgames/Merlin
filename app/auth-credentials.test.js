@@ -287,6 +287,62 @@ test('readFileCredentialsForSession survives a throwing persist', () => {
   assert.strictEqual(out.token, 'tok');
 });
 
+// ─── readFileCredentialsForSession: Windows alt-path → Tier 1 (2026-06-28) ──
+
+const APPDATA = '/tmp/auth-creds-test-appdata';
+const WIN_ALT = path.join(APPDATA, 'Claude', '.credentials.json');
+
+test('readFileCredentialsForSession promotes a refreshable Windows alt-path blob to Tier 1', () => {
+  // Windows user whose refreshable token lives at %APPDATA%\\Claude\\.credentials
+  // .json (older CLI layout). Before the 2026-06-28 fix this fell through to
+  // readCredentials → bare token → Tier 2 (no refresh → forced re-auth). Now it
+  // is found here, returned as refreshable, and normalized to the canonical path.
+  const raw = JSON.stringify({
+    claudeAiOauth: { accessToken: 'tok-win', refreshToken: 'r-win', expiresAt: Date.now() + 60_000 },
+  });
+  const persisted = [];
+  const out = readFileCredentialsForSession({
+    fs: fakeFs({ [CANONICAL]: '__ENOENT__', [NODOT]: '__ENOENT__', [WIN_ALT]: raw }),
+    homeDir: HOME,
+    platform: 'win32',
+    appData: APPDATA,
+    localAppData: '',
+    persist: (r) => persisted.push(r),
+  });
+  assert.ok(out, 'refreshable Windows alt-path blob MUST produce a Tier-1 descriptor');
+  assert.strictEqual(out.token, 'tok-win');
+  assert.strictEqual(out.refreshable, true);
+  assert.strictEqual(persisted.length, 1, 'alt-path blob must be normalized to the canonical path');
+  assert.ok(persisted[0].includes('r-win'), 'the persisted blob must carry the refreshToken');
+});
+
+test('readFileCredentialsForSession does NOT scan Windows alt-paths on non-win32', () => {
+  const raw = JSON.stringify({
+    claudeAiOauth: { accessToken: 'tok-x', refreshToken: 'r-x', expiresAt: Date.now() + 60_000 },
+  });
+  const out = readFileCredentialsForSession({
+    fs: fakeFs({ [CANONICAL]: '__ENOENT__', [NODOT]: '__ENOENT__', [WIN_ALT]: raw }),
+    homeDir: HOME,
+    platform: 'darwin',
+    appData: APPDATA,
+  });
+  assert.strictEqual(out, null, 'alt-path scan must be gated to win32 (Mac uses the keychain path)');
+});
+
+test('readFileCredentialsForSession ignores a NON-refreshable Windows alt-path blob', () => {
+  const raw = JSON.stringify({ claudeAiOauth: { accessToken: 'bare', expiresAt: Date.now() + 60_000 } });
+  const persisted = [];
+  const out = readFileCredentialsForSession({
+    fs: fakeFs({ [CANONICAL]: '__ENOENT__', [NODOT]: '__ENOENT__', [WIN_ALT]: raw }),
+    homeDir: HOME,
+    platform: 'win32',
+    appData: APPDATA,
+    persist: (r) => persisted.push(r),
+  });
+  assert.strictEqual(out, null, 'a bare alt-path token must not be promoted to Tier 1');
+  assert.strictEqual(persisted.length, 0, 'nothing should be persisted for a bare alt-path token');
+});
+
 // ─── done ──────────────────────────────────────────────────────────────────
 console.log('');
 console.log(`  ${passed} passed, ${failed} failed`);

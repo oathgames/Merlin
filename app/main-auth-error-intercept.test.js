@@ -115,11 +115,20 @@ test('catch-block auth check honors the interceptor sentinel to avoid duplicate 
       + '_authFailureIntercepted so requireAuth is not fired twice for '
       + 'the same failure.',
   );
+  // The 2026-06-28 one-shot silent retry (_authRetryArmed) now sits BETWEEN the
+  // !_authFailureIntercepted guard and the requireAuth fallback, so the window
+  // allows the retry-branch text. The guard must still wrap requireAuth.
   assert.match(
     SRC,
-    /if\s*\(!_authFailureIntercepted\)\s*\{\s*requireAuth/,
+    /if\s*\(!_authFailureIntercepted\)\s*\{[\s\S]{0,800}?requireAuth/,
     'Catch block must guard the requireAuth call with '
       + '!_authFailureIntercepted to prevent duplicate fires.',
+  );
+  assert.match(
+    SRC,
+    /if\s*\(!_authFailureIntercepted\)\s*\{[\s\S]{0,500}?_authRetryArmed/,
+    'Catch block must attempt the one-shot silent retry (_authRetryArmed) '
+      + 'before falling through to requireAuth (transient-401 recovery).',
   );
 });
 

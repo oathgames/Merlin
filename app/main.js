@@ -734,7 +734,21 @@ const {
 } = require('./auth-credentials');
 
 function persistCredentials(raw) {
+  // REGRESSION GUARD (2026-06-28, refresh-token-strip): the canonical
+  // ~/.claude/.credentials.json is the Tier-1 source the SDK reads to refresh
+  // silently — it is ONLY useful if it carries a refreshToken. Writing a
+  // non-refreshable (accessToken-only) blob here STRIPS silent-refresh and pins
+  // the user to a forced browser sign-in on every token expiry — a root cause
+  // of the repeated-re-auth incident. Refuse any blob that isn't refreshable so
+  // a good file can never be downgraded to a bare one. Legit callers pass a
+  // real CLI/keychain blob (result.raw) that carries the refreshToken and are
+  // unaffected; only the synthetic bare-token writes are rejected.
   try {
+    const parsed = extractToken(raw);
+    if (!parsed || !parsed.refreshable) {
+      console.warn('[auth] Refusing to persist a non-refreshable credential to the Tier-1 file (would strip silent-refresh)');
+      return false;
+    }
     const claudeDir = path.join(os.homedir(), '.claude');
     fs.mkdirSync(claudeDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(CLAUDE_CRED_FILE, raw, { mode: 0o600 });
@@ -974,7 +988,12 @@ async function getClaudeDesktopStatus() {
 }
 
 function isClaudeAuthError(message = '') {
-  return /auth|authorization|token|sign in|signin|logged in|login|account/i.test(message);
+  // REGRESSION GUARD (2026-06-28, broad-auth-matcher): narrowed from the old
+  // /auth|...|token|...|account/ which mis-classified ANY error merely
+  // mentioning "token" (e.g. a rate-limit/quota message) or "account" as an
+  // auth failure and forced a needless browser sign-in. Match only language
+  // that genuinely indicates missing/expired/invalid CREDENTIALS.
+  return /not logged in|please run \/login|login required|invalid api key|authentication[_ ]?(?:failed|error)|unauthorized|oauth token (?:has been revoked|is expired|expired)|failed to authenticate|credentials?\s+(?:missing|not found|expired|invalid)|\b401\b/i.test(message);
 }
 
 // REGRESSION GUARD (2026-04-24, auth-error-graceful):
@@ -1366,6 +1385,20 @@ let _suppressNextResponse = false; // Suppress SDK responses for internal action
 // when credentials are missing, cleared when the next session successfully drains
 // the queue or when the renderer explicitly abandons the pending auth.
 let _queueFrozenForAuth = false;
+
+// REGRESSION GUARD (2026-06-28, transient-401-no-retry): a single auth error
+// from the SDK is usually a TRANSIENT blip while the SDK refreshes its own
+// token (network hiccup / brief 401 mid-refresh), NOT a real logout. Forcing a
+// full browser sign-in on the first such error is a root cause of the "Merlin
+// keeps asking me to sign in" incident (2026-06-28). This module-level flag
+// grants exactly ONE silent session restart (the SDK re-reads
+// ~/.claude/.credentials.json and re-attempts its refresh) before requireAuth()
+// ever opens the browser. Consumed on use; re-armed ONLY when a session
+// confirms auth (accountInfo success) — never at session start — so every
+// genuine future expiry gets its own one-shot retry and we can never
+// infinite-loop (a restart that ALSO auth-fails finds the flag false →
+// requireAuth fires for real).
+let _authRetryArmed = true;
 
 // True while switch-brand is mid-flight. Prevents rapid dropdown mashing
 // from starting two sessions back-to-back (both would race on the
@@ -3614,21 +3647,20 @@ async function startSession(brandOverride) {
     )),
   ]);
   accountInfoPromise.then((acctInfo) => {
-    // Anti-deletion guard: the SDK subprocess may delete ~/.claude/.credentials.json
-    // on Mac (GitHub #10039). Now that accountInfo() succeeded, we KNOW the session
-    // is authenticated — re-persist the token if the file is missing.
-    if (sessionEnv.CLAUDE_CODE_OAUTH_TOKEN) {
-      try {
-        fs.accessSync(CLAUDE_CRED_FILE, fs.constants.F_OK);
-      } catch {
-        persistCredentials(JSON.stringify({
-          claudeAiOauth: {
-            accessToken: sessionEnv.CLAUDE_CODE_OAUTH_TOKEN,
-          }
-        }));
-        console.log('[auth] Re-persisted credentials (anti-deletion guard)');
-      }
-    }
+    // REGRESSION GUARD (2026-06-28, transient-401-no-retry): accountInfo()
+    // succeeding PROVES this session authenticated — re-arm the one-shot silent
+    // auth-retry for the next genuine expiry. Re-arming ONLY on confirmed auth
+    // (never at session start) is what keeps the retry safe from infinite loops.
+    _authRetryArmed = true;
+    // (Removed 2026-06-28, refresh-token-strip) The old Mac "anti-deletion"
+    // guard re-persisted a bare accessToken-only blob here when the file was
+    // missing. That STRIPPED the refreshToken from the Tier-1 credentials file
+    // and pinned users to re-auth-on-every-expiry — a root cause of the
+    // forced-re-auth incident. We no longer write a bare token over the
+    // canonical file (persistCredentials also refuses non-refreshable blobs as
+    // defense in depth). If the SDK deletes the file on macOS (#10039), the
+    // CURRENT session is unaffected (token already in env) and the next session
+    // falls to the normal credential resolution + one-shot silent retry.
 
     if (acctInfo?.email) {
       const cfg = readConfig();
@@ -3796,10 +3828,22 @@ async function startSession(brandOverride) {
       //      guard here too.
       // See isSdkAuthErrorMessage() for the classification contract.
       if (!_authFailureIntercepted && isSdkAuthErrorMessage(msg)) {
-        console.warn('[auth] SDK auth-error message intercepted — routing through requireAuth');
         _authFailureIntercepted = true;
         _queueFrozenForAuth = true;
-        requireAuth('session error: authentication failed');
+        // REGRESSION GUARD (2026-06-28, transient-401-no-retry): retry ONCE via
+        // a silent session restart before opening the browser. Most first auth
+        // errors are a transient blip during the SDK's OWN token refresh; a
+        // restart lets the SDK re-read the creds file + re-attempt the refresh.
+        // Mirrors the resume-failure recovery below. Only a SECOND auth failure
+        // (flag already consumed) surfaces requireAuth(). See _authRetryArmed.
+        if (_authRetryArmed) {
+          _authRetryArmed = false;
+          console.warn('[auth] SDK auth-error — retrying once via silent session restart before sign-in');
+          setTimeout(() => { startSession(activeBrand).catch(() => {}); }, 250);
+        } else {
+          console.warn('[auth] SDK auth-error persisted after silent retry — routing through requireAuth');
+          requireAuth('session error: authentication failed');
+        }
         continue;
       }
       if (_authFailureIntercepted) {
@@ -4011,7 +4055,16 @@ async function startSession(brandOverride) {
       if (isAuth) {
         _queueFrozenForAuth = true; // preserve the queue across auth recovery
         if (!_authFailureIntercepted) {
-          requireAuth('session error: ' + errMsg.slice(0, 120));
+          // REGRESSION GUARD (2026-06-28, transient-401-no-retry): same one-shot
+          // silent retry as the stream interceptor — a thrown auth error is
+          // usually a transient refresh blip; restart once before sign-in.
+          if (_authRetryArmed) {
+            _authRetryArmed = false;
+            console.warn('[auth] thrown auth-error — retrying once via silent session restart before sign-in');
+            setTimeout(() => { startSession(activeBrand).catch(() => {}); }, 250);
+          } else {
+            requireAuth('session error: ' + errMsg.slice(0, 120));
+          }
         }
       } else {
         win.webContents.send('sdk-error', errMsg);
