@@ -2115,10 +2115,16 @@ test('Auth-required + SDK-error clear the stale "Sending to Claude…" phase bar
   // flow mid-send, but the handler never cleared the session-phase label that
   // query-start had set, so a frozen "SENDING TO CLAUDE… [Cancel]" bar sat behind
   // the sign-in prompt and the app looked hung. Both handlers must clear it.
-  const authIdx = RENDERER_JS.indexOf('merlin.onAuthRequired(async');
-  assert.ok(authIdx > 0, 'onAuthRequired handler exists');
+  // The onAuthRequired handler was extracted into the named runAuthRequiredFlow
+  // (2026-06-28, streamed-auth-error-leak) so the streamed-auth backstop can
+  // reuse the SAME login + replay path. The clear must live there, and the
+  // function must still be registered as the onAuthRequired handler.
+  const authIdx = RENDERER_JS.indexOf('async function runAuthRequiredFlow');
+  assert.ok(authIdx > 0, 'runAuthRequiredFlow (the onAuthRequired handler) exists');
   assert.ok(RENDERER_JS.slice(authIdx, authIdx + 1600).includes('clearStatusLabel()'),
-    'onAuthRequired must clear the stale phase label so it does not look stuck mid-send');
+    'runAuthRequiredFlow must clear the stale phase label so it does not look stuck mid-send');
+  assert.ok(/merlin\.onAuthRequired\(runAuthRequiredFlow\)/.test(RENDERER_JS),
+    'runAuthRequiredFlow must be registered as the onAuthRequired handler');
 
   const errIdx = RENDERER_JS.indexOf('merlin.onSdkError((err)');
   assert.ok(errIdx > 0, 'onSdkError handler exists');
