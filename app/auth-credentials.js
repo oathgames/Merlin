@@ -93,6 +93,23 @@ function readFileCredentialsForSession(deps) {
     canonical,
     path.join(homeDir, '.claude', 'credentials.json'), // no-dot variant
   ];
+  // REGRESSION GUARD (2026-06-28, windows-altpath-tier1): on Windows the Claude
+  // CLI (older versions) may store the blob under %APPDATA%/%LOCALAPPDATA%\
+  // Claude[ Code]\.credentials.json. If such a blob is REFRESHABLE, promote it
+  // to Tier-1 (the SDK silent-refresh path) and normalize it to the canonical
+  // path below — instead of letting it fall through to readCredentials(), which
+  // returns a bare token and pins the user to Tier-2 (no refresh → forced
+  // re-auth on every expiry). deps.platform/appData/localAppData are test seams.
+  const platform = (deps && deps.platform) || process.platform;
+  if (platform === 'win32') {
+    const appData = (deps && deps.appData) || process.env.APPDATA || '';
+    const localAppData = (deps && deps.localAppData) || process.env.LOCALAPPDATA || '';
+    for (const base of [appData, localAppData]) {
+      if (!base) continue;
+      candidates.push(path.join(base, 'Claude', '.credentials.json'));
+      candidates.push(path.join(base, 'Claude Code', '.credentials.json'));
+    }
+  }
   for (const file of candidates) {
     let raw;
     try {
