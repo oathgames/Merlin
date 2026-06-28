@@ -1076,6 +1076,44 @@ let _streamRenderState = null; // {prefixText, prefixHtml}
 // the bridge handle lookup + wrapper calls entirely rather than entering
 // them and returning early. Saves ~2ms per frame on hot streaming turns —
 // small per-frame, but paid 30-60 times per second during heavy streams.
+// REGRESSION GUARD (2026-06-28, streamed-auth-error-leak):
+// The Claude Agent SDK streams a 401 credential failure back as ordinary
+// assistant TEXT — e.g. "Failed to authenticate. API Error: 401 {...
+// "type":"authentication_error" ... request_id ...}". main.js's
+// isSdkAuthErrorMessage interceptor swallows the one-shot wrapper and the
+// single-delta case, but when the payload arrives fragmented across stream
+// deltas no single chunk holds the full fingerprint, so it slips through to
+// appendText and the raw JSON (with the request_id) paints into a chat
+// bubble — a Rule 6 credential leak a paying user hit 2026-06-28. This is the
+// shape-independent renderer backstop: detect the SDK's literal auth signature
+// on the ACCUMULATED stream text and route to the sign-in flow instead of ever
+// rendering it. The signature is intentionally narrow (the exact "Failed to
+// authenticate. API Error: 401" phrase) so legitimate assistant prose that
+// merely discusses authentication is never suppressed.
+function streamedAuthErrorPresent(text) {
+  if (!text || typeof text !== 'string') return false;
+  return /failed to authenticate\.\s*api error:\s*401/i.test(text);
+}
+
+// interceptStreamedAuthError wipes the partially-streamed raw auth payload off
+// screen and hands the UI to the unified sign-in flow (runAuthRequiredFlow) —
+// the same path onAuthRequired uses, which auto-opens the browser login and
+// replays the triggering message on success. Idempotent via _authLoginInFlight.
+function interceptStreamedAuthError() {
+  if (_authLoginInFlight) return;
+  console.warn('[auth] streamed auth-error detected in renderer — suppressing raw payload, routing to sign-in');
+  // Drop the in-flight bubble holding the partial raw payload + reset every
+  // streaming-render variable so nothing re-paints the leaked text.
+  if (currentBubble) { try { currentBubble.remove(); } catch {} }
+  currentBubble = null;
+  textBuffer = '';
+  _streamRenderState = null;
+  lastRenderedLength = 0;
+  if (typeof runAuthRequiredFlow === 'function') {
+    runAuthRequiredFlow({ context: 'streamed auth error' });
+  }
+}
+
 function appendText(text) {
   // REGRESSION GUARD (2026-05-03, escape-cancel-leaves-stale-bubble incident):
   // when Escape canceled a turn we marked currentBubble.dataset.canceled='true'.
@@ -1084,6 +1122,11 @@ function appendText(text) {
   // turn's bubble after addClaudeBubble re-uses the reference). Drop
   // the write — the user has explicitly stopped this turn.
   if (currentBubble && currentBubble.dataset.canceled === 'true') return;
+  // REGRESSION GUARD (2026-06-28, streamed-auth-error-leak): once the sign-in
+  // flow owns the UI (interceptStreamedAuthError / onAuthRequired), drop any
+  // late streamed text from the failed turn so a raw 401 payload can never
+  // paint into a bubble behind the sign-in prompt.
+  if (_authLoginInFlight) return;
   // Fact binding: pass the delta through the tail quarantine before it joins
   // the text buffer. When the flag is off this returns `text` unchanged, so
   // the streaming behavior is identical to before.
@@ -2335,6 +2378,12 @@ merlin.onSdkMessage((msg) => {
     case 'result':
       sessionActive = false;
       if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
+      // REGRESSION GUARD (2026-06-28, streamed-auth-error-leak): if the sign-in
+      // flow has taken over (we intercepted a streamed 401), swallow the failed
+      // turn's trailing result so it cannot paint a "stream interrupted" / error
+      // marker behind the sign-in bubble. The message replays cleanly after
+      // sign-in succeeds (runAuthRequiredFlow), so this turn's result is moot.
+      if (_authLoginInFlight) break;
       // REGRESSION GUARD (2026-05-04, stuck-chat-no-result-event): when
       // main.js synthesizes a {subtype:'truncated', is_error:true,
       // _synthetic:true} terminal because the SDK iterator ended without
@@ -2507,6 +2556,15 @@ function handleStreamEvent(msg) {
 
   if (event.type === 'content_block_delta') {
     if (event.delta && event.delta.type === 'text_delta' && event.delta.text) {
+      // REGRESSION GUARD (2026-06-28, streamed-auth-error-leak): before this
+      // delta paints, check the ACCUMULATED stream text for the SDK's literal
+      // 401 auth signature. If present, wipe the partial bubble and route to
+      // the sign-in flow instead of leaking the raw payload (with request_id)
+      // into chat. See streamedAuthErrorPresent / interceptStreamedAuthError.
+      if (!_authLoginInFlight && streamedAuthErrorPresent(textBuffer + event.delta.text)) {
+        interceptStreamedAuthError();
+        return;
+      }
       if (_pendingMessageBreak) {
         const sep = textBuffer.endsWith('\n\n') ? '' : (textBuffer.endsWith('\n') ? '\n' : '\n\n');
         if (sep) appendText(sep);
@@ -3389,8 +3447,12 @@ if (merlin.onAuthCodeDismiss) {
 // If an auth-required event fires while a login is already in progress,
 // we ignore the duplicate so we don't spawn a second subprocess.
 let _authLoginInFlight = false;
-if (merlin.onAuthRequired) {
-  merlin.onAuthRequired(async (data) => {
+// REGRESSION GUARD (2026-06-28, streamed-auth-error-leak): extracted from the
+// onAuthRequired inline handler into a named function so the streaming-text auth
+// backstop (interceptStreamedAuthError, see appendText) can invoke the EXACT
+// same login + replay flow instead of forking a second copy. Body is verbatim;
+// registration with merlin.onAuthRequired is at the end of the function.
+async function runAuthRequiredFlow(data) {
     if (_authLoginInFlight) {
       console.log('[auth] onAuthRequired fired while login already in flight — ignoring duplicate');
       return;
@@ -3498,8 +3560,8 @@ if (merlin.onAuthRequired) {
     } finally {
       _authLoginInFlight = false;
     }
-  });
 }
+if (merlin.onAuthRequired) merlin.onAuthRequired(runAuthRequiredFlow);
 
 // addRetryButton appends a "Sign In to Claude" button to a bubble. Clicking
 // it fires the auth-required flow again. Used when the first auto-triggered
