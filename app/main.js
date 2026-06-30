@@ -1386,19 +1386,17 @@ let _suppressNextResponse = false; // Suppress SDK responses for internal action
 // the queue or when the renderer explicitly abandons the pending auth.
 let _queueFrozenForAuth = false;
 
-// REGRESSION GUARD (2026-06-28, transient-401-no-retry): a single auth error
-// from the SDK is usually a TRANSIENT blip while the SDK refreshes its own
-// token (network hiccup / brief 401 mid-refresh), NOT a real logout. Forcing a
-// full browser sign-in on the first such error is a root cause of the "Merlin
-// keeps asking me to sign in" incident (2026-06-28). This module-level flag
-// grants exactly ONE silent session restart (the SDK re-reads
-// ~/.claude/.credentials.json and re-attempts its refresh) before requireAuth()
-// ever opens the browser. Consumed on use; re-armed ONLY when a session
-// confirms auth (accountInfo success) — never at session start — so every
-// genuine future expiry gets its own one-shot retry and we can never
-// infinite-loop (a restart that ALSO auth-fails finds the flag false →
-// requireAuth fires for real).
-let _authRetryArmed = true;
+// REGRESSION GUARD (2026-06-28, silent-retry-hang REVERT): the v1.31.3 one-shot
+// silent session restart on auth error was reverted. It re-entered startSession()
+// at a fixed 250ms delay, but activeQuery only clears when the SDK closes the
+// stream (later), so the restart raced the "session already active" guard and
+// no-op'd — leaving the user hung on "Starting session…" with NO sign-in prompt
+// (live incident: a user could not add a brand). The proven behavior is: an auth
+// error opens the sign-in IMMEDIATELY (requireAuth) so the user always reaches a
+// resolution. Re-auth frequency is still reduced by the kept Tier-1 fixes
+// (persistCredentials refuses non-refreshable blobs, Windows alt-path → Tier-1,
+// narrowed isClaudeAuthError). A safe silent-retry can return later, designed to
+// restart ON TEARDOWN (after activeQuery clears), not on a fixed timer.
 
 // True while switch-brand is mid-flight. Prevents rapid dropdown mashing
 // from starting two sessions back-to-back (both would race on the
@@ -3647,11 +3645,6 @@ async function startSession(brandOverride) {
     )),
   ]);
   accountInfoPromise.then((acctInfo) => {
-    // REGRESSION GUARD (2026-06-28, transient-401-no-retry): accountInfo()
-    // succeeding PROVES this session authenticated — re-arm the one-shot silent
-    // auth-retry for the next genuine expiry. Re-arming ONLY on confirmed auth
-    // (never at session start) is what keeps the retry safe from infinite loops.
-    _authRetryArmed = true;
     // (Removed 2026-06-28, refresh-token-strip) The old Mac "anti-deletion"
     // guard re-persisted a bare accessToken-only blob here when the file was
     // missing. That STRIPPED the refreshToken from the Tier-1 credentials file
@@ -3828,22 +3821,10 @@ async function startSession(brandOverride) {
       //      guard here too.
       // See isSdkAuthErrorMessage() for the classification contract.
       if (!_authFailureIntercepted && isSdkAuthErrorMessage(msg)) {
+        console.warn('[auth] SDK auth-error message intercepted — routing through requireAuth');
         _authFailureIntercepted = true;
         _queueFrozenForAuth = true;
-        // REGRESSION GUARD (2026-06-28, transient-401-no-retry): retry ONCE via
-        // a silent session restart before opening the browser. Most first auth
-        // errors are a transient blip during the SDK's OWN token refresh; a
-        // restart lets the SDK re-read the creds file + re-attempt the refresh.
-        // Mirrors the resume-failure recovery below. Only a SECOND auth failure
-        // (flag already consumed) surfaces requireAuth(). See _authRetryArmed.
-        if (_authRetryArmed) {
-          _authRetryArmed = false;
-          console.warn('[auth] SDK auth-error — retrying once via silent session restart before sign-in');
-          setTimeout(() => { startSession(activeBrand).catch(() => {}); }, 250);
-        } else {
-          console.warn('[auth] SDK auth-error persisted after silent retry — routing through requireAuth');
-          requireAuth('session error: authentication failed');
-        }
+        requireAuth('session error: authentication failed');
         continue;
       }
       if (_authFailureIntercepted) {
@@ -4055,16 +4036,7 @@ async function startSession(brandOverride) {
       if (isAuth) {
         _queueFrozenForAuth = true; // preserve the queue across auth recovery
         if (!_authFailureIntercepted) {
-          // REGRESSION GUARD (2026-06-28, transient-401-no-retry): same one-shot
-          // silent retry as the stream interceptor — a thrown auth error is
-          // usually a transient refresh blip; restart once before sign-in.
-          if (_authRetryArmed) {
-            _authRetryArmed = false;
-            console.warn('[auth] thrown auth-error — retrying once via silent session restart before sign-in');
-            setTimeout(() => { startSession(activeBrand).catch(() => {}); }, 250);
-          } else {
-            requireAuth('session error: ' + errMsg.slice(0, 120));
-          }
+          requireAuth('session error: ' + errMsg.slice(0, 120));
         }
       } else {
         win.webContents.send('sdk-error', errMsg);

@@ -1,21 +1,19 @@
-// REGRESSION GUARD (2026-06-28, engine-auth-never-reauth)
+// REGRESSION GUARD (2026-06-28, engine-auth hardening + silent-retry REVERT)
 //
-// Incident: a Windows user with Claude Desktop signed in was forced to
-// re-authenticate Merlin's engine over and over (user: "this issue is still
-// not fucking fixed ... the user should NEVER have to auth"). The /rsi deep
-// dive found a cluster of root causes that all force a needless full browser
-// sign-in even when a valid refreshToken exists:
-//   A. A single transient 401 during the SDK's OWN silent refresh fired
-//      requireAuth() immediately, with no retry-the-refresh-first.
-//   B. A Mac-only "anti-deletion" guard ran on Windows too and re-persisted a
-//      bare (refreshToken-less) blob to the Tier-1 credentials file, stripping
-//      silent-refresh and pinning the user to re-auth-on-every-expiry.
-//   C. isClaudeAuthError matched ANY error mentioning "token"/"account",
-//      misclassifying non-auth errors as logout.
+// v1.31.3 added a one-shot "silent session restart" on auth error. It re-entered
+// startSession() at a fixed 250ms delay, but activeQuery only clears when the SDK
+// closes the stream (later), so the restart raced the "session already active"
+// guard and no-op'd — leaving the user hung on "Starting session…" with NO
+// sign-in prompt (live incident: could not add a brand). v1.31.4 REVERTED the
+// silent-retry: an auth error now opens the sign-in IMMEDIATELY (requireAuth), the
+// proven behavior that always reaches a resolution.
 //
-// main.js cannot be require()d without Electron, so these are source-scans of
-// the load-bearing invariants. The pure-helper behaviour (Windows alt-path →
-// Tier 1) is covered functionally in auth-credentials.test.js.
+// The THREE Tier-1 fixes from v1.31.3 are KEPT (they reduce re-auth frequency and
+// carry zero hang risk): persistCredentials refuses non-refreshable blobs, Windows
+// alt-path -> Tier-1 promotion (tested in auth-credentials.test.js), and the
+// narrowed isClaudeAuthError. This file locks the revert + the kept fixes.
+//
+// main.js can't be require()d without Electron, so these are source-scans.
 //
 // Run: node --test app/main-auth-silent-retry.test.js
 
@@ -28,80 +26,59 @@ const path = require('node:path');
 
 const SRC = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
-test('a module-level _authRetryArmed flag exists (one-shot silent retry budget)', () => {
-  assert.match(
+test('the v1.31.3 silent-retry flag is GONE (it caused the startup hang)', () => {
+  assert.doesNotMatch(
     SRC,
-    /^let _authRetryArmed = true;/m,
-    '_authRetryArmed must be a MODULE-level let (not per-session) so it survives '
-      + 'the silent restart; a per-session flag would reset on restart and loop.',
+    /_authRetryArmed/,
+    'the _authRetryArmed silent-retry must stay reverted — re-entering startSession '
+      + 'on a timer raced the activeQuery guard and hung the app at "Starting session".',
   );
 });
 
-test('the STREAM auth interceptor retries once via silent restart before requireAuth', () => {
-  // Anchor on the interceptor CALL SITE, not the function definition (which
-  // appears earlier in the file as `function isSdkAuthErrorMessage(msg)`).
+test('an auth error opens the sign-in IMMEDIATELY (no timer-restart in the interceptor)', () => {
   const idx = SRC.indexOf('!_authFailureIntercepted && isSdkAuthErrorMessage(msg)');
   assert.ok(idx > 0, 'stream interceptor call site not found');
-  const block = SRC.slice(idx, idx + 1300); // long REGRESSION GUARD comment precedes the if/else
-  assert.match(block, /if \(_authRetryArmed\)/,
-    'the stream interceptor must check _authRetryArmed before requireAuth');
-  assert.match(block, /_authRetryArmed = false/,
-    'the retry budget must be consumed (set false) when used');
-  assert.match(block, /startSession\(activeBrand\)/,
-    'the retry must restart the session so the SDK re-reads creds + re-refreshes');
-  // requireAuth only in the else (already-retried) branch.
-  assert.match(block, /else \{[\s\S]{0,200}?requireAuth/,
-    'requireAuth must be the ELSE branch (only after the one-shot retry failed)');
+  const block = SRC.slice(idx, idx + 400);
+  assert.match(
+    block,
+    /requireAuth\('session error: authentication failed'\)/,
+    'the stream auth interceptor must call requireAuth immediately so the user '
+      + 'always reaches the sign-in prompt.',
+  );
+  assert.doesNotMatch(
+    block,
+    /setTimeout\([^)]*startSession/,
+    'the interceptor must NOT re-enter startSession on a timer (the hang cause).',
+  );
 });
 
-test('the THROWN-error path also retries once before requireAuth', () => {
-  const idx = SRC.indexOf('preserve the queue across auth recovery');
-  assert.ok(idx > 0, 'thrown-error auth branch not found');
-  const block = SRC.slice(idx, idx + 700);
-  assert.match(block, /if \(_authRetryArmed\)/, 'thrown path must check _authRetryArmed');
-  assert.match(block, /startSession\(activeBrand\)/, 'thrown path must silent-restart');
-});
-
-test('_authRetryArmed is RE-ARMED only on confirmed auth (accountInfo success)', () => {
-  const idx = SRC.indexOf('accountInfoPromise.then');
-  assert.ok(idx > 0, 'accountInfo.then not found');
-  const block = SRC.slice(idx, idx + 600);
-  assert.match(block, /_authRetryArmed = true/,
-    'accountInfo success (proof of auth) must re-arm the one-shot retry for the '
-      + 'next genuine expiry — re-arming here (not at session start) is what '
-      + 'prevents an auth-error → restart → auth-error infinite loop.');
-});
-
-test('persistCredentials REFUSES a non-refreshable blob (no refresh-token strip)', () => {
+test('persistCredentials REFUSES a non-refreshable blob (kept Tier-1 fix)', () => {
   const idx = SRC.indexOf('function persistCredentials(');
   assert.ok(idx > 0, 'persistCredentials not found');
   const fn = SRC.slice(idx, idx + 1300); // long REGRESSION GUARD comment precedes the body
-  assert.match(fn, /extractToken\(raw\)/,
-    'persistCredentials must inspect the blob before writing');
-  assert.match(fn, /!parsed\.refreshable[\s\S]{0,160}?return false/,
-    'persistCredentials must return WITHOUT writing when the blob lacks a '
-      + 'refreshToken — writing a bare token to the Tier-1 file strips silent-refresh.');
-});
-
-test('the Mac anti-deletion guard no longer writes a bare accessToken blob', () => {
-  // The old guard did persistCredentials(JSON.stringify({claudeAiOauth:{accessToken:...}}))
-  // with NO refreshToken. That exact bare-blob write must be gone.
-  assert.doesNotMatch(
-    SRC,
-    /persistCredentials\(JSON\.stringify\(\{\s*claudeAiOauth:\s*\{\s*accessToken:[^}]*\}\s*\}\)\)/,
-    'the bare accessToken-only anti-deletion re-persist must be removed — it '
-      + 'stripped the refreshToken and pinned users to forced re-auth.',
+  assert.match(fn, /extractToken\(raw\)/, 'persistCredentials must inspect the blob before writing');
+  assert.match(
+    fn,
+    /!parsed\.refreshable[\s\S]{0,160}?return false/,
+    'persistCredentials must return WITHOUT writing a non-refreshable blob '
+      + '(writing a bare token to the Tier-1 file strips silent-refresh).',
   );
 });
 
-test('isClaudeAuthError no longer matches a bare "token" or "account" mention', () => {
+test('the Mac anti-deletion guard no longer writes a bare accessToken blob (kept fix)', () => {
+  assert.doesNotMatch(
+    SRC,
+    /persistCredentials\(JSON\.stringify\(\{\s*claudeAiOauth:\s*\{\s*accessToken:[^}]*\}\s*\}\)\)/,
+    'the bare accessToken-only anti-deletion re-persist must stay removed.',
+  );
+});
+
+test('isClaudeAuthError stays narrowed (no bare "token"/"account" match) (kept fix)', () => {
   const idx = SRC.indexOf('function isClaudeAuthError(');
   assert.ok(idx > 0, 'isClaudeAuthError not found');
   const fn = SRC.slice(idx, idx + 700);
-  // The old broad alternation /...|token|...|account/ must be gone.
   assert.doesNotMatch(fn, /\/auth\|authorization\|token\|/,
-    'the broad token/account matcher must be narrowed (it misclassified '
-      + 'rate-limit/quota errors mentioning "token" as auth failures).');
+    'the broad token/account matcher must stay narrowed.');
   assert.match(fn, /not logged in|invalid api key|authentication/i,
     'the narrowed matcher must still catch genuine credential-failure language.');
 });
