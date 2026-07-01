@@ -10121,12 +10121,44 @@ ipcMain.handle('truesight', async (_, opts) => {
   const o = (opts && typeof opts === 'object' && !Array.isArray(opts)) ? opts : {};
   const binaryPath = getBinaryPath();
   try { fs.accessSync(binaryPath); } catch { return { error: 'Merlin engine not found. Restart Merlin and try again.' }; }
-  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+  let configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
   try { fs.accessSync(configPath); } catch { return { error: 'Merlin is not set up yet.' }; }
 
   const cmdObj = { action: 'truesight' };
   if (typeof o.brand === 'string' && o.brand.trim()) cmdObj.brand = o.brand.trim().slice(0, 200);
   if (Number.isInteger(o.batchCount) && o.batchCount > 0 && o.batchCount <= 365) cmdObj.batchCount = o.batchCount;
+
+  // REGRESSION GUARD (2026-06-30, truesight cross-brand leak — recurrence of
+  // the 2026-04-15 codex per-brand revenue audit finding #2): this handler
+  // used to pass the RAW GLOBAL config to the binary. The global config holds
+  // plain (non-vault) legacy credentials — metaAccessToken / metaAdAccountId
+  // from the pre-multi-brand era — and the binary's applyBrandVault only
+  // rewrites @@VAULT@@ placeholder fields, so EVERY brand's funnel silently
+  // pulled the SAME ad account. Live incident 2026-06-30: switching brands
+  // showed identical Truesight numbers ("incorrect information, not specific
+  // to each brand"). Fix: identical pattern to the refresh-perf handler —
+  // build a STRICT brand config (global base with ALL BRAND_KEYS stripped,
+  // brand's own creds overlaid, no global fallback), write it to a tmp file
+  // inside .claude/tools/ (projectRoot resolution — see the live-ads
+  // projectRoot guard), hand THAT to the binary, delete immediately after.
+  // No data is better than another brand's data. DO NOT revert to the raw
+  // global configPath when a brand is named.
+  if (cmdObj.brand) {
+    try {
+      const strictBrandConfig = buildStrictBrandConfig(cmdObj.brand);
+      if (strictBrandConfig && Object.keys(strictBrandConfig).length > 0) {
+        const toolsDir = path.join(appRoot, '.claude', 'tools');
+        fs.mkdirSync(toolsDir, { recursive: true });
+        const tmpPath = path.join(toolsDir, `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
+        fs.writeFileSync(tmpPath, JSON.stringify(strictBrandConfig, null, 2), { mode: 0o600 });
+        configPath = tmpPath;
+      }
+    } catch (e) {
+      console.error('[truesight] strict brand config failed:', e.message);
+      return { error: 'Merlin could not load this brand’s connections. Please try again in a moment.' };
+    }
+  }
+  const isTmpConfig = !configPath.endsWith('merlin-config.json');
 
   try { await maybeHydrateBinaryLicenseToken('truesight'); } catch {}
   const { execFile } = require('child_process');
@@ -10134,6 +10166,8 @@ ipcMain.handle('truesight', async (_, opts) => {
     const child = execFile(binaryPath, ['--config', configPath, '--cmd', JSON.stringify(cmdObj)], {
       timeout: 120000, cwd: appRoot, windowsHide: true, maxBuffer: 32 * 1024 * 1024,
     }, (err, stdout) => {
+      // Delete the tmp config IMMEDIATELY — never leave resolved credentials on disk.
+      if (isTmpConfig) { try { fs.unlinkSync(configPath); } catch {} }
       const parsed = extractPrefixedJSON(stdout, 'TRUESIGHT_RESULT ');
       if (parsed && typeof parsed === 'object') return resolve(parsed);
       if (err && err.killed) return resolve({ error: 'Building your funnel timed out. Try a shorter window, then try again.' });
