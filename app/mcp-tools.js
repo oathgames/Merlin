@@ -337,9 +337,26 @@ async function runBinary(ctx, action, args, opts = {}) {
     return { text: 'Merlin engine not found. Try reinstalling or running /update.', error: true };
   }
 
-  // Build merged config with vault-resolved tokens
+  // Build STRICT brand-scoped config with vault-resolved tokens.
+  // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): this is the ONE
+  // config resolver for the entire MCP tool surface (meta_ads, dashboard,
+  // truesight, every ad platform, shopify, klaviyo, stripe, …). It MUST use
+  // buildStrictBrandConfig, NOT readBrandConfig. readBrandConfig is a global ⊕
+  // brand overlay — plain legacy creds and non-sensitive BRAND_KEYS
+  // (metaAdAccountId, shopifyStore, …) left in the global config merge into
+  // EVERY brand, so an agent calling mcp__merlin__dashboard({action:'truesight',
+  // brand}) or meta_ads for Brand B would receive Brand A's ad account. This is
+  // the exact class as the Truesight IPC leak (main.js truesight handler, fixed
+  // the same day). buildStrictBrandConfig strips ALL BRAND_KEYS from the global
+  // base and overlays only the brand's own creds — no global fallback. The
+  // readBrandConfig fallback below exists ONLY for unit-test contexts whose ctx
+  // predates the strict resolver; production main.js always supplies it (see
+  // cross-brand-config-scope.test.js which fails CI if the production ctx omits it).
   const brandName = args.brand || '';
-  const cfg = brandName ? ctx.readBrandConfig(brandName) : ctx.readConfig();
+  const resolveBrandCfg = (typeof ctx.buildStrictBrandConfig === 'function')
+    ? ctx.buildStrictBrandConfig
+    : ctx.readBrandConfig;
+  const cfg = brandName ? resolveBrandCfg(brandName) : ctx.readConfig();
 
   // OAuth client secrets are handled server-side (BFF pattern).
   // The Go binary calls merlingotme.com/api/oauth/exchange directly.

@@ -2769,6 +2769,15 @@ merlin.onSdkError((err) => {
   // on screen — query-start cancelled the 120s stuck-clear, so clear it here
   // (matches the onAuthRequired fix; covers the "not logged in" re-auth branch).
   clearStatusLabel();
+  // REGRESSION GUARD (2026-06-30, wedged-UI sweep): also stop the live "Ns…"
+  // ticker and the stream watchdog. onSdkError previously omitted both, so an
+  // SDK error that arrived as a thrown error left the ticker's rAF loop
+  // counting forever (calling scrollToBottom every second) in the
+  // retry-exhausted terminal state, and the watchdog could not rescue it (it
+  // early-returns when !isStreaming && !sessionActive). Every other turn-end
+  // path (result / inline / auth / Escape) already stops both.
+  stopTickingTimer();
+  stopStreamWatchdog();
 
   _restartAttempts++;
 
@@ -3124,6 +3133,13 @@ merlin.onInlineMessage(({ text, kind }) => {
   if (typingTimeout) { clearTimeout(typingTimeout); typingTimeout = null; }
   removeTypingIndicator();
   stopTickingTimer();
+  // REGRESSION GUARD (2026-06-30, wedged-UI sweep): clear the phase label and
+  // stop the watchdog too. startSession's subscription-refused / trial-expired
+  // early return emits 'starting' ("Starting session…") and then routes here;
+  // onInlineMessage reset everything EXCEPT the status label, so that phase bar
+  // sat frozen behind the inline error bubble. Mirrors the onAuthRequired fix.
+  clearStatusLabel();
+  stopStreamWatchdog();
   finalizeBubble(); // commits any streaming bubble, then resets currentBubble/textBuffer
   sessionActive = false;
   isStreaming = false;
@@ -3549,13 +3565,20 @@ async function runAuthRequiredFlow(data) {
         setStatus('Sign-in cancelled. Click the button below to try again.');
         addRetryButton(bubble);
       } else {
+        // REGRESSION GUARD (2026-06-30, Rule 6 sweep): route through
+        // friendlyErrorPlain — result.error here can be a raw
+        // "Claude Code login exited with code N: <node/CLI stderr>" or a raw
+        // spawn e.message. The sibling retry-button path already wraps; this
+        // parallel path in runAuthRequiredFlow was missed by the v1.31.2 fix.
         const err = (result && result.error) || 'Sign-in failed.';
-        setStatus(err);
+        setStatus(friendlyErrorPlain(err, 'Claude'));
         addRetryButton(bubble);
       }
     } catch (e) {
       console.error('[auth] triggerClaudeLogin threw:', e);
-      setStatus('Sign-in failed unexpectedly. ' + (e && e.message ? e.message : ''));
+      // Never append a raw IPC rejection ("Error invoking remote method …") to
+      // a chat bubble — friendlyErrorPlain strips it to a plain-English line.
+      setStatus(friendlyErrorPlain((e && e.message) ? e.message : 'Sign-in failed.', 'Claude'));
       addRetryButton(bubble);
     } finally {
       _authLoginInFlight = false;
@@ -3891,9 +3914,8 @@ function paintQrPayload(img, url, note, payload) {
   // Surface the fallback so a phone on cellular doesn't silently get a LAN
   // URL that only works on the same WiFi.
   if (payload.mode === 'lan') {
-    note.textContent = payload.relayError
-      ? `Roaming unavailable (${payload.relayError}) — same-WiFi fallback only.`
-      : 'Roaming unavailable — same-WiFi fallback only.';
+    // payload.relayError is a boolean marker (Rule 6 — never a raw exception).
+    note.textContent = 'Roaming unavailable right now — connect on the same WiFi.';
     note.classList.remove('hidden');
   } else {
     note.textContent = '';
@@ -6475,9 +6497,13 @@ function showMetaApiKeyModal(activeBrand) {
       if (!tokenValue || tokenValue.trim().length < 20) { showModalError('Token looks too short'); throw new Error('validation'); }
       const token = tokenValue.trim();
       const r1 = await merlin.saveConfigField('metaAccessToken', token, activeBrand);
-      if (!r1.success) { showModalError(r1.error || 'Failed to save token'); throw new Error('save'); }
+      if (!r1.success) { showModalError(friendlyError(r1.error || 'Failed to save token', 'Meta')); throw new Error('save'); }
       const d = await merlin.discoverMetaIds(activeBrand);
-      if (d.error) { showModalError(d.error); throw new Error('discover'); }
+      // REGRESSION GUARD (2026-06-30, Rule 6 sweep): d.error / r1.error can be a
+      // raw execFile "Command failed: <full Merlin.exe path> --config … --cmd {…}"
+      // or a raw vault/fs message. friendlyError has a dedicated Command-failed
+      // branch — route through it so the modal never shows the binary command line.
+      if (d.error) { showModalError(friendlyError(d.error, 'Meta')); throw new Error('discover'); }
       loadConnections();
     },
   });
@@ -11303,7 +11329,8 @@ function renderTruesightResult(res, days) {
 
   if (res.error) {
     if (funnel) funnel.innerHTML = '';
-    if (status) { status.style.display = ''; status.textContent = res.error; }
+    // Rule 6 (2026-06-30): friendlyErrorPlain(res.error) — defense-in-depth so a future raw Go error can't leak.
+    if (status) { status.style.display = ''; status.textContent = friendlyErrorPlain(res.error, 'your funnel'); }
     return;
   }
   if (!res.any_connected) {

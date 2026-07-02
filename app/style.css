@@ -1261,6 +1261,16 @@ a:hover{text-decoration:underline}
   max-height: 300px;
   overflow: auto;
 }
+/* Themed scrollbar (2026-06-30 sweep) — inside the Archive panel; 5px convention. */
+.activity-raw pre::-webkit-scrollbar { width: 5px; }
+.activity-raw pre::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 3px; }
+.activity-raw pre::-webkit-scrollbar-track { background: transparent; }
+/* #agency-brands is built with inline max-height/overflow in renderer.js (the
+   Agency reports brand list). Inline styles can't carry pseudo-element theming,
+   so the OS scrollbar showed through — theme it here by id (2026-06-30 sweep). */
+#agency-brands::-webkit-scrollbar { width: 5px; }
+#agency-brands::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 3px; }
+#agency-brands::-webkit-scrollbar-track { background: transparent; }
 .activity-raw-copy {
   position: absolute;
   top: 6px;
@@ -1449,11 +1459,15 @@ body.platform-mac .titlebar-drag{
   overflow-y:auto;
   overflow-x:hidden;
   padding-right:4px;
-  scrollbar-width:thin;
-  scrollbar-color:var(--hover-8) transparent;
 }
-.magic-panel-scroll::-webkit-scrollbar{width:4px}
-.magic-panel-scroll::-webkit-scrollbar-thumb{background:var(--hover-8);border-radius:2px}
+/* Themed scrollbar — 5px webkit convention (same as #chat / .truesight-scroll).
+   REGRESSION GUARD (2026-06-30, scrollbar-theme sweep): do NOT re-add
+   scrollbar-width/scrollbar-color here. In Chromium 121+ (Electron 41) the
+   standard props take precedence and SHADOW these ::-webkit-scrollbar rules,
+   rendering a wider bar that doesn't match the rest of the app. */
+.magic-panel-scroll::-webkit-scrollbar{width:5px}
+.magic-panel-scroll::-webkit-scrollbar-thumb{background:var(--hover-8);border-radius:3px}
+.magic-panel-scroll::-webkit-scrollbar-track{background:transparent}
 
 .magic-header{
   display:flex;align-items:center;justify-content:space-between;
@@ -1919,10 +1933,11 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 .wisdom-title-row{display:flex;align-items:baseline}
 .wisdom-scroll{
   flex:1;overflow-y:auto;padding:16px;
-  scrollbar-width:thin;scrollbar-color:var(--hover-8) transparent;
 }
-.wisdom-scroll::-webkit-scrollbar{width:4px}
-.wisdom-scroll::-webkit-scrollbar-thumb{background:var(--hover-8);border-radius:2px}
+/* 5px webkit convention — no scrollbar-width/color (shadows webkit in Chromium 121+). */
+.wisdom-scroll::-webkit-scrollbar{width:5px}
+.wisdom-scroll::-webkit-scrollbar-thumb{background:var(--hover-8);border-radius:3px}
+.wisdom-scroll::-webkit-scrollbar-track{background:transparent}
 .wisdom-grid{
   display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;
 }
@@ -2535,11 +2550,11 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
      `Images` tab (empty state) renders wider filters than `Ads` tab
      (overflow causes 4px scrollbar + 4px padding-right = visible shift). */
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: var(--hover-8) transparent;
 }
-.archive-panel-scroll::-webkit-scrollbar { width: 4px; }
-.archive-panel-scroll::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 2px; }
+/* 5px webkit convention — no scrollbar-width/color (shadows webkit in Chromium 121+). */
+.archive-panel-scroll::-webkit-scrollbar { width: 5px; }
+.archive-panel-scroll::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 3px; }
+.archive-panel-scroll::-webkit-scrollbar-track { background: transparent; }
 
 .archive-filters {
   padding: 10px 16px;
@@ -3106,8 +3121,11 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 }
 .brand-switcher-scroll {
   flex: 1; overflow-y: auto; padding: 28px 24px;
-  scrollbar-width: thin; scrollbar-color: var(--hover-8) transparent;
 }
+/* 5px webkit convention — no scrollbar-width/color (shadows webkit in Chromium 121+). */
+.brand-switcher-scroll::-webkit-scrollbar { width: 5px; }
+.brand-switcher-scroll::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 3px; }
+.brand-switcher-scroll::-webkit-scrollbar-track { background: transparent; }
 .brand-switcher-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
   gap: 14px; max-width: 920px; margin: 0 auto;
@@ -3967,12 +3985,12 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
   overflow-y: auto;
   overflow-x: hidden;
   scrollbar-gutter: stable;
-  scrollbar-width: thin;
-  scrollbar-color: var(--hover-8) transparent;
   padding: 16px 24px 28px;
 }
-.palantir-scroll::-webkit-scrollbar { width: 6px; }
+/* 5px webkit convention — no scrollbar-width/color (shadows webkit in Chromium 121+). */
+.palantir-scroll::-webkit-scrollbar { width: 5px; }
 .palantir-scroll::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 3px; }
+.palantir-scroll::-webkit-scrollbar-track { background: transparent; }
 
 /* Competitor-spy controls now live inside the collapsed <details>, so no
    panel-top sticky positioning. */
@@ -4146,6 +4164,11 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
   border-radius: var(--radius);
   box-shadow: 0 24px 60px var(--shadow-lg);
 }
+/* Themed scrollbar (2026-06-30 sweep) — this lightbox lives inside the Palantir
+   full-window panel; without this it showed the raw OS scrollbar. 5px convention. */
+.palantir-detail-card::-webkit-scrollbar { width: 5px; }
+.palantir-detail-card::-webkit-scrollbar-thumb { background: var(--hover-8); border-radius: 3px; }
+.palantir-detail-card::-webkit-scrollbar-track { background: transparent; }
 .palantir-detail-close {
   position: absolute;
   top: 10px; right: 12px;

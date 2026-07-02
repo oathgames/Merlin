@@ -11,13 +11,20 @@ const path = require('node:path');
 
 const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
-test('get-decrypted-config-path brand branch is wrapped in try/catch', () => {
+test('get-decrypted-config-path brand branch is strict-scoped + wrapped in try/catch', () => {
   const i = main.indexOf("ipcMain.handle('get-decrypted-config-path'");
   assert.ok(i >= 0, 'handler not found');
-  const block = main.slice(i, i + 1300);
-  const rb = block.indexOf('readBrandConfig(brandName)');
-  assert.ok(rb >= 0, 'readBrandConfig call not found');
-  assert.match(block.slice(0, rb), /try\s*\{/, 'readBrandConfig (throws on bad brand) must sit inside a try');
+  const block = main.slice(i, i + 1800);
+  // Updated 2026-06-30 (cross-brand leak sweep): this handler MUST resolve the
+  // brand config through buildStrictBrandConfig (strips global legacy creds), NOT
+  // readBrandConfig (global ⊕ brand overlay), and write the tmp file into
+  // .claude/tools/ (hook-protected + swept) rather than os.tmpdir().
+  const rb = block.indexOf('buildStrictBrandConfig(brandName)');
+  assert.ok(rb >= 0, 'must resolve via buildStrictBrandConfig (strict per-brand), not readBrandConfig');
+  assert.ok(!block.includes('readBrandConfig(brandName)'), 'must NOT use the leaky readBrandConfig resolver');
+  assert.match(block.slice(0, rb), /try\s*\{/, 'buildStrictBrandConfig (throws on bad brand) must sit inside a try');
+  assert.ok(/\.claude['"\s,)]*,\s*['"]tools['"]/.test(block) || block.includes("'.claude', 'tools'"),
+    'tmp config must live under .claude/tools/ (swept + hook-protected), not os.tmpdir()');
   assert.ok(block.includes('return null'), 'returns null on failure instead of rejecting');
 });
 
