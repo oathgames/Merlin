@@ -116,8 +116,12 @@ test('mobileHandlers.onSendMessage appends the phone user bubble to the brand th
 test('mobileHandlers.onSendMessage resolves resolveNextMessage when one is waiting', () => {
   const block = extractMobileHandlersBlock(MAIN_JS);
   const body = extractOnSendMessageBody(block);
-  if (!/if\s*\(\s*resolveNextMessage\s*\)\s*\{[^}]*resolveNextMessage\s*\(\s*msg\s*\)/s.test(body)) {
-    throw new Error('fast-path resolveNextMessage(msg) missing from onSendMessage — breaks the hot path used during an active SDK turn');
+  // Updated 2026-06-30 (message-integrity sweep): the fast-path delivery now goes
+  // through settleNextMessage(msg), which invokes the resolver AND nulls it in one
+  // step so a stale single-shot resolver can't silently drop the next message.
+  // The `if (resolveNextMessage)` guard still gates the fast path vs the queue branch.
+  if (!/if\s*\(\s*resolveNextMessage\s*\)\s*\{[^}]*settleNextMessage\s*\(\s*msg\s*\)/s.test(body)) {
+    throw new Error('fast-path settleNextMessage(msg) missing from onSendMessage — breaks the hot path used during an active SDK turn');
   }
 });
 

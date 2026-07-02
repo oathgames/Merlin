@@ -156,8 +156,8 @@ contextBridge.exposeInMainWorld('merlin', {
   saveState: (data) => ipcRenderer.invoke('save-state', assertObj(data)),
   loadState: () => ipcRenderer.invoke('load-state'),
 
-  // Revenue tracker
-  getStatsCache: () => ipcRenderer.invoke('get-stats-cache'),
+  // (Removed 2026-06-30) getStatsCache bridged the cross-brand action-keyed
+  // .merlin-stats.json cache; the pipeline was deleted in the leak sweep.
 
   // Performance + Activity
   getPerfSummary: (days, brand) => ipcRenderer.invoke('get-perf-summary', assertInt(days, 7), assertBrand(brand)),

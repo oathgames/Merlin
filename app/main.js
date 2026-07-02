@@ -1360,6 +1360,24 @@ let win = null;
 let tray = null;
 let forceQuit = false;
 let resolveNextMessage = null;
+// REGRESSION GUARD (2026-06-30, message-integrity sweep): resolveNextMessage is
+// a SINGLE-SHOT resolver. Once invoked, its promise is settled and calling it
+// again is a no-op — but the variable stays truthy until the message generator
+// loops back and reassigns it (or teardown nulls it). The send-message fast path
+// keys on `if (resolveNextMessage)` to mean "the generator is parked awaiting
+// input, deliver now". A STALE truthy resolver (post-Escape, or a dying
+// auth-intercepted session whose for-await hasn't unwound) makes that a no-op
+// that returns {success:true} while the user's message silently vanishes —
+// never queued, never delivered. ALWAYS resolve THROUGH this helper so the
+// variable is nulled the instant it is consumed; a send arriving in the gap
+// then correctly falls through to the queue branch. The ONLY place that may
+// assign resolveNextMessage is the generator's `await new Promise(...)`; every
+// invocation goes through settleNextMessage (enforced by main-message-integrity.test.js).
+function settleNextMessage(value) {
+  const fn = resolveNextMessage;
+  resolveNextMessage = null;
+  if (fn) { try { fn(value); } catch {} }
+}
 const activeChildProcesses = new Set(); // track spawned Merlin.exe for cleanup
 // §G7 — Holds the most recent MCP ctx so `before-quit` can reach
 // ctx.jobStore (the in-process JobStore backing long-running MCP tools
@@ -2077,7 +2095,7 @@ async function createWindow() {
       } catch (e) { console.warn('[threads] remote user bubble log failed:', e.message); }
       const msg = { type: 'user', message: { role: 'user', content } };
       if (resolveNextMessage) {
-        resolveNextMessage(msg);
+        settleNextMessage(msg);
       } else {
         if (_queueFrozenForAuth) {
           pendingMessageQueue = [];
@@ -3249,6 +3267,16 @@ async function startSession(brandOverride) {
       getBinaryPath,
       readConfig,
       readBrandConfig,
+      // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): the MCP tool
+      // surface (runBinary in mcp-tools.js) MUST resolve a brand's binary
+      // config through buildStrictBrandConfig, NOT readBrandConfig. readBrandConfig
+      // is global ⊕ brand overlay — plain legacy creds + non-sensitive BRAND_KEYS
+      // (metaAdAccountId, shopifyStore, …) in the global config merge into EVERY
+      // brand, so mcp__merlin__dashboard/meta_ads/etc. served another brand's ad
+      // account (same class as the Truesight IPC leak fixed the same day).
+      // buildStrictBrandConfig strips ALL BRAND_KEYS from the global base and
+      // overlays only the brand's own creds — no global fallback.
+      buildStrictBrandConfig,
       writeConfig,
       writeBrandTokens,
       vaultGet,
@@ -3691,7 +3719,7 @@ async function startSession(brandOverride) {
               .some(d => d.isDirectory() && d.name !== 'example');
           } catch {}
           if (!hasBrands && resolveNextMessage) {
-            resolveNextMessage({ type: 'user', message: { role: 'user', content:
+            settleNextMessage({ type: 'user', message: { role: 'user', content:
               `(System note: I just detected the user's email domain is "${domain}". If you haven't already asked for their website, suggest this domain as their brand. If you already asked, ignore this.)`
             }});
           }
@@ -3862,10 +3890,16 @@ async function startSession(brandOverride) {
         win.webContents.send('sdk-message', outbound);
         wsServer.broadcast('sdk-message', outbound);
 
-        // Cache dashboard/insights responses for the revenue tracker
-        if (msg.type === 'tool_result' || msg.type === 'tool_use') {
-          cacheDashboardData(msg);
-        }
+        // (Removed 2026-06-30, cross-brand leak sweep) The revenue-tracker
+        // `.merlin-stats.json` cache was keyed by action name only, with no
+        // brand — Brand A's dashboard/insights JSON overwrote and served for
+        // Brand B. Its only renderer consumer was already removed (the Revenue
+        // overlay now reads the brand-scoped perfState.cache exclusively; see
+        // renderer.js REGRESSION GUARD 2026-04-15 findings #3/#5), leaving a
+        // write-only cross-brand data-at-rest artifact plus a get-stats-cache
+        // handler + preload bridge that were re-consumption traps. All four are
+        // deleted. Do NOT reintroduce an action-keyed stats cache — if a
+        // cross-action cache is ever needed, key it by brand AND period.
 
         // Spellbook: detect task-related MCP tool calls and task lifecycle events
         if (msg.type === 'tool_use' && msg.tool_name && msg.tool_name.includes('scheduled-tasks')) {
@@ -4047,8 +4081,7 @@ async function startSession(brandOverride) {
     // Always reset so session can be restarted after error or completion
     activeQuery = null;
     // Resolve pending generator promise so it exits cleanly (null = stop signal)
-    if (resolveNextMessage) { resolveNextMessage(null); }
-    resolveNextMessage = null;
+    settleNextMessage(null);
     // Only clear the queue when we're NOT in an auth-recovery window. If auth
     // failed and we're waiting for login, keep the triggering message so it
     // replays automatically when the next session starts. Covered by Codex
@@ -4411,12 +4444,17 @@ ipcMain.handle('trigger-claude-login', async () => {
           return;
         }
 
-        // No token. Build an error message that actually helps the user.
+        // No token. Build a plain-English error — REGRESSION GUARD (2026-06-30,
+        // Rule 6 sweep): NEVER embed raw CLI stderr in the user-facing string.
+        // The renderer routes this through friendlyErrorPlain, but that helper
+        // passes short (<150-char) unclassified strings through verbatim, so a
+        // short stderr preview would still leak to the chat bubble. Keep the raw
+        // stderr in the console log for diagnostics only.
         const stderrPreview = stderr.replace(/\s+/g, ' ').trim().slice(0, 200);
+        console.error('[claude-login] verification failed: exit', code, stderrPreview);
         const reason = code === 0
           ? 'Claude Code signed in but no credential file was produced. Check your network and try again.'
-          : `Claude Code login exited with code ${code}${stderrPreview ? ': ' + stderrPreview : ''}`;
-        console.error('[claude-login] verification failed:', reason);
+          : 'Sign-in did not complete. Please try again.';
         finish({ success: false, error: reason });
       });
 
@@ -4427,7 +4465,8 @@ ipcMain.handle('trigger-claude-login', async () => {
         try { ipcMain.removeHandler('cancel-claude-login'); } catch {}
         if (win && !win.isDestroyed()) win.webContents.send('auth-code-dismiss');
         console.error('[claude-login] spawn error:', e.message);
-        finish({ success: false, error: e.message });
+        // Rule 6: friendly message to the user; raw spawn error stays in the log.
+        finish({ success: false, error: 'Sign-in could not start. Please try again.' });
       });
 
       // Small diagnostic: after 5 seconds, log whether we've seen the CLI
@@ -4491,10 +4530,11 @@ ipcMain.handle('dismiss-briefing', (_, brandName) => {
 });
 
 ipcMain.handle('stop-generation', () => {
-  // Signal the message generator to stop, ending the current turn
-  if (resolveNextMessage) {
-    resolveNextMessage(null);
-  }
+  // Signal the message generator to stop, ending the current turn. settleNextMessage
+  // nulls the resolver as it fires so a message sent during the (possibly long)
+  // stream-close window falls to the queue branch instead of hitting a stale
+  // resolver no-op and vanishing (post-Escape silent-drop, message-integrity sweep).
+  settleNextMessage(null);
   return { success: true };
 });
 
@@ -4528,9 +4568,7 @@ ipcMain.handle('abort-active-query', async () => {
   // turn was hung, they were destined for the now-aborted state and
   // should be re-evaluated against the next session, not silently
   // delivered into the next turn's startSession.
-  if (resolveNextMessage) {
-    try { resolveNextMessage(null); } catch {}
-  }
+  settleNextMessage(null);
   pendingMessageQueue = [];
   // Clear pending tool approvals so the user isn't asked to approve a
   // tool from the aborted turn.
@@ -4609,9 +4647,7 @@ ipcMain.handle('switch-brand', async (_, targetBrand) => {
     if (activeQuery && typeof activeQuery.interrupt === 'function') {
       try { await activeQuery.interrupt(); } catch {}
     }
-    if (resolveNextMessage) {
-      try { resolveNextMessage(null); } catch {}
-    }
+    settleNextMessage(null);
     pendingMessageQueue = [];
     // Hard-clear the queue badge — switch-brand drained the queue.
     if (win && !win.isDestroyed()) {
@@ -4901,7 +4937,15 @@ async function runOAuthFlow(platform, brandName, extra) {
             }
           } catch { /* ignore — keep scanning */ }
         }
-        if (err) return resolve({ error: stderr || err.message });
+        // Rule 6: prefer the Go binary's (hardened, friendly) stderr; NEVER fall
+        // back to raw Node err.message — that's "Command failed: <full Merlin.exe
+        // path> --config … --cmd {…}", which the renderer's friendlyError would
+        // pass through verbatim for short strings (S1). Friendly fallback + log.
+        if (err) {
+          console.error('[oauth] exchange failed:', platform, stderr || (err && err.message));
+          const goMsg = (stderr && stderr.trim()) ? stderr.trim() : '';
+          return resolve({ error: goMsg || 'Could not finish connecting. Please try again.' });
+        }
         // REGRESSION GUARD (2026-04-17, v1.4 Google Ads tile-not-green fix):
         // Binary exited 0 but stdout unparseable — tokens may already be
         // on disk via the binary's own VaultPut path. Broadcast so the
@@ -5153,7 +5197,13 @@ ipcMain.handle('save-config-field', (_, key, value, brandName) => {
     }
     if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
     return { success: true };
-  } catch (err) { return { success: false, error: err.message }; }
+  } catch (err) {
+    // Rule 6 (2026-06-30 sweep): the ~10 showModalError(r.error) sinks render
+    // this verbatim; a raw vault/fs message (`EACCES … C:\Users\…`) would leak
+    // an absolute path into a modal. Friendly message + log.
+    console.error('[save-config-field] failed:', key, err && err.message ? err.message : err);
+    return { success: false, error: 'Could not save that. Please try again.' };
+  }
 });
 
 // ── Bulk upload (drag-drop + multi-select) ──────────────────────────
@@ -5546,7 +5596,7 @@ ipcMain.handle('send-message', (_, text, options = {}) => {
   }
   const msg = { type: 'user', message: { role: 'user', content } };
   if (resolveNextMessage) {
-    resolveNextMessage(msg);
+    settleNextMessage(msg);
   } else {
     // REGRESSION GUARD (2026-04-14, Codex P1 #1 — duplicate replay):
     // When _queueFrozenForAuth is true, the renderer's auth-recovery
@@ -5697,6 +5747,12 @@ async function transcribeAudioImpl(audioBytes) {
 
   const { spawn } = require('child_process');
   const isWin = process.platform === 'win32';
+  // Bounded wall-clock for the two voice subprocesses so a wedged process can
+  // never hang the transcribe-audio IPC (see the spawn-site REGRESSION GUARDs
+  // below). Generous relative to real dictation turns (<30s @ 16kHz): ffmpeg
+  // downmix is near-instant; whisper greedy-decode is the slow half.
+  const FFMPEG_TIMEOUT_MS = 30000;
+  const WHISPER_TIMEOUT_MS = 120000;
 
   // Resolve paths: check install dir first (bundled), fall back to workspace
   const findTool = (name) => {
@@ -5759,7 +5815,16 @@ async function transcribeAudioImpl(audioBytes) {
         '-ar', '16000', '-ac', '1', '-c:a', 'pcm_s16le',
         wavPath,
       ];
-      const ff = spawn(ffmpegPath, args, { windowsHide: true });
+      // REGRESSION GUARD (2026-06-30, message-integrity sweep): both voice
+      // spawns (ffmpeg here + whisper-cli below) MUST carry a timeout. Without
+      // one, a wedged process (AV filter-driver interference on Windows is the
+      // documented case) never fires 'close'/'error', so this Promise never
+      // settles → the transcribe-audio IPC hangs forever, the desktop mic stays
+      // stuck in "transcribing", the PWA transcription reply never sends, and
+      // the temp files leak. Node's `timeout` kills with `killSignal` and then
+      // fires 'close' with code=null, which the handler below rejects — settling
+      // the promise. SIGKILL because a truly wedged process can ignore SIGTERM.
+      const ff = spawn(ffmpegPath, args, { windowsHide: true, timeout: FFMPEG_TIMEOUT_MS, killSignal: 'SIGKILL' });
       let stderr = '';
       ff.stderr.on('data', (d) => { stderr += d.toString(); });
       ff.on('close', (code) => {
@@ -5818,7 +5883,10 @@ async function transcribeAudioImpl(audioBytes) {
     const transcript = await new Promise((resolve, reject) => {
       const args = ['-m', modelPath, '-f', wavPath, '-nt', '-np', '-l', 'en', '-bs', '1', '-t', '4'];
       if (promptSeed) { args.push('--prompt', promptSeed); }
-      const w = spawn(whisperBin, args, { windowsHide: true });
+      // REGRESSION GUARD (2026-06-30, message-integrity sweep): timeout mandatory
+      // — see the ffmpeg spawn above. A wedged whisper-cli on a pathological wav
+      // would otherwise hang the transcribe-audio IPC forever.
+      const w = spawn(whisperBin, args, { windowsHide: true, timeout: WHISPER_TIMEOUT_MS, killSignal: 'SIGKILL' });
       let stdout = '';
       let stderr = '';
       w.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -7839,9 +7907,20 @@ ipcMain.handle('get-decrypted-config-path', (_, brandName) => {
     // error (ENOSPC/EACCES on writeFileSync) must return null, not reject the
     // renderer promise unhandled. RSI 2026-06-22.
     try {
-      const cfg = readBrandConfig(brandName);
+      // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): this handler is
+      // currently unreferenced (no preload bridge), but it is a ready-made
+      // leak primitive one refactor away from being wired back. Two hardenings
+      // so it can never leak: (1) buildStrictBrandConfig, NOT readBrandConfig,
+      // so no global legacy creds merge into the brand; (2) write into
+      // .claude/tools/ (matched by the hook block-list AND swept by the 24h
+      // orphan cleaner) instead of os.tmpdir(), which nothing ever cleans and
+      // the hook cannot protect. The timer/exit cleanup below is kept as the
+      // fast path.
+      const cfg = buildStrictBrandConfig(brandName);
       if (!cfg || Object.keys(cfg).length === 0) return null;
-      const tmpPath = path.join(os.tmpdir(), `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
+      const toolsDir = path.join(appRoot, '.claude', 'tools');
+      try { fs.mkdirSync(toolsDir, { recursive: true }); } catch {}
+      const tmpPath = path.join(toolsDir, `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
       fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
       // Clean up temp config aggressively: 10s grace for binary to read it, then delete
       setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch (e) { console.error('[config-cleanup]', e.message); } }, 10000);
@@ -9137,68 +9216,12 @@ function writeSecureFile(filePath, data) {
   } catch {}
 }
 
-// ── Revenue Tracker — cache raw API responses ──────────────
-const statsFile = path.join(appRoot, '.merlin-stats.json');
-
-// Track the last tool_use action so we can tag the result
-let _lastToolAction = null;
-
-function cacheDashboardData(msg) {
-  // Capture the action from tool_use commands (Bash or MCP)
-  if (msg.type === 'tool_use') {
-    if (msg.tool_name === 'Bash') {
-      const cmd = msg.input?.command || '';
-      if (cmd.includes('Merlin')) {
-        const match = cmd.match(/"action"\s*:\s*"([^"]+)"/);
-        if (match) _lastToolAction = match[1];
-      }
-    } else if (msg.tool_name && msg.tool_name.startsWith('mcp__merlin__')) {
-      // MCP tool calls: extract action from input
-      const action = msg.input?.action;
-      if (action) _lastToolAction = action;
-    }
-    return;
-  }
-
-  // Cache tool_result for dashboard/insights actions
-  if (msg.type === 'tool_result' && _lastToolAction) {
-    const action = _lastToolAction;
-    _lastToolAction = null;
-
-    // Cache any action that returns performance/revenue data
-    // This list auto-extends as new platforms are added to the binary
-    if (!action.includes('insights') && !action.includes('orders') && !action.includes('analytics')
-        && !action.includes('performance') && !action.includes('dashboard') && !action.includes('cohorts')
-        && !action.includes('revenue')) return;
-
-    try {
-      const content = typeof msg.content === 'string' ? msg.content
-        : Array.isArray(msg.content) ? msg.content.map(b => b.text || '').join('')
-        : '';
-      if (!content || content.length < 10) return;
-
-      // Try to extract JSON from the response
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return;
-
-      let stats = {};
-      try { stats = JSON.parse(fs.readFileSync(statsFile, 'utf8')); } catch {}
-      stats[action] = {
-        data: jsonMatch[0].slice(0, 10000), // Cap at 10KB per entry
-        timestamp: new Date().toISOString(),
-      };
-      const tmpPath = statsFile + '.tmp';
-      fs.writeFileSync(tmpPath, JSON.stringify(stats, null, 2));
-      fs.renameSync(tmpPath, statsFile);
-    } catch (e) { console.error('[stats-cache]', e.message); }
-  }
-}
-
-ipcMain.handle('get-stats-cache', () => {
-  try {
-    return JSON.parse(fs.readFileSync(statsFile, 'utf8'));
-  } catch { return null; }
-});
+// ── Revenue Tracker ────────────────────────────────────────
+// (Removed 2026-06-30, cross-brand leak sweep) The `.merlin-stats.json`
+// action-keyed cache (cacheDashboardData + get-stats-cache handler) was a
+// cross-brand data-at-rest artifact with no live reader. See the deletion
+// note at the former call site in the SDK message loop. The Revenue overlay
+// reads brand-scoped perfState.cache exclusively.
 
 // Check which platforms are connected by reading the config.
 // Platform connections (Meta, Shopify, Google, etc.) are per-brand — only show if the brand has them.
@@ -9903,7 +9926,15 @@ ipcMain.handle('refresh-live-ads', async (_, brandName) => {
   let isTmpConfig = false;
   let cfg = {};
   try {
-    cfg = brandName ? readBrandConfig(brandName) : readConfig();
+    // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): STRICT config only.
+    // readBrandConfig merges global legacy creds into the brand, so the platform
+    // gating below (`!!cfg.metaAccessToken && !!cfg.metaAdAccountId`) would treat
+    // a platform as connected for THIS brand on the strength of another brand's
+    // (or a legacy global) leftovers, then write that other account's ads into
+    // assets/brands/<brand>/ads-live.json — which getBudgetContext later sums for
+    // spend caps. Strict config means an unconnected platform is simply absent
+    // and skipped: no data beats another brand's data.
+    cfg = brandName ? buildStrictBrandConfig(brandName) : readConfig();
   } catch {}
   if (brandName) {
     if (cfg && Object.keys(cfg).length > 0) {
@@ -10303,16 +10334,25 @@ ipcMain.handle('get-brands', () => {
       try { existingHash = JSON.parse(fs.readFileSync(indexPath, 'utf8')).hash; } catch {}
 
       if (currentHash !== existingHash) {
-        const cfg = readConfig();
-
+        // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): hasShopify /
+        // hasMeta MUST be computed per-brand via buildStrictBrandConfig, NOT
+        // from the global readConfig(). The global holds legacy/leftover creds,
+        // so `!!cfg.shopifyAccessToken` off the global marked EVERY brand as
+        // Shopify-connected — an index consumed by commands and scheduled tasks
+        // to decide what to run. Strict per-brand config reflects only what that
+        // brand actually connected.
         const index = {
           hash: currentHash,
           generated: new Date().toISOString(),
-          brands: dirs.map(b => ({
-            ...b,
-            hasShopify: !!cfg.shopifyAccessToken,
-            hasMeta: !!cfg.metaAccessToken,
-          })),
+          brands: dirs.map(b => {
+            let bcfg = {};
+            try { bcfg = buildStrictBrandConfig(b.name); } catch {}
+            return {
+              ...b,
+              hasShopify: !!bcfg.shopifyAccessToken,
+              hasMeta: !!bcfg.metaAccessToken,
+            };
+          }),
         };
         fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
       }
@@ -10456,6 +10496,7 @@ async function buildMobileQrEntry() {
       expiresInSec: pair.expiresInSec,
     };
   } catch (e) {
+    console.warn('[mobile-qr] relay pairing failed, LAN fallback:', e && e.message ? e.message : e);
     const info = wsServer.getConnectionInfo();
     const protocol = info.secure ? 'https' : 'http';
     const pwaUrl = `${protocol}://${info.host}:${info.port}`;
@@ -10464,7 +10505,13 @@ async function buildMobileQrEntry() {
       qrDataUri,
       pwaUrl,
       mode: 'lan',
-      relayError: String(e?.message || e).slice(0, 64),
+      // REGRESSION GUARD (2026-06-30, Rule 6 sweep): a boolean marker that relay
+      // pairing was attempted and failed — NOT the raw exception. The prior
+      // `String(e).slice(0,64)` was the exact ".slice(N) on a raw error" leak
+      // Rule 6 names; it surfaced "connect ECONNREFUSED 104.21…" verbatim in the
+      // QR note. The user-facing note (renderer paintQrPayload) needs only the
+      // fact of failure to explain the same-WiFi fallback. Log the detail:
+      relayError: true,
       ...info,
     };
   }
@@ -11100,9 +11147,15 @@ ipcMain.handle('activate-key', async (_, key) => {
       }
       return { success: true, tier: data.tier || 'pro' };
     }
-    return { success: false, error: data.error || `Server returned ${status}` };
+    // REGRESSION GUARD (2026-06-30, Rule 6 sweep): the three "Invalid Key"
+    // modal sinks render this verbatim. Never return the raw `Server returned N`
+    // jargon or (in the catch) a raw `fetch failed` / `getaddrinfo ENOTFOUND`
+    // network string — offline users saw those under an "Invalid Key" title.
+    console.error('[activate-key] server error:', status, data && data.error);
+    return { success: false, error: data.error || 'That key could not be activated. Please check for typos and try again.' };
   } catch (err) {
-    return { success: false, error: err?.message || 'network error' };
+    console.error('[activate-key] network error:', err && err.message ? err.message : err);
+    return { success: false, error: 'Could not reach the activation server. Check your internet connection and try again.' };
   }
 });
 
@@ -11236,7 +11289,13 @@ ipcMain.handle('open-manage', async () => {
     // Electron app catching the update yet; a reconcile will fix it.
     // Prefer device-token wording even if older comments above still
     // mention the previous email-based recovery flow.
-    let errMsg = data.error || `Server returned ${status}`;
+    // REGRESSION GUARD (2026-06-30, Rule 6 sweep): default to a friendly generic
+    // and ONLY override for specifically-mapped cases. The prior default
+    // (`data.error || 'Server returned N'`) leaked raw worker codes ('license
+    // corrupt', 'rate limited', 'invalid body') into the chat bubble for any
+    // unmapped status. Log the raw code for diagnostics.
+    console.error('[billing-portal] server error:', status, data && data.error);
+    let errMsg = 'Could not open the billing portal right now. Please try again, or email support@merlingotme.com.';
     if (status === 401 && data.error === 'reauth_required') {
       errMsg = 'Your billing credential needs to be recovered. Relaunch Merlin online, or contact support@merlingotme.com.';
     } else if (status === 403 && data.error === 'unauthorized') {
@@ -11254,13 +11313,15 @@ ipcMain.handle('open-manage', async () => {
     }
     return { ok: false, error: errMsg };
   } catch (err) {
+    // Rule 6: no raw network error (`getaddrinfo ENOTFOUND …`) in the bubble.
+    console.error('[billing-portal] network error:', err && err.message ? err.message : err);
     if (win && !win.isDestroyed()) {
       win.webContents.send('inline-message', {
         kind: 'error',
-        text: `Could not reach billing portal (${err?.message || 'network error'}). Check your connection and retry.`,
+        text: 'Could not reach the billing portal. Check your internet connection and try again.',
       });
     }
-    return { ok: false, error: err?.message || 'network error' };
+    return { ok: false, error: 'network error' };
   }
 });
 
@@ -13719,7 +13780,15 @@ app.whenReady().then(async () => {
       let isTmpConfig = false;
       if (brand) {
         try {
-          const cfg = readBrandConfig(brand);
+          // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): STRICT config
+          // only. readBrandConfig would merge the global legacy Meta/TikTok/etc.
+          // token into THIS brand's watchdog-check, and the Go binary's
+          // MaybeRenewAllTokens would then treat another brand's (or a legacy
+          // global) token as this brand's and persist the renewed value into the
+          // wrong brand's vault namespace — actively propagating Brand A's
+          // credential into Brand B. buildStrictBrandConfig strips all BRAND_KEYS
+          // from the global base so a brand only ever renews tokens it actually owns.
+          const cfg = buildStrictBrandConfig(brand);
           if (!cfg || Object.keys(cfg).length === 0) continue;
           // Follows the same tmp-config placement rule as refresh-live-ads
           // — must live inside .claude/tools/ so the binary's projectRoot
