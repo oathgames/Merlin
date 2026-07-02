@@ -410,3 +410,23 @@ test('legacy meta_ads still accepts action=insights and doesn\'t require brand',
     'meta_ads must stay brandRequired:false so setup/adlib keep working');
   assert.equal(ann.destructive, true);
 });
+
+// ── granularity:"daily" per-day series (2026-07-02) ────────────────────
+// Locks the daily-breakdown surface: meta_review_performance exposes a
+// granularity input (summary|daily) that flows verbatim through runBinary
+// into the Go binary's cmd JSON, where meta-insights adds daily_series
+// (Meta time_increment=1, account level). Source-scan both sides so a
+// schema refactor can't silently drop the option.
+test('meta_review_performance exposes granularity:"daily" and documents daily_series', () => {
+  const fs = require('node:fs');
+  const src = fs.readFileSync(require('node:path').join(__dirname, 'mcp-meta-intent.js'), 'utf8');
+  const i = src.indexOf("name: 'meta_review_performance'");
+  assert.ok(i > 0, 'meta_review_performance tool exists');
+  const block = src.slice(i, i + 2600);
+  assert.ok(/granularity: z\.enum\(\['summary', 'daily'\]\)/.test(block),
+    'input schema must offer granularity: summary|daily');
+  assert.ok(/daily_series/.test(block),
+    'description must document the daily_series response field so the agent knows to ask for it');
+  assert.ok(/time_increment=1/.test(block),
+    'description must name the Meta mechanism (time_increment=1) for maintainer clarity');
+});

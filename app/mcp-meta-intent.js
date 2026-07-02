@@ -127,7 +127,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   // ── meta_review_performance ───────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_review_performance',
-    description: 'Read Meta ad performance at campaign, ad-set, AND ad granularity — spend, CTR, ROAS, CPC, purchases. One pull returns pre-aggregated campaign_summary + adset_summary rollups plus the raw ad-level array, so you can quote any tier without summing rows yourself. Use adset_summary for budget decisions (ad set is the meaningful-volume unit). Read-only; does not change campaigns.',
+    description: 'Read Meta ad performance at campaign, ad-set, AND ad granularity — spend, CTR, ROAS, CPC, purchases. One pull returns pre-aggregated campaign_summary + adset_summary rollups plus the raw ad-level array, so you can quote any tier without summing rows yourself. Use adset_summary for budget decisions (ad set is the meaningful-volume unit). For trend-shaped questions ("daily ROAS this week", "how does today compare to the weekly average") pass granularity:"daily" — the response then also carries daily_series, an account-level per-day array (date, spend, impressions, clicks, ctr, purchases, purchase_value, roas), so one call answers the trend without N pulls and manual diffs. Read-only; does not change campaigns.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -136,6 +136,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     input: {
       brand: brandSchema.describe('Brand name'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
+      granularity: z.enum(['summary', 'daily']).optional().describe('daily = also return daily_series, one account-level row per day in the window (Meta time_increment=1). Default: summary only.'),
       sortBy: z.string().optional().describe('Sort by: spend, roas, ctr, clicks, impressions, cpc, purchases'),
       sortOrder: z.enum(['asc', 'desc']).optional().describe('Sort order (default: desc)'),
       limit: z.number().optional().describe('Max results (e.g. 5 for top 5)'),
