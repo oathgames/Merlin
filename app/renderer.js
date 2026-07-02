@@ -1748,6 +1748,34 @@ function merlinUrl(relPath) {
   }).join('/');
 }
 
+// REGRESSION GUARD (2026-07-02, archive-blank-thumbs incident): resolve a
+// live ad's creative to a renderable src. The Go binary writes creativePath
+// RELATIVE to the brand folder (".creative-cache/<adID>.jpg") and, on
+// Windows, with BACKSLASHES. The merlin:// protocol handler resolves
+// appRoot-relative against an assets/ results/ pwa/ allowlist, so the bare
+// value resolved to appRoot/.creative-cache\… → 403 → every live-ad card
+// painted a blank thumb even though all 149 images sat cached on disk
+// (Forever21, live incident). Normalize slashes and qualify with the brand
+// assets prefix; every consumer of creativePath (card thumb, click preview,
+// context-menu details) MUST route through this helper — piping the raw
+// creativePath field straight into merlinUrl is the regression.
+function liveAdCreativeSrc(ad) {
+  if (!ad) return '';
+  if (ad.creativePath) {
+    let rel = String(ad.creativePath).replace(/\\/g, '/').replace(/^\.\//, '');
+    // Brand-qualify ONLY brand-relative cache paths (".creative-cache/…").
+    // Merlin-pushed ads store their source image path instead — already
+    // appRoot-relative ("results/img_…/001.png") or absolute — and those
+    // resolve as-is; prefixing them would break every Merlin-pushed card.
+    const isAbsolute = /^([a-zA-Z]:\/|\/)/.test(rel);
+    if (!isAbsolute && !/^(assets|results)\//.test(rel) && ad.brand) {
+      rel = 'assets/brands/' + ad.brand + '/' + rel;
+    }
+    return merlinUrl(rel);
+  }
+  return ad.creativeUrl || '';
+}
+
 // REGRESSION GUARD (2026-04-23, §3.11+§3.12, Cluster-M error chip wiring):
 // friendlyError() embeds action sentinels of the form [[chip:LABEL:ACTION]]
 // so downstream rendering (renderErrorToBubble) can upgrade them into real
@@ -4386,6 +4414,9 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   const tsPanel = document.getElementById('truesight-panel');
   if (tsPanel && !tsPanel.classList.contains('hidden')) loadTruesightData();
   else prefetchTruesight();
+  // Warm every report window + live ads for the new brand in the background
+  // (staleness-gated, aborts if the user switches again mid-warm).
+  warmBrandData(newBrand);
 });
 
 // add-brand-btn moved into brand dropdown as "+ New Brand" option
@@ -9786,12 +9817,81 @@ loadBrands().then(() => {
         // If user switched brands, don't overwrite their selection
       }
     } catch {}
+    // The active window is on screen — now warm everything else in the
+    // background so no report surface ever greets the user with
+    // "No data yet — run a performance check first".
+    warmBrandData(activeBrand);
   })();
 });
 
-// Periodic refresh — every 4 hours, refresh the currently selected brand
-// for the CURRENTLY selected period. See the REGRESSION GUARD above on
-// refreshPerfOnLaunch for why days must flow through.
+// ── Background data warmer (2026-07-02, async-data-warm) ─────────────
+// Every report window (1D/7D/30D/90D/12M) plus the live-ads snapshot is
+// warmed in the background — on launch, on brand switch, and every 4h —
+// so data is instantly ready when the user asks for it. The user only
+// ever waits on a first-ever populate. Two side effects are the point:
+//  - refresh-live-ads runs each platform's insights action, and those
+//    contribute anonymized metrics to the Wisdom machine (reportMetrics
+//    in the Go binary) — so Wisdom is now fed continuously by live ad
+//    data instead of only when the user happens to open the Archive.
+//  - every window's dashboard file lands on disk, which is what the
+//    Revenue overlay's 90D/12M tabs read.
+// Cost control: each step is gated on a 4h staleness check, runs
+// serially (main-side refresh-perf queue + one warm cycle at a time),
+// aborts when the user switches brands mid-warm, and the Go binary's
+// PreflightCheck enforces per-platform rate limits underneath.
+const PERF_WARM_WINDOWS = [1, 7, 30, 90, 365];
+const WARM_FRESH_MS = 4 * 60 * 60 * 1000;
+let _warmCycleRunning = false;
+async function warmBrandData(brand) {
+  if (_warmCycleRunning) return;
+  const target = brand || document.getElementById('brand-select')?.value || '';
+  if (!target) return;
+  _warmCycleRunning = true;
+  try {
+    const brandChanged = () => (document.getElementById('brand-select')?.value || '') !== target;
+
+    // 1. Live ads (Archive freshness + continuous Wisdom contribution).
+    //    Skip when the newest entry is < 4h old (manual ↻ just ran, or a
+    //    prior warm cycle covered it).
+    try {
+      const ads = await merlin.getLiveAds(target);
+      const newest = (Array.isArray(ads) ? ads : []).reduce((m, a) => {
+        const t = Date.parse(a && (a.updatedAt || a.publishedAt) || 0) || 0;
+        return t > m ? t : m;
+      }, 0);
+      if (!newest || (Date.now() - newest) > WARM_FRESH_MS) {
+        if (!brandChanged()) await merlin.refreshLiveAds(target);
+      }
+    } catch {}
+
+    // 2. Every perf window, serially, freshest-skipped.
+    for (const days of PERF_WARM_WINDOWS) {
+      if (brandChanged()) break;
+      let existing = null;
+      try { existing = await fetchPerfData(days, target); } catch {}
+      const freshAt = existing && existing.generatedAt ? new Date(existing.generatedAt).getTime() : 0;
+      if (freshAt && (Date.now() - freshAt) < WARM_FRESH_MS) {
+        if (!perfState.cache[target]) perfState.cache[target] = {};
+        perfState.cache[target][days] = existing;
+        continue;
+      }
+      try { await merlin.refreshPerf(target, days); } catch {}
+      try {
+        const fresh = await fetchPerfData(days, target);
+        if (fresh) {
+          if (!perfState.cache[target]) perfState.cache[target] = {};
+          perfState.cache[target][days] = fresh;
+        }
+      } catch {}
+    }
+  } finally {
+    _warmCycleRunning = false;
+  }
+}
+
+// Periodic refresh — every 4 hours, refresh the active window on-screen
+// first (see the REGRESSION GUARD above on refreshPerfOnLaunch for why
+// days must flow through), then warm every other window + live ads.
 setInterval(async () => {
   try {
     const activeBrand = document.getElementById('brand-select')?.value || '';
@@ -9799,6 +9899,7 @@ setInterval(async () => {
     const days = parseInt(activePeriod) || 7;
     await merlin.refreshPerf(activeBrand, days);
     loadPerfBar(days, activeBrand);
+    warmBrandData(activeBrand);
   } catch {}
 }, 4 * 60 * 60 * 1000); // every 4 hours
 
@@ -11127,6 +11228,24 @@ function palantirGenerateFromIdea(idea) {
 
 // loadPalantirIdeas auto-pulls the brand's niche winners and renders the wall.
 // No user input — the Go palantir-ideas action reads the active brand's niche.
+// Paint the Palantir connect state (no TrendTrack): clear the grid + niche
+// and show the connect CTA. Shared by the pre-fetch early-exit gate and the
+// binary's needConnect backstop so both paths render identically.
+function palantirRenderConnectState(grid, cta, niche, note) {
+  if (niche) niche.textContent = ''; // no "tailored to X" while disconnected
+  if (grid) grid.innerHTML = '';
+  if (cta) {
+    cta.style.display = '';
+    cta.innerHTML = palantirPortalHTML('connect', note || 'Connect TrendTrack to light up your idea wall.');
+    const cbtn = document.getElementById('palantir-connect-btn');
+    if (cbtn) cbtn.addEventListener('click', () => {
+      document.getElementById('palantir-panel')?.classList.add('hidden');
+      const magicBtn = document.getElementById('magic-btn');
+      if (magicBtn) magicBtn.click();
+    });
+  }
+}
+
 async function loadPalantirIdeas(opts) {
   opts = opts || {};
   if (palantirIdeasLoading) return;
@@ -11135,6 +11254,28 @@ async function loadPalantirIdeas(opts) {
   const cta = document.getElementById('palantir-connect-cta');
   const niche = document.getElementById('palantir-niche');
   if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
+
+  // REGRESSION GUARD (2026-07-02, palantir-portal-jitter): check the TrendTrack
+  // connection BEFORE painting the "Scrying the ad library…" portal or firing
+  // the binary. Pre-fix, the portal painted immediately, the binary ran for
+  // 1-3s, then needConnect swapped it to the connect CTA — a visible jitter
+  // between UI stages on every open for unconnected users. The gate is a fast
+  // local-config IPC raced at 3s; on timeout/failure we fall through to the
+  // normal fetch, whose needConnect backstop still renders the same state.
+  try {
+    const brand = (typeof getActiveBrandSelection === 'function' ? getActiveBrandSelection() : '') || '';
+    const conns = await Promise.race([
+      merlin.getConnectedPlatforms(brand),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('conn-gate-timeout')), 3000)),
+    ]);
+    const hasTrendTrack = Array.isArray(conns) && conns.some((c) => c && c.platform === 'trendtrack');
+    if (!hasTrendTrack) {
+      palantirIdeasLoading = false;
+      palantirRenderConnectState(grid, cta, niche, 'Connect TrendTrack to light up your idea wall.');
+      return;
+    }
+  } catch { /* gate unavailable — fall through, backstop below covers it */ }
+
   if (opts.reset && grid) grid.innerHTML = palantirPortalHTML('loading');
 
   let res = null;
@@ -11151,18 +11292,7 @@ async function loadPalantirIdeas(opts) {
   if (niche) niche.textContent = res.niche || '';
 
   if (res.needConnect) {
-    if (niche) niche.textContent = ''; // no "tailored to X" while disconnected
-    if (grid) grid.innerHTML = '';
-    if (cta) {
-      cta.style.display = '';
-      cta.innerHTML = palantirPortalHTML('connect', res.note || 'Connect TrendTrack to light up your idea wall.');
-      const cbtn = document.getElementById('palantir-connect-btn');
-      if (cbtn) cbtn.addEventListener('click', () => {
-        document.getElementById('palantir-panel')?.classList.add('hidden');
-        const magicBtn = document.getElementById('magic-btn');
-        if (magicBtn) magicBtn.click();
-      });
-    }
+    palantirRenderConnectState(grid, cta, niche, res.note);
     return;
   }
 
@@ -11396,6 +11526,7 @@ function truesightGrowthHeader(stages, wowDays) {
   const tiles = [
     { stage: byKey.awareness, label: 'Reach', sub: 'people who saw you' },
     { stage: byKey.visits, label: 'Mindshare', sub: 'came to your site' },
+    { stage: byKey.joined_list, label: 'List Joins', sub: 'joined email/SMS list' },
     { stage: byKey.add_to_cart, label: 'Intent', sub: 'added to cart' },
     { stage: byKey.converted, label: 'Revenue', sub: 'bought' },
   ];
@@ -11416,7 +11547,6 @@ function truesightGrowthHeader(stages, wowDays) {
       '</div>';
   });
   h += '</div>';
-  h += '<div class="ts-growth-note">Mindshare precedes revenue — watch reach and site visits climb before sales follow.</div>';
   h += '</div>';
   return h;
 }
@@ -11430,7 +11560,10 @@ function renderTruesightFunnel(data) {
   steps.forEach((s) => { if (s && s.from) stepByFrom[s.from] = s; });
   // Lead with the growth story (reach + mindshare WoW), then the funnel bars.
   let html = truesightGrowthHeader(stages, data.wow_days);
-  stages.forEach((stage, i) => {
+  // joined_list is a growth-header-only metric (WoW tile), not a funnel step —
+  // list joins sit alongside the funnel, not inside the narrowing shape.
+  const barStages = stages.filter((s) => s && s.key !== 'joined_list');
+  barStages.forEach((stage, i) => {
     const avail = !!stage.available;
     // Fixed funnel-bar widths by stage position (TS_BAR_WIDTHS): always a clean
     // narrowing shape, matching the reviewed mockup. Deliberately NOT
@@ -11458,7 +11591,7 @@ function renderTruesightFunnel(data) {
     }
     html += '</div>';
     const step = stepByFrom[stage.key];
-    if (step && i < stages.length - 1) {
+    if (step && i < barStages.length - 1) {
       const pctTxt = (typeof step.pct === 'number') ? step.pct.toFixed(1) + '%' : '—';
       html += '<div class="ts-step"><span class="ts-step-pct">' + pctTxt + '</span>';
       if (step.soft) html += '<span class="ts-step-soft" title="These two stages come from different measurement sources, so this rate is directional.">directional</span>';
@@ -12035,7 +12168,12 @@ async function loadArchive(opts = {}) {
       // earlier suggestion to switch to eager would force every tile
       // to fetch immediately. (image-browse-perf incident, 2026-05-03)
       if (ad.creativePath) {
-        thumbHtml = `<img class="archive-card-thumb" src="${escapeHtml(merlinUrl(ad.creativePath))}" alt="${altText}" loading="lazy" decoding="async">`;
+        // liveAdCreativeSrc (NOT bare merlinUrl) — brand-qualifies + normalizes
+        // the Windows backslash path so the merlin:// allowlist accepts it.
+        // data-fallback-src carries the Meta CDN URL so a missing/corrupt cache
+        // file degrades to the remote thumbnail before the sparkle placeholder.
+        const fallbackAttr = ad.creativeUrl ? ` data-fallback-src="${escapeHtml(ad.creativeUrl)}"` : '';
+        thumbHtml = `<img class="archive-card-thumb" src="${escapeHtml(liveAdCreativeSrc(ad))}"${fallbackAttr} alt="${altText}" loading="lazy" decoding="async">`;
       } else if (ad.creativeUrl) {
         thumbHtml = `<img class="archive-card-thumb" src="${escapeHtml(ad.creativeUrl)}" alt="${altText}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
       } else {
@@ -12117,11 +12255,23 @@ async function loadArchive(opts = {}) {
       let isStaticCard = !ad.creativePath && !ad.creativeUrl;
       const thumbImg = card.querySelector('img.archive-card-thumb');
       if (thumbImg) {
+        // Two-stage fallback (2026-07-02): local cache file missing/corrupt →
+        // retry once with the Meta CDN URL (data-fallback-src) → then the
+        // sparkle placeholder. Not {once:true} — the CDN retry needs a second
+        // error event to reach the placeholder.
+        let triedFallback = false;
         thumbImg.addEventListener('error', () => {
+          const fb = thumbImg.dataset ? thumbImg.dataset.fallbackSrc : '';
+          if (fb && !triedFallback) {
+            triedFallback = true;
+            thumbImg.referrerPolicy = 'no-referrer';
+            thumbImg.src = fb;
+            return;
+          }
           thumbImg.outerHTML = placeholderHTML;
           isStaticCard = true;
           card.classList.add('archive-card-static');
-        }, { once: true });
+        });
       }
       if (isStaticCard) card.classList.add('archive-card-static');
 
@@ -12130,7 +12280,9 @@ async function loadArchive(opts = {}) {
       // the preview in `noThumbnail` mode so the user sees metrics +
       // refresh action instead of a dead-pixel tile.
       card.addEventListener('click', () => {
-        const previewSrc = ad.creativePath || ad.creativeUrl;
+        // liveAdCreativeSrc, not raw creativePath — the preview modal hits the
+        // same merlin:// allowlist as the card thumb (archive-blank-thumbs).
+        const previewSrc = liveAdCreativeSrc(ad);
         if (previewSrc) {
           openArchivePreview({
             type: 'image',
@@ -12312,7 +12464,7 @@ async function loadArchive(opts = {}) {
         detailsItem.addEventListener('click', () => {
           menu.remove();
           document.querySelectorAll('.context-submenu').forEach(s => s.remove());
-          const src = ad.creativePath || ad.creativeUrl;
+          const src = liveAdCreativeSrc(ad);
           if (src) openArchivePreview({ type: 'image', thumbnail: src, folder: '', files: [] });
         });
         menu.appendChild(detailsItem);
