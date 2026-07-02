@@ -7276,9 +7276,30 @@ function maybeNotifyBriefing(briefingPath) {
 // pulls; on-launch refresh sends 1 for speed (and because the bar shows
 // today's live number), while the user-initiated "Run a check now" button
 // (Part F) can request a longer window matching the selected period.
-ipcMain.handle('refresh-perf', async (_, brandName, days) => {
-  try { assertBrandSafe(brandName); } catch { return { error: 'invalid brand name' }; }
+// REGRESSION GUARD (2026-07-02, async-data-warm): refresh-perf is now queued.
+// The background warm cycle (renderer warms every window 1/7/30/90/365 on
+// launch + every 4h) and user-initiated refreshes share ONE serial chain with
+// per-(brand,days) dedup — two concurrent requests for the same window join
+// the same promise, different windows run one binary at a time. Without this,
+// warming five windows while the user clicks "Run a check" spawned overlapping
+// dashboard engines that hammered the same platform APIs in parallel.
+const _perfRefreshInflight = new Map(); // `${brand}|${days}` -> Promise
+let _perfRefreshChain = Promise.resolve();
+function queueRefreshPerf(brandName, days) {
   const requestedDays = Number.isInteger(days) && days > 0 && days <= 365 ? days : 1;
+  const key = `${brandName || ''}|${requestedDays}`;
+  const inflight = _perfRefreshInflight.get(key);
+  if (inflight) return inflight;
+  const run = _perfRefreshChain.then(() => _refreshPerfImpl(brandName, requestedDays));
+  _perfRefreshChain = run.then(() => {}, () => {});
+  _perfRefreshInflight.set(key, run);
+  run.then(() => _perfRefreshInflight.delete(key), () => _perfRefreshInflight.delete(key));
+  return run;
+}
+ipcMain.handle('refresh-perf', (_, brandName, days) => queueRefreshPerf(brandName, days));
+
+async function _refreshPerfImpl(brandName, requestedDays) {
+  try { assertBrandSafe(brandName); } catch { return { error: 'invalid brand name' }; }
 
   // Wait for the startup ensure+version check to complete before we let
   // any refresh run. If this handler fires during the 1500ms startup delay
@@ -7389,7 +7410,7 @@ ipcMain.handle('refresh-perf', async (_, brandName, days) => {
       resolve({ success: true });
     });
   });
-});
+}
 
 ipcMain.handle('get-perf-updated', async (_, brandName) => {
   try { assertBrandSafe(brandName); } catch { return null; }

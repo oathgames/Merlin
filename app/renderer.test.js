@@ -2275,16 +2275,22 @@ test('Truesight WoW — delta badge helper handles up / down / new / flat', () =
   assert.ok(fn.includes('delta_pct'), 'reads the rounded delta_pct from the Go payload');
 });
 
-test('Truesight WoW — growth header leads with Reach + Mindshare (mindshare precedes revenue)', () => {
+test('Truesight WoW — growth header leads with Reach + Mindshare + List Joins', () => {
+  // Updated 2026-07-02 (data-pipeline sweep): the "mindshare precedes revenue"
+  // note line was removed at user request, and the joined_list (email/SMS list
+  // growth) tile joined the header. The tile lineup + leading-indicator gate
+  // + compare-label plumbing are unchanged.
   const idx = RENDERER_JS.indexOf('function truesightGrowthHeader');
   assert.ok(idx > 0, 'truesightGrowthHeader helper exists');
-  const fn = RENDERER_JS.slice(idx, idx + 1700);
+  const fn = RENDERER_JS.slice(idx, idx + 1900);
   assert.ok(fn.includes("label: 'Reach'") && fn.includes('byKey.awareness'),
     'Reach tile is the awareness stage');
   assert.ok(fn.includes("label: 'Mindshare'") && fn.includes('byKey.visits'),
     'Mindshare tile is the visits stage');
-  assert.ok(/Mindshare precedes revenue/i.test(fn),
-    'header carries the "mindshare precedes revenue" framing');
+  assert.ok(fn.includes("label: 'List Joins'") && fn.includes('byKey.joined_list'),
+    'List Joins tile is the joined_list stage');
+  assert.ok(!/Mindshare precedes revenue/i.test(fn),
+    'the mindshare-precedes-revenue note line must stay removed');
   assert.ok(fn.includes('hasLeading') || /Reach.*Mindshare/.test(fn),
     'header requires at least one leading indicator (reach/mindshare) before showing');
   assert.ok(fn.includes('truesightCompareLabel(wowDays)'),
