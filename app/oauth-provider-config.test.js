@@ -173,7 +173,7 @@ test('buildAuthUrl: Meta — URL shape + Worker redirect + no PKCE + no config_i
   const { authUrl, state, authState, pkceVerifier, redirectUri } = buildAuthUrl('meta', { localPort: 54321 });
   const u = parseUrl(authUrl);
   assert.strictEqual(u.host, 'www.facebook.com');
-  assert.strictEqual(u.pathname, '/v22.0/dialog/oauth');
+  assert.strictEqual(u.pathname, '/v24.0/dialog/oauth');
   assert.strictEqual(u.params.client_id, '823058806852722');
   assert.strictEqual(u.params.redirect_uri, 'https://merlingotme.com/auth/callback');
   assert.ok(

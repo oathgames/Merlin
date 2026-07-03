@@ -10388,7 +10388,39 @@ ipcMain.handle('get-brands', () => {
 });
 
 // Fetch credit balances for connected platforms
-ipcMain.handle('get-credits', async (_, brandName) => {
+// REGRESSION GUARD (2026-07-03, rate-limit enforcement audit): get-credits is
+// the ONE main-process path that calls metered third-party APIs (HeyGen,
+// ElevenLabs) directly instead of through the Go binary's PreflightCheck.
+// Documented exemption: two single-shot read-only quota probes on settings
+// panel open. The guards that make the exemption safe:
+//   (a) 10-minute TTL cache per brand, so repeated panel opens serve the cache
+//   (b) single-flight, so concurrent opens join one in-flight promise
+// Worst case is 1 probe per platform per 10 minutes. Do NOT add more platforms
+// or hotter call sites here; anything beyond this shape moves into the Go
+// binary behind its rate limiter.
+const _creditsCache = new Map(); // brandKey -> { at, credits }
+const _creditsInflight = new Map(); // brandKey -> Promise
+const CREDITS_CACHE_MS = 10 * 60 * 1000;
+
+ipcMain.handle('get-credits', (_, brandName) => {
+  const cacheKey = brandName || '';
+  const hit = _creditsCache.get(cacheKey);
+  if (hit && (Date.now() - hit.at) < CREDITS_CACHE_MS) return hit.credits;
+  const inflight = _creditsInflight.get(cacheKey);
+  if (inflight) return inflight;
+  const run = _getCreditsImpl(brandName).then((credits) => {
+    _creditsCache.set(cacheKey, { at: Date.now(), credits });
+    _creditsInflight.delete(cacheKey);
+    return credits;
+  }, () => {
+    _creditsInflight.delete(cacheKey);
+    return {};
+  });
+  _creditsInflight.set(cacheKey, run);
+  return run;
+});
+
+async function _getCreditsImpl(brandName) {
   let cfg = {};
   try { cfg = brandName ? readBrandConfig(brandName) : readConfig(); } catch { return {}; }
 
@@ -10426,7 +10458,7 @@ ipcMain.handle('get-credits', async (_, brandName) => {
   }
 
   return credits;
-});
+}
 let _wisdomCache = {};  // keyed by vertical
 let _wisdomCacheTime = {};
 // Cache aligned with the server-side eager aggregation throttle (10 min).
