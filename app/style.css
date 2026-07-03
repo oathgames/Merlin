@@ -1484,6 +1484,20 @@ body.platform-mac .titlebar-drag{
   background:linear-gradient(135deg,#a78bfa,#34d399);
   -webkit-background-clip:text;-webkit-text-fill-color:transparent;
 }
+/* Shared full-page takeover header (2026-07-03 UI consistency pass): ONE
+   geometry for every takeover topbar — Truesight, Palantir, Archive, Brand
+   switcher. Slim and identical: 10px vertical padding + 28px controls =
+   a 48px bar everywhere. The per-panel accent classes (border color +
+   gradient) are all defined LATER in this file so they win the equal-
+   specificity source-order tie against the border-bottom shorthand here.
+   Geometry lives here and nowhere else, so takeovers can never drift
+   apart in height again (locked by takeover-consistency.test.js). */
+.takeover-topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 24px; min-height: 48px; flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+
 .magic-close{
   width:28px;height:28px;border:none;
   background:var(--surface);border-radius:7px;
@@ -1494,13 +1508,15 @@ body.platform-mac .titlebar-drag{
 .magic-close:hover{background:var(--surface-hover);color:var(--text)}
 
 /* ── Pin sidebar (REGRESSION GUARD 2026-05-04, pin-sidebar feature) ──
-   When the user clicks the pin button on Magic / Archive headers, the
-   sidebar stays open AND the chat reflows to make room (no overlay).
+   When the user clicks the pin button on the Magic header, the sidebar
+   stays open AND the chat reflows to make room (no overlay).
+   (2026-07-03: Archive is now a full-page takeover and no longer
+   pinnable — magic is the only pinnable sidebar. Stale persisted
+   archive-pin state is ignored by boot-pin.js and setSidebarPinned.)
    State lives on `body.has-pinned-sidebar` (any sidebar pinned) plus
-   per-sidebar `body.has-pinned-magic-sidebar` / `.has-pinned-archive-
-   sidebar` (which one). Persisted in localStorage; restored on launch
-   via the boot script in <head> so the layout doesn't flicker between
-   unpinned + pinned on first paint.
+   `body.has-pinned-magic-sidebar`. Persisted in localStorage; restored
+   on launch via the boot script in <head> so the layout doesn't flicker
+   between unpinned + pinned on first paint.
    The pin BUTTON itself has two visual states — aria-pressed="false"
    (default, dim) and aria-pressed="true" (active, accent-colored). */
 .magic-pin{font-size:13px;line-height:1}
@@ -1543,17 +1559,13 @@ body.platform-mac .titlebar-drag{
 
    Test: with sidebar pinned, the input bar's left+right gutters MUST
    be visually equal within the visible chat area (0..viewport-340). */
-html[data-pinned-sidebar="archive"] body,
 html[data-pinned-sidebar="magic"] body,
-body.has-pinned-archive-sidebar,
 body.has-pinned-magic-sidebar{padding-right:340px}
 /* Restore titlebar full-width — its buttons (theme/wisdom/archive/magic
    /min/max/close) live at the absolute right edge of the window and
    would shift left under the body padding otherwise. Sidebars start
    at top:40px (below the 40px titlebar) so there's no visual conflict. */
-html[data-pinned-sidebar="archive"] #titlebar,
 html[data-pinned-sidebar="magic"] #titlebar,
-body.has-pinned-archive-sidebar #titlebar,
 body.has-pinned-magic-sidebar #titlebar{margin-right:-340px}
 /* Keep the chat-shrink animation smooth — matches the sidebar's own
    transform transition. Animate body padding (the new layout driver)
@@ -2517,29 +2529,24 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
   to{opacity:0}
 }
 
-/* ── Archive Panel ────────────────────────────────── */
+/* ── Archive — full-page takeover ──────────────────────────
+   (2026-07-03 UI consistency pass: was a 340px right sidebar with slide
+   transition, pin, and expand. Now the same full-frame takeover shape as
+   Palantir / Truesight / Brand switcher — always full width, no pin.) */
 .archive-panel {
   position: fixed;
-  top: 40px;
-  right: 0;
-  bottom: 0;
-  width: 340px;
+  top: 40px; left: 0; right: 0; bottom: 0;
   background: var(--bg-deep);
-  border-left: 1px solid var(--border);
   z-index: 60;
   overflow: hidden;
-  transform: translateX(100%);
-  transition: transform .3s cubic-bezier(.4,0,.2,1);
   display: flex;
   flex-direction: column;
 }
-.archive-panel:not(.hidden) { transform: translateX(0); }
-.archive-panel.expanded {
-  width: 100%;
-  left: 0;
-}
-.archive-panel.expanded .archive-grid {
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+.archive-panel.hidden { display: none; }
+/* Archive keeps the magic-family gradient as its topbar accent. */
+.archive-topbar {
+  border-bottom-color: rgba(139,92,246,.15);
+  background: linear-gradient(135deg, rgba(139,92,246,.08), rgba(52,211,153,.04));
 }
 .archive-panel-scroll {
   flex: 1;
@@ -2626,7 +2633,9 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 
 .archive-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  /* Full-width takeover default (was repeat(2, 1fr) for the 340px sidebar;
+     this was the .expanded variant before expand was removed). */
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
   gap: 8px;
   padding: 12px 16px;
   flex: 1;
@@ -3115,9 +3124,9 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
   z-index: 210; display: flex; flex-direction: column;
 }
 .brand-switcher-overlay.hidden { display: none; }
+/* Accent only — geometry comes from the shared .takeover-topbar rule. */
 .brand-switcher-topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 24px; flex-shrink: 0; border-bottom: 1px solid var(--border);
+  border-bottom-color: var(--border);
 }
 .brand-switcher-scroll {
   flex: 1; overflow-y: auto; padding: 28px 24px;
@@ -3741,10 +3750,11 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
   flex-direction: column;
 }
 .truesight-panel.hidden { display: none; }
+/* Accent only — geometry comes from the shared .takeover-topbar rule
+   (defined early in this file, before every accent rule, so the accents'
+   border-bottom-color always wins the source-order tie). */
 .truesight-topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 24px; flex-shrink: 0;
-  border-bottom: 1px solid rgba(34,211,238,.18);
+  border-bottom-color: rgba(34,211,238,.18);
   background: linear-gradient(135deg, rgba(34,211,238,.10), rgba(139,92,246,.04));
 }
 .truesight-title-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
@@ -3866,10 +3876,9 @@ body{transition:padding-right .25s cubic-bezier(.2,.8,.2,1)}
 .ts-delta-flat { color: var(--text-muted); background: rgba(127,127,127,.1); font-weight: 600; }
 
 /* ── Palantir full-frame top bar ───────────────────────── */
+/* Accent only — geometry comes from the shared .takeover-topbar rule. */
 .palantir-topbar {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 16px 24px; flex-shrink: 0;
-  border-bottom: 1px solid rgba(139,92,246,.18);
+  border-bottom-color: rgba(139,92,246,.18);
   background: linear-gradient(135deg, rgba(139,92,246,.10), rgba(34,211,238,.04));
 }
 .palantir-title-row { display: flex; align-items: baseline; gap: 12px; min-width: 0; }

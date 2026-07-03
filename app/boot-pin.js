@@ -25,7 +25,12 @@
 
 (function () {
   try {
-    var ids = ['magic', 'archive'];
+    // 2026-07-03: 'archive' removed — the Archive is a full-page takeover
+    // now, not a pinnable sidebar. A stale 'merlin.sidebar-pin.archive'
+    // value in localStorage (from installs that pinned it pre-takeover)
+    // is intentionally ignored here so it can never reserve 340px of
+    // chat width for a panel that no longer docks.
+    var ids = ['magic'];
     for (var i = 0; i < ids.length; i++) {
       var id = ids[i];
       if (localStorage.getItem('merlin.sidebar-pin.' + id) === 'true') {

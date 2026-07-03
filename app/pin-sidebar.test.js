@@ -23,16 +23,21 @@ const rendererSrc = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8')
 const indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
 const styleCss = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
 
-// ── HTML — both sidebar headers carry a pin button ─────────────
+// ── HTML — Magic is the ONLY pinnable sidebar (2026-07-03) ───────
+// The Archive became a full-page takeover: always full width, nothing to
+// pin or expand. These tests lock BOTH directions — magic keeps its pin,
+// archive must never grow one back.
 
-test('index.html declares pin buttons on Magic + Archive headers', () => {
+test('index.html declares a pin button on the Magic header ONLY', () => {
   assert.match(indexHtml, /id="magic-pin"[^>]*data-sidebar="magic"/,
     '#magic-pin button must exist on the Magic panel header with data-sidebar="magic"');
-  assert.match(indexHtml, /id="archive-pin"[^>]*data-sidebar="archive"/,
-    '#archive-pin button must exist on the Archive panel header with data-sidebar="archive"');
+  assert.ok(!/id="archive-pin"/.test(indexHtml),
+    'the Archive is a takeover now — no pin button (removed 2026-07-03)');
+  assert.ok(!/id="archive-expand"/.test(indexHtml),
+    'the Archive is always full width — no expand toggle (removed 2026-07-03)');
 });
 
-test('pin buttons declare aria-pressed for screen readers + state styling', () => {
+test('pin button declares aria-pressed for screen readers + state styling', () => {
   // The CSS uses [aria-pressed="true"] to flip the active visual state,
   // and the JS toggles aria-pressed on click. Both ATs and CSS depend
   // on this attribute being present at parse time.
@@ -40,10 +45,6 @@ test('pin buttons declare aria-pressed for screen readers + state styling', () =
   assert.ok(magicMatch, '#magic-pin must exist');
   assert.match(magicMatch[0], /aria-pressed="false"/,
     '#magic-pin must declare aria-pressed="false" initially (matched at parse time so SR users hear the pressed/unpressed state from the first paint)');
-  const archiveMatch = indexHtml.match(/id="archive-pin"[^>]*>/);
-  assert.ok(archiveMatch, '#archive-pin must exist');
-  assert.match(archiveMatch[0], /aria-pressed="false"/,
-    '#archive-pin must declare aria-pressed="false" initially');
 });
 
 // ── Boot script — apply pin state BEFORE first paint ───────────
@@ -107,14 +108,21 @@ test('style.css reserves 340px on body when a sidebar is pinned', () => {
   //
   // Both selector forms (html[data-pinned-sidebar=...] for first paint,
   // body.has-pinned-...-sidebar for runtime) must apply.
+  // 2026-07-03: archive selectors REMOVED — the Archive is a full-page
+  // takeover and must never reserve chat width again.
   for (const required of [
-    /html\[data-pinned-sidebar="archive"\]\s+body/,
     /html\[data-pinned-sidebar="magic"\]\s+body/,
-    /body\.has-pinned-archive-sidebar/,
     /body\.has-pinned-magic-sidebar/,
   ]) {
     assert.match(styleCss, required,
       `style.css must include selector matching ${required} for the pinned-sidebar body padding rule`);
+  }
+  for (const banned of [
+    /html\[data-pinned-sidebar="archive"\]/,
+    /body\.has-pinned-archive-sidebar/,
+  ]) {
+    assert.ok(!banned.test(styleCss),
+      `style.css must NOT carry archive pinned selectors anymore (${banned})`);
   }
   assert.match(styleCss, /padding-right:340px/,
     'pinned-sidebar selectors must use padding-right:340px on body (matches sidebar width)');
@@ -128,9 +136,7 @@ test('style.css restores titlebar to full width when sidebar is pinned', () => {
   // padding for the titlebar specifically. Sidebars start at top:40px
   // (below the 40px titlebar) so there's no visual conflict.
   for (const required of [
-    /html\[data-pinned-sidebar="archive"\]\s+#titlebar/,
     /html\[data-pinned-sidebar="magic"\]\s+#titlebar/,
-    /body\.has-pinned-archive-sidebar\s+#titlebar/,
     /body\.has-pinned-magic-sidebar\s+#titlebar/,
   ]) {
     assert.match(styleCss, required,
@@ -188,10 +194,12 @@ test('setSidebarPinned enforces mutual exclusivity (unpin the other on pin)', ()
   const fnIdx = rendererSrc.indexOf('function setSidebarPinned');
   assert.ok(fnIdx > 0, 'setSidebarPinned must exist');
   const fnBody = rendererSrc.slice(fnIdx, fnIdx + 1500);
-  assert.match(fnBody, /Mutual exclusivity/,
-    'setSidebarPinned body must carry the mutual-exclusivity comment anchor');
-  assert.match(fnBody, /for\s*\(\s*(?:const|let|var)\s+other/,
-    'setSidebarPinned must iterate the OTHER sidebar IDs and unpin them when pinning one');
+  // 2026-07-03: mutual exclusivity is GONE with the archive pin — magic is
+  // the only pinnable sidebar, so the guard is now a magic-only id check.
+  assert.match(fnBody, /if\s*\(\s*id\s*!==\s*['"]magic['"]\s*\)\s*return/,
+    'setSidebarPinned must no-op for anything but the magic sidebar');
+  assert.ok(!/for\s*\(\s*(?:const|let|var)\s+other/.test(fnBody),
+    'the old mutual-exclusivity loop over other sidebars must stay deleted');
 });
 
 test('renderer.js restores pin state on launch (mirrors the boot script)', () => {
@@ -207,9 +215,10 @@ test('renderer.js restores pin state on launch (mirrors the boot script)', () =>
 });
 
 test('renderer.js sidebar-close handlers unpin implicitly', () => {
-  // Without this, closing a sidebar leaves the body class set and the
-  // chat reflow reserves 340px for an empty void. Both magic-close
-  // and archive-close MUST call setSidebarPinned(id, false).
+  // Without this, closing the magic sidebar leaves the body class set and
+  // the chat reflow reserves 340px for an empty void. (2026-07-03: the
+  // archive-close handler no longer needs a setSidebarPinned call — the
+  // Archive is a takeover with no pin state to clear; it just hides.)
   const magicCloseIdx = rendererSrc.indexOf("document.getElementById('magic-close')");
   assert.ok(magicCloseIdx > 0, 'magic-close handler must exist');
   const magicRegion = rendererSrc.slice(magicCloseIdx, magicCloseIdx + 600);
@@ -217,9 +226,9 @@ test('renderer.js sidebar-close handlers unpin implicitly', () => {
     'magic-close handler MUST call setSidebarPinned("magic", false) so the body class clears when the panel hides');
   const archiveCloseIdx = rendererSrc.indexOf("document.getElementById('archive-close')");
   assert.ok(archiveCloseIdx > 0, 'archive-close handler must exist');
-  const archiveRegion = rendererSrc.slice(archiveCloseIdx, archiveCloseIdx + 600);
-  assert.match(archiveRegion, /setSidebarPinned\(['"]archive['"],\s*false\)/,
-    'archive-close handler MUST call setSidebarPinned("archive", false)');
+  const archiveRegion = rendererSrc.slice(archiveCloseIdx, archiveCloseIdx + 300);
+  assert.match(archiveRegion, /classList\.add\(['"]hidden['"]\)/,
+    'archive-close simply hides the takeover');
 });
 
 test('REGRESSION GUARD comment anchors the pin-sidebar feature', () => {
@@ -292,22 +301,17 @@ test('magic-panel Escape handler bails when sidebar is pinned', () => {
     'magic-panel Escape handler MUST check body.classList.contains("has-pinned-magic-sidebar") and bail before hiding');
 });
 
-test('archive-panel click-outside handler bails when sidebar is pinned', () => {
-  // REGRESSION GUARD (2026-05-05, pin-sidebar bugfix — archive-click-outside):
-  // Mirrors the magic-panel handler. Archive's click-outside is more
-  // narrow (it only fires on chat-transcript clicks), but the same
-  // dismissal-leak applied — the pin button was cosmetic.
-  const anchorIdx = rendererSrc.indexOf('Close archive when clicking into the chat transcript');
-  assert.ok(anchorIdx > 0, 'archive-panel click-outside anchor comment must exist');
-  const region = rendererSrc.slice(anchorIdx, anchorIdx + 1800);
-  assert.match(region, /classList\.contains\(['"]has-pinned-archive-sidebar['"]\)/,
-    'archive-panel click-outside handler MUST check body.classList.contains("has-pinned-archive-sidebar") and bail before hiding');
-  const pinnedCheckIdx = region.search(/classList\.contains\(['"]has-pinned-archive-sidebar['"]\)/);
-  const hideCallIdx = region.search(/panel\.classList\.add\(['"]hidden['"]\)/);
-  assert.ok(pinnedCheckIdx > 0 && hideCallIdx > 0,
-    'archive click-outside handler must contain both the pinned-check and the hide call');
-  assert.ok(pinnedCheckIdx < hideCallIdx,
-    'pinned-check MUST run BEFORE the hide call');
+test('archive click-into-chat dismissal stays deleted (takeover covers the chat)', () => {
+  // 2026-07-03: the Archive is a full-page takeover — the chat is fully
+  // covered while it is open, so the old click-into-chat dismissal (and its
+  // pinned-archive bail guard) is dead code and was removed. Lock the
+  // removal so a refactor can't resurrect a handler that would close the
+  // takeover from clicks that cannot legitimately reach the chat.
+  assert.ok(!/Close archive when clicking into the chat transcript/.test(rendererSrc) ||
+    /Removed 2026-07-03/.test(rendererSrc),
+    'the archive click-into-chat dismissal must stay removed (or carry the removal note)');
+  assert.ok(!/has-pinned-archive-sidebar['"]\)/.test(rendererSrc.replace(/\/\/[^\n]*/g, '')),
+    'no CODE may reference has-pinned-archive-sidebar anymore (comments ok)');
 });
 
 test('hideSidebarPanel helper exists + clears pin state in lockstep', () => {
@@ -345,11 +349,13 @@ test('every inline magic/archive panel hide is paired with setSidebarPinned(fals
   // Bypass exception: setSidebarPinned itself doesn't hide the panel
   // (it only manages pin state) — the regex below targets ONLY the
   // `getElementById('<id>-panel').classList.add('hidden')` shape.
+  // 2026-07-03: the scan covers the MAGIC panel only — the Archive is a
+  // takeover with no pin state, so its hides need no pairing.
   const lines = rendererSrc.split('\n');
   const offendingHides = [];
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const match = line.match(/getElementById\(['"](magic|archive)-panel['"]\)\.classList\.add\(['"]hidden['"]\)/);
+    const match = line.match(/getElementById\(['"](magic)-panel['"]\)\.classList\.add\(['"]hidden['"]\)/);
     if (!match) continue;
     const id = match[1];
     // Look ahead 6 lines for the paired setSidebarPinned(id, false).
@@ -362,7 +368,7 @@ test('every inline magic/archive panel hide is paired with setSidebarPinned(fals
     }
   }
   assert.deepStrictEqual(offendingHides, [],
-    'every inline `getElementById("<id>-panel").classList.add("hidden")` must be paired with setSidebarPinned("<id>", false) within 6 lines, OR be replaced with hideSidebarPanel(id). Offenders:\n  ' + offendingHides.join('\n  '));
+    'every inline `getElementById("magic-panel").classList.add("hidden")` must be paired with setSidebarPinned("magic", false) within 6 lines, OR be replaced with hideSidebarPanel(id). Offenders:\n  ' + offendingHides.join('\n  '));
 });
 
 test('cross-panel buttons clear the OTHER sidebar pin when force-hiding it', () => {
