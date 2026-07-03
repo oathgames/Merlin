@@ -5711,20 +5711,13 @@ function _sidebarPinWriteStored(id, pinned) {
 }
 
 function setSidebarPinned(id, pinned) {
-  if (id !== 'magic' && id !== 'archive') return; // unknown sidebar — no-op
+  // 2026-07-03: 'magic' is the ONLY pinnable sidebar — Archive became a
+  // full-page takeover (always full width, nothing to pin). Callers that
+  // still pass 'archive' (hideSidebarPanel) no-op here harmlessly. The old
+  // mutual-exclusivity loop over ['magic','archive'] is gone with it.
+  if (id !== 'magic') return;
   const cls = SIDEBAR_BODY_CLASS_PREFIX + id + SIDEBAR_BODY_CLASS_SUFFIX;
   if (pinned) {
-    // Mutual exclusivity — unpin the OTHER sidebar first.
-    for (const other of ['magic', 'archive']) {
-      if (other === id) continue;
-      const otherCls = SIDEBAR_BODY_CLASS_PREFIX + other + SIDEBAR_BODY_CLASS_SUFFIX;
-      if (document.body.classList.contains(otherCls)) {
-        document.body.classList.remove(otherCls);
-        _sidebarPinWriteStored(other, false);
-        const otherBtn = document.getElementById(other + '-pin');
-        if (otherBtn) otherBtn.setAttribute('aria-pressed', 'false');
-      }
-    }
     document.body.classList.add(cls);
     // Mirror to <html> data-attr so the CSS first-paint selector (used
     // by boot-pin.js for FOUC prevention) stays in sync at runtime too.
@@ -5776,12 +5769,18 @@ function hideSidebarPanel(id) {
   setSidebarPinned(id, false);
 }
 
+// Stale-state cleanup (2026-07-03): installs that pinned the Archive back
+// when it was a sidebar carry 'merlin.sidebar-pin.archive' in localStorage.
+// boot-pin.js no longer reads it, but remove it outright so nothing can
+// ever resurrect a 340px reservation for a panel that no longer docks.
+try { localStorage.removeItem(SIDEBAR_PIN_KEY_PREFIX + 'archive'); } catch {}
+
 // Restore pin state on launch — runs once at module load.
-for (const id of ['magic', 'archive']) {
+for (const id of ['magic']) {
   const stored = _sidebarPinReadStored(id);
   if (stored) {
     // Open the panel + apply the pinned state. `setSidebarPinned` handles
-    // mutual exclusivity, body class, and button state.
+    // body class and button state.
     const panel = document.getElementById(id + '-panel');
     if (panel) panel.classList.remove('hidden');
     setSidebarPinned(id, true);
@@ -5793,7 +5792,7 @@ for (const id of ['magic', 'archive']) {
 }
 
 // Click handlers — toggle pin on each button.
-for (const id of ['magic', 'archive']) {
+for (const id of ['magic']) {
   const btn = document.getElementById(id + '-pin');
   if (!btn) continue;
   btn.addEventListener('click', (e) => {
@@ -10707,24 +10706,10 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   });
   obs.observe(panel, { attributes: true, attributeFilter: ['class'] });
 })();
+// 2026-07-03: Archive is a full-page takeover now — the expand toggle and
+// pin are gone (a takeover is always full width, nothing to dock).
 document.getElementById('archive-close').addEventListener('click', () => {
-  const panel = document.getElementById('archive-panel');
-  panel.classList.remove('expanded');
-  document.getElementById('archive-expand').textContent = '←';
-  panel.classList.add('hidden');
-  // Closing the panel implicitly unpins it — without this, the body
-  // class stays set and the chat reflow reserves 340px for an empty
-  // void. Mirrors the magic-close handler at the top of this file.
-  setSidebarPinned('archive', false);
-});
-
-// Expand/collapse archive to full width
-document.getElementById('archive-expand').addEventListener('click', (e) => {
-  e.stopPropagation();
-  const panel = document.getElementById('archive-panel');
-  const btn = document.getElementById('archive-expand');
-  panel.classList.toggle('expanded');
-  btn.textContent = panel.classList.contains('expanded') ? '→' : '←';
+  document.getElementById('archive-panel').classList.add('hidden');
 });
 
 // ── Palantir — competitor ad feed ──────────────────────────────────
@@ -13512,30 +13497,10 @@ function openArchivePreview(item) {
   document.body.appendChild(overlay);
 }
 
-// Close archive when clicking into the chat transcript. The input bar is
-// intentionally excluded — users frequently reference a visible archive
-// card while typing in chat, and clicking the textarea used to dismiss the
-// panel before they could finish their thought.
-//
-// REGRESSION GUARD (2026-05-05, pin-sidebar bugfix): when the archive
-// is pinned (`body.has-pinned-archive-sidebar`), clicking into the
-// chat MUST NOT dismiss it. The pin commits the user to a side-by-side
-// layout — without this gate, a single click on a chat message hid
-// the archive and left the chat reflowed to a 340px-narrower void
-// (because the body class stayed set). Symmetric with the magic-panel
-// click-outside guard above. Test: pin archive → click a chat message
-// → panel stays visible AND `body.has-pinned-archive-sidebar` stays set.
-document.addEventListener('click', (e) => {
-  const panel = document.getElementById('archive-panel');
-  const btn = document.getElementById('archive-btn');
-  if (panel && !panel.classList.contains('hidden') && !panel.contains(e.target) && e.target !== btn && !e.target.closest('#archive-btn')) {
-    // Only close if clicking in the chat transcript area.
-    if (!e.target.closest('#chat')) return;
-    // Pinned panels stay open — see REGRESSION GUARD above.
-    if (document.body.classList.contains('has-pinned-archive-sidebar')) return;
-    panel.classList.add('hidden');
-  }
-});
+// (Removed 2026-07-03) The click-into-chat dismissal + its pinned-archive
+// guard are gone with the sidebar: the Archive is a full-page takeover now,
+// so the chat is fully covered while it is open and no click can land there.
+// Close paths are the X button and Escape, same as every other takeover.
 
 // Archive keyboard shortcuts:
 //   - Esc with selection > 0 → clear selection (don't close the panel — the
@@ -13565,9 +13530,6 @@ document.addEventListener('keydown', (e) => {
       __archiveModel.clear();
       return;
     }
-    panel.classList.remove('expanded');
-    const expandBtn = document.getElementById('archive-expand');
-    if (expandBtn) expandBtn.textContent = '←';
     panel.classList.add('hidden');
     return;
   }

@@ -295,14 +295,13 @@
   </div><!-- end magic-panel-scroll -->
 </div>
 
-<!-- Archive Panel -->
-<div id="archive-panel" class="archive-panel hidden">
-  <div class="magic-header">
+<!-- Archive — full-page takeover (2026-07-03: was a 340px sidebar with
+     pin + expand; both removed — a takeover is always full width). -->
+<div id="archive-panel" class="archive-panel hidden" role="dialog" aria-modal="true" aria-label="Archive">
+  <div class="takeover-topbar archive-topbar">
     <span class="magic-title">✦ Archive</span>
     <div class="magic-header-right">
-      <button id="archive-expand" class="magic-close" aria-label="Expand" data-tip="Expand" data-tip-pos="bottom">←</button>
       <button id="activity-btn" class="subscribe-header-btn"><span class="subscribe-cta">Activity</span></button>
-      <button id="archive-pin" class="magic-close magic-pin" aria-label="Pin sidebar open" aria-pressed="false" data-tip="Pin sidebar" data-tip-pos="bottom" data-sidebar="archive">⊟</button>
       <button id="archive-close" class="magic-close" aria-label="Close Archive panel">&times;</button>
     </div>
   </div>
@@ -334,7 +333,7 @@
      takeover (mirrors the Wisdom overlay), opened from the toolbar Palantir
      button which sits one slot right of Reports. -->
 <div id="palantir-panel" class="palantir-panel hidden" role="dialog" aria-modal="true" aria-label="Palantir">
-  <div class="palantir-topbar">
+  <div class="takeover-topbar palantir-topbar">
     <div class="palantir-title-row">
       <span class="magic-title palantir-title">✦ Palantir</span>
       <span id="palantir-niche" class="palantir-niche" aria-live="polite"></span>
@@ -394,7 +393,7 @@
 </div>
 
 <div id="truesight-panel" class="truesight-panel hidden" role="dialog" aria-modal="true" aria-label="Truesight funnel">
-  <div class="truesight-topbar">
+  <div class="takeover-topbar truesight-topbar">
     <div class="truesight-title-row">
       <span class="magic-title truesight-title">✦ Truesight</span>
       <span id="truesight-period-label" class="truesight-period-label" aria-live="polite"></span>
@@ -557,7 +556,7 @@
      minimal Name/URL form whose Add creates + switches instantly and runs all
      data ingestion async in the background. -->
 <div id="brand-switcher-overlay" class="brand-switcher-overlay hidden" role="dialog" aria-modal="true" aria-label="Your brands">
-  <div class="brand-switcher-topbar">
+  <div class="takeover-topbar brand-switcher-topbar">
     <span class="magic-title">Your Brands</span>
     <button id="brand-switcher-close" class="magic-close" aria-label="Close brand switcher">&times;</button>
   </div>
