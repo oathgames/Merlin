@@ -65,7 +65,7 @@ const PROVIDERS = {
   meta: {
     displayName: 'Meta Ads',
     providerKey: 'meta',
-    authUrl: 'https://www.facebook.com/v22.0/dialog/oauth',
+    authUrl: 'https://www.facebook.com/v24.0/dialog/oauth',
     clientId: '823058806852722',
     // catalog_management appended 2026-06-22 to match autocmo-core/oauth.go
     // getMetaOAuth (v1.29.0 added it to the binary but not here, so the
