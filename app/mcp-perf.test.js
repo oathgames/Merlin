@@ -64,8 +64,11 @@ test('4.1 — _internal tag uses shallow spread, bounded to the suppression bran
   // Suppression flag clears on result INSIDE the suppression branch —
   // ensures we don't clear on every message, which would break the
   // multi-message-suppression case (spell notifications).
+  // (2026-07-04: the clear became a block so the result event can also
+  // disarm the 120s _suppressClearTimer, see app/perf-hygiene.test.js.
+  // The flag-clear must stay the FIRST statement inside the result check.)
   assert.ok(
-    /if\s*\(\s*_suppressNextResponse\s*\)\s*\{[\s\S]*?if\s*\(\s*msg\.type\s*===\s*'result'\s*\)\s*_suppressNextResponse\s*=\s*false\s*;[\s\S]*?\}/.test(region),
+    /if\s*\(\s*_suppressNextResponse\s*\)\s*\{[\s\S]*?if\s*\(\s*msg\.type\s*===\s*'result'\s*\)\s*\{\s*\n\s*_suppressNextResponse\s*=\s*false\s*;[\s\S]*?\}/.test(region),
     'suppression clears only on result, only inside the suppression branch',
   );
 });
