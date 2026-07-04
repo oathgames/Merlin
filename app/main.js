@@ -1463,7 +1463,7 @@ let _switchInProgress = false;
 // old one. The queued message was already pushed to pendingMessageQueue, so
 // it drains into the switch's session instead. Any bare
 // `if (!activeQuery) startSession()` in a queue-drain path is this bug class
-// returning; a source-scan lock (stuck-chat-watchdog.test.js) enforces it.
+// returning; a source-scan lock (perf-hygiene.test.js) enforces it.
 function startSessionForQueuedMessage() {
   if (activeQuery || _switchInProgress) return;
   startSession();
