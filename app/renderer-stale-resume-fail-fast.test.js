@@ -150,10 +150,12 @@ test('fail-fast branch calls merlin.startFreshSession (NOT startSession)', () =>
   );
   assert.match(
     block,
-    /Start Fresh Session/,
-    'Button label MUST be "Start Fresh Session" — tells the user '
+    /Start fresh session/,
+    'Button label MUST be "Start fresh session" — tells the user '
       + 'what clicking will do (start over, not retry the broken thing). '
-      + 'Generic "Retry" is what left v1.18.1 users stuck.',
+      + 'Generic "Retry" is what left v1.18.1 users stuck. (Label sentence-'
+      + 'cased in the 2026-07-04 microcopy-unification pass — was '
+      + '"Start Fresh Session".)',
   );
   assert.match(
     block,

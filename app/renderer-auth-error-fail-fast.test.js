@@ -126,10 +126,11 @@ test('fail-fast branch calls triggerClaudeLogin (not startSession)', () => {
   );
   assert.match(
     block,
-    /Sign In to Claude/,
-    'Auth fail-fast button label must be "Sign In to Claude" so the '
+    /Sign in to Claude/,
+    'Auth fail-fast button label must be "Sign in to Claude" so the '
       + 'user understands what clicking does. Generic "Retry" is what '
-      + 'got users stuck in the v1.18.0 loop.',
+      + 'got users stuck in the v1.18.0 loop. (Label sentence-cased in the '
+      + '2026-07-04 microcopy-unification pass — was "Sign In to Claude".)',
   );
   assert.match(
     block,

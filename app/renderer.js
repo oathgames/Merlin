@@ -502,16 +502,16 @@ let _trialExpired = false;
     const ctaEl = document.querySelector('.subscribe-cta');
     if (_trialExpired) {
       trialEl.textContent = 'Expired';
-      ctaEl.textContent = 'Upgrade Now';
+      ctaEl.textContent = 'Upgrade now';
       btn.style.borderColor = 'rgba(239,68,68,.4)';
       btn.style.animation = 'none'; // stop any pulsing
     } else if (days <= 2) {
-      const dayText = `${days}D Left`;
+      const dayText = `${days} days left`;
       trialEl.textContent = bonus > 0 ? `${dayText} (+${bonus})` : dayText;
       ctaEl.textContent = 'Get Pro';
       btn.style.borderColor = 'rgba(251,191,36,.4)';
     } else {
-      const dayText = `${days}D Left`;
+      const dayText = `${days} days left`;
       trialEl.textContent = bonus > 0 ? `${dayText} (+${bonus})` : dayText;
     }
   }
@@ -1754,6 +1754,52 @@ document.addEventListener('click', (e) => {
   p.then(flashSuccess).catch(tryElectronFallback);
 });
 
+// ── Formatters (shared) ─────────────────────────────────────
+// Single source of truth for money + relative-time rendering so every
+// surface (revenue tracker, reports, archive cards, Truesight, perf bar,
+// wisdom, spellbook) speaks one dialect. Consolidated during the microcopy
+// unification pass — previously ~5 money formatters (lowercase "k", two-
+// decimal small values, comma-grouped) and 4 time-ago copies drifted apart.
+//
+// formatMoney: abs < 1000 → comma-grouped whole dollars ("$1,234"); larger
+// values collapse to an UPPERCASE compact suffix ("$1.2K" / "$3.4M" /
+// "$5.6B"). Returns the em-dash empty glyph for null/NaN.
+function formatMoney(n) {
+  if (n == null || isNaN(n)) return '—';
+  const num = Number(n);
+  const abs = Math.abs(num);
+  const sign = num < 0 ? '-' : '';
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1).replace(/\.0$/, '')}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1).replace(/\.0$/, '')}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1).replace(/\.0$/, '')}K`;
+  return `${sign}$${Math.round(abs).toLocaleString()}`;
+}
+
+// timeAgo: accepts a Date, an epoch-ms number, or an ISO string (including
+// the space-separated UTC form D1 returns, e.g. "2026-07-04 12:00:00", which
+// is re-anchored to UTC before parsing). Floors each unit and special-cases
+// "yesterday" — the richest behavior of the four call sites it replaces.
+// Returns '' for unparseable input so callers can omit the suffix cleanly.
+function timeAgo(date) {
+  let ms;
+  if (date instanceof Date) ms = date.getTime();
+  else if (typeof date === 'number') ms = date;
+  else if (typeof date === 'string') {
+    ms = Date.parse(date);
+    if (!Number.isFinite(ms)) ms = Date.parse(date.replace(' ', 'T') + 'Z');
+  }
+  if (!Number.isFinite(ms)) return '';
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  return `${days}d ago`;
+}
+
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -1904,7 +1950,7 @@ function friendlyError(raw, platformName) {
     return 'That request needed more steps than Merlin could fit in one go.\nTry: Break it into smaller asks (e.g. "make 5 ads" → "make 1 hero ad first").';
   }
   if (sl.includes('error_max_budget_usd') || sl.includes('reached maximum budget')) {
-    return 'That request hit Merlin\'s spend ceiling for one turn.\nTry: Break it into smaller asks, or open Settings → Connections to raise your budget.';
+    return 'That request hit Merlin\'s spend ceiling for one turn.\nTry: Break it into smaller asks (e.g. "make 5 ads" → "make 1 first").';
   }
   if (sl.includes('error_max_structured_output_retries') || sl.includes('valid structured output after')) {
     return 'Merlin had trouble producing a clean structured answer.\nTry: Rephrase the request more directly, or [[chip:Update Merlin:update]] to pick up the latest fixes.';
@@ -2041,7 +2087,7 @@ function friendlyError(raw, platformName) {
     else if (sl.includes('elevenlabs')) capability = 'voice generation';
     else if (sl.includes('heygen')) capability = 'video generation';
     else if (platformName) capability = platformName.toLowerCase();
-    return `${capability.charAt(0).toUpperCase()}${capability.slice(1)} credits ran out.\nTry: Open Settings → Connections to add more credits.`;
+    return `${capability.charAt(0).toUpperCase()}${capability.slice(1)} credits ran out.\nTry: Open the ✦ Magic panel to add more credits.`;
   }
   if (sl.includes('rate limit') || sl.includes('too many requests') || sl.includes('429')) return 'Too many requests — Merlin is protecting your account.\nTry: Wait 30 seconds and try again. This is normal.';
   // When we don't know which platform hit the quota, say it in plain
@@ -2070,7 +2116,7 @@ function friendlyError(raw, platformName) {
   if (sl.includes('shopify') && sl.includes('throttl')) return 'Shopify is rate-limiting requests.\nTry: Wait a moment — Merlin will auto-retry.';
 
   // ── Network errors ──
-  if (sl.includes('enoent') || (sl.includes('not found') && sl.includes('spawn'))) return 'Merlin engine not found.\nTry: [[chip:Update Merlin:update]] or restart the app.';
+  if (sl.includes('enoent') || (sl.includes('not found') && sl.includes('spawn'))) return "Merlin isn't ready yet. Restart Merlin to finish setup.\nTry: [[chip:Update Merlin:update]] or restart the app.";
   if (sl.includes('etimedout') || sl.includes('timeout')) return 'Connection timed out.\nTry: Check your internet connection and try again.';
   if (sl.includes('econnrefused')) return `${platformName || 'Platform'} refused the connection.\nTry: The service may be down — wait a few minutes and retry.`;
   if (sl.includes('enotfound') || sl.includes('dns')) return `Can't reach ${platformName || 'the service'}.\nTry: Check your Wi-Fi or internet connection.`;
@@ -2881,7 +2927,7 @@ merlin.onSdkError((err) => {
   // Then retry the session.
   if (errLower.includes('not logged in') || errLower.includes('please run /login') || errLower.includes('login required')) {
     const bubble = addClaudeBubble();
-    textBuffer = 'Connecting to your Claude account...\n\nA browser window will open for a quick sign-in. This only happens once.';
+    textBuffer = 'Connecting to your Claude account…\n\nA browser window will open for a quick sign-in. This only happens once.';
     finalizeBubble();
     bubble.style.borderColor = 'rgba(251,191,36,.3)';
 
@@ -2892,7 +2938,7 @@ merlin.onSdkError((err) => {
           const result = await merlin.triggerClaudeLogin();
           if (result.success) {
             // Login succeeded — retry session immediately
-            bubble.textContent = 'Signed in! Starting Merlin...';
+            bubble.textContent = 'Signed in! Starting Merlin…';
             setTimeout(() => {
               _restartAttempts = 0;
               beginAgentTurn('login-success-restart', { quiet: true });
@@ -2921,11 +2967,11 @@ merlin.onSdkError((err) => {
       };
 
       const loginBtn = document.createElement('button');
-      loginBtn.textContent = 'Sign In to Claude';
+      loginBtn.textContent = 'Sign in to Claude';
       loginBtn.className = 'btn-action btn-approve-style';
       loginBtn.style.cssText = 'margin-top:12px;margin-right:8px;width:auto;padding:8px 20px;font-size:13px';
       loginBtn.onclick = async () => {
-        loginBtn.textContent = 'Signing in...';
+        loginBtn.textContent = 'Signing in…';
         loginBtn.disabled = true;
         try {
           if (merlin.triggerClaudeLogin) {
@@ -2946,7 +2992,7 @@ merlin.onSdkError((err) => {
             bubble.textContent = result.error
               ? friendlyErrorPlain(result.error, 'Claude sign-in')
               : 'Sign-in failed. Click the button to try again.';
-            loginBtn.textContent = 'Sign In to Claude';
+            loginBtn.textContent = 'Sign in to Claude';
             loginBtn.disabled = false;
             bubble.appendChild(loginBtn);
             bubble.appendChild(retryBtn);
@@ -2954,7 +3000,7 @@ merlin.onSdkError((err) => {
           }
         } catch {}
         // triggerClaudeLogin not available — re-enable
-        loginBtn.textContent = 'Sign In to Claude';
+        loginBtn.textContent = 'Sign in to Claude';
         loginBtn.disabled = false;
       };
       bubble.appendChild(loginBtn);
@@ -3058,12 +3104,12 @@ merlin.onSdkError((err) => {
     _restartAttempts = 0; // reset the circuit so post-sign-in startSession isn't penalized
     const signInBtn = document.createElement('button');
     signInBtn.className = 'auth-retry-btn';
-    signInBtn.textContent = 'Sign In to Claude';
+    signInBtn.textContent = 'Sign in to Claude';
     signInBtn.style.cssText = 'margin-top:12px;padding:8px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer';
     signInBtn.onclick = async () => {
       if (!merlin.triggerClaudeLogin) return;
       signInBtn.disabled = true;
-      signInBtn.textContent = 'Opening browser...';
+      signInBtn.textContent = 'Opening browser…';
       try {
         const result = await merlin.triggerClaudeLogin();
         if (result && result.success) {
@@ -3083,11 +3129,11 @@ merlin.onSdkError((err) => {
         // Sign-in failed or was cancelled — re-enable the button so the
         // user can try again without reloading.
         signInBtn.disabled = false;
-        signInBtn.textContent = 'Sign In to Claude';
+        signInBtn.textContent = 'Sign in to Claude';
       } catch (e) {
         console.error('[auth-retry]', e);
         signInBtn.disabled = false;
-        signInBtn.textContent = 'Sign In to Claude';
+        signInBtn.textContent = 'Sign in to Claude';
       }
     };
     bubble.appendChild(signInBtn);
@@ -3119,12 +3165,12 @@ merlin.onSdkError((err) => {
     _restartAttempts = 0; // reset circuit — the fresh-session restart isn't a retry in disguise
     const freshBtn = document.createElement('button');
     freshBtn.className = 'stale-resume-btn';
-    freshBtn.textContent = 'Start Fresh Session';
+    freshBtn.textContent = 'Start fresh session';
     freshBtn.style.cssText = 'margin-top:12px;padding:8px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer';
     freshBtn.onclick = async () => {
       if (!merlin.startFreshSession) return;
       freshBtn.disabled = true;
-      freshBtn.textContent = 'Starting fresh session...';
+      freshBtn.textContent = 'Starting fresh session…';
       try {
         const result = await merlin.startFreshSession();
         if (result && result.success) {
@@ -3141,11 +3187,11 @@ merlin.onSdkError((err) => {
           return;
         }
         freshBtn.disabled = false;
-        freshBtn.textContent = 'Start Fresh Session';
+        freshBtn.textContent = 'Start fresh session';
       } catch (e) {
         console.error('[stale-resume-retry]', e);
         freshBtn.disabled = false;
-        freshBtn.textContent = 'Start Fresh Session';
+        freshBtn.textContent = 'Start fresh session';
       }
     };
     bubble.appendChild(freshBtn);
@@ -3177,7 +3223,7 @@ merlin.onSdkError((err) => {
     bubble.appendChild(retryExhausted);
 
     const retryBtn = document.createElement('button');
-    retryBtn.textContent = 'Retry Connection';
+    retryBtn.textContent = 'Retry connection';
     retryBtn.className = 'btn-action btn-approve-style';
     retryBtn.style.cssText = 'margin-top:12px;width:auto;padding:8px 20px;font-size:13px';
     retryBtn.onclick = () => {
@@ -3194,7 +3240,7 @@ merlin.onSdkError((err) => {
   // userMsg already rendered as chip-aware DOM above; append retry line as text node.
   const retryLine = document.createElement('div');
   retryLine.style.cssText = 'margin-top:10px;color:rgba(228,228,231,0.7);font-size:12px';
-  retryLine.textContent = `Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
+  retryLine.textContent = `Retrying in ${delay / 1000}s… (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
   bubble.appendChild(retryLine);
 
   setTimeout(() => {
@@ -3248,7 +3294,7 @@ merlin.onUpdateAvailable(({ current, latest }) => {
 
   document.getElementById('update-btn').onclick = () => {
     document.getElementById('update-btn').disabled = true;
-    document.getElementById('update-btn').textContent = 'Updating...';
+    document.getElementById('update-btn').textContent = 'Updating…';
     document.getElementById('update-dismiss').classList.add('hidden');
     merlin.applyUpdate();
   };
@@ -3272,11 +3318,11 @@ merlin.onUpdateReady(({ latest, needsReinstall }) => {
     // Shell asar can't be hot-swapped — we need to run the new installer.
     // The Install button kicks off a download + silent install + relaunch.
     document.getElementById('update-text').textContent = `Merlin ${latest} ready — install now?`;
-    document.getElementById('update-btn').textContent = 'Install Now';
+    document.getElementById('update-btn').textContent = 'Install now';
     document.getElementById('update-btn').disabled = false;
     document.getElementById('update-btn').onclick = async () => {
       document.getElementById('update-btn').disabled = true;
-      document.getElementById('update-btn').textContent = 'Installing...';
+      document.getElementById('update-btn').textContent = 'Installing…';
       dismiss.classList.add('hidden');
       try {
         const r = await merlin.installUpdate();
@@ -3313,7 +3359,7 @@ merlin.onUpdateError((err) => {
   document.getElementById('update-btn').textContent = 'Retry';
   document.getElementById('update-btn').disabled = false;
   document.getElementById('update-btn').onclick = () => {
-    document.getElementById('update-btn').textContent = 'Updating...';
+    document.getElementById('update-btn').textContent = 'Updating…';
     document.getElementById('update-btn').disabled = true;
     merlin.applyUpdate();
   };
@@ -3426,7 +3472,7 @@ if (merlin.onAuthCodePrompt) {
     dialog.innerHTML = `
       <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px">Paste your authentication code</div>
       <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;line-height:1.5">Your browser should have opened a Claude page. Click the <b>Copy Code</b> button on that page and paste the full string below. It looks like <code style="background:var(--surface);padding:1px 5px;border-radius:4px">xxxxxxxx#yyyyyyyy</code> — make sure you copy the part after the <code style="background:var(--surface);padding:1px 5px;border-radius:4px">#</code> too.</div>
-      <input id="auth-code-input" type="text" placeholder="Paste the full code here..." style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:13px;outline:none;margin-bottom:12px;text-align:center" autocomplete="off" spellcheck="false">
+      <input id="auth-code-input" type="text" placeholder="Paste the full code here…" style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:13px;outline:none;margin-bottom:12px;text-align:center" autocomplete="off" spellcheck="false">
       <div style="display:flex;gap:8px">
         <button id="auth-code-submit-btn" style="flex:1;padding:10px 24px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:14px;cursor:pointer">Submit</button>
         <button id="auth-code-cancel-btn" style="padding:10px 16px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:14px;cursor:pointer">Cancel</button>
@@ -3469,7 +3515,7 @@ if (merlin.onAuthCodePrompt) {
         return;
       }
 
-      btn.textContent = 'Submitting...';
+      btn.textContent = 'Submitting…';
       btn.disabled = true;
       inputEl.disabled = true;
 
@@ -3492,7 +3538,7 @@ if (merlin.onAuthCodePrompt) {
       if (!document.getElementById('auth-code-dialog')) return;
 
       if (result.ok) {
-        showHint('Sent to Claude — waiting for the token exchange to complete...', 'var(--text-muted)');
+        showHint('Sent to Claude — waiting for the token exchange to complete…', 'var(--text-muted)');
         btn.textContent = 'Submit';
         btn.disabled = false;
         inputEl.disabled = false;
@@ -3644,7 +3690,7 @@ async function runAuthRequiredFlow(data) {
         // scenario B (mid-session). Do NOT re-add addUserBubble —
         // that visibly duplicates scenario A.
         if (pendingMessage) {
-          setStatus('Signed in — continuing your request...');
+          setStatus('Signed in — continuing your request…');
           // Small delay so the user sees the transition
           await new Promise(r => setTimeout(r, 250));
           bubble.remove(); // remove the "signing in" status bubble
@@ -3686,11 +3732,11 @@ function addRetryButton(bubble) {
   if (!bubble || bubble.querySelector('.auth-retry-btn')) return;
   const btn = document.createElement('button');
   btn.className = 'auth-retry-btn';
-  btn.textContent = 'Sign In to Claude';
+  btn.textContent = 'Sign in to Claude';
   btn.style.cssText = 'margin-top:12px;padding:8px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer';
   btn.onclick = async () => {
     btn.disabled = true;
-    btn.textContent = 'Opening...';
+    btn.textContent = 'Opening…';
     if (!merlin.triggerClaudeLogin) return;
     try {
       const result = await merlin.triggerClaudeLogin();
@@ -3708,11 +3754,11 @@ function addRetryButton(bubble) {
         merlin.sendMessage(_lastUserMessage);
       } else if (result && !result.success) {
         btn.disabled = false;
-        btn.textContent = 'Sign In to Claude';
+        btn.textContent = 'Sign in to Claude';
       }
     } catch {
       btn.disabled = false;
-      btn.textContent = 'Sign In to Claude';
+      btn.textContent = 'Sign in to Claude';
     }
   };
   bubble.appendChild(btn);
@@ -4005,7 +4051,7 @@ function paintQrPayload(img, url, note, payload) {
   // URL that only works on the same WiFi.
   if (payload.mode === 'lan') {
     // payload.relayError is a boolean marker (Rule 6 — never a raw exception).
-    note.textContent = 'Roaming unavailable right now — connect on the same WiFi.';
+    note.textContent = 'Roaming unavailable right now — connect on the same Wi-Fi.';
     note.classList.remove('hidden');
   } else {
     note.textContent = '';
@@ -4283,7 +4329,7 @@ async function loadBrands() {
     const addBrandOption = () => {
       const addOpt = document.createElement('option');
       addOpt.value = '__add__';
-      addOpt.textContent = '+ New Brand';
+      addOpt.textContent = '+ New brand';
       select.appendChild(addOpt);
     };
     if (!brands || brands.length === 0) {
@@ -4637,7 +4683,7 @@ async function openBrandSwitcher() {
   addTile.appendChild(aav);
   const anm = document.createElement('div');
   anm.className = 'brand-tile-name';
-  anm.textContent = 'New Brand';
+  anm.textContent = 'New brand';
   addTile.appendChild(anm);
   addTile.addEventListener('click', () => showBrandNewForm(true));
   grid.appendChild(addTile);
@@ -4737,11 +4783,11 @@ function promptBrandSetupBeforeConnect(platform) {
 }
 
 // ── Revenue Tracker (Merlin Made Me) ────────────────────────
+// Revenue Tracker money — routes through the shared formatMoney helper so
+// the "$1.2K/M/B" + comma-grouped-small-values dialect stays consistent with
+// reports, archive cards, and Truesight. (Was a local lowercase-"k" copy.)
 function fmtMoney(n) {
-  if (n == null || isNaN(n)) return '--';
-  if (n >= 1000000) return '$' + (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1000) return '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  return '$' + Math.round(n);
+  return formatMoney(n);
 }
 
 const STATS_PERIOD_LABELS = { 1: 'Yesterday', 7: 'Last 7 days', 30: 'Last 30 days', 90: 'Last 90 days', 365: 'Last 12 months' };
@@ -4758,7 +4804,7 @@ function platformShortName(p) { return PLATFORM_DISPLAY[p] || p || ''; }
 function setStatsEmpty() {
   ['stats-revenue','stats-roas','stats-spend','stats-customers'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.textContent = '--';
+    if (el) el.textContent = '—';
   });
   document.getElementById('stats-period').textContent = 'No data yet — run a performance check first';
   document.getElementById('stats-story').textContent = '';
@@ -4853,10 +4899,10 @@ function renderStatsCard(perf, days) {
   const heroIsAdRev = adRev > 0;
   const effMer = heroIsAdRev && spend > 0 ? (adRev / spend) : (perf.mer > 0 ? perf.mer : (spend > 0 ? totalRev / spend : 0));
 
-  document.getElementById('stats-revenue').textContent = heroVal > 0 ? fmtMoney(heroVal) : '--';
-  document.getElementById('stats-spend').textContent = spend > 0 ? fmtMoney(spend) : '--';
-  document.getElementById('stats-roas').textContent = effMer > 0 ? effMer.toFixed(1) + 'x' : '--';
-  document.getElementById('stats-customers').textContent = perf.newCustomers > 0 ? String(perf.newCustomers) : '--';
+  document.getElementById('stats-revenue').textContent = heroVal > 0 ? fmtMoney(heroVal) : '—';
+  document.getElementById('stats-spend').textContent = spend > 0 ? fmtMoney(spend) : '—';
+  document.getElementById('stats-roas').textContent = effMer > 0 ? effMer.toFixed(1) + 'x' : '—';
+  document.getElementById('stats-customers').textContent = perf.newCustomers > 0 ? String(perf.newCustomers) : '—';
 
   const revLabel = document.getElementById('stats-revenue-label');
   if (revLabel) {
@@ -4945,17 +4991,11 @@ function wisdomNormalizeRow(row) {
 }
 
 // Server returns "YYYY-MM-DD HH:MM:SS" without a timezone — D1's
-// datetime('now') is UTC, so re-attach 'Z' before parsing.
+// datetime('now') is UTC. The shared timeAgo helper re-anchors this
+// space-separated form to UTC before parsing, so we just delegate.
 function wisdomRelTime(iso) {
   if (!iso || typeof iso !== 'string') return '';
-  const ms = Date.parse(iso.replace(' ', 'T') + 'Z');
-  if (!Number.isFinite(ms)) return '';
-  const ageMin = Math.max(0, Math.round((Date.now() - ms) / 60000));
-  if (ageMin < 1) return 'just now';
-  if (ageMin < 60) return `${ageMin}m ago`;
-  const hr = Math.round(ageMin / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.round(hr / 24)}d ago`;
+  return timeAgo(iso);
 }
 
 function wisdomEscHandler(e) {
@@ -5002,7 +5042,7 @@ async function renderWisdom(w) {
   if (sample > 0) {
     sampleEl.textContent = `From ${sample.toLocaleString()} anonymized ads${ageStr ? ' · updated ' + ageStr : ''}`;
   } else {
-    sampleEl.textContent = 'Collecting data…';
+    sampleEl.textContent = 'Collecting…';
   }
 
   // Object-shape guards — reject arrays and null masquerading as objects.
@@ -5361,12 +5401,12 @@ function drawStatsShareCard() {
 
   const brand = document.getElementById('stats-brand-name').textContent || 'Merlin';
   const period = document.getElementById('stats-period').textContent || '';
-  const revText = document.getElementById('stats-revenue').textContent || '--';
+  const revText = document.getElementById('stats-revenue').textContent || '—';
   const revLabel = document.getElementById('stats-revenue-label').textContent || '';
   const story = document.getElementById('stats-story').textContent || '';
-  const spend = document.getElementById('stats-spend').textContent || '--';
-  const roas = document.getElementById('stats-roas').textContent || '--';
-  const customers = document.getElementById('stats-customers').textContent || '--';
+  const spend = document.getElementById('stats-spend').textContent || '—';
+  const roas = document.getElementById('stats-roas').textContent || '—';
+  const customers = document.getElementById('stats-customers').textContent || '—';
   const topLine = document.getElementById('stats-top-ad').textContent || '';
   const trendPill = document.getElementById('stats-trend-pill');
   const trendText = trendPill && !trendPill.classList.contains('hidden') ? trendPill.textContent : '';
@@ -5961,13 +6001,13 @@ document.addEventListener('click', (e) => {
 // every connector_id in oauth-provider-config.js against this Set.
 const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads']);
 const API_KEY_PLATFORMS = {
-  fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx...', url: 'https://fal.ai/dashboard/keys' },
-  elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx...', url: 'https://elevenlabs.io/app/settings/api-keys' },
+  fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx…', url: 'https://fal.ai/dashboard/keys' },
+  elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx…', url: 'https://elevenlabs.io/app/settings/api-keys' },
   heygen:     { key: 'heygenApiKey', label: 'HeyGen', placeholder: 'your-api-key', url: 'https://app.heygen.com/settings?nav=API' },
   arcads:     { key: 'arcadsApiKey', label: 'Arcads', placeholder: 'your-api-key', url: 'https://app.arcads.ai/settings' },
-  foreplay:   { key: 'foreplayApiKey', label: 'Foreplay', placeholder: 'fp_xxxx...', url: 'https://app.foreplay.co/settings/api' },
-  trendtrack: { key: 'trendtrackApiKey', label: 'TrendTrack', placeholder: 'tt_xxxx...', url: 'https://app.trendtrack.io/workspace/settings/api' },
-  postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx...', url: 'https://app.postscript.io/settings/api' },
+  foreplay:   { key: 'foreplayApiKey', label: 'Foreplay', placeholder: 'fp_xxxx…', url: 'https://app.foreplay.co/settings/api' },
+  trendtrack: { key: 'trendtrackApiKey', label: 'TrendTrack', placeholder: 'tt_xxxx…', url: 'https://app.trendtrack.io/workspace/settings/api' },
+  postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx…', url: 'https://app.postscript.io/settings/api' },
   // Microsoft Clarity Data Export API token (brand-scoped). Generated by a
   // project admin in Clarity → Settings → Data Export. Saved to clarityApiToken
   // (vaulted; in VAULT_SENSITIVE_KEYS + CONFIG_FIELD_ALLOWLIST). Validated lazily
@@ -6000,7 +6040,7 @@ const API_KEY_PLATFORMS = {
   // the right account/api page. Placeholder hint now spells out
   // the `-<dc>` suffix requirement so users don't paste a bare
   // 32-hex string and hit the "must end with -<datacenter>" gate.
-  mailchimp:  { key: 'mailchimpApiKey', label: 'Mailchimp', placeholder: 'paste the full key (looks like abc123...-us6)', url: 'https://login.mailchimp.com/?redirect=%2Faccount%2Fapi%2F' },
+  mailchimp:  { key: 'mailchimpApiKey', label: 'Mailchimp', placeholder: 'paste the full key (looks like abc123…-us6)', url: 'https://login.mailchimp.com/?redirect=%2Faccount%2Fapi%2F' },
   // AppLovin default tile click saves the MAX (publisher) key. Users who have
   // an AppDiscovery (advertiser) key instead — or both — can switch via the
   // tile's right-click "Use my API key" override, which opens the two-input
@@ -6615,7 +6655,7 @@ function showMetaApiKeyModal(activeBrand) {
   showModal({
     title: 'Meta — Access Token',
     bodyNode: metaBody,
-    inputPlaceholder: 'EAAL...',
+    inputPlaceholder: 'EAAL…',
     confirmLabel: 'Connect',
     onConfirm: async (tokenValue) => {
       if (!tokenValue || tokenValue.trim().length < 20) { showModalError('Token looks too short'); throw new Error('validation'); }
@@ -6734,7 +6774,7 @@ function showPosthogConnectModal(activeBrand) {
   showModal({
     title: 'PostHog: Personal API Key',
     body: 'Paste a PostHog Personal API Key with the "Query Read" + "Project Read" scopes (PostHog -> Settings -> Personal API Keys). It is stored encrypted and never shown again. (Step 1 of 3)',
-    inputPlaceholder: 'phx_... (Personal API Key)',
+    inputPlaceholder: 'phx_… (Personal API Key)',
     confirmLabel: 'Next',
     cancelLabel: 'Cancel',
     onConfirm: async (v1) => {
@@ -6953,7 +6993,7 @@ async function loadReferralInfo() {
       linkInput.dataset.retryHooked = '1';
       linkInput.addEventListener('click', () => {
         if (linkInput.value === 'Could not load — click to retry') {
-          linkInput.value = 'loading...';
+          linkInput.value = 'loading…';
           loadReferralInfo();
         }
       });
@@ -7028,7 +7068,7 @@ document.getElementById('referral-copy').addEventListener('click', () => {
     }
     btn.disabled = true;
     input.disabled = true;
-    status.textContent = 'Applying...';
+    status.textContent = 'Applying…';
     status.className = 'referral-apply-status';
     try {
       const result = await merlin.applyReferralCode(code);
@@ -7071,7 +7111,7 @@ if (merlin.onSubscriptionCanceled) {
       btn.classList.remove('hidden-sub');
     }
     if (trialEl) trialEl.textContent = 'Expired';
-    if (ctaEl) ctaEl.textContent = 'Upgrade Now';
+    if (ctaEl) ctaEl.textContent = 'Upgrade now';
     const bubble = addClaudeBubble();
     textBuffer = `✦ Your subscription was ${data && data.reason === 'refunded' ? 'refunded' : 'canceled'}. You can re-subscribe anytime from the button up top.`;
     finalizeBubble();
@@ -7103,17 +7143,11 @@ function formatCron(cron) {
   return dayStr ? `${dayStr} ${timeStr}` : timeStr;
 }
 
+// Thin wrapper over the shared timeAgo helper (kept for its existing call
+// sites / name). timeAgo carries the richest behavior this used to own —
+// floors + the "yesterday" special-case.
 function formatTimeAgo(timestamp) {
-  const now = Date.now();
-  const diff = now - timestamp;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return 'yesterday';
-  return `${days}d ago`;
+  return timeAgo(timestamp);
 }
 
 function sendChatFromPanel(msg) {
@@ -7238,12 +7272,12 @@ async function loadSpells() {
     <span class="spell-dot" style="background:var(--accent);opacity:.5"></span>
     <div class="spell-info">
       <div class="spell-name">+ Custom spell</div>
-      <div class="spell-meta">Create your own automation</div>
+      <div class="spell-meta">Create your own spell</div>
     </div>
   `;
   customRow.addEventListener('click', () => {
     hideSidebarPanel('magic');
-    addUserBubble('I want to create a custom scheduled task');
+    addUserBubble('I want to create a custom spell');
     beginAgentTurn('custom-spell');
     // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
     // Instruct Claude to name the task with the `merlin-{brand}-` prefix
@@ -7410,7 +7444,7 @@ function buildSpellRow(spell, isActive) {
     retry.title = spell.lastSummary || 'Tap to retry now';
     retry.onclick = (e) => {
       e.stopPropagation();
-      retry.textContent = '...';
+      retry.textContent = '…';
       retry.disabled = true;
       // Reset failure count and trigger a run
       merlin.updateSpellMeta(spell.id, { consecutiveFailures: 0, lastStatus: 'running' });
@@ -7487,7 +7521,7 @@ async function discoverBrandsForSpellActivation() {
 async function activateSpell(template, row) {
   // Optimistic: show creating state
   row.querySelector('.spell-dot').className = 'spell-dot dot-creating';
-  row.querySelector('.spell-meta').textContent = 'Setting up...';
+  row.querySelector('.spell-meta').textContent = 'Setting up…';
   row.style.pointerEvents = 'none';
 
   // Enterprise default: enable the spell for EVERY brand that has at least
@@ -7615,7 +7649,7 @@ function showFirstRunPrompt(template, brand) {
 
   card.querySelector('.first-run-yes').addEventListener('click', () => {
     // Replace buttons with "Running..." state
-    card.querySelector('.bubble div:last-child').innerHTML = '<span style="color:var(--accent)">Running now...</span>';
+    card.querySelector('.bubble div:last-child').innerHTML = '<span style="color:var(--accent)">Running now…</span>';
 
     // Send the spell prompt as a chat message so user sees it execute live
     const firstRunPrompt = `This is the FIRST RUN of "${template.name}"${brandLabel}. The user just activated this automation and wants to see it in action.\n\n` +
@@ -7847,7 +7881,7 @@ function _tickerLoop() {
     // finalize will refresh the visible second. Always paint first
     // second so the ticker doesn't appear stuck at "0s" on turn start.
     if (!isStreaming || elapsed < 2) {
-      tickerEl.textContent = `${formatElapsed(elapsed)}...`;
+      tickerEl.textContent = `${formatElapsed(elapsed)}…`;
       scrollToBottom();
     }
   }
@@ -9452,7 +9486,7 @@ document.addEventListener('contextmenu', (e) => {
 
   let menuItems = '';
   if (!isVideo && filePath) menuItems += '<button data-action="copy">Copy Image</button>';
-  if (filePath) menuItems += '<button data-action="save">Save As...</button>';
+  if (filePath) menuItems += '<button data-action="save">Save as…</button>';
   if (folderPath) menuItems += '<button data-action="folder">Open Folder</button>';
   if (deleteTargets.length > 0) menuItems += '<div class="img-context-divider"></div><button data-action="delete" class="img-context-danger">Delete</button>';
   if (!menuItems) return;
@@ -9629,13 +9663,7 @@ function renderPerfBar(perf) {
 
   let updatedHtml = '';
   if (perf.generatedAt) {
-    const ago = Date.now() - new Date(perf.generatedAt).getTime();
-    const mins = Math.floor(ago / 60000);
-    let agoStr;
-    if (mins < 1) agoStr = 'just now';
-    else if (mins < 60) agoStr = `${mins}m ago`;
-    else if (mins < 1440) agoStr = `${Math.floor(mins / 60)}h ago`;
-    else agoStr = `${Math.floor(mins / 1440)}d ago`;
+    const agoStr = timeAgo(new Date(perf.generatedAt).getTime());
     updatedHtml = ` · <span class="perf-updated">Updated ${agoStr}</span>`;
   }
 
@@ -9714,7 +9742,7 @@ async function renderPerfBarEmpty(text) {
     e.preventDefault();
     if (perfRunInFlight.has(brand)) return; // debounce double-click
     perfRunInFlight.add(brand);
-    btn.textContent = 'running...';
+    btn.textContent = 'running…';
     btn.style.pointerEvents = 'none';
 
     // Clear the "already refreshed once this session" guard that loadPerfBar
@@ -9748,7 +9776,7 @@ async function renderPerfBarEmpty(text) {
       loadPerfBar(perfState.currentPeriod || 7, brand);
     } catch (err) {
       if (perfState.currentBrand !== brand) return;
-      text.innerHTML = 'Couldn\'t reach the Merlin engine — try again in a moment';
+      text.innerHTML = "Merlin isn't responding. Restart Merlin and try again.";
       console.warn('[perf-bar] refresh failed:', err);
     } finally {
       perfRunInFlight.delete(brand);
@@ -10113,7 +10141,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
 
       <div class="agency-status" style="font-size:12px;color:var(--text-dim);margin-bottom:12px;min-height:16px" role="status" aria-live="polite"></div>
 
-      <button type="button" class="agency-gen btn-primary" style="width:100%">Generate Report</button>
+      <button type="button" class="agency-gen btn-primary" style="width:100%">Generate report</button>
     </div>
   `;
 
@@ -10169,7 +10197,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
     } else if (selectedCount === 0) {
       genBtn.textContent = 'Select at least one brand';
     } else {
-      genBtn.textContent = `Generate Report (${selectedCount})`;
+      genBtn.textContent = `Generate report (${selectedCount})`;
     }
   };
 
@@ -10231,7 +10259,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
     }
 
     if (!report || report.summary.brandsWithData === 0) {
-      setStatus('No dashboard data found for the selected brands and period. Run "dashboard" for each brand first.', 'error');
+      setStatus('No dashboard data found for the selected brands and period. Ask Merlin "how are my ads doing" for each brand first.', 'error');
       updateGenState();
       return;
     }
@@ -10269,7 +10297,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
 function buildReportHtml(report, allBrands) {
   const periodLabel = reportPeriodLabel(report.period);
   const s = report.summary;
-  const fmtMoney = (n) => '$' + Math.round(n || 0).toLocaleString();
+  const fmtMoney = (n) => formatMoney(n || 0); // shared money dialect
   const fmtMer = (n) => (n > 0 ? n.toFixed(2) + 'x' : '—');
   const fmtRoas = (n) => (n > 0 ? n.toFixed(2) + 'x' : '—');
   const fmtInt = (n) => Math.round(n || 0).toLocaleString();
@@ -10291,7 +10319,7 @@ function buildReportHtml(report, allBrands) {
         <section class="page-break">
           <h2>${escapeHtml(displayName)}</h2>
           <p class="subtitle">${escapeHtml(periodLabel)}</p>
-          <div class="empty">No dashboard data for this period. Run "dashboard" for this brand to populate the report.</div>
+          <div class="empty">No dashboard data for this period. Ask Merlin "how are my ads doing" for this brand to populate the report.</div>
         </section>
       `;
     }
@@ -10569,7 +10597,7 @@ function renderActivityToolbar() {
   const bar = document.createElement('div');
   bar.className = 'activity-toolbar';
   bar.innerHTML = `
-    <input id="activity-search" type="text" placeholder="Search activity..." class="activity-search" value="${escapeHtml(_activityState.query)}">
+    <input id="activity-search" type="text" placeholder="Search activity…" class="activity-search" value="${escapeHtml(_activityState.query)}">
     <button id="activity-export" class="activity-icon-btn" title="Export to JSON file" aria-label="Export to JSON file">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     </button>
@@ -11726,7 +11754,7 @@ function renderTruesightFunnel(data) {
     }
   });
   if (typeof data.revenue === 'number' && data.revenue > 0) {
-    html += '<div class="ts-revenue">Revenue this period: <strong>$' + tsNum(data.revenue) + '</strong>' +
+    html += '<div class="ts-revenue">Revenue this period: <strong>' + formatMoney(data.revenue) + '</strong>' +
       (data.revenue_source ? ' <span style="opacity:.7">(' + escapeHtml(data.revenue_source) + ')</span>' : '') + '</div>';
   }
   // Honesty: when the upper-funnel stages fall back to ad pixels (Google
@@ -12163,20 +12191,11 @@ async function loadArchive(opts = {}) {
       }, 0);
       const ageMs = newestUpdatedAt > 0 ? Date.now() - newestUpdatedAt : 0;
       if (newestUpdatedAt > 0) {
-        const fmtAgo = (ms) => {
-          if (ms < 60 * 1000) return 'just now';
-          const m = Math.round(ms / 60000);
-          if (m < 60) return `${m}m ago`;
-          const h = Math.round(m / 60);
-          if (h < 24) return `${h}h ago`;
-          const d = Math.round(h / 24);
-          return `${d}d ago`;
-        };
         const chip = document.createElement('div');
         chip.className = 'archive-staleness-chip';
         const isStale = ageMs > STALE_THRESHOLD_MS;
         if (isStale) chip.classList.add('archive-staleness-chip-stale');
-        chip.textContent = `Live ad data: ${fmtAgo(ageMs)}` + (isStale ? ' — refreshing…' : '');
+        chip.textContent = `Live ad data: ${timeAgo(newestUpdatedAt)}` + (isStale ? ' — refreshing…' : '');
         grid.appendChild(chip);
         if (isStale && !window.__merlinAutoRefreshFiredFor) {
           window.__merlinAutoRefreshFiredFor = newestUpdatedAt;
@@ -12216,7 +12235,7 @@ async function loadArchive(opts = {}) {
     const groupByKey = new Map(campaignGroups.map(g => [g.key, g]));
     ads = flatAds;
     let currentGroupKey = null;
-    const fmtGroupSpend = (n) => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n.toFixed(2)}`;
+    const fmtGroupSpend = (n) => formatMoney(n); // shared money dialect
 
     ads.forEach(ad => {
       if (showCampaignHeaders) {
@@ -12255,7 +12274,7 @@ async function loadArchive(opts = {}) {
       const budgetText = ad.budget ? `$${ad.budget}/day` : '';
 
       // Format KPIs defensively — insights may not have run yet for a new ad
-      const fmtMoney = (n) => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n.toFixed(2)}`;
+      const fmtMoney = (n) => formatMoney(n); // shared money dialect
       const fmtInt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : `${Math.round(n)}`;
       const roas = Number(ad.lastRoas) || 0;
       const spend = Number(ad.spend) || 0;
@@ -12520,7 +12539,7 @@ async function loadArchive(opts = {}) {
           const platforms = ['Meta', 'TikTok', 'Google', 'Amazon'].filter(p => p.toLowerCase() !== ad.platform?.toLowerCase());
           const copyItem = document.createElement('div');
           copyItem.className = 'context-menu-item';
-          copyItem.textContent = '🚀 Copy to...';
+          copyItem.textContent = '🚀 Copy to…';
           copyItem.style.position = 'relative';
           // Track the current submenu on the copy item so mouseleave, menu
           // close, and option-click all have a single source of truth to
@@ -13801,7 +13820,7 @@ async function updateProgressBar() {
       goal: 'Next: tell Merlin what to tee up first.',
       sales: 'Next: connect your sales platform so Merlin can see store performance.',
       platform: 'Next: connect an ad platform like Meta, Google, or TikTok.',
-      automation: 'Next: turn on your first automation.',
+      automation: 'Next: turn on your first spell.',
     };
     document.getElementById('progress-next').textContent = nextLabels[nextStep] || '';
   } catch {}

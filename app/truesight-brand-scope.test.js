@@ -85,19 +85,23 @@ test('truesight tmp cleanup runs BEFORE the result parse (never skipped on early
 // ── Fix 2: themed scrollbar ──────────────────────────────────────────
 
 test('truesight scroll container has the app-themed scrollbar (not the OS default)', () => {
+  // 2026-07-04 scrollbar dedup: the per-selector blocks were collapsed into
+  // grouped selector lists, so .truesight-scroll is now comma-joined into the
+  // shared rules. Assert it appears in each themed group (width 5px, thumb
+  // var(--hover-8), transparent track) whether standalone or grouped.
   assert.match(
     STYLE_CSS,
-    /\.truesight-scroll::-webkit-scrollbar\s*\{\s*width:\s*5px/,
+    /\.truesight-scroll::-webkit-scrollbar\s*[,{][^}]*width:\s*5px/s,
     'scrollbar width must match the app convention (#chat uses 5px)',
   );
   assert.match(
     STYLE_CSS,
-    /\.truesight-scroll::-webkit-scrollbar-thumb\s*\{\s*background:\s*var\(--hover-8\)/,
-    'scrollbar thumb must use var(--hover-8) — the app-wide themed thumb color',
+    /\.truesight-scroll::-webkit-scrollbar-thumb\s*[,{][^}]*background:\s*var\(--hover-8\)/s,
+    'scrollbar thumb must use var(--hover-8), the app-wide themed thumb color',
   );
   assert.match(
     STYLE_CSS,
-    /\.truesight-scroll::-webkit-scrollbar-track\s*\{\s*background:\s*transparent/,
+    /\.truesight-scroll::-webkit-scrollbar-track\s*[,{][^}]*background:\s*transparent/s,
     'scrollbar track must be transparent per the app convention',
   );
 });

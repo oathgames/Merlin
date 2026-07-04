@@ -88,7 +88,10 @@ test('style.css drops black background from .gv-media IMG (defense-in-depth vs p
 test('style.css carries the gv-stage-loading shimmer rule', () => {
   const css = fs.readFileSync(stylePath, 'utf8');
   assert.match(css, /\.gv-stage\.gv-stage-loading::before/, 'shimmer pseudo-element must render only while gv-stage-loading is set');
-  assert.match(css, /@keyframes\s+gv-shimmer/, 'gv-shimmer keyframes must be defined');
+  // 2026-07-04 shimmer dedup: gv-shimmer/shimmer/merlin-stack-shimmer were
+  // merged into ONE keyframe named `shimmer`; the pseudo-element must animate it.
+  assert.match(css, /@keyframes\s+shimmer\b/, 'the shared shimmer keyframes must be defined');
+  assert.match(css, /\.gv-stage\.gv-stage-loading::before\{[^}]*animation:\s*shimmer/s, 'gv-stage-loading shimmer must animate the shared shimmer keyframe');
 });
 
 test('archive card thumbnails declare loading=lazy AND decoding=async', () => {

@@ -1652,10 +1652,16 @@ test('Palantir — index.html has the tab button, panel, and detail lightbox', (
 });
 
 // ── PAL-4 (2026-06-20): winning-ideas wall + full takeover + button move ──
-test('Palantir — tooltip reads exactly "Palantir" (not "competitor ads")', () => {
+// Tooltip copy updated in the 2026-07-04 microcopy-unification pass: the
+// mystical-name buttons (Palantir / Wisdom / Magic) gained a "— <plain-English
+// gloss>" suffix matching the existing Truesight tooltip, so a first-time user
+// knows what the icon does. The original guard (must NOT say "competitor ads")
+// still holds — the gloss is "winning ad ideas".
+test('Palantir — tooltip reads "Palantir — winning ad ideas" (not "competitor ads")', () => {
   const m = INDEX_HTML.match(/id="palantir-btn"[^>]*data-tip="([^"]*)"/);
   assert.ok(m, 'palantir-btn has a data-tip');
-  assert.equal(m[1], 'Palantir', 'tooltip is exactly "Palantir"');
+  assert.equal(m[1], 'Palantir — winning ad ideas', 'tooltip names Palantir + a plain-English gloss');
+  assert.ok(!/competitor ads/i.test(m[1]), 'tooltip must not revert to the "competitor ads" wording');
 });
 
 test('Palantir — button sits 1 slot to the right of Reports', () => {
@@ -2034,9 +2040,10 @@ test('timer — formatElapsed renders seconds / minutes / hours, not raw seconds
 });
 
 test('timer — renderer.js uses formatElapsed for the live ticker AND the stats line (no raw ${elapsed}s)', () => {
-  // The live ticker must format, not print raw seconds.
-  assert.match(RENDERER_JS, /tickerEl\.textContent\s*=\s*`\$\{formatElapsed\(elapsed\)\}\.\.\.`/,
-    'live ticker must render formatElapsed(elapsed), not `${elapsed}s...`');
+  // The live ticker must format, not print raw seconds. (Trailing glyph is the
+  // "…" ellipsis after the 2026-07-04 microcopy-unification pass — was "...".)
+  assert.match(RENDERER_JS, /tickerEl\.textContent\s*=\s*`\$\{formatElapsed\(elapsed\)\}…`/,
+    'live ticker must render formatElapsed(elapsed), not `${elapsed}s…`');
   // The post-turn stats line must format the duration too.
   assert.match(RENDERER_JS, /statsText\s*=\s*formatElapsed\(parseInt\(duration,\s*10\)\)/,
     'post-turn stats line must render formatElapsed(duration), not `${duration}s`');
@@ -2153,10 +2160,13 @@ test('Truesight — button sits one slot to the RIGHT of Palantir', () => {
   assert.ok(palantir < truesight && truesight < wisdom, 'order must be Palantir → Truesight → Wisdom');
 });
 
-test('Truesight — panel is a full-window takeover (fixed, top:40px, z-index:60)', () => {
+test('Truesight — panel is a full-window takeover (fixed, top:40px, overlay z-layer)', () => {
   assert.ok(/\.truesight-panel\s*\{[^}]*position:\s*fixed/.test(STYLE_CSS), 'panel is position:fixed');
   assert.ok(/\.truesight-panel\s*\{[^}]*top:\s*40px/.test(STYLE_CSS), 'panel sits below the titlebar');
-  assert.ok(/\.truesight-panel\s*\{[^}]*z-index:\s*60/.test(STYLE_CSS), 'panel z-index is 60 (matches Palantir layer)');
+  // 2026-07-04 z-index tokenization: the literal 60 became var(--z-overlay)
+  // (700), which every full-window takeover now shares (a consistency win over
+  // the old mixed 55/60 literals).
+  assert.ok(/\.truesight-panel\s*\{[^}]*z-index:\s*var\(--z-overlay\)/.test(STYLE_CSS), 'panel z-index uses the shared --z-overlay token');
   assert.ok(/\.truesight-panel\.hidden\s*\{\s*display:\s*none/.test(STYLE_CSS), '.hidden toggles display:none');
 });
 
