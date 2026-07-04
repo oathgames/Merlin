@@ -2190,7 +2190,10 @@ test('Truesight — preload exposes the truesight bridge', () => {
 test('Truesight — renders funnel via escaped sinks (no raw innerHTML of source/label)', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
   assert.ok(idx > 0, 'renderTruesightFunnel exists');
-  const fn = RENDERER_JS.slice(idx, idx + 2600);
+  // Slice widened 2600 -> 3000 after the funnel-draw pass added the width:0 +
+  // data-tw bar markup and the rAF that plays the width transition; the escaped
+  // stage.source sink sits a little further into the function now.
+  const fn = RENDERER_JS.slice(idx, idx + 3000);
   // every dynamic field is wrapped in escapeHtml; numbers go through tsNum
   assert.ok(fn.includes('escapeHtml(stage.label'), 'stage label is escaped');
   assert.ok(fn.includes('escapeHtml(stage.source'), 'stage source is escaped');
@@ -2256,7 +2259,9 @@ test('Truesight — prefetches so the tab opens instantly (startup + brand + win
 
 test('Truesight — ad-attributed stages show an honest "connect GA" note', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
-  const fn = RENDERER_JS.slice(idx, idx + 4600);
+  // Slice widened 4600 -> 5200 after the funnel-draw pass added the rAF width
+  // application block between the bar loop and the ts-note nudge.
+  const fn = RENDERER_JS.slice(idx, idx + 5200);
   assert.ok(fn.includes("s.provider === 'ads'") && fn.includes("s.key === 'visits'") && fn.includes("s.key === 'add_to_cart'"),
     'detects upper-funnel stages that fell back to ad pixels');
   assert.ok(fn.includes('ts-note') && fn.includes('Connect Google Analytics'),

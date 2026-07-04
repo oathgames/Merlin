@@ -71,10 +71,16 @@ test('joined_list is excluded from the funnel bars', () => {
 test('palantir checks the TrendTrack connection BEFORE painting the Scrying portal', () => {
   const body = fnBody(R, 'async function loadPalantirIdeas(', 2600);
   const gateIdx = body.indexOf('getConnectedPlatforms');
-  const portalIdx = body.indexOf("palantirPortalHTML('loading')");
+  // 2026-07 interaction-polish pass: the `opts.reset` loading placeholder is now
+  // content-shaped skeleton cards (was palantirPortalHTML('loading')). The
+  // portal-jitter invariant is unchanged: the connection gate must still run
+  // BEFORE any loading placeholder paints. Anchor on the `opts.reset && grid`
+  // paint line, whichever placeholder it renders.
+  const portalIdx = body.search(/opts\.reset && grid/);
   assert.ok(gateIdx >= 0, 'connection gate missing');
-  assert.ok(portalIdx >= 0, 'loading portal missing');
-  assert.ok(gateIdx < portalIdx, 'gate must run BEFORE the portal paint (portal jitter regression)');
+  assert.ok(portalIdx >= 0, 'loading placeholder paint missing');
+  assert.ok(gateIdx < portalIdx, 'gate must run BEFORE the loading paint (portal jitter regression)');
+  assert.ok(/skeleton-card/.test(body), 'the reset loading placeholder is content-shaped skeleton cards');
   assert.ok(/palantirRenderConnectState/.test(body), 'unconnected path renders the connect state directly');
   // The gate must not wedge the panel: raced with a timeout, loading flag released.
   assert.ok(/conn-gate-timeout/.test(body), 'gate must be raced with a timeout');

@@ -745,6 +745,22 @@ async function init() {
     welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Tell me your brand or website first, and I\'ll set everything up before we connect stores or ad accounts.';
     const checkpoint = await _readOnboardingCheckpointSafe();
     renderStarterChips(welcomeBubble, 'new', checkpoint && checkpoint.goal);
+    // First-run only: stage the reveal so the greeting fades in first, then the
+    // starter chips follow in a short stagger (total < 800ms). Returning users
+    // never hit this branch, so their history/briefing paints instantly.
+    welcomeBubble.classList.add('reveal-item');
+    welcomeBubble.style.animationDelay = '0ms';
+    const chipRow = welcomeBubble.querySelector('[data-starter-chips]');
+    if (chipRow) {
+      const chips = chipRow.children;
+      for (let i = 0; i < chips.length; i++) {
+        const chip = chips[i];
+        if (!chip || chip.nodeType !== 1) continue;
+        chip.classList.add('reveal-item');
+        // Base 220ms so chips land after the greeting, then 90ms per chip.
+        chip.style.animationDelay = (220 + Math.min(i * 90, 400)) + 'ms';
+      }
+    }
   }
 
   window._welcomeShown = true;
@@ -1525,7 +1541,12 @@ chat.addEventListener('scroll', () => {
 }, { passive: true });
 
 scrollBtn.addEventListener('click', () => {
-  scrollToBottom(true);
+  // Explicit button click gets a SMOOTH scroll (the streaming auto-follow in
+  // scrollToBottom stays instant; smooth there would fight every token tick).
+  _userScrolledUp = false;
+  const anchor = document.getElementById('scroll-anchor');
+  if (anchor) anchor.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  else chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
   scrollBtn.classList.add('hidden');
 });
 
@@ -2314,7 +2335,7 @@ function _dispatchErrorChipAction(action) {
     if (action.startsWith('reconnect:')) {
       const platform = action.slice('reconnect:'.length).trim().toLowerCase();
       const panel = document.getElementById('magic-panel');
-      if (panel && panel.classList.contains('hidden')) panel.classList.remove('hidden');
+      if (panel && panel.classList.contains('hidden')) openMagicSlide(panel);
       if (platform && typeof merlin.connectPlatform === 'function') {
         merlin.connectPlatform(platform).catch(() => {});
       }
@@ -3769,60 +3790,37 @@ function addRetryButton(bubble) {
 // of the screen. The toast is reused across updates so progress appears to
 // "tick" rather than spamming new bubbles. Auto-dismisses 4s after a
 // "complete" / "ready" message.
-let _engineToast = null;
-let _engineToastTimer = null;
 merlin.onEngineStatus((msg) => {
   console.log('[engine]', msg);
   if (!msg) return;
-
-  if (!_engineToast) {
-    _engineToast = document.createElement('div');
-    _engineToast.id = 'engine-toast';
-    _engineToast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(10px);max-width:420px;padding:10px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(167,139,250,0.4);border-radius:10px;color:#e4e4e7;font-size:12px;line-height:1.4;z-index:9998;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transition:all .3s ease';
-    document.body.appendChild(_engineToast);
-  }
-  _engineToast.textContent = '✦ ' + msg;
-  requestAnimationFrame(() => {
-    _engineToast.style.opacity = '1';
-    _engineToast.style.transform = 'translateX(-50%) translateY(0)';
+  // Single bottom-center status ticker, updated in place by id. Sticky
+  // (duration:0) while work is in flight; on a terminal state it holds 4s
+  // then hides. showToast owns the shell/positioning/fade now.
+  const terminal = /ready|complete|done|failed/i.test(msg);
+  showToast('✦ ' + msg, {
+    id: 'engine-toast',
+    center: true,
+    variant: /failed/i.test(msg) ? 'error' : 'info',
+    duration: terminal ? 4000 : 0,
   });
-
-  // Auto-dismiss on terminal states
-  if (_engineToastTimer) clearTimeout(_engineToastTimer);
-  if (/ready|complete|done|failed/i.test(msg)) {
-    _engineToastTimer = setTimeout(() => {
-      if (!_engineToast) return;
-      _engineToast.style.opacity = '0';
-      _engineToast.style.transform = 'translateX(-50%) translateY(10px)';
-      setTimeout(() => { _engineToast?.remove(); _engineToast = null; }, 300);
-    }, 4000);
-  }
 });
 
 // ── Security: bypass attempt toast ──────────────────────────
 // Surfaces when the hook or canUseTool blocks an API bypass attempt.
 // Tells the user something was blocked without alarming them — it's
 // expected behavior when Claude is exploring.
-let _bypassToastTimer = null;
 merlin.onBypassAttempt(({ reason }) => {
-  let toast = document.getElementById('bypass-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'bypass-toast';
-    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:12px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(251,191,36,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.4;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease';
-    toast.innerHTML = '<div style="font-weight:600;color:#fbbf24;margin-bottom:4px">✦ Merlin prevented an unsafe action</div><div id="bypass-toast-body" style="color:rgba(228,228,231,0.8)"></div>';
-    document.body.appendChild(toast);
-  }
-  document.getElementById('bypass-toast-body').textContent = reason || 'An unauthorized action was blocked.';
-  requestAnimationFrame(() => {
-    toast.style.opacity = '1';
-    toast.style.transform = 'translateY(0)';
+  // Title + body, warn tone, 7s. textContent-set the body via a temp node so a
+  // hostile `reason` can never inject markup (it lands as text, not innerHTML).
+  const bodyText = reason || 'An unauthorized action was blocked.';
+  const safe = document.createElement('div');
+  safe.textContent = bodyText;
+  showToast(null, {
+    id: 'bypass-toast',
+    variant: 'warn',
+    duration: 7000,
+    html: '<div style="font-weight:600;color:#fbbf24;margin-bottom:4px">✦ Merlin prevented an unsafe action</div><div style="color:rgba(228,228,231,0.8)">' + safe.innerHTML + '</div>',
   });
-  if (_bypassToastTimer) clearTimeout(_bypassToastTimer);
-  _bypassToastTimer = setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(10px)';
-  }, 7000);
 });
 
 // ── Remote User Messages (from PWA) ─────────────────────────
@@ -3846,17 +3844,14 @@ merlin.onRemoteUserMessage((text) => {
 if (window.merlin && typeof window.merlin.onPostCrashReload === 'function') {
   window.merlin.onPostCrashReload((payload) => {
     try {
-      const existing = document.getElementById('post-crash-toast');
-      if (existing) existing.remove();
-      const toast = document.createElement('div');
-      toast.id = 'post-crash-toast';
-      toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:14px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(34,197,94,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.5;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease;display:flex;align-items:flex-start;gap:10px';
       // REGRESSION GUARD (2026-04-23, Rule 6 review gate):
       // Electron's render-process-gone `details.reason` is a raw string from
       // Chromium and must NEVER land in `innerHTML` verbatim — `.slice(0, N)`
       // on a raw value is the exact anti-pattern Rule 6 prohibits. Map the
       // known enum values to plain-English labels via a static lookup; drop
-      // the hint entirely for anything unrecognized.
+      // the hint entirely for anything unrecognized. (The consolidation onto
+      // showToast preserves this: only the STATIC label ever reaches innerHTML,
+      // never rawReason.)
       const CRASH_REASON_LABELS = {
         'crashed': 'the app crashed',
         'oom': 'it ran out of memory',
@@ -3867,34 +3862,22 @@ if (window.merlin && typeof window.merlin.onPostCrashReload === 'function') {
       };
       const rawReason = payload && typeof payload === 'object' && typeof payload.reason === 'string' ? payload.reason : '';
       const reasonLabel = Object.prototype.hasOwnProperty.call(CRASH_REASON_LABELS, rawReason) ? CRASH_REASON_LABELS[rawReason] : '';
-      toast.innerHTML = `
+      const hintHtml = reasonLabel
+        ? `<div style="color:rgba(228,228,231,0.55);font-size:11px;margin-top:4px">(${reasonLabel})</div>`
+        : '';
+      const html = `
+        <div style="display:flex;align-items:flex-start;gap:10px">
         <span style="font-size:16px;color:#22c55e;flex-shrink:0">✓</span>
         <div style="flex:1" id="post-crash-toast-body">
           <div style="font-weight:600;margin-bottom:2px;color:#22c55e">Merlin recovered from a hiccup</div>
-          <div style="color:rgba(228,228,231,0.85)">Your last turn is saved.</div>
+          <div style="color:rgba(228,228,231,0.85)">Your last turn is saved.</div>${hintHtml}
         </div>
         <button id="post-crash-toast-close" style="background:transparent;border:none;color:rgba(228,228,231,0.5);cursor:pointer;font-size:16px;padding:0;line-height:1;flex-shrink:0">×</button>
+        </div>
       `;
-      if (reasonLabel) {
-        const hint = document.createElement('div');
-        hint.style.cssText = 'color:rgba(228,228,231,0.55);font-size:11px;margin-top:4px';
-        hint.textContent = `(${reasonLabel})`;
-        const body = toast.querySelector('#post-crash-toast-body');
-        if (body) body.appendChild(hint);
-      }
-      document.body.appendChild(toast);
-      requestAnimationFrame(() => {
-        toast.style.opacity = '1';
-        toast.style.transform = 'translateY(0)';
-      });
-      const closeBtn = document.getElementById('post-crash-toast-close');
-      const hide = () => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(10px)';
-        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 320);
-      };
+      const { el, hide } = showToast(null, { id: 'post-crash-toast', variant: 'success', duration: 8000, html });
+      const closeBtn = el.querySelector('#post-crash-toast-close');
       if (closeBtn) closeBtn.addEventListener('click', hide);
-      setTimeout(hide, 8000);
     } catch {}
   });
 }
@@ -4578,8 +4561,134 @@ function updateBrandSwitcherLabel() {
   label.textContent = text;
 }
 
+// ── Shared takeover enter/exit motion ───────────────────────────────────
+// The six full-window surfaces (brand switcher, Wisdom, Palantir, Truesight,
+// Archive, Magic) used to pop in/out via a bare `.hidden` (display:none)
+// toggle with no motion. openTakeover / closeTakeover add the `.takeover-anim`
+// opacity+scale transition (style.css) and gate the `.open` flip on a double
+// rAF so the browser paints the resting (hidden) frame before the transition
+// runs. Callers still own their own data-load / focus / closeOtherOverlays
+// logic; these helpers ONLY wrap the visibility toggle.
+//
+// The Magic panel is the exception: it carries an authored translateX slide in
+// CSS (`.magic-panel:not(.hidden)` sets translateX(0)), defeated by
+// display:none. Removing `.hidden` alone jumps it to translateX(0) with no
+// transition (no rendered start frame). openMagicSlide / closeMagicSlide force
+// a translateX(100%) start frame via an inline transform, then clear it on the
+// next frame so the authored CSS transition has a value to animate FROM.
+function openTakeover(el) {
+  if (!el) return;
+  el.classList.add('takeover-anim');
+  el.classList.remove('hidden');
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('open')));
+}
+function closeTakeover(el) {
+  if (!el) return;
+  el.classList.remove('open');
+  const done = () => {
+    el.classList.add('hidden');
+    el.removeEventListener('transitionend', done);
+  };
+  el.addEventListener('transitionend', done, { once: true });
+  // Fallback in case transitionend never fires (element removed, reduced
+  // motion collapsing the transition to ~0ms, or a display change racing it).
+  setTimeout(done, 260);
+}
+// Magic panel: make its authored translateX slide actually play. On open we
+// remove `.hidden` (element now rendered) but force translateX(100%) inline
+// for one painted frame, then clear the inline transform on the next frame so
+// the CSS `:not(.hidden)` rule (translateX(0)) transitions in. On close we set
+// translateX(100%) inline to slide out, then add `.hidden` after the slide.
+function openMagicSlide(el) {
+  if (!el) return;
+  el.style.transform = 'translateX(100%)';
+  el.classList.remove('hidden');
+  requestAnimationFrame(() => requestAnimationFrame(() => { el.style.transform = ''; }));
+}
+function closeMagicSlide(el) {
+  if (!el) return;
+  el.style.transform = 'translateX(100%)';
+  const done = () => {
+    el.classList.add('hidden');
+    el.style.transform = '';
+    el.removeEventListener('transitionend', done);
+  };
+  el.addEventListener('transitionend', done, { once: true });
+  setTimeout(done, 340);
+}
+
+// revealGrid staggers the arrival of a freshly-rebuilt grid's children by
+// adding `.reveal-item` (fadeUp) with an incremental per-child animation-delay
+// (capped at 300ms so a large grid doesn't crawl). No-op on an empty grid so
+// an empty-state placeholder never gets a stray fade.
+function revealGrid(gridEl) {
+  if (!gridEl) return;
+  const kids = gridEl.children;
+  if (!kids || kids.length === 0) return;
+  for (let i = 0; i < kids.length; i++) {
+    const child = kids[i];
+    if (!child || child.nodeType !== 1) continue;
+    child.classList.add('reveal-item');
+    child.style.animationDelay = Math.min(i * 25, 300) + 'ms';
+  }
+}
+
+// ── Unified app toast ───────────────────────────────────────────────────
+// showToast(msg, opts) is the single bottom-anchored notification toast. It
+// replaced four near-identical hand-rolled cssText blobs (engine status,
+// bypass-blocked, referral-auto-applied, post-crash) that each re-declared the
+// same fixed positioning, blur, shadow and fade. Options:
+//   variant | kind : 'success' | 'info' | 'warn' | 'error' (border tone via
+//                    the existing .spell-toast-* classes in style.css)
+//   duration       : ms before auto-hide (0 = sticky, caller hides manually)
+//   id             : reuse/update one toast in place (engine status ticker)
+//   center         : bottom-CENTER instead of bottom-right (engine status)
+//   html           : rich innerHTML (title + body, close button) instead of msg
+// Returns { el, hide } so callers can wire a close button or terminal dismiss.
+const _appToasts = new Map();
+function showToast(msg, opts = {}) {
+  const variant = opts.variant || opts.kind || 'info';
+  const cls = variant === 'success' ? 'spell-toast-success'
+    : variant === 'error' ? 'spell-toast-error'
+    : 'spell-toast-info'; // 'info' and 'warn' both map to the info border tone
+  const duration = typeof opts.duration === 'number' ? opts.duration : 5000;
+  const id = opts.id || null;
+  const center = !!opts.center;
+  // Shared shell: positioning + blur + shadow + fade transition lived
+  // duplicated across four blobs; it lives here now. Border color + text tone
+  // come from the .spell-toast-* class. center anchors bottom-center (was the
+  // engine status toast) via translateX(-50%); default is bottom-right.
+  const hidden = center ? 'translateX(-50%) translateY(10px)' : 'translateY(10px)';
+  const shown = center ? 'translateX(-50%) translateY(0)' : 'translateY(0)';
+  const anchor = center ? 'bottom:20px;left:50%;' : 'bottom:20px;right:20px;';
+  let toast = id ? _appToasts.get(id) : null;
+  if (!toast || !toast.isConnected) {
+    toast = document.createElement('div');
+    toast.className = 'app-toast ' + cls;
+    toast.style.cssText = 'position:fixed;' + anchor + 'max-width:' + (center ? '420px' : '360px') + ';padding:12px 16px;border-radius:12px;font-size:12px;line-height:1.4;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:' + hidden + ';transition:opacity .3s ease,transform .3s ease';
+    document.body.appendChild(toast);
+    if (id) _appToasts.set(id, toast);
+  } else {
+    toast.className = 'app-toast ' + cls;
+  }
+  if (opts.html != null) toast.innerHTML = opts.html;
+  else if (typeof msg === 'string') toast.textContent = msg;
+  requestAnimationFrame(() => {
+    toast.style.opacity = '1';
+    toast.style.transform = shown;
+  });
+  const hide = () => {
+    toast.style.opacity = '0';
+    toast.style.transform = hidden;
+    setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); if (id) _appToasts.delete(id); }, 320);
+  };
+  if (toast._hideTimer) clearTimeout(toast._hideTimer);
+  if (duration > 0) toast._hideTimer = setTimeout(hide, duration);
+  return { el: toast, hide };
+}
+
 function closeBrandSwitcher() {
-  document.getElementById('brand-switcher-overlay')?.classList.add('hidden');
+  closeTakeover(document.getElementById('brand-switcher-overlay'));
 }
 
 // anyModalTakeoverOpen reports whether a full-window modal takeover (brand
@@ -4613,12 +4722,12 @@ function closeOtherOverlays(keepId) {
   if (keepId !== 'archive-panel') hideSidebarPanel('archive');
   if (keepId !== 'wisdom-overlay') closeWisdom();
   if (keepId !== 'palantir-panel') {
-    document.getElementById('palantir-panel')?.classList.add('hidden');
+    closeTakeover(document.getElementById('palantir-panel'));
     try { closePalantirDetail(); } catch {}
   }
-  if (keepId !== 'truesight-panel') document.getElementById('truesight-panel')?.classList.add('hidden');
+  if (keepId !== 'truesight-panel') closeTakeover(document.getElementById('truesight-panel'));
   if (keepId !== 'brand-switcher-overlay') closeBrandSwitcher();
-  if (keepId !== 'stats-overlay') document.getElementById('stats-overlay')?.classList.add('hidden');
+  if (keepId !== 'stats-overlay') closeTakeover(document.getElementById('stats-overlay'));
   if (keepId !== 'agency-overlay') closeAgencyOverlay();
 }
 
@@ -4644,7 +4753,7 @@ async function openBrandSwitcher() {
   // Close every sibling surface so none renders behind the takeover.
   closeOtherOverlays('brand-switcher-overlay');
   showBrandNewForm(false);
-  ov.classList.remove('hidden');
+  openTakeover(ov);
   grid.innerHTML = '<div class="palantir-portal"><div class="palantir-portal-orb">✦</div><div class="palantir-portal-sub">Loading your brands…</div></div>';
 
   let brands = [];
@@ -4687,6 +4796,7 @@ async function openBrandSwitcher() {
   addTile.appendChild(anm);
   addTile.addEventListener('click', () => showBrandNewForm(true));
   grid.appendChild(addTile);
+  revealGrid(grid);
 }
 
 // chooseBrandFromTakeover swaps brand in ONE click by driving the hidden
@@ -4697,9 +4807,34 @@ function chooseBrandFromTakeover(name) {
   if (!sel) return;
   closeBrandSwitcher();
   if (name === getActiveBrandSelection()) return; // already active — no-op
+  brandSwitchCrossfade(); // 150ms chat opacity dip + label scale pulse (see fn)
   sel.value = name;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
   setTimeout(updateBrandSwitcherLabel, 0);
+}
+
+// brandSwitchCrossfade runs a short, purely-cosmetic transition on brand swap.
+// Inline styles only (no style.css touch): a 150ms opacity dip on #chat and a
+// scale pulse on the brand label. Both self-clean so nothing lingers.
+function brandSwitchCrossfade() {
+  try {
+    if (chat) {
+      const prevTransition = chat.style.transition;
+      chat.style.transition = 'opacity .15s ease';
+      chat.style.opacity = '0.5';
+      setTimeout(() => {
+        chat.style.opacity = '1';
+        setTimeout(() => { chat.style.transition = prevTransition; }, 160);
+      }, 150);
+    }
+    const label = document.getElementById('brand-switcher-label');
+    if (label) {
+      label.style.transition = 'transform .12s ease';
+      label.style.transform = 'scale(1.06)';
+      setTimeout(() => { label.style.transform = 'scale(1)'; }, 130);
+      setTimeout(() => { label.style.transition = ''; label.style.transform = ''; }, 320);
+    }
+  } catch {}
 }
 
 // addBrandFromForm validates Name + URL, then activates the brand INSTANTLY and
@@ -4928,7 +5063,7 @@ function renderStatsCard(perf, days) {
 // brand-stats-btn removed — revenue tracker opens via perf bar click
 
 document.getElementById('stats-close').addEventListener('click', () => {
-  document.getElementById('stats-overlay').classList.add('hidden');
+  closeTakeover(document.getElementById('stats-overlay'));
 });
 
 // ── Wisdom Overlay ─────────────────────────────────────────
@@ -5007,7 +5142,7 @@ function wisdomEscHandler(e) {
 }
 
 function closeWisdom() {
-  document.getElementById('wisdom-overlay').classList.add('hidden');
+  closeTakeover(document.getElementById('wisdom-overlay'));
   document.removeEventListener('keydown', wisdomEscHandler);
 }
 
@@ -5016,7 +5151,9 @@ async function loadWisdom({ force = false } = {}) {
   const sampleEl = document.getElementById('wisdom-sample');
   const refreshBtn = document.getElementById('wisdom-refresh-btn');
 
-  grid.innerHTML = '<div class="wisdom-loading">Loading…</div>';
+  // Content-shaped loading: ~8 skeleton cards in the wisdom grid instead of a
+  // bare "Loading…" line, so the panel reads as "cards incoming" not "empty".
+  grid.innerHTML = Array.from({ length: 8 }, () => '<div class="skeleton-card"></div>').join('');
   if (refreshBtn) refreshBtn.classList.add('refreshing');
 
   let w = null;
@@ -5305,6 +5442,8 @@ async function renderWisdom(w) {
       <div class="wisdom-timing-value last">${escapeHtml(bestHours || (sample > 0 ? '—' : 'Collecting…'))}</div>
     </div>
   `;
+  // Stagger the freshly-built cards in, replacing the skeletons.
+  revealGrid(grid);
 }
 
 document.getElementById('wisdom-header-btn').addEventListener('click', async () => {
@@ -5323,7 +5462,7 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
     return;
   }
 
-  overlay.classList.remove('hidden');
+  openTakeover(overlay);
   document.addEventListener('keydown', wisdomEscHandler);
   await loadWisdom();
 });
@@ -5349,7 +5488,7 @@ document.getElementById('wisdom-refresh-btn').addEventListener('click', () => {
   loadWisdom({ force: true });
 });
 document.getElementById('stats-overlay').addEventListener('click', (e) => {
-  if (e.target.id === 'stats-overlay') document.getElementById('stats-overlay').classList.add('hidden');
+  if (e.target.id === 'stats-overlay') closeTakeover(document.getElementById('stats-overlay'));
 });
 
 // Escape closes the revenue/stats overlay, matching every other overlay's
@@ -5359,7 +5498,7 @@ document.addEventListener('keydown', (e) => {
   const overlay = document.getElementById('stats-overlay');
   if (!overlay || overlay.classList.contains('hidden')) return;
   e.preventDefault();
-  overlay.classList.add('hidden');
+  closeTakeover(overlay);
 });
 
 // Share — build a self-contained PNG card via the native Canvas API and drop
@@ -5771,14 +5910,19 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   // a stranded pin.
   closeOtherOverlays('magic-panel');
   const panel = document.getElementById('magic-panel');
-  panel.classList.toggle('hidden');
+  const willOpen = panel.classList.contains('hidden');
+  // Magic slides in/out via its authored translateX transition (openMagicSlide
+  // / closeMagicSlide gate the display flip so the slide actually plays, rather
+  // than the panel popping via a bare display:none toggle).
+  if (willOpen) openMagicSlide(panel);
+  else closeMagicSlide(panel);
   // If we're hiding magic via toggle, also clear its pinned state so
   // the body class doesn't outlive the visible panel.
-  if (panel.classList.contains('hidden')) {
+  if (!willOpen) {
     setSidebarPinned('magic', false);
   }
   // Load brands first (sets vertical filter), then connections (hides connected from available)
-  if (!panel.classList.contains('hidden')) {
+  if (willOpen) {
     loadBrands().then(() => loadConnections());
     loadSpells();
     loadReferralInfo();
@@ -5801,7 +5945,7 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   }
 });
 document.getElementById('magic-close').addEventListener('click', () => {
-  document.getElementById('magic-panel').classList.add('hidden');
+  closeMagicSlide(document.getElementById('magic-panel'));
   // Closing a sidebar implicitly unpins it — without this, the body
   // class stays set and the chat reflow reserves 340px for an empty
   // void. Mirror in archive-close below.
@@ -5899,7 +6043,7 @@ function setSidebarPinned(id, pinned) {
 function hideSidebarPanel(id) {
   if (id !== 'magic' && id !== 'archive') return;
   const panel = document.getElementById(id + '-panel');
-  if (panel) panel.classList.add('hidden');
+  if (id === 'magic') closeMagicSlide(panel); else closeTakeover(panel);
   setSidebarPinned(id, false);
 }
 
@@ -5959,7 +6103,7 @@ document.addEventListener('keydown', (e) => {
   if (typeof isRecording !== 'undefined' && isRecording) return;
   // Pinned panels stay open — see REGRESSION GUARD above.
   if (document.body.classList.contains('has-pinned-magic-sidebar')) return;
-  panel.classList.add('hidden');
+  closeMagicSlide(panel);
 });
 
 // Close panel on any outside click (except on the Magic button itself,
@@ -5986,7 +6130,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('.tile-context-menu')) return;
   // Pinned panels stay open — see REGRESSION GUARD above.
   if (document.body.classList.contains('has-pinned-magic-sidebar')) return;
-  panel.classList.add('hidden');
+  closeMagicSlide(panel);
 });
 
 // Connect platform tiles — ALL connections handled directly in UI, zero chat involvement
@@ -7006,27 +7150,19 @@ async function loadReferralInfo() {
 // boot and fires this event if a pending referral was stashed by the
 // landing page. Surfaces a dismissible toast so the user sees their
 // friend got credit without ever having to type a code.
-let _refAutoToastTimer = null;
 merlin.onReferralAutoApplied(({ code, bonus }) => {
-  let toast = document.getElementById('referral-auto-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'referral-auto-toast';
-    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:12px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(52,211,153,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.4;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease';
-    toast.innerHTML = '<div style="font-weight:600;color:#34d399;margin-bottom:4px">✦ Referral applied</div><div id="referral-auto-toast-body" style="color:rgba(228,228,231,0.8)"></div>';
-    document.body.appendChild(toast);
-  }
   const safeCode = String(code || '').replace(/[^0-9a-f]/gi, '').slice(0, 8);
   const bonusDays = Math.max(0, Math.min(21, Number(bonus) || 0));
   const bonusLabel = bonusDays > 0 ? ` Your friend now has +${bonusDays} trial day${bonusDays !== 1 ? 's' : ''}.` : '';
-  document.getElementById('referral-auto-toast-body').textContent =
-    `Code ${safeCode} from your invite link was applied automatically.${bonusLabel}`;
-  requestAnimationFrame(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; });
-  if (_refAutoToastTimer) clearTimeout(_refAutoToastTimer);
-  _refAutoToastTimer = setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(10px)';
-  }, 8000);
+  // safeCode is already stripped to [0-9a-f]{0,8}; bonusLabel is built from a
+  // clamped integer, so neither can inject markup and the body is safe inline.
+  const body = `Code ${safeCode} from your invite link was applied automatically.${bonusLabel}`;
+  showToast(null, {
+    id: 'referral-auto-toast',
+    variant: 'success',
+    duration: 8000,
+    html: '<div style="font-weight:600;color:#34d399;margin-bottom:4px">✦ Referral applied</div><div style="color:rgba(228,228,231,0.8)">' + body + '</div>',
+  });
   // Refresh the Share Merlin panel so its state reflects the applied code
   // without waiting for the user to reopen it.
   try { loadReferralInfo(); } catch {}
@@ -9544,7 +9680,7 @@ document.addEventListener('contextmenu', (e) => {
         const card = media.closest('.archive-card');
         if (card) { card.style.opacity = '0'; setTimeout(() => card.remove(), 300); }
         const preview = media.closest('.archive-preview');
-        if (preview) { preview.remove(); document.getElementById('archive-panel').classList.remove('hidden'); loadArchive(); }
+        if (preview) { preview.remove(); openTakeover(document.getElementById('archive-panel')); loadArchive(); }
       } else {
         showCopyToast('Delete failed');
       }
@@ -9813,8 +9949,7 @@ async function loadPerfBar(days, brandOverride) {
       const link = document.getElementById('perf-empty-connect');
       if (link) link.addEventListener('click', (e) => {
         e.preventDefault();
-        const panel = document.getElementById('magic-panel');
-        if (panel) panel.classList.remove('hidden');
+        openMagicSlide(document.getElementById('magic-panel'));
       });
     }
     return;
@@ -10436,7 +10571,9 @@ document.getElementById('perf-bar').addEventListener('click', async (e) => {
   // Hide any sibling surface (sidebars, takeovers) before showing Revenue, so
   // closing Revenue never reveals a panel left open behind it. RSI 2026-06-22.
   closeOtherOverlays('stats-overlay');
-  overlay.classList.remove('hidden');
+  // Fade the .overlay scrim in WITH its card (the .stats-card runs its own
+  // fadeUp on top) instead of the backdrop popping to full opacity frame 1.
+  openTakeover(overlay);
   // REGRESSION GUARD (2026-04-15, codex per-brand revenue audit — findings #3 + #5):
   // Use perfState.cache as the SINGLE source of truth for this overlay.
   //
@@ -10852,9 +10989,9 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   // sidebar gets a matching `setSidebarPinned(id, false)`.
   closeOtherOverlays('archive-panel');
   const panel = document.getElementById('archive-panel');
-  panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) { showArchiveView(); }
-  else { setSidebarPinned('archive', false); }
+  const willOpen = panel.classList.contains('hidden');
+  if (willOpen) { openTakeover(panel); showArchiveView(); }
+  else { closeTakeover(panel); setSidebarPinned('archive', false); }
 });
 
 // REGRESSION GUARD (2026-05-10, BUG-F007): archive auto-refresh on visible.
@@ -10883,7 +11020,7 @@ document.getElementById('archive-btn').addEventListener('click', () => {
 // 2026-07-03: Archive is a full-page takeover now — the expand toggle and
 // pin are gone (a takeover is always full width, nothing to dock).
 document.getElementById('archive-close').addEventListener('click', () => {
-  document.getElementById('archive-panel').classList.add('hidden');
+  closeTakeover(document.getElementById('archive-panel'));
 });
 
 // ── Palantir — competitor ad feed ──────────────────────────────────
@@ -11372,7 +11509,7 @@ function palantirRenderIdea(idea) {
 function palantirGenerateFromIdea(idea) {
   const seed = (idea && idea.generateSeed) ? idea.generateSeed : '';
   if (!seed) return;
-  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeTakeover(document.getElementById('palantir-panel'));
   closePalantirDetail();
   try {
     addUserBubble(seed);
@@ -11394,7 +11531,7 @@ function palantirRenderConnectState(grid, cta, niche, note) {
     cta.innerHTML = palantirPortalHTML('connect', note || 'Connect TrendTrack to light up your idea wall.');
     const cbtn = document.getElementById('palantir-connect-btn');
     if (cbtn) cbtn.addEventListener('click', () => {
-      document.getElementById('palantir-panel')?.classList.add('hidden');
+      closeTakeover(document.getElementById('palantir-panel'));
       const magicBtn = document.getElementById('magic-btn');
       if (magicBtn) magicBtn.click();
     });
@@ -11431,7 +11568,9 @@ async function loadPalantirIdeas(opts) {
     }
   } catch { /* gate unavailable — fall through, backstop below covers it */ }
 
-  if (opts.reset && grid) grid.innerHTML = palantirPortalHTML('loading');
+  // Content-shaped loading: fill the wall with ~12 skeleton cards so the grid
+  // reads as "ideas incoming" rather than a bare portal orb over empty space.
+  if (opts.reset && grid) grid.innerHTML = Array.from({ length: 12 }, () => '<div class="skeleton-card"></div>').join('');
 
   let res = null;
   try {
@@ -11459,6 +11598,7 @@ async function loadPalantirIdeas(opts) {
   }
   grid.innerHTML = '';
   for (const idea of ideas) grid.appendChild(palantirRenderIdea(idea));
+  revealGrid(grid);
 }
 
 document.getElementById('palantir-btn').addEventListener('click', () => {
@@ -11467,17 +11607,19 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
   // FULL-FRAME takeover (toggled via .hidden = display:none in CSS).
   closeOtherOverlays('palantir-panel');
   const panel = document.getElementById('palantir-panel');
-  panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) {
+  const willOpen = panel.classList.contains('hidden');
+  if (willOpen) {
+    openTakeover(panel);
     // Auto-load the brand-tailored winning-ideas wall — zero typing required.
     loadPalantirIdeas({ reset: true });
   } else {
+    closeTakeover(panel);
     closePalantirDetail();
   }
 });
 
 document.getElementById('palantir-close').addEventListener('click', () => {
-  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeTakeover(document.getElementById('palantir-panel'));
   closePalantirDetail();
 });
 
@@ -11598,7 +11740,13 @@ function showTruesightLoading(days) {
   const periodLabel = document.getElementById('truesight-period-label');
   if (periodLabel) periodLabel.textContent = truesightWindowLabel(days);
   if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
-  if (funnel) funnel.innerHTML = '';
+  // Content-shaped loading: 4 skeleton bars in a narrowing funnel silhouette
+  // (matching TS_BAR_WIDTHS) instead of a bare empty area under the status line.
+  if (funnel) {
+    funnel.innerHTML = TS_BAR_WIDTHS.map((w) =>
+      '<div class="ts-bar-track"><div class="skeleton-bar" style="height:30px;border-radius:var(--r-md);width:' + w + '%;margin:0 auto"></div></div>'
+    ).join('');
+  }
   if (status) { status.style.display = ''; status.textContent = 'Reading your funnel…'; }
 }
 
@@ -11626,7 +11774,7 @@ function renderTruesightResult(res, days) {
         '<div>Connect your ad platforms, Google Analytics, and store to light up every stage — from awareness to purchase.</div>' +
         '<button class="ts-portal-cta" id="ts-connect-btn">Connect your data</button>';
       const b = document.getElementById('ts-connect-btn');
-      if (b) b.addEventListener('click', () => { document.getElementById('truesight-panel')?.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
+      if (b) b.addEventListener('click', () => { closeTakeover(document.getElementById('truesight-panel')); document.getElementById('magic-btn')?.click(); });
     }
     return;
   }
@@ -11739,7 +11887,10 @@ function renderTruesightFunnel(data) {
     }
     html += '</div>';
     if (avail) {
-      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:' + pct.toFixed(1) + '%"><span class="ts-bar-num">' + tsNum(stage.value) + '</span></div></div>';
+      // Funnel draw (item 5): bar starts at width:0 with its target in data-tw;
+      // a rAF after innerHTML applies the real width so .ts-bar's width
+      // transition draws the funnel out (see the requestAnimationFrame below).
+      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:0%" data-tw="' + pct.toFixed(1) + '"><span class="ts-bar-num">' + tsNum(stage.value) + '</span></div></div>';
       if (stage.source) html += '<div class="ts-stage-source">' + escapeHtml(stage.source) + '</div>';
     } else if (stage.note) {
       html += '<div class="ts-stage-source">' + escapeHtml(stage.note) + '</div>';
@@ -11773,9 +11924,16 @@ function renderTruesightFunnel(data) {
       '<button class="ts-connect-inline" type="button">Connect Google Analytics</button> for site-wide totals.</div>';
   }
   funnel.innerHTML = html;
+  // Draw the funnel: apply each bar's target width on the next frame so the
+  // width transition plays from 0 -> stage width.
+  requestAnimationFrame(() => {
+    funnel.querySelectorAll('.ts-bar[data-tw]').forEach((bar) => {
+      bar.style.width = bar.getAttribute('data-tw') + '%';
+    });
+  });
   // Inline "Connect" buttons (for a missing stage) open the Magic panel.
   funnel.querySelectorAll('.ts-connect-inline').forEach((b) => {
-    b.addEventListener('click', () => { document.getElementById('truesight-panel')?.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
+    b.addEventListener('click', () => { closeTakeover(document.getElementById('truesight-panel')); document.getElementById('magic-btn')?.click(); });
   });
 }
 
@@ -11783,18 +11941,19 @@ document.getElementById('truesight-btn')?.addEventListener('click', () => {
   closeOtherOverlays('truesight-panel');
   const panel = document.getElementById('truesight-panel');
   if (!panel) return;
-  panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) {
+  if (panel.classList.contains('hidden')) {
+    openTakeover(panel);
     loadTruesightData();
     // a11y: move focus into the aria-modal takeover so keyboard/SR users land inside it.
     document.getElementById('truesight-close')?.focus();
   } else {
+    closeTakeover(panel);
     document.getElementById('truesight-btn')?.focus();
   }
 });
 
 document.getElementById('truesight-close')?.addEventListener('click', () => {
-  document.getElementById('truesight-panel')?.classList.add('hidden');
+  closeTakeover(document.getElementById('truesight-panel'));
   document.getElementById('truesight-btn')?.focus(); // a11y: restore focus to the opener
 });
 
@@ -11821,7 +11980,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const panel = document.getElementById('truesight-panel');
   if (panel && !panel.classList.contains('hidden')) {
-    panel.classList.add('hidden');
+    closeTakeover(panel);
     document.getElementById('truesight-btn')?.focus(); // a11y: restore focus to the opener
   }
 });
@@ -11991,7 +12150,15 @@ async function loadArchive(opts = {}) {
     userWasNearBottom = oldMax > 0 && (oldMax - savedScrollTop) <= FOLLOW_NEW_CONTENT_THRESHOLD_PX;
   }
 
-  loading.style.display = 'block';
+  // Content-shaped loading: fill the loading strip with ~10 skeleton cards in
+  // the same auto-fill grid as the real archive, so the panel reads as "tiles
+  // incoming" instead of a bare "Loading…" line. Rendered in the dedicated
+  // #archive-loading element (NOT #archive-grid) so the scroll-restore
+  // MutationObserver on the grid never mistakes skeletons for real content.
+  loading.style.display = 'grid';
+  loading.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
+  loading.style.gap = '10px';
+  loading.innerHTML = Array.from({ length: 10 }, () => '<div class="skeleton-card"></div>').join('');
   grid.innerHTML = '';
   empty.style.display = 'none';
 
@@ -12100,6 +12267,7 @@ async function loadArchive(opts = {}) {
       card.addEventListener('click', () => toggleArchiveSelect(card, swipe));
       grid.appendChild(card);
     });
+    revealGrid(grid);
 
     // Show merge button if selections exist
     updateMergeButton();
@@ -12642,6 +12810,7 @@ async function loadArchive(opts = {}) {
 
       grid.appendChild(card);
     });
+    revealGrid(grid);
     // Wire the load gate on this render path too — Live Ads grid uses the
     // same archive-card-thumb class as the regular archive list.
     wireArchiveThumbLoadGate(grid);
@@ -12731,6 +12900,11 @@ async function loadArchive(opts = {}) {
     const firstChunkEnd = Math.min(items.length, INITIAL_VISIBLE_ARCHIVE_CARDS);
     const initialFrag = document.createDocumentFragment();
     for (let i = 0; i < firstChunkEnd; i++) appendItem(items[i], initialFrag);
+    // Staggered arrival for the first batch only (tail chunks append silently
+    // so already-visible cards never re-animate). reveal-item is a pure add-on
+    // (class + inline animation-delay); it doesn't touch card structure or the
+    // lazy-load / selection wiring below.
+    revealGrid(initialFrag);
     grid.appendChild(initialFrag);
     if (__archiveModel) __archiveModel.syncOrder(orderedKeys);
     observeLazyVideos(grid);
@@ -13880,7 +14054,13 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
   }
   function _showOverlay(id) {
     const ov = document.getElementById(id);
-    if (ov) ov.classList.remove('hidden');
+    if (!ov) return;
+    // Fade-in mirror of _fadeHideOverlay so the 3-step onboarding flow
+    // (ToS -> referral -> goal) crossfades instead of the next card popping in
+    // at full opacity the frame the previous one finished fading out.
+    ov.classList.remove('hidden');
+    ov.style.animation = 'fadeIn .3s ease';
+    setTimeout(() => { if (ov) ov.style.animation = ''; }, 300);
   }
 
   // Wire the referral + goal overlay handlers. Idempotent across cold-start
