@@ -455,6 +455,28 @@ function logMigration(line) {
     appendActivityLog(logPath, JSON.stringify({ ts: new Date().toISOString(), kind: 'migration', ...line }) + '\n');
   } catch {}
 }
+// moveFileSync relocates src to dst. It tries an atomic rename first (near
+// instant, no extra disk), falling back to copy only across devices (EXDEV).
+//
+// REGRESSION GUARD (2026-07-04, perf-rsi startup-critical-path): the legacy
+// Documents/Merlin migration runs synchronously before any window exists, and
+// it used copyFileSync on the ENTIRE old tree including results/ (which can be
+// gigabytes of generated video). On the one triggering launch that froze the
+// process with no UI for as long as the copy took AND doubled disk usage.
+// Rename makes the same-volume case (the overwhelming majority: Documents and
+// the new ContentDir are both under the user profile) sub-second, so the
+// pre-window block is negligible. Cross-device installs keep the bounded
+// copy+unlink fallback.
+function moveFileSync(src, dst) {
+  try {
+    fs.renameSync(src, dst);
+    return;
+  } catch (e) {
+    if (e && e.code !== 'EXDEV') throw e;
+  }
+  fs.copyFileSync(src, dst);
+  try { fs.unlinkSync(src); } catch {}
+}
 function migrateTreeToSplit(oldRoot) {
   // Walk oldRoot, routing state files to stateDir (FLAT), everything else
   // to appRoot preserving relative path. Skip-on-exists. Idempotent.
@@ -478,9 +500,9 @@ function migrateTreeToSplit(oldRoot) {
         try {
           if (fs.existsSync(dst)) { skipped++; continue; }
           fs.mkdirSync(path.dirname(dst), { recursive: true });
-          fs.copyFileSync(absSrc, dst);
+          moveFileSync(absSrc, dst);
           stateMoved++;
-        } catch (e) { console.warn('[migration] state copy failed:', absSrc, e.message); }
+        } catch (e) { console.warn('[migration] state move failed:', absSrc, e.message); }
       } else {
         // Content: preserve relative path, but collapse `.claude/tools/` state leftovers
         // (the isStateFileName check already handled that branch; anything else under
@@ -490,9 +512,9 @@ function migrateTreeToSplit(oldRoot) {
         try {
           if (fs.existsSync(dst)) { skipped++; continue; }
           fs.mkdirSync(path.dirname(dst), { recursive: true });
-          fs.copyFileSync(absSrc, dst);
+          moveFileSync(absSrc, dst);
           contentMoved++;
-        } catch (e) { console.warn('[migration] content copy failed:', absSrc, e.message); }
+        } catch (e) { console.warn('[migration] content move failed:', absSrc, e.message); }
       }
     }
   }
@@ -1428,6 +1450,25 @@ let _queueFrozenForAuth = false;
 // sends from the renderer.
 let _switchInProgress = false;
 
+// REGRESSION GUARD (2026-07-04, perf-rsi wrong-brand-session race):
+// startSessionForQueuedMessage is the ONLY way the queue-drain paths may
+// boot a session. It refuses to start while a brand switch is in flight.
+// The race it closes: switch-brand clears activeQuery mid-flight (its drain
+// loop) and then calls startSession(targetBrand). If a user send lands in
+// that window, a bare `if (!activeQuery) startSession()` would boot a
+// session with NO brand override (the old activeBrand, since writeState for
+// the new brand has not run yet), win the activeQuery singleton, and the
+// switch's own startSession(targetBrand) would then no-op ("already
+// active") -> the UI shows the new brand while the live session runs the
+// old one. The queued message was already pushed to pendingMessageQueue, so
+// it drains into the switch's session instead. Any bare
+// `if (!activeQuery) startSession()` in a queue-drain path is this bug class
+// returning; a source-scan lock (stuck-chat-watchdog.test.js) enforces it.
+function startSessionForQueuedMessage() {
+  if (activeQuery || _switchInProgress) return;
+  startSession();
+}
+
 // Serializes startSession() init against rapid switch-brand toggles.
 // startSession's pre-query awaits (subscription check + SDK import + MCP
 // boot) create a window where activeQuery is still null but a session is
@@ -2123,7 +2164,7 @@ async function createWindow() {
           if (win && !win.isDestroyed()) {
             win.webContents.send('message-queued', { depth: pendingMessageQueue.length });
           }
-          if (!activeQuery) startSession();
+          startSessionForQueuedMessage();
         }
       }
       if (win && !win.isDestroyed()) {
@@ -5651,8 +5692,10 @@ ipcMain.handle('send-message', (_, text, options = {}) => {
     // If no session is running, start one so the queued message gets processed.
     // This handles the case where the session was stopped (Escape) or crashed
     // without auto-restarting — without this, messages sit in the queue forever
-    // and the typing indicator hangs indefinitely.
-    if (!activeQuery) startSession();
+    // and the typing indicator hangs indefinitely. Routed through
+    // startSessionForQueuedMessage so a send landing mid-brand-switch cannot
+    // boot a wrong-brand session (see that helper's REGRESSION GUARD).
+    startSessionForQueuedMessage();
   }
   if (!options.silent) wsServer.broadcast('user-message', { text });
   return { success: true };

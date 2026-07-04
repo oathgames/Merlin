@@ -172,3 +172,44 @@ test('result-event clear also disarms and nulls the suppression timer', () => {
   assert.match(src, /clearTimeout\(_suppressClearTimer\);\s*_suppressClearTimer = null/,
     'the result event must clearTimeout AND null _suppressClearTimer so the stale timer cannot fire inside a later silent send\'s window');
 });
+
+// ── 5. Wrong-brand-session race (perf-rsi 2026-07-04) ────────────────
+// The queue-drain paths must only start a session through the guarded
+// helper, which refuses while a brand switch is mid-flight. A bare
+// `if (!activeQuery) startSession()` in a drain path could boot a
+// wrong-brand session inside the switch window.
+
+test('queue-drain paths route through startSessionForQueuedMessage, not a bare startSession', () => {
+  // The helper exists and guards on _switchInProgress.
+  const helper = region('function startSessionForQueuedMessage()', 200);
+  assert.match(helper, /if \(activeQuery \|\| _switchInProgress\) return/,
+    'startSessionForQueuedMessage must bail while a brand switch is in progress');
+
+  // No queue-drain path uses the old bare pattern. Strip comments first so
+  // the guard comment describing the old pattern does not trip the scan.
+  const code = mainSrc.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.ok(!/if \(!activeQuery\) startSession\(\)/.test(code),
+    'no bare `if (!activeQuery) startSession()` may remain; queue-drain must use startSessionForQueuedMessage');
+
+  // Both drain call sites use the helper.
+  const uses = (mainSrc.match(/startSessionForQueuedMessage\(\)/g) || []).length;
+  assert.ok(uses >= 2, `expected both queue-drain sites to call the helper, found ${uses}`);
+});
+
+// ── 6. Legacy migration moves (rename) instead of copying (perf-rsi) ──
+// The Documents/Merlin migration runs synchronously before any window
+// exists; copying results/ (GB of video) froze startup and doubled disk.
+// It must move (rename, copy only across devices).
+
+test('legacy workspace migration moves files instead of copyFileSync', () => {
+  const fn = region('function migrateTreeToSplit(oldRoot)', 1600);
+  assert.ok(!/fs\.copyFileSync\(absSrc, dst\)/.test(fn),
+    'migrateTreeToSplit must not copyFileSync the tree; use moveFileSync (rename-first)');
+  assert.match(fn, /moveFileSync\(absSrc, dst\)/,
+    'migration must route file relocation through moveFileSync');
+  const helper = region('function moveFileSync(src, dst)', 400);
+  assert.match(helper, /fs\.renameSync\(src, dst\)/,
+    'moveFileSync must try an atomic rename first');
+  assert.match(helper, /EXDEV/,
+    'moveFileSync must fall back to copy only across devices (EXDEV)');
+});
