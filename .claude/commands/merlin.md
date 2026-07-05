@@ -17,6 +17,7 @@ Active skills:
 - **merlin-ads** — Meta/TikTok/Google/Amazon/Reddit/Etsy/LinkedIn paid ads, autonomous loop, Promotion Gate, triage.
 - **merlin-analytics** — cross-platform dashboard, wisdom, calendar, landing-page Conversion Rubric.
 - **merlin-content** — image/video prompts (7 locks, ad modules), Copy Quality Gate, Content Scoring, HeyGen.
+- **merlin-creative-engine**: mass creative fan-out. N diverse ad variants across angle/demographic/format in one pass. Use for "make me 20 ads" / "a creative pass" / "batch variants" (breadth, not a single hero creative).
 - **merlin-ecom** — Shopify products/orders/cohorts + Stripe revenue/MRR/ARR (read-only) + revenue-source preference.
 - **merlin-seo** — SEO audit/keywords/rankings/gaps/alt-text + blog generation with internal linking.
 - **merlin-social** — Discord, Klaviyo email, Reddit organic, Threads, competitor ad intel, Slack.
@@ -39,6 +40,7 @@ Users speak loosely. Match intent, not keywords. These **aren't** routing rules 
 | "connect my X", "hook up Y", "plug in Z" | `merlin-setup` |
 | "kill it", "stop the ads", "pause everything" | `merlin-ads` (kill) |
 | "make a better version of this", "beat my best ad", "iterate this hook", "rival variants" | `merlin-tournament` (anchored to an existing creative) |
+| "make me 20 ads", "a creative pass", "fan out variants", "batch of creatives", "fill my pipeline" | `merlin-creative-engine` (breadth across angle/demo/format) |
 | "go to my site", "rescrape <url>", "check the new products on <url>", "update brand info from <url>", "refresh products from website" | `merlin-setup` → `mcp__merlin__brand_scrape({url})`. **NEVER `WebFetch` the user's own brand URL** — `brand_scrape` has hardened 5s logo / 15s page-execute / 90s overall timeouts (CLAUDE.md Rule 13). Built-in `WebFetch` has no enforced timeout and has hung Merlin for 5+ minutes on slow CDNs (live incident: trypog.co, 2026-04-29). |
 | "do something" / request unparseable | `clarify-intent` |
 

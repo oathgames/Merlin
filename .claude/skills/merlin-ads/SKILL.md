@@ -55,6 +55,54 @@ Merlin's internal verdicts (KILL / WINNER / MASSIVE WINNER) already bake in spen
 
 **Challengers to a confirmed winner → `merlin-tournament`.** Critic → blind author → 3-judge Borda with k=2 stop. Don't ask for "10 variations" here — that drifts. Winner returns to `meta-push`.
 
+## Creative & offer frameworks
+
+The front half of experimentation (what to test, and how to frame the offer) that feeds the Promotion Gate above. The Gate is the statistical judge of a finished test; this is test selection plus copy leverage.
+
+<!-- Test prioritization (ICE), persuasion levers, and platform char-limits below are distilled facts/methods, re-worded, from coreyhaines31/marketingskills, MIT License, (c) Corey Haines. Full license text in THIRD_PARTY_NOTICES.md. The objection taxonomy is standard direct-response canon (Schwartz/Halbert), independently stated. -->
+
+### Test prioritization (ICE decides which test to run before the Gate judges the result)
+
+The Promotion Gate decides *whether a finished test won*. ICE decides *which test to run next*, so spend goes to high-leverage ideas, not whims.
+
+- **ICE score**: (Impact + Confidence + Ease) / 3, each rated 1 to 10. Run the highest first; re-score the backlog monthly. Distinct from the Impact x Confidence used for SEO keywords: ICE adds *Ease* and applies to ad/CRO tests.
+- **Hypothesis template.** Every test states one, falsifiable: "Because [data/observation], we believe [change] will cause [outcome] for [audience]. True when [metric] moves [amount]." This kills "let's just try a new hook."
+- **Guardrail metric.** Name one metric that must NOT degrade (AOV, gross margin, CPA). Auto-stop the test if the guardrail breaks even when the primary metric wins: a hook that lifts CTR but tanks AOV is a loss.
+- **Expect a 20 to 30% win rate.** Most tests lose; that's normal. Don't over-read a loser or chase noise below the Gate's sample floor.
+
+### Persuasion levers (offer + copy framing)
+
+Named biases mapped to concrete levers. Reach for these when building an offer or writing ad copy. They are the *how*; the creative angle (`merlin-content`) is the *why*.
+
+- **Anchoring**: show the highest price or premium tier first, so everything after reads as a deal.
+- **Decoy effect**: add a deliberately inferior third option so the target tier looks obviously best.
+- **Rule of 100**: under $100, show the discount as a **%**; over $100, show it as an absolute **$**. Each looks bigger.
+- **Mental accounting**: reframe price per unit of time ("$3/day", not "$90/month").
+- **Charm vs. rounded pricing**: `.99` signals a deal; round numbers signal premium. Match pricing to positioning.
+- **Zero-price effect**: "free" (shipping, trial, gift) pulls disproportionately harder than an equivalent discount.
+- **Loss aversion**: "avoid losing X" outpulls "gain X" (losses feel roughly 2x gains). Pairs with the `hidden_cost` angle.
+- **Goal-gradient / Zeigarnik**: progress bars and "you're 80% done" accelerate checkout, quiz, and onboarding completion.
+- **Peak-end rule**: design ONE memorable peak and a strong ending, not uniform quality across the creative.
+- **Pratfall effect**: admitting one small, honest flaw raises trust (the anti-perfection UGC move).
+
+### Objection taxonomy + rebuttal structure (for `objection_first` briefs)
+
+The tactical layer under the `objection_first` creative angle (defined in `merlin-content`). Surface objections across **all five categories** (Price, Time, Trust, Complexity, Past-failure), then rebut each on **three axes**: Logic (rational counter) + Proof (evidence, specifics, demo) + Emotion (aspirational resonance). One-axis rebuttals leave the objection half-answered.
+
+### Platform ad character limits (values drift, so verify against platform docs; snapshot 2026-07)
+
+Front-load the hook inside the *visible* count; write to the max only when it earns the scroll.
+
+| Platform | Primary / body | Headline | Notes |
+|---|---|---|---|
+| Meta (FB/IG) | 125 visible / 2,200 max | ~40 | First 125 chars decide the scroll. |
+| Google RSA | Description 90 (x4) | 30 (x15) | Headlines must read in ANY combination. |
+| LinkedIn | Intro 150 | 70 | Intro truncates near 150 on mobile. |
+| TikTok | Ad text 80 | n/a | Very tight, so lead with the payoff. |
+| X (Twitter) | 280 | n/a | |
+
+Retire a creative only after **>= 1,000 impressions**; below that, CTR is noise, not a verdict.
+
 ## Meta Ads Autonomous Loop
 
 When Meta is configured:
@@ -141,8 +189,7 @@ Leave `trigger` blank only for user-initiated pauses from the UI. A blank trigge
 
 **Never write raw metrics to memory.md.** If a line needs a number, that number lives in a DecisionFact or a dashboard fact envelope — memory cites the ID instead. Two citation formats: `[dec-<8hex>]` for DecisionFact IDs (kill/scale/pause events), `[facts: <id>, <id>]` for dashboard fact envelope IDs (metric-level receipts). See the Memory Harmony Rule in merlin-setup's merlin-memory task prompt for the full policy.
 
-<!-- Updated 2026-05-10 (v1.22.0 RSI fixes B001/B002/B004/D004/D005/E003) -->
-## Tool selection guide — intent tools vs legacy multiplexer (BUG-D004 / BUG-D005)
+## Tool selection guide: intent tools vs legacy multiplexer
 
 **Prefer intent tools over the legacy `meta_ads` action-multiplexer.** Intent tools have tighter input validation, per-action approval cards (so the user sees exactly what's about to be killed / scaled / paused / launched), and structured error envelopes that downstream agents can branch on. The legacy `meta_ads({action: ...})` multiplexer is still wired up for actions that don't yet have a dedicated intent tool, but it ships with looser validation and a single "ads action approved" card that hides the specific operation.
 
@@ -155,7 +202,7 @@ Leave `trigger` blank only for user-initiated pauses from the UI. A blank trigge
 | launch a batch of test ads | `mcp__merlin__meta_launch_test_batch` | N creatives → one ad set; batched approval. |
 | scale a winner | `mcp__merlin__meta_scale_winner` | Cards with the proposed budget jump; routes through `meta_ads({action: "duplicate"})` under the hood with stricter pre-validation. |
 | pause a single asset | `mcp__merlin__meta_pause_asset` | Per-asset card; non-destructive (asset can be re-activated). |
-| kill a single asset | `mcp__merlin__meta_kill_asset` | Per-asset card; destructive — emits a `DecisionFact` (see Decision Facts above). |
+| kill a single asset | `meta_ads({action: "kill", adId})` | No dedicated intent tool yet, so use the multiplexer and say so in chat. Per-asset card; destructive (emits a `DecisionFact`, see Decision Facts above). To merely pause (reversible), use `meta_pause_asset` instead. |
 | promote test → retargeting | `mcp__merlin__meta_promote_to_retargeting` | Builds the retargeting variant from a winner. |
 | build lookalike from purchasers | `mcp__merlin__meta_build_lookalike` | Cards once; idempotent per ad. |
 | audit (read-only inspection) | `mcp__merlin__meta_audit` | See Meta Audit table below. |
@@ -266,7 +313,7 @@ sending the user to Ads Manager when they ask "what audiences do I have",
 
 Connector OAuth via `platform_login({platform: "etsy"})`. Same listing/insights pattern as above.
 
-### LinkedIn (`mcp__merlin__linkedin`)
+### LinkedIn (`mcp__merlin__linkedin_ads`)
 
 Connect + campaign ops. **Budget validation runs on the final scaled value** — if the code scales budget (e.g. 3× for LinkedIn scaling), `validateDailyBudget(cfg, scaledBudget, "linkedin")` must run on the scaled number. This is a regression guard — see `linkedin.go`.
 

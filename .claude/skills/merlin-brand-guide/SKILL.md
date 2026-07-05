@@ -204,7 +204,7 @@ Exact JSON shape. The Go validator enforces required fields, enum values, hex fo
   },
   "generation_meta": {
     "generated_at": "ISO-8601 timestamp",
-    "model": "string (the model that generated this — e.g., 'claude-opus-4-7 via Claude Code')",
+    "model": "string (the exact model id that generated this, e.g. 'claude-opus-4-8 via Claude Code')",
     "signal_sources": ["string (which inputs were present: primary-scrape, secondary-pages, competitor-scrape, user-uploads, user-answers)"],
     "low_confidence_fields": ["string (dot-path to any field where signal was thin)"],
     "limitations": ["string (anything you couldn't do and why — e.g., 'competitor URL failed to load')"]
