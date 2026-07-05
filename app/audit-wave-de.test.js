@@ -52,8 +52,11 @@ test('renderer.js friendlyError no longer surfaces fal.ai vendor name to grandma
   );
   assert.match(
     src,
-    /Open Settings → Connections to add more credits/,
-    'friendlyError must route the user to in-app Settings rather than a third-party URL the user has never seen',
+    /Open the ✦ Magic panel to add more credits/,
+    'friendlyError must route the user to the in-app ✦ Magic panel rather than a '
+      + 'third-party URL the user has never seen. (Updated in the 2026-07-04 microcopy-'
+      + 'unification pass — the old copy said "Open Settings → Connections", but no '
+      + 'Settings/Connections panel exists in the app; credits are added via ✦ Magic.)',
   );
 });
 

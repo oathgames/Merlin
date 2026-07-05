@@ -32,8 +32,14 @@ const THEMED = [
 
 for (const sel of THEMED) {
   test(`${sel} has the 5px themed webkit scrollbar`, () => {
-    const re = new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '::-webkit-scrollbar\\s*\\{\\s*width:\\s*5px');
-    assert.ok(re.test(CSS), `${sel} must declare ::-webkit-scrollbar { width: 5px }`);
+    // 2026-07-04 dedup: the 10 verbatim per-selector scrollbar blocks were
+    // collapsed into ONE grouped selector list, so each selector is now
+    // comma-joined into a group that ends `{width:5px}`. Accept either the
+    // standalone `sel::-webkit-scrollbar{width:5px}` form or the grouped form
+    // (selector followed by `,` then more selectors, then the shared block).
+    const esc = sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(esc + '::-webkit-scrollbar\\s*[,{][^}]*width:\\s*5px', 's');
+    assert.ok(re.test(CSS), `${sel} must be covered by a ::-webkit-scrollbar rule with width:5px`);
   });
 }
 

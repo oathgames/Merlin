@@ -227,8 +227,11 @@ test('renderer.js sidebar-close handlers unpin implicitly', () => {
   const archiveCloseIdx = rendererSrc.indexOf("document.getElementById('archive-close')");
   assert.ok(archiveCloseIdx > 0, 'archive-close handler must exist');
   const archiveRegion = rendererSrc.slice(archiveCloseIdx, archiveCloseIdx + 300);
-  assert.match(archiveRegion, /classList\.add\(['"]hidden['"]\)/,
-    'archive-close simply hides the takeover');
+  // 2026-07 takeover-motion pass: the Archive takeover now fades out via the
+  // shared closeTakeover() helper (which adds 'hidden' on transitionend)
+  // instead of a bare classList.add('hidden'). Accept either shape.
+  assert.match(archiveRegion, /closeTakeover\(|classList\.add\(['"]hidden['"]\)/,
+    'archive-close hides the takeover (bare hide or the closeTakeover motion helper)');
 });
 
 test('REGRESSION GUARD comment anchors the pin-sidebar feature', () => {
@@ -276,11 +279,13 @@ test('magic-panel click-outside handler bails when sidebar is pinned', () => {
   const region = rendererSrc.slice(anchorIdx, anchorIdx + 1800);
   assert.match(region, /classList\.contains\(['"]has-pinned-magic-sidebar['"]\)/,
     'magic-panel click-outside handler MUST check body.classList.contains("has-pinned-magic-sidebar") and bail before hiding');
-  // The bail must be a return (early exit) BEFORE the panel.add('hidden')
-  // call. Source-scan: the pinned-check must appear before the final
-  // panel.classList.add('hidden') in the handler body.
+  // The bail must be a return (early exit) BEFORE the hide call. Source-scan:
+  // the pinned-check must appear before the final hide in the handler body.
+  // 2026-07 takeover-motion pass: the hide is now closeMagicSlide(panel) (the
+  // authored translateX slide-out) rather than a bare classList.add('hidden');
+  // the pinned-bail invariant is unchanged. Accept either hide shape.
   const pinnedCheckIdx = region.search(/classList\.contains\(['"]has-pinned-magic-sidebar['"]\)/);
-  const hideCallIdx = region.search(/panel\.classList\.add\(['"]hidden['"]\)/);
+  const hideCallIdx = region.search(/closeMagicSlide\(panel\)|panel\.classList\.add\(['"]hidden['"]\)/);
   assert.ok(pinnedCheckIdx > 0 && hideCallIdx > 0,
     'click-outside handler must contain both the pinned-check and the hide call');
   assert.ok(pinnedCheckIdx < hideCallIdx,
@@ -331,8 +336,11 @@ test('hideSidebarPanel helper exists + clears pin state in lockstep', () => {
   const fnIdx = rendererSrc.indexOf('function hideSidebarPanel');
   assert.ok(fnIdx > 0);
   const fnBody = rendererSrc.slice(fnIdx, fnIdx + 600);
-  assert.match(fnBody, /classList\.add\(\s*['"]hidden['"]\s*\)/,
-    'hideSidebarPanel must hide the panel');
+  // 2026-07 takeover-motion pass: hideSidebarPanel now routes magic through the
+  // closeMagicSlide slide-out and archive through the closeTakeover fade (each
+  // eventually adds 'hidden'), instead of a bare classList.add('hidden').
+  assert.match(fnBody, /closeMagicSlide\(|closeTakeover\(|classList\.add\(\s*['"]hidden['"]\s*\)/,
+    'hideSidebarPanel must hide the panel (via a motion helper or a bare hide)');
   assert.match(fnBody, /setSidebarPinned\(\s*id\s*,\s*false\s*\)/,
     'hideSidebarPanel MUST call setSidebarPinned(id, false) so the body class clears in lockstep with the panel hiding');
 });

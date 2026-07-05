@@ -502,16 +502,16 @@ let _trialExpired = false;
     const ctaEl = document.querySelector('.subscribe-cta');
     if (_trialExpired) {
       trialEl.textContent = 'Expired';
-      ctaEl.textContent = 'Upgrade Now';
+      ctaEl.textContent = 'Upgrade now';
       btn.style.borderColor = 'rgba(239,68,68,.4)';
       btn.style.animation = 'none'; // stop any pulsing
     } else if (days <= 2) {
-      const dayText = `${days}D Left`;
+      const dayText = `${days} days left`;
       trialEl.textContent = bonus > 0 ? `${dayText} (+${bonus})` : dayText;
       ctaEl.textContent = 'Get Pro';
       btn.style.borderColor = 'rgba(251,191,36,.4)';
     } else {
-      const dayText = `${days}D Left`;
+      const dayText = `${days} days left`;
       trialEl.textContent = bonus > 0 ? `${dayText} (+${bonus})` : dayText;
     }
   }
@@ -745,6 +745,22 @@ async function init() {
     welcomeBubble.innerHTML = 'Hey — I\'m Merlin, your AI marketing wizard.<br>Tell me your brand or website first, and I\'ll set everything up before we connect stores or ad accounts.';
     const checkpoint = await _readOnboardingCheckpointSafe();
     renderStarterChips(welcomeBubble, 'new', checkpoint && checkpoint.goal);
+    // First-run only: stage the reveal so the greeting fades in first, then the
+    // starter chips follow in a short stagger (total < 800ms). Returning users
+    // never hit this branch, so their history/briefing paints instantly.
+    welcomeBubble.classList.add('reveal-item');
+    welcomeBubble.style.animationDelay = '0ms';
+    const chipRow = welcomeBubble.querySelector('[data-starter-chips]');
+    if (chipRow) {
+      const chips = chipRow.children;
+      for (let i = 0; i < chips.length; i++) {
+        const chip = chips[i];
+        if (!chip || chip.nodeType !== 1) continue;
+        chip.classList.add('reveal-item');
+        // Base 220ms so chips land after the greeting, then 90ms per chip.
+        chip.style.animationDelay = (220 + Math.min(i * 90, 400)) + 'ms';
+      }
+    }
   }
 
   window._welcomeShown = true;
@@ -1525,7 +1541,12 @@ chat.addEventListener('scroll', () => {
 }, { passive: true });
 
 scrollBtn.addEventListener('click', () => {
-  scrollToBottom(true);
+  // Explicit button click gets a SMOOTH scroll (the streaming auto-follow in
+  // scrollToBottom stays instant; smooth there would fight every token tick).
+  _userScrolledUp = false;
+  const anchor = document.getElementById('scroll-anchor');
+  if (anchor) anchor.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  else chat.scrollTo({ top: chat.scrollHeight, behavior: 'smooth' });
   scrollBtn.classList.add('hidden');
 });
 
@@ -1754,6 +1775,52 @@ document.addEventListener('click', (e) => {
   p.then(flashSuccess).catch(tryElectronFallback);
 });
 
+// ── Formatters (shared) ─────────────────────────────────────
+// Single source of truth for money + relative-time rendering so every
+// surface (revenue tracker, reports, archive cards, Truesight, perf bar,
+// wisdom, spellbook) speaks one dialect. Consolidated during the microcopy
+// unification pass — previously ~5 money formatters (lowercase "k", two-
+// decimal small values, comma-grouped) and 4 time-ago copies drifted apart.
+//
+// formatMoney: abs < 1000 → comma-grouped whole dollars ("$1,234"); larger
+// values collapse to an UPPERCASE compact suffix ("$1.2K" / "$3.4M" /
+// "$5.6B"). Returns the em-dash empty glyph for null/NaN.
+function formatMoney(n) {
+  if (n == null || isNaN(n)) return '—';
+  const num = Number(n);
+  const abs = Math.abs(num);
+  const sign = num < 0 ? '-' : '';
+  if (abs >= 1e9) return `${sign}$${(abs / 1e9).toFixed(1).replace(/\.0$/, '')}B`;
+  if (abs >= 1e6) return `${sign}$${(abs / 1e6).toFixed(1).replace(/\.0$/, '')}M`;
+  if (abs >= 1e3) return `${sign}$${(abs / 1e3).toFixed(1).replace(/\.0$/, '')}K`;
+  return `${sign}$${Math.round(abs).toLocaleString()}`;
+}
+
+// timeAgo: accepts a Date, an epoch-ms number, or an ISO string (including
+// the space-separated UTC form D1 returns, e.g. "2026-07-04 12:00:00", which
+// is re-anchored to UTC before parsing). Floors each unit and special-cases
+// "yesterday" — the richest behavior of the four call sites it replaces.
+// Returns '' for unparseable input so callers can omit the suffix cleanly.
+function timeAgo(date) {
+  let ms;
+  if (date instanceof Date) ms = date.getTime();
+  else if (typeof date === 'number') ms = date;
+  else if (typeof date === 'string') {
+    ms = Date.parse(date);
+    if (!Number.isFinite(ms)) ms = Date.parse(date.replace(' ', 'T') + 'Z');
+  }
+  if (!Number.isFinite(ms)) return '';
+  const diff = Date.now() - ms;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return 'yesterday';
+  return `${days}d ago`;
+}
+
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -1904,7 +1971,7 @@ function friendlyError(raw, platformName) {
     return 'That request needed more steps than Merlin could fit in one go.\nTry: Break it into smaller asks (e.g. "make 5 ads" → "make 1 hero ad first").';
   }
   if (sl.includes('error_max_budget_usd') || sl.includes('reached maximum budget')) {
-    return 'That request hit Merlin\'s spend ceiling for one turn.\nTry: Break it into smaller asks, or open Settings → Connections to raise your budget.';
+    return 'That request hit Merlin\'s spend ceiling for one turn.\nTry: Break it into smaller asks (e.g. "make 5 ads" → "make 1 first").';
   }
   if (sl.includes('error_max_structured_output_retries') || sl.includes('valid structured output after')) {
     return 'Merlin had trouble producing a clean structured answer.\nTry: Rephrase the request more directly, or [[chip:Update Merlin:update]] to pick up the latest fixes.';
@@ -2041,7 +2108,7 @@ function friendlyError(raw, platformName) {
     else if (sl.includes('elevenlabs')) capability = 'voice generation';
     else if (sl.includes('heygen')) capability = 'video generation';
     else if (platformName) capability = platformName.toLowerCase();
-    return `${capability.charAt(0).toUpperCase()}${capability.slice(1)} credits ran out.\nTry: Open Settings → Connections to add more credits.`;
+    return `${capability.charAt(0).toUpperCase()}${capability.slice(1)} credits ran out.\nTry: Open the ✦ Magic panel to add more credits.`;
   }
   if (sl.includes('rate limit') || sl.includes('too many requests') || sl.includes('429')) return 'Too many requests — Merlin is protecting your account.\nTry: Wait 30 seconds and try again. This is normal.';
   // When we don't know which platform hit the quota, say it in plain
@@ -2070,7 +2137,7 @@ function friendlyError(raw, platformName) {
   if (sl.includes('shopify') && sl.includes('throttl')) return 'Shopify is rate-limiting requests.\nTry: Wait a moment — Merlin will auto-retry.';
 
   // ── Network errors ──
-  if (sl.includes('enoent') || (sl.includes('not found') && sl.includes('spawn'))) return 'Merlin engine not found.\nTry: [[chip:Update Merlin:update]] or restart the app.';
+  if (sl.includes('enoent') || (sl.includes('not found') && sl.includes('spawn'))) return "Merlin isn't ready yet. Restart Merlin to finish setup.\nTry: [[chip:Update Merlin:update]] or restart the app.";
   if (sl.includes('etimedout') || sl.includes('timeout')) return 'Connection timed out.\nTry: Check your internet connection and try again.';
   if (sl.includes('econnrefused')) return `${platformName || 'Platform'} refused the connection.\nTry: The service may be down — wait a few minutes and retry.`;
   if (sl.includes('enotfound') || sl.includes('dns')) return `Can't reach ${platformName || 'the service'}.\nTry: Check your Wi-Fi or internet connection.`;
@@ -2268,7 +2335,7 @@ function _dispatchErrorChipAction(action) {
     if (action.startsWith('reconnect:')) {
       const platform = action.slice('reconnect:'.length).trim().toLowerCase();
       const panel = document.getElementById('magic-panel');
-      if (panel && panel.classList.contains('hidden')) panel.classList.remove('hidden');
+      if (panel && panel.classList.contains('hidden')) openMagicSlide(panel);
       if (platform && typeof merlin.connectPlatform === 'function') {
         merlin.connectPlatform(platform).catch(() => {});
       }
@@ -2881,7 +2948,7 @@ merlin.onSdkError((err) => {
   // Then retry the session.
   if (errLower.includes('not logged in') || errLower.includes('please run /login') || errLower.includes('login required')) {
     const bubble = addClaudeBubble();
-    textBuffer = 'Connecting to your Claude account...\n\nA browser window will open for a quick sign-in. This only happens once.';
+    textBuffer = 'Connecting to your Claude account…\n\nA browser window will open for a quick sign-in. This only happens once.';
     finalizeBubble();
     bubble.style.borderColor = 'rgba(251,191,36,.3)';
 
@@ -2892,7 +2959,7 @@ merlin.onSdkError((err) => {
           const result = await merlin.triggerClaudeLogin();
           if (result.success) {
             // Login succeeded — retry session immediately
-            bubble.textContent = 'Signed in! Starting Merlin...';
+            bubble.textContent = 'Signed in! Starting Merlin…';
             setTimeout(() => {
               _restartAttempts = 0;
               beginAgentTurn('login-success-restart', { quiet: true });
@@ -2921,11 +2988,11 @@ merlin.onSdkError((err) => {
       };
 
       const loginBtn = document.createElement('button');
-      loginBtn.textContent = 'Sign In to Claude';
+      loginBtn.textContent = 'Sign in to Claude';
       loginBtn.className = 'btn-action btn-approve-style';
       loginBtn.style.cssText = 'margin-top:12px;margin-right:8px;width:auto;padding:8px 20px;font-size:13px';
       loginBtn.onclick = async () => {
-        loginBtn.textContent = 'Signing in...';
+        loginBtn.textContent = 'Signing in…';
         loginBtn.disabled = true;
         try {
           if (merlin.triggerClaudeLogin) {
@@ -2946,7 +3013,7 @@ merlin.onSdkError((err) => {
             bubble.textContent = result.error
               ? friendlyErrorPlain(result.error, 'Claude sign-in')
               : 'Sign-in failed. Click the button to try again.';
-            loginBtn.textContent = 'Sign In to Claude';
+            loginBtn.textContent = 'Sign in to Claude';
             loginBtn.disabled = false;
             bubble.appendChild(loginBtn);
             bubble.appendChild(retryBtn);
@@ -2954,7 +3021,7 @@ merlin.onSdkError((err) => {
           }
         } catch {}
         // triggerClaudeLogin not available — re-enable
-        loginBtn.textContent = 'Sign In to Claude';
+        loginBtn.textContent = 'Sign in to Claude';
         loginBtn.disabled = false;
       };
       bubble.appendChild(loginBtn);
@@ -3058,12 +3125,12 @@ merlin.onSdkError((err) => {
     _restartAttempts = 0; // reset the circuit so post-sign-in startSession isn't penalized
     const signInBtn = document.createElement('button');
     signInBtn.className = 'auth-retry-btn';
-    signInBtn.textContent = 'Sign In to Claude';
+    signInBtn.textContent = 'Sign in to Claude';
     signInBtn.style.cssText = 'margin-top:12px;padding:8px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer';
     signInBtn.onclick = async () => {
       if (!merlin.triggerClaudeLogin) return;
       signInBtn.disabled = true;
-      signInBtn.textContent = 'Opening browser...';
+      signInBtn.textContent = 'Opening browser…';
       try {
         const result = await merlin.triggerClaudeLogin();
         if (result && result.success) {
@@ -3083,11 +3150,11 @@ merlin.onSdkError((err) => {
         // Sign-in failed or was cancelled — re-enable the button so the
         // user can try again without reloading.
         signInBtn.disabled = false;
-        signInBtn.textContent = 'Sign In to Claude';
+        signInBtn.textContent = 'Sign in to Claude';
       } catch (e) {
         console.error('[auth-retry]', e);
         signInBtn.disabled = false;
-        signInBtn.textContent = 'Sign In to Claude';
+        signInBtn.textContent = 'Sign in to Claude';
       }
     };
     bubble.appendChild(signInBtn);
@@ -3119,12 +3186,12 @@ merlin.onSdkError((err) => {
     _restartAttempts = 0; // reset circuit — the fresh-session restart isn't a retry in disguise
     const freshBtn = document.createElement('button');
     freshBtn.className = 'stale-resume-btn';
-    freshBtn.textContent = 'Start Fresh Session';
+    freshBtn.textContent = 'Start fresh session';
     freshBtn.style.cssText = 'margin-top:12px;padding:8px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer';
     freshBtn.onclick = async () => {
       if (!merlin.startFreshSession) return;
       freshBtn.disabled = true;
-      freshBtn.textContent = 'Starting fresh session...';
+      freshBtn.textContent = 'Starting fresh session…';
       try {
         const result = await merlin.startFreshSession();
         if (result && result.success) {
@@ -3141,11 +3208,11 @@ merlin.onSdkError((err) => {
           return;
         }
         freshBtn.disabled = false;
-        freshBtn.textContent = 'Start Fresh Session';
+        freshBtn.textContent = 'Start fresh session';
       } catch (e) {
         console.error('[stale-resume-retry]', e);
         freshBtn.disabled = false;
-        freshBtn.textContent = 'Start Fresh Session';
+        freshBtn.textContent = 'Start fresh session';
       }
     };
     bubble.appendChild(freshBtn);
@@ -3177,7 +3244,7 @@ merlin.onSdkError((err) => {
     bubble.appendChild(retryExhausted);
 
     const retryBtn = document.createElement('button');
-    retryBtn.textContent = 'Retry Connection';
+    retryBtn.textContent = 'Retry connection';
     retryBtn.className = 'btn-action btn-approve-style';
     retryBtn.style.cssText = 'margin-top:12px;width:auto;padding:8px 20px;font-size:13px';
     retryBtn.onclick = () => {
@@ -3194,7 +3261,7 @@ merlin.onSdkError((err) => {
   // userMsg already rendered as chip-aware DOM above; append retry line as text node.
   const retryLine = document.createElement('div');
   retryLine.style.cssText = 'margin-top:10px;color:rgba(228,228,231,0.7);font-size:12px';
-  retryLine.textContent = `Retrying in ${delay / 1000}s... (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
+  retryLine.textContent = `Retrying in ${delay / 1000}s… (attempt ${_restartAttempts}/${MAX_RESTART_ATTEMPTS})`;
   bubble.appendChild(retryLine);
 
   setTimeout(() => {
@@ -3248,7 +3315,7 @@ merlin.onUpdateAvailable(({ current, latest }) => {
 
   document.getElementById('update-btn').onclick = () => {
     document.getElementById('update-btn').disabled = true;
-    document.getElementById('update-btn').textContent = 'Updating...';
+    document.getElementById('update-btn').textContent = 'Updating…';
     document.getElementById('update-dismiss').classList.add('hidden');
     merlin.applyUpdate();
   };
@@ -3272,11 +3339,11 @@ merlin.onUpdateReady(({ latest, needsReinstall }) => {
     // Shell asar can't be hot-swapped — we need to run the new installer.
     // The Install button kicks off a download + silent install + relaunch.
     document.getElementById('update-text').textContent = `Merlin ${latest} ready — install now?`;
-    document.getElementById('update-btn').textContent = 'Install Now';
+    document.getElementById('update-btn').textContent = 'Install now';
     document.getElementById('update-btn').disabled = false;
     document.getElementById('update-btn').onclick = async () => {
       document.getElementById('update-btn').disabled = true;
-      document.getElementById('update-btn').textContent = 'Installing...';
+      document.getElementById('update-btn').textContent = 'Installing…';
       dismiss.classList.add('hidden');
       try {
         const r = await merlin.installUpdate();
@@ -3313,7 +3380,7 @@ merlin.onUpdateError((err) => {
   document.getElementById('update-btn').textContent = 'Retry';
   document.getElementById('update-btn').disabled = false;
   document.getElementById('update-btn').onclick = () => {
-    document.getElementById('update-btn').textContent = 'Updating...';
+    document.getElementById('update-btn').textContent = 'Updating…';
     document.getElementById('update-btn').disabled = true;
     merlin.applyUpdate();
   };
@@ -3426,7 +3493,7 @@ if (merlin.onAuthCodePrompt) {
     dialog.innerHTML = `
       <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:8px">Paste your authentication code</div>
       <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px;line-height:1.5">Your browser should have opened a Claude page. Click the <b>Copy Code</b> button on that page and paste the full string below. It looks like <code style="background:var(--surface);padding:1px 5px;border-radius:4px">xxxxxxxx#yyyyyyyy</code> — make sure you copy the part after the <code style="background:var(--surface);padding:1px 5px;border-radius:4px">#</code> too.</div>
-      <input id="auth-code-input" type="text" placeholder="Paste the full code here..." style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:13px;outline:none;margin-bottom:12px;text-align:center" autocomplete="off" spellcheck="false">
+      <input id="auth-code-input" type="text" placeholder="Paste the full code here…" style="width:100%;padding:10px 14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);color:var(--text);font-family:var(--font);font-size:13px;outline:none;margin-bottom:12px;text-align:center" autocomplete="off" spellcheck="false">
       <div style="display:flex;gap:8px">
         <button id="auth-code-submit-btn" style="flex:1;padding:10px 24px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:14px;cursor:pointer">Submit</button>
         <button id="auth-code-cancel-btn" style="padding:10px 16px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text-muted);font-size:14px;cursor:pointer">Cancel</button>
@@ -3469,7 +3536,7 @@ if (merlin.onAuthCodePrompt) {
         return;
       }
 
-      btn.textContent = 'Submitting...';
+      btn.textContent = 'Submitting…';
       btn.disabled = true;
       inputEl.disabled = true;
 
@@ -3492,7 +3559,7 @@ if (merlin.onAuthCodePrompt) {
       if (!document.getElementById('auth-code-dialog')) return;
 
       if (result.ok) {
-        showHint('Sent to Claude — waiting for the token exchange to complete...', 'var(--text-muted)');
+        showHint('Sent to Claude — waiting for the token exchange to complete…', 'var(--text-muted)');
         btn.textContent = 'Submit';
         btn.disabled = false;
         inputEl.disabled = false;
@@ -3644,7 +3711,7 @@ async function runAuthRequiredFlow(data) {
         // scenario B (mid-session). Do NOT re-add addUserBubble —
         // that visibly duplicates scenario A.
         if (pendingMessage) {
-          setStatus('Signed in — continuing your request...');
+          setStatus('Signed in — continuing your request…');
           // Small delay so the user sees the transition
           await new Promise(r => setTimeout(r, 250));
           bubble.remove(); // remove the "signing in" status bubble
@@ -3686,11 +3753,11 @@ function addRetryButton(bubble) {
   if (!bubble || bubble.querySelector('.auth-retry-btn')) return;
   const btn = document.createElement('button');
   btn.className = 'auth-retry-btn';
-  btn.textContent = 'Sign In to Claude';
+  btn.textContent = 'Sign in to Claude';
   btn.style.cssText = 'margin-top:12px;padding:8px 20px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600;font-size:13px;cursor:pointer';
   btn.onclick = async () => {
     btn.disabled = true;
-    btn.textContent = 'Opening...';
+    btn.textContent = 'Opening…';
     if (!merlin.triggerClaudeLogin) return;
     try {
       const result = await merlin.triggerClaudeLogin();
@@ -3708,11 +3775,11 @@ function addRetryButton(bubble) {
         merlin.sendMessage(_lastUserMessage);
       } else if (result && !result.success) {
         btn.disabled = false;
-        btn.textContent = 'Sign In to Claude';
+        btn.textContent = 'Sign in to Claude';
       }
     } catch {
       btn.disabled = false;
-      btn.textContent = 'Sign In to Claude';
+      btn.textContent = 'Sign in to Claude';
     }
   };
   bubble.appendChild(btn);
@@ -3723,60 +3790,37 @@ function addRetryButton(bubble) {
 // of the screen. The toast is reused across updates so progress appears to
 // "tick" rather than spamming new bubbles. Auto-dismisses 4s after a
 // "complete" / "ready" message.
-let _engineToast = null;
-let _engineToastTimer = null;
 merlin.onEngineStatus((msg) => {
   console.log('[engine]', msg);
   if (!msg) return;
-
-  if (!_engineToast) {
-    _engineToast = document.createElement('div');
-    _engineToast.id = 'engine-toast';
-    _engineToast.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%) translateY(10px);max-width:420px;padding:10px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(167,139,250,0.4);border-radius:10px;color:#e4e4e7;font-size:12px;line-height:1.4;z-index:9998;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transition:all .3s ease';
-    document.body.appendChild(_engineToast);
-  }
-  _engineToast.textContent = '✦ ' + msg;
-  requestAnimationFrame(() => {
-    _engineToast.style.opacity = '1';
-    _engineToast.style.transform = 'translateX(-50%) translateY(0)';
+  // Single bottom-center status ticker, updated in place by id. Sticky
+  // (duration:0) while work is in flight; on a terminal state it holds 4s
+  // then hides. showToast owns the shell/positioning/fade now.
+  const terminal = /ready|complete|done|failed/i.test(msg);
+  showToast('✦ ' + msg, {
+    id: 'engine-toast',
+    center: true,
+    variant: /failed/i.test(msg) ? 'error' : 'info',
+    duration: terminal ? 4000 : 0,
   });
-
-  // Auto-dismiss on terminal states
-  if (_engineToastTimer) clearTimeout(_engineToastTimer);
-  if (/ready|complete|done|failed/i.test(msg)) {
-    _engineToastTimer = setTimeout(() => {
-      if (!_engineToast) return;
-      _engineToast.style.opacity = '0';
-      _engineToast.style.transform = 'translateX(-50%) translateY(10px)';
-      setTimeout(() => { _engineToast?.remove(); _engineToast = null; }, 300);
-    }, 4000);
-  }
 });
 
 // ── Security: bypass attempt toast ──────────────────────────
 // Surfaces when the hook or canUseTool blocks an API bypass attempt.
 // Tells the user something was blocked without alarming them — it's
 // expected behavior when Claude is exploring.
-let _bypassToastTimer = null;
 merlin.onBypassAttempt(({ reason }) => {
-  let toast = document.getElementById('bypass-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'bypass-toast';
-    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:12px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(251,191,36,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.4;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease';
-    toast.innerHTML = '<div style="font-weight:600;color:#fbbf24;margin-bottom:4px">✦ Merlin prevented an unsafe action</div><div id="bypass-toast-body" style="color:rgba(228,228,231,0.8)"></div>';
-    document.body.appendChild(toast);
-  }
-  document.getElementById('bypass-toast-body').textContent = reason || 'An unauthorized action was blocked.';
-  requestAnimationFrame(() => {
-    toast.style.opacity = '1';
-    toast.style.transform = 'translateY(0)';
+  // Title + body, warn tone, 7s. textContent-set the body via a temp node so a
+  // hostile `reason` can never inject markup (it lands as text, not innerHTML).
+  const bodyText = reason || 'An unauthorized action was blocked.';
+  const safe = document.createElement('div');
+  safe.textContent = bodyText;
+  showToast(null, {
+    id: 'bypass-toast',
+    variant: 'warn',
+    duration: 7000,
+    html: '<div style="font-weight:600;color:#fbbf24;margin-bottom:4px">✦ Merlin prevented an unsafe action</div><div style="color:rgba(228,228,231,0.8)">' + safe.innerHTML + '</div>',
   });
-  if (_bypassToastTimer) clearTimeout(_bypassToastTimer);
-  _bypassToastTimer = setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(10px)';
-  }, 7000);
 });
 
 // ── Remote User Messages (from PWA) ─────────────────────────
@@ -3800,17 +3844,14 @@ merlin.onRemoteUserMessage((text) => {
 if (window.merlin && typeof window.merlin.onPostCrashReload === 'function') {
   window.merlin.onPostCrashReload((payload) => {
     try {
-      const existing = document.getElementById('post-crash-toast');
-      if (existing) existing.remove();
-      const toast = document.createElement('div');
-      toast.id = 'post-crash-toast';
-      toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:14px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(34,197,94,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.5;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease;display:flex;align-items:flex-start;gap:10px';
       // REGRESSION GUARD (2026-04-23, Rule 6 review gate):
       // Electron's render-process-gone `details.reason` is a raw string from
       // Chromium and must NEVER land in `innerHTML` verbatim — `.slice(0, N)`
       // on a raw value is the exact anti-pattern Rule 6 prohibits. Map the
       // known enum values to plain-English labels via a static lookup; drop
-      // the hint entirely for anything unrecognized.
+      // the hint entirely for anything unrecognized. (The consolidation onto
+      // showToast preserves this: only the STATIC label ever reaches innerHTML,
+      // never rawReason.)
       const CRASH_REASON_LABELS = {
         'crashed': 'the app crashed',
         'oom': 'it ran out of memory',
@@ -3821,34 +3862,22 @@ if (window.merlin && typeof window.merlin.onPostCrashReload === 'function') {
       };
       const rawReason = payload && typeof payload === 'object' && typeof payload.reason === 'string' ? payload.reason : '';
       const reasonLabel = Object.prototype.hasOwnProperty.call(CRASH_REASON_LABELS, rawReason) ? CRASH_REASON_LABELS[rawReason] : '';
-      toast.innerHTML = `
+      const hintHtml = reasonLabel
+        ? `<div style="color:rgba(228,228,231,0.55);font-size:11px;margin-top:4px">(${reasonLabel})</div>`
+        : '';
+      const html = `
+        <div style="display:flex;align-items:flex-start;gap:10px">
         <span style="font-size:16px;color:#22c55e;flex-shrink:0">✓</span>
         <div style="flex:1" id="post-crash-toast-body">
           <div style="font-weight:600;margin-bottom:2px;color:#22c55e">Merlin recovered from a hiccup</div>
-          <div style="color:rgba(228,228,231,0.85)">Your last turn is saved.</div>
+          <div style="color:rgba(228,228,231,0.85)">Your last turn is saved.</div>${hintHtml}
         </div>
         <button id="post-crash-toast-close" style="background:transparent;border:none;color:rgba(228,228,231,0.5);cursor:pointer;font-size:16px;padding:0;line-height:1;flex-shrink:0">×</button>
+        </div>
       `;
-      if (reasonLabel) {
-        const hint = document.createElement('div');
-        hint.style.cssText = 'color:rgba(228,228,231,0.55);font-size:11px;margin-top:4px';
-        hint.textContent = `(${reasonLabel})`;
-        const body = toast.querySelector('#post-crash-toast-body');
-        if (body) body.appendChild(hint);
-      }
-      document.body.appendChild(toast);
-      requestAnimationFrame(() => {
-        toast.style.opacity = '1';
-        toast.style.transform = 'translateY(0)';
-      });
-      const closeBtn = document.getElementById('post-crash-toast-close');
-      const hide = () => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateY(10px)';
-        setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); }, 320);
-      };
+      const { el, hide } = showToast(null, { id: 'post-crash-toast', variant: 'success', duration: 8000, html });
+      const closeBtn = el.querySelector('#post-crash-toast-close');
       if (closeBtn) closeBtn.addEventListener('click', hide);
-      setTimeout(hide, 8000);
     } catch {}
   });
 }
@@ -4005,7 +4034,7 @@ function paintQrPayload(img, url, note, payload) {
   // URL that only works on the same WiFi.
   if (payload.mode === 'lan') {
     // payload.relayError is a boolean marker (Rule 6 — never a raw exception).
-    note.textContent = 'Roaming unavailable right now — connect on the same WiFi.';
+    note.textContent = 'Roaming unavailable right now — connect on the same Wi-Fi.';
     note.classList.remove('hidden');
   } else {
     note.textContent = '';
@@ -4283,7 +4312,7 @@ async function loadBrands() {
     const addBrandOption = () => {
       const addOpt = document.createElement('option');
       addOpt.value = '__add__';
-      addOpt.textContent = '+ New Brand';
+      addOpt.textContent = '+ New brand';
       select.appendChild(addOpt);
     };
     if (!brands || brands.length === 0) {
@@ -4532,8 +4561,134 @@ function updateBrandSwitcherLabel() {
   label.textContent = text;
 }
 
+// ── Shared takeover enter/exit motion ───────────────────────────────────
+// The six full-window surfaces (brand switcher, Wisdom, Palantir, Truesight,
+// Archive, Magic) used to pop in/out via a bare `.hidden` (display:none)
+// toggle with no motion. openTakeover / closeTakeover add the `.takeover-anim`
+// opacity+scale transition (style.css) and gate the `.open` flip on a double
+// rAF so the browser paints the resting (hidden) frame before the transition
+// runs. Callers still own their own data-load / focus / closeOtherOverlays
+// logic; these helpers ONLY wrap the visibility toggle.
+//
+// The Magic panel is the exception: it carries an authored translateX slide in
+// CSS (`.magic-panel:not(.hidden)` sets translateX(0)), defeated by
+// display:none. Removing `.hidden` alone jumps it to translateX(0) with no
+// transition (no rendered start frame). openMagicSlide / closeMagicSlide force
+// a translateX(100%) start frame via an inline transform, then clear it on the
+// next frame so the authored CSS transition has a value to animate FROM.
+function openTakeover(el) {
+  if (!el) return;
+  el.classList.add('takeover-anim');
+  el.classList.remove('hidden');
+  requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('open')));
+}
+function closeTakeover(el) {
+  if (!el) return;
+  el.classList.remove('open');
+  const done = () => {
+    el.classList.add('hidden');
+    el.removeEventListener('transitionend', done);
+  };
+  el.addEventListener('transitionend', done, { once: true });
+  // Fallback in case transitionend never fires (element removed, reduced
+  // motion collapsing the transition to ~0ms, or a display change racing it).
+  setTimeout(done, 260);
+}
+// Magic panel: make its authored translateX slide actually play. On open we
+// remove `.hidden` (element now rendered) but force translateX(100%) inline
+// for one painted frame, then clear the inline transform on the next frame so
+// the CSS `:not(.hidden)` rule (translateX(0)) transitions in. On close we set
+// translateX(100%) inline to slide out, then add `.hidden` after the slide.
+function openMagicSlide(el) {
+  if (!el) return;
+  el.style.transform = 'translateX(100%)';
+  el.classList.remove('hidden');
+  requestAnimationFrame(() => requestAnimationFrame(() => { el.style.transform = ''; }));
+}
+function closeMagicSlide(el) {
+  if (!el) return;
+  el.style.transform = 'translateX(100%)';
+  const done = () => {
+    el.classList.add('hidden');
+    el.style.transform = '';
+    el.removeEventListener('transitionend', done);
+  };
+  el.addEventListener('transitionend', done, { once: true });
+  setTimeout(done, 340);
+}
+
+// revealGrid staggers the arrival of a freshly-rebuilt grid's children by
+// adding `.reveal-item` (fadeUp) with an incremental per-child animation-delay
+// (capped at 300ms so a large grid doesn't crawl). No-op on an empty grid so
+// an empty-state placeholder never gets a stray fade.
+function revealGrid(gridEl) {
+  if (!gridEl) return;
+  const kids = gridEl.children;
+  if (!kids || kids.length === 0) return;
+  for (let i = 0; i < kids.length; i++) {
+    const child = kids[i];
+    if (!child || child.nodeType !== 1) continue;
+    child.classList.add('reveal-item');
+    child.style.animationDelay = Math.min(i * 25, 300) + 'ms';
+  }
+}
+
+// ── Unified app toast ───────────────────────────────────────────────────
+// showToast(msg, opts) is the single bottom-anchored notification toast. It
+// replaced four near-identical hand-rolled cssText blobs (engine status,
+// bypass-blocked, referral-auto-applied, post-crash) that each re-declared the
+// same fixed positioning, blur, shadow and fade. Options:
+//   variant | kind : 'success' | 'info' | 'warn' | 'error' (border tone via
+//                    the existing .spell-toast-* classes in style.css)
+//   duration       : ms before auto-hide (0 = sticky, caller hides manually)
+//   id             : reuse/update one toast in place (engine status ticker)
+//   center         : bottom-CENTER instead of bottom-right (engine status)
+//   html           : rich innerHTML (title + body, close button) instead of msg
+// Returns { el, hide } so callers can wire a close button or terminal dismiss.
+const _appToasts = new Map();
+function showToast(msg, opts = {}) {
+  const variant = opts.variant || opts.kind || 'info';
+  const cls = variant === 'success' ? 'spell-toast-success'
+    : variant === 'error' ? 'spell-toast-error'
+    : 'spell-toast-info'; // 'info' and 'warn' both map to the info border tone
+  const duration = typeof opts.duration === 'number' ? opts.duration : 5000;
+  const id = opts.id || null;
+  const center = !!opts.center;
+  // Shared shell: positioning + blur + shadow + fade transition lived
+  // duplicated across four blobs; it lives here now. Border color + text tone
+  // come from the .spell-toast-* class. center anchors bottom-center (was the
+  // engine status toast) via translateX(-50%); default is bottom-right.
+  const hidden = center ? 'translateX(-50%) translateY(10px)' : 'translateY(10px)';
+  const shown = center ? 'translateX(-50%) translateY(0)' : 'translateY(0)';
+  const anchor = center ? 'bottom:20px;left:50%;' : 'bottom:20px;right:20px;';
+  let toast = id ? _appToasts.get(id) : null;
+  if (!toast || !toast.isConnected) {
+    toast = document.createElement('div');
+    toast.className = 'app-toast ' + cls;
+    toast.style.cssText = 'position:fixed;' + anchor + 'max-width:' + (center ? '420px' : '360px') + ';padding:12px 16px;border-radius:12px;font-size:12px;line-height:1.4;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:' + hidden + ';transition:opacity .3s ease,transform .3s ease';
+    document.body.appendChild(toast);
+    if (id) _appToasts.set(id, toast);
+  } else {
+    toast.className = 'app-toast ' + cls;
+  }
+  if (opts.html != null) toast.innerHTML = opts.html;
+  else if (typeof msg === 'string') toast.textContent = msg;
+  requestAnimationFrame(() => {
+    toast.style.opacity = '1';
+    toast.style.transform = shown;
+  });
+  const hide = () => {
+    toast.style.opacity = '0';
+    toast.style.transform = hidden;
+    setTimeout(() => { if (toast.parentNode) toast.parentNode.removeChild(toast); if (id) _appToasts.delete(id); }, 320);
+  };
+  if (toast._hideTimer) clearTimeout(toast._hideTimer);
+  if (duration > 0) toast._hideTimer = setTimeout(hide, duration);
+  return { el: toast, hide };
+}
+
 function closeBrandSwitcher() {
-  document.getElementById('brand-switcher-overlay')?.classList.add('hidden');
+  closeTakeover(document.getElementById('brand-switcher-overlay'));
 }
 
 // anyModalTakeoverOpen reports whether a full-window modal takeover (brand
@@ -4567,12 +4722,12 @@ function closeOtherOverlays(keepId) {
   if (keepId !== 'archive-panel') hideSidebarPanel('archive');
   if (keepId !== 'wisdom-overlay') closeWisdom();
   if (keepId !== 'palantir-panel') {
-    document.getElementById('palantir-panel')?.classList.add('hidden');
+    closeTakeover(document.getElementById('palantir-panel'));
     try { closePalantirDetail(); } catch {}
   }
-  if (keepId !== 'truesight-panel') document.getElementById('truesight-panel')?.classList.add('hidden');
+  if (keepId !== 'truesight-panel') closeTakeover(document.getElementById('truesight-panel'));
   if (keepId !== 'brand-switcher-overlay') closeBrandSwitcher();
-  if (keepId !== 'stats-overlay') document.getElementById('stats-overlay')?.classList.add('hidden');
+  if (keepId !== 'stats-overlay') closeTakeover(document.getElementById('stats-overlay'));
   if (keepId !== 'agency-overlay') closeAgencyOverlay();
 }
 
@@ -4598,7 +4753,7 @@ async function openBrandSwitcher() {
   // Close every sibling surface so none renders behind the takeover.
   closeOtherOverlays('brand-switcher-overlay');
   showBrandNewForm(false);
-  ov.classList.remove('hidden');
+  openTakeover(ov);
   grid.innerHTML = '<div class="palantir-portal"><div class="palantir-portal-orb">✦</div><div class="palantir-portal-sub">Loading your brands…</div></div>';
 
   let brands = [];
@@ -4637,10 +4792,11 @@ async function openBrandSwitcher() {
   addTile.appendChild(aav);
   const anm = document.createElement('div');
   anm.className = 'brand-tile-name';
-  anm.textContent = 'New Brand';
+  anm.textContent = 'New brand';
   addTile.appendChild(anm);
   addTile.addEventListener('click', () => showBrandNewForm(true));
   grid.appendChild(addTile);
+  revealGrid(grid);
 }
 
 // chooseBrandFromTakeover swaps brand in ONE click by driving the hidden
@@ -4651,9 +4807,34 @@ function chooseBrandFromTakeover(name) {
   if (!sel) return;
   closeBrandSwitcher();
   if (name === getActiveBrandSelection()) return; // already active — no-op
+  brandSwitchCrossfade(); // 150ms chat opacity dip + label scale pulse (see fn)
   sel.value = name;
   sel.dispatchEvent(new Event('change', { bubbles: true }));
   setTimeout(updateBrandSwitcherLabel, 0);
+}
+
+// brandSwitchCrossfade runs a short, purely-cosmetic transition on brand swap.
+// Inline styles only (no style.css touch): a 150ms opacity dip on #chat and a
+// scale pulse on the brand label. Both self-clean so nothing lingers.
+function brandSwitchCrossfade() {
+  try {
+    if (chat) {
+      const prevTransition = chat.style.transition;
+      chat.style.transition = 'opacity .15s ease';
+      chat.style.opacity = '0.5';
+      setTimeout(() => {
+        chat.style.opacity = '1';
+        setTimeout(() => { chat.style.transition = prevTransition; }, 160);
+      }, 150);
+    }
+    const label = document.getElementById('brand-switcher-label');
+    if (label) {
+      label.style.transition = 'transform .12s ease';
+      label.style.transform = 'scale(1.06)';
+      setTimeout(() => { label.style.transform = 'scale(1)'; }, 130);
+      setTimeout(() => { label.style.transition = ''; label.style.transform = ''; }, 320);
+    }
+  } catch {}
 }
 
 // addBrandFromForm validates Name + URL, then activates the brand INSTANTLY and
@@ -4737,11 +4918,11 @@ function promptBrandSetupBeforeConnect(platform) {
 }
 
 // ── Revenue Tracker (Merlin Made Me) ────────────────────────
+// Revenue Tracker money — routes through the shared formatMoney helper so
+// the "$1.2K/M/B" + comma-grouped-small-values dialect stays consistent with
+// reports, archive cards, and Truesight. (Was a local lowercase-"k" copy.)
 function fmtMoney(n) {
-  if (n == null || isNaN(n)) return '--';
-  if (n >= 1000000) return '$' + (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M';
-  if (n >= 1000) return '$' + (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k';
-  return '$' + Math.round(n);
+  return formatMoney(n);
 }
 
 const STATS_PERIOD_LABELS = { 1: 'Yesterday', 7: 'Last 7 days', 30: 'Last 30 days', 90: 'Last 90 days', 365: 'Last 12 months' };
@@ -4758,7 +4939,7 @@ function platformShortName(p) { return PLATFORM_DISPLAY[p] || p || ''; }
 function setStatsEmpty() {
   ['stats-revenue','stats-roas','stats-spend','stats-customers'].forEach(id => {
     const el = document.getElementById(id);
-    if (el) el.textContent = '--';
+    if (el) el.textContent = '—';
   });
   document.getElementById('stats-period').textContent = 'No data yet — run a performance check first';
   document.getElementById('stats-story').textContent = '';
@@ -4853,10 +5034,10 @@ function renderStatsCard(perf, days) {
   const heroIsAdRev = adRev > 0;
   const effMer = heroIsAdRev && spend > 0 ? (adRev / spend) : (perf.mer > 0 ? perf.mer : (spend > 0 ? totalRev / spend : 0));
 
-  document.getElementById('stats-revenue').textContent = heroVal > 0 ? fmtMoney(heroVal) : '--';
-  document.getElementById('stats-spend').textContent = spend > 0 ? fmtMoney(spend) : '--';
-  document.getElementById('stats-roas').textContent = effMer > 0 ? effMer.toFixed(1) + 'x' : '--';
-  document.getElementById('stats-customers').textContent = perf.newCustomers > 0 ? String(perf.newCustomers) : '--';
+  document.getElementById('stats-revenue').textContent = heroVal > 0 ? fmtMoney(heroVal) : '—';
+  document.getElementById('stats-spend').textContent = spend > 0 ? fmtMoney(spend) : '—';
+  document.getElementById('stats-roas').textContent = effMer > 0 ? effMer.toFixed(1) + 'x' : '—';
+  document.getElementById('stats-customers').textContent = perf.newCustomers > 0 ? String(perf.newCustomers) : '—';
 
   const revLabel = document.getElementById('stats-revenue-label');
   if (revLabel) {
@@ -4882,7 +5063,7 @@ function renderStatsCard(perf, days) {
 // brand-stats-btn removed — revenue tracker opens via perf bar click
 
 document.getElementById('stats-close').addEventListener('click', () => {
-  document.getElementById('stats-overlay').classList.add('hidden');
+  closeTakeover(document.getElementById('stats-overlay'));
 });
 
 // ── Wisdom Overlay ─────────────────────────────────────────
@@ -4945,17 +5126,11 @@ function wisdomNormalizeRow(row) {
 }
 
 // Server returns "YYYY-MM-DD HH:MM:SS" without a timezone — D1's
-// datetime('now') is UTC, so re-attach 'Z' before parsing.
+// datetime('now') is UTC. The shared timeAgo helper re-anchors this
+// space-separated form to UTC before parsing, so we just delegate.
 function wisdomRelTime(iso) {
   if (!iso || typeof iso !== 'string') return '';
-  const ms = Date.parse(iso.replace(' ', 'T') + 'Z');
-  if (!Number.isFinite(ms)) return '';
-  const ageMin = Math.max(0, Math.round((Date.now() - ms) / 60000));
-  if (ageMin < 1) return 'just now';
-  if (ageMin < 60) return `${ageMin}m ago`;
-  const hr = Math.round(ageMin / 60);
-  if (hr < 24) return `${hr}h ago`;
-  return `${Math.round(hr / 24)}d ago`;
+  return timeAgo(iso);
 }
 
 function wisdomEscHandler(e) {
@@ -4967,7 +5142,7 @@ function wisdomEscHandler(e) {
 }
 
 function closeWisdom() {
-  document.getElementById('wisdom-overlay').classList.add('hidden');
+  closeTakeover(document.getElementById('wisdom-overlay'));
   document.removeEventListener('keydown', wisdomEscHandler);
 }
 
@@ -4976,7 +5151,9 @@ async function loadWisdom({ force = false } = {}) {
   const sampleEl = document.getElementById('wisdom-sample');
   const refreshBtn = document.getElementById('wisdom-refresh-btn');
 
-  grid.innerHTML = '<div class="wisdom-loading">Loading…</div>';
+  // Content-shaped loading: ~8 skeleton cards in the wisdom grid instead of a
+  // bare "Loading…" line, so the panel reads as "cards incoming" not "empty".
+  grid.innerHTML = Array.from({ length: 8 }, () => '<div class="skeleton-card"></div>').join('');
   if (refreshBtn) refreshBtn.classList.add('refreshing');
 
   let w = null;
@@ -5002,7 +5179,7 @@ async function renderWisdom(w) {
   if (sample > 0) {
     sampleEl.textContent = `From ${sample.toLocaleString()} anonymized ads${ageStr ? ' · updated ' + ageStr : ''}`;
   } else {
-    sampleEl.textContent = 'Collecting data…';
+    sampleEl.textContent = 'Collecting…';
   }
 
   // Object-shape guards — reject arrays and null masquerading as objects.
@@ -5265,6 +5442,8 @@ async function renderWisdom(w) {
       <div class="wisdom-timing-value last">${escapeHtml(bestHours || (sample > 0 ? '—' : 'Collecting…'))}</div>
     </div>
   `;
+  // Stagger the freshly-built cards in, replacing the skeletons.
+  revealGrid(grid);
 }
 
 document.getElementById('wisdom-header-btn').addEventListener('click', async () => {
@@ -5283,7 +5462,7 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
     return;
   }
 
-  overlay.classList.remove('hidden');
+  openTakeover(overlay);
   document.addEventListener('keydown', wisdomEscHandler);
   await loadWisdom();
 });
@@ -5309,7 +5488,17 @@ document.getElementById('wisdom-refresh-btn').addEventListener('click', () => {
   loadWisdom({ force: true });
 });
 document.getElementById('stats-overlay').addEventListener('click', (e) => {
-  if (e.target.id === 'stats-overlay') document.getElementById('stats-overlay').classList.add('hidden');
+  if (e.target.id === 'stats-overlay') closeTakeover(document.getElementById('stats-overlay'));
+});
+
+// Escape closes the revenue/stats overlay, matching every other overlay's
+// keyboard affordance. Visibility-gated, wisdomEscHandler style.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const overlay = document.getElementById('stats-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  e.preventDefault();
+  closeTakeover(overlay);
 });
 
 // Escape closes the revenue/stats overlay, matching every other overlay's
@@ -5361,12 +5550,12 @@ function drawStatsShareCard() {
 
   const brand = document.getElementById('stats-brand-name').textContent || 'Merlin';
   const period = document.getElementById('stats-period').textContent || '';
-  const revText = document.getElementById('stats-revenue').textContent || '--';
+  const revText = document.getElementById('stats-revenue').textContent || '—';
   const revLabel = document.getElementById('stats-revenue-label').textContent || '';
   const story = document.getElementById('stats-story').textContent || '';
-  const spend = document.getElementById('stats-spend').textContent || '--';
-  const roas = document.getElementById('stats-roas').textContent || '--';
-  const customers = document.getElementById('stats-customers').textContent || '--';
+  const spend = document.getElementById('stats-spend').textContent || '—';
+  const roas = document.getElementById('stats-roas').textContent || '—';
+  const customers = document.getElementById('stats-customers').textContent || '—';
   const topLine = document.getElementById('stats-top-ad').textContent || '';
   const trendPill = document.getElementById('stats-trend-pill');
   const trendText = trendPill && !trendPill.classList.contains('hidden') ? trendPill.textContent : '';
@@ -5731,14 +5920,19 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   // a stranded pin.
   closeOtherOverlays('magic-panel');
   const panel = document.getElementById('magic-panel');
-  panel.classList.toggle('hidden');
+  const willOpen = panel.classList.contains('hidden');
+  // Magic slides in/out via its authored translateX transition (openMagicSlide
+  // / closeMagicSlide gate the display flip so the slide actually plays, rather
+  // than the panel popping via a bare display:none toggle).
+  if (willOpen) openMagicSlide(panel);
+  else closeMagicSlide(panel);
   // If we're hiding magic via toggle, also clear its pinned state so
   // the body class doesn't outlive the visible panel.
-  if (panel.classList.contains('hidden')) {
+  if (!willOpen) {
     setSidebarPinned('magic', false);
   }
   // Load brands first (sets vertical filter), then connections (hides connected from available)
-  if (!panel.classList.contains('hidden')) {
+  if (willOpen) {
     loadBrands().then(() => loadConnections());
     loadSpells();
     loadReferralInfo();
@@ -5761,7 +5955,7 @@ document.getElementById('magic-btn').addEventListener('click', () => {
   }
 });
 document.getElementById('magic-close').addEventListener('click', () => {
-  document.getElementById('magic-panel').classList.add('hidden');
+  closeMagicSlide(document.getElementById('magic-panel'));
   // Closing a sidebar implicitly unpins it — without this, the body
   // class stays set and the chat reflow reserves 340px for an empty
   // void. Mirror in archive-close below.
@@ -5859,7 +6053,7 @@ function setSidebarPinned(id, pinned) {
 function hideSidebarPanel(id) {
   if (id !== 'magic' && id !== 'archive') return;
   const panel = document.getElementById(id + '-panel');
-  if (panel) panel.classList.add('hidden');
+  if (id === 'magic') closeMagicSlide(panel); else closeTakeover(panel);
   setSidebarPinned(id, false);
 }
 
@@ -5919,7 +6113,7 @@ document.addEventListener('keydown', (e) => {
   if (typeof isRecording !== 'undefined' && isRecording) return;
   // Pinned panels stay open — see REGRESSION GUARD above.
   if (document.body.classList.contains('has-pinned-magic-sidebar')) return;
-  panel.classList.add('hidden');
+  closeMagicSlide(panel);
 });
 
 // Close panel on any outside click (except on the Magic button itself,
@@ -5946,7 +6140,7 @@ document.addEventListener('click', (e) => {
   if (e.target.closest('.tile-context-menu')) return;
   // Pinned panels stay open — see REGRESSION GUARD above.
   if (document.body.classList.contains('has-pinned-magic-sidebar')) return;
-  panel.classList.add('hidden');
+  closeMagicSlide(panel);
 });
 
 // Connect platform tiles — ALL connections handled directly in UI, zero chat involvement
@@ -5961,13 +6155,13 @@ document.addEventListener('click', (e) => {
 // every connector_id in oauth-provider-config.js against this Set.
 const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads']);
 const API_KEY_PLATFORMS = {
-  fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx...', url: 'https://fal.ai/dashboard/keys' },
-  elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx...', url: 'https://elevenlabs.io/app/settings/api-keys' },
+  fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx…', url: 'https://fal.ai/dashboard/keys' },
+  elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx…', url: 'https://elevenlabs.io/app/settings/api-keys' },
   heygen:     { key: 'heygenApiKey', label: 'HeyGen', placeholder: 'your-api-key', url: 'https://app.heygen.com/settings?nav=API' },
   arcads:     { key: 'arcadsApiKey', label: 'Arcads', placeholder: 'your-api-key', url: 'https://app.arcads.ai/settings' },
-  foreplay:   { key: 'foreplayApiKey', label: 'Foreplay', placeholder: 'fp_xxxx...', url: 'https://app.foreplay.co/settings/api' },
-  trendtrack: { key: 'trendtrackApiKey', label: 'TrendTrack', placeholder: 'tt_xxxx...', url: 'https://app.trendtrack.io/workspace/settings/api' },
-  postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx...', url: 'https://app.postscript.io/settings/api' },
+  foreplay:   { key: 'foreplayApiKey', label: 'Foreplay', placeholder: 'fp_xxxx…', url: 'https://app.foreplay.co/settings/api' },
+  trendtrack: { key: 'trendtrackApiKey', label: 'TrendTrack', placeholder: 'tt_xxxx…', url: 'https://app.trendtrack.io/workspace/settings/api' },
+  postscript: { key: 'postscriptApiKey', label: 'Postscript', placeholder: 'sk_live_xxxx…', url: 'https://app.postscript.io/settings/api' },
   // Microsoft Clarity Data Export API token (brand-scoped). Generated by a
   // project admin in Clarity → Settings → Data Export. Saved to clarityApiToken
   // (vaulted; in VAULT_SENSITIVE_KEYS + CONFIG_FIELD_ALLOWLIST). Validated lazily
@@ -6000,7 +6194,7 @@ const API_KEY_PLATFORMS = {
   // the right account/api page. Placeholder hint now spells out
   // the `-<dc>` suffix requirement so users don't paste a bare
   // 32-hex string and hit the "must end with -<datacenter>" gate.
-  mailchimp:  { key: 'mailchimpApiKey', label: 'Mailchimp', placeholder: 'paste the full key (looks like abc123...-us6)', url: 'https://login.mailchimp.com/?redirect=%2Faccount%2Fapi%2F' },
+  mailchimp:  { key: 'mailchimpApiKey', label: 'Mailchimp', placeholder: 'paste the full key (looks like abc123…-us6)', url: 'https://login.mailchimp.com/?redirect=%2Faccount%2Fapi%2F' },
   // AppLovin default tile click saves the MAX (publisher) key. Users who have
   // an AppDiscovery (advertiser) key instead — or both — can switch via the
   // tile's right-click "Use my API key" override, which opens the two-input
@@ -6615,7 +6809,7 @@ function showMetaApiKeyModal(activeBrand) {
   showModal({
     title: 'Meta — Access Token',
     bodyNode: metaBody,
-    inputPlaceholder: 'EAAL...',
+    inputPlaceholder: 'EAAL…',
     confirmLabel: 'Connect',
     onConfirm: async (tokenValue) => {
       if (!tokenValue || tokenValue.trim().length < 20) { showModalError('Token looks too short'); throw new Error('validation'); }
@@ -6734,7 +6928,7 @@ function showPosthogConnectModal(activeBrand) {
   showModal({
     title: 'PostHog: Personal API Key',
     body: 'Paste a PostHog Personal API Key with the "Query Read" + "Project Read" scopes (PostHog -> Settings -> Personal API Keys). It is stored encrypted and never shown again. (Step 1 of 3)',
-    inputPlaceholder: 'phx_... (Personal API Key)',
+    inputPlaceholder: 'phx_… (Personal API Key)',
     confirmLabel: 'Next',
     cancelLabel: 'Cancel',
     onConfirm: async (v1) => {
@@ -6953,7 +7147,7 @@ async function loadReferralInfo() {
       linkInput.dataset.retryHooked = '1';
       linkInput.addEventListener('click', () => {
         if (linkInput.value === 'Could not load — click to retry') {
-          linkInput.value = 'loading...';
+          linkInput.value = 'loading…';
           loadReferralInfo();
         }
       });
@@ -6966,27 +7160,19 @@ async function loadReferralInfo() {
 // boot and fires this event if a pending referral was stashed by the
 // landing page. Surfaces a dismissible toast so the user sees their
 // friend got credit without ever having to type a code.
-let _refAutoToastTimer = null;
 merlin.onReferralAutoApplied(({ code, bonus }) => {
-  let toast = document.getElementById('referral-auto-toast');
-  if (!toast) {
-    toast = document.createElement('div');
-    toast.id = 'referral-auto-toast';
-    toast.style.cssText = 'position:fixed;bottom:20px;right:20px;max-width:360px;padding:12px 16px;background:rgba(20,20,24,0.96);border:1px solid rgba(52,211,153,0.4);border-radius:12px;color:#e4e4e7;font-size:12px;line-height:1.4;z-index:9999;box-shadow:0 8px 32px rgba(0,0,0,0.5);backdrop-filter:blur(12px);opacity:0;transform:translateY(10px);transition:all .3s ease';
-    toast.innerHTML = '<div style="font-weight:600;color:#34d399;margin-bottom:4px">✦ Referral applied</div><div id="referral-auto-toast-body" style="color:rgba(228,228,231,0.8)"></div>';
-    document.body.appendChild(toast);
-  }
   const safeCode = String(code || '').replace(/[^0-9a-f]/gi, '').slice(0, 8);
   const bonusDays = Math.max(0, Math.min(21, Number(bonus) || 0));
   const bonusLabel = bonusDays > 0 ? ` Your friend now has +${bonusDays} trial day${bonusDays !== 1 ? 's' : ''}.` : '';
-  document.getElementById('referral-auto-toast-body').textContent =
-    `Code ${safeCode} from your invite link was applied automatically.${bonusLabel}`;
-  requestAnimationFrame(() => { toast.style.opacity = '1'; toast.style.transform = 'translateY(0)'; });
-  if (_refAutoToastTimer) clearTimeout(_refAutoToastTimer);
-  _refAutoToastTimer = setTimeout(() => {
-    toast.style.opacity = '0';
-    toast.style.transform = 'translateY(10px)';
-  }, 8000);
+  // safeCode is already stripped to [0-9a-f]{0,8}; bonusLabel is built from a
+  // clamped integer, so neither can inject markup and the body is safe inline.
+  const body = `Code ${safeCode} from your invite link was applied automatically.${bonusLabel}`;
+  showToast(null, {
+    id: 'referral-auto-toast',
+    variant: 'success',
+    duration: 8000,
+    html: '<div style="font-weight:600;color:#34d399;margin-bottom:4px">✦ Referral applied</div><div style="color:rgba(228,228,231,0.8)">' + body + '</div>',
+  });
   // Refresh the Share Merlin panel so its state reflects the applied code
   // without waiting for the user to reopen it.
   try { loadReferralInfo(); } catch {}
@@ -7028,7 +7214,7 @@ document.getElementById('referral-copy').addEventListener('click', () => {
     }
     btn.disabled = true;
     input.disabled = true;
-    status.textContent = 'Applying...';
+    status.textContent = 'Applying…';
     status.className = 'referral-apply-status';
     try {
       const result = await merlin.applyReferralCode(code);
@@ -7071,7 +7257,7 @@ if (merlin.onSubscriptionCanceled) {
       btn.classList.remove('hidden-sub');
     }
     if (trialEl) trialEl.textContent = 'Expired';
-    if (ctaEl) ctaEl.textContent = 'Upgrade Now';
+    if (ctaEl) ctaEl.textContent = 'Upgrade now';
     const bubble = addClaudeBubble();
     textBuffer = `✦ Your subscription was ${data && data.reason === 'refunded' ? 'refunded' : 'canceled'}. You can re-subscribe anytime from the button up top.`;
     finalizeBubble();
@@ -7103,17 +7289,11 @@ function formatCron(cron) {
   return dayStr ? `${dayStr} ${timeStr}` : timeStr;
 }
 
+// Thin wrapper over the shared timeAgo helper (kept for its existing call
+// sites / name). timeAgo carries the richest behavior this used to own —
+// floors + the "yesterday" special-case.
 function formatTimeAgo(timestamp) {
-  const now = Date.now();
-  const diff = now - timestamp;
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days === 1) return 'yesterday';
-  return `${days}d ago`;
+  return timeAgo(timestamp);
 }
 
 function sendChatFromPanel(msg) {
@@ -7238,12 +7418,12 @@ async function loadSpells() {
     <span class="spell-dot" style="background:var(--accent);opacity:.5"></span>
     <div class="spell-info">
       <div class="spell-name">+ Custom spell</div>
-      <div class="spell-meta">Create your own automation</div>
+      <div class="spell-meta">Create your own spell</div>
     </div>
   `;
   customRow.addEventListener('click', () => {
     hideSidebarPanel('magic');
-    addUserBubble('I want to create a custom scheduled task');
+    addUserBubble('I want to create a custom spell');
     beginAgentTurn('custom-spell');
     // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
     // Instruct Claude to name the task with the `merlin-{brand}-` prefix
@@ -7410,7 +7590,7 @@ function buildSpellRow(spell, isActive) {
     retry.title = spell.lastSummary || 'Tap to retry now';
     retry.onclick = (e) => {
       e.stopPropagation();
-      retry.textContent = '...';
+      retry.textContent = '…';
       retry.disabled = true;
       // Reset failure count and trigger a run
       merlin.updateSpellMeta(spell.id, { consecutiveFailures: 0, lastStatus: 'running' });
@@ -7487,7 +7667,7 @@ async function discoverBrandsForSpellActivation() {
 async function activateSpell(template, row) {
   // Optimistic: show creating state
   row.querySelector('.spell-dot').className = 'spell-dot dot-creating';
-  row.querySelector('.spell-meta').textContent = 'Setting up...';
+  row.querySelector('.spell-meta').textContent = 'Setting up…';
   row.style.pointerEvents = 'none';
 
   // Enterprise default: enable the spell for EVERY brand that has at least
@@ -7615,7 +7795,7 @@ function showFirstRunPrompt(template, brand) {
 
   card.querySelector('.first-run-yes').addEventListener('click', () => {
     // Replace buttons with "Running..." state
-    card.querySelector('.bubble div:last-child').innerHTML = '<span style="color:var(--accent)">Running now...</span>';
+    card.querySelector('.bubble div:last-child').innerHTML = '<span style="color:var(--accent)">Running now…</span>';
 
     // Send the spell prompt as a chat message so user sees it execute live
     const firstRunPrompt = `This is the FIRST RUN of "${template.name}"${brandLabel}. The user just activated this automation and wants to see it in action.\n\n` +
@@ -7847,7 +8027,7 @@ function _tickerLoop() {
     // finalize will refresh the visible second. Always paint first
     // second so the ticker doesn't appear stuck at "0s" on turn start.
     if (!isStreaming || elapsed < 2) {
-      tickerEl.textContent = `${formatElapsed(elapsed)}...`;
+      tickerEl.textContent = `${formatElapsed(elapsed)}…`;
       scrollToBottom();
     }
   }
@@ -9452,7 +9632,7 @@ document.addEventListener('contextmenu', (e) => {
 
   let menuItems = '';
   if (!isVideo && filePath) menuItems += '<button data-action="copy">Copy Image</button>';
-  if (filePath) menuItems += '<button data-action="save">Save As...</button>';
+  if (filePath) menuItems += '<button data-action="save">Save as…</button>';
   if (folderPath) menuItems += '<button data-action="folder">Open Folder</button>';
   if (deleteTargets.length > 0) menuItems += '<div class="img-context-divider"></div><button data-action="delete" class="img-context-danger">Delete</button>';
   if (!menuItems) return;
@@ -9510,7 +9690,7 @@ document.addEventListener('contextmenu', (e) => {
         const card = media.closest('.archive-card');
         if (card) { card.style.opacity = '0'; setTimeout(() => card.remove(), 300); }
         const preview = media.closest('.archive-preview');
-        if (preview) { preview.remove(); document.getElementById('archive-panel').classList.remove('hidden'); loadArchive(); }
+        if (preview) { preview.remove(); openTakeover(document.getElementById('archive-panel')); loadArchive(); }
       } else {
         showCopyToast('Delete failed');
       }
@@ -9629,13 +9809,7 @@ function renderPerfBar(perf) {
 
   let updatedHtml = '';
   if (perf.generatedAt) {
-    const ago = Date.now() - new Date(perf.generatedAt).getTime();
-    const mins = Math.floor(ago / 60000);
-    let agoStr;
-    if (mins < 1) agoStr = 'just now';
-    else if (mins < 60) agoStr = `${mins}m ago`;
-    else if (mins < 1440) agoStr = `${Math.floor(mins / 60)}h ago`;
-    else agoStr = `${Math.floor(mins / 1440)}d ago`;
+    const agoStr = timeAgo(new Date(perf.generatedAt).getTime());
     updatedHtml = ` · <span class="perf-updated">Updated ${agoStr}</span>`;
   }
 
@@ -9714,7 +9888,7 @@ async function renderPerfBarEmpty(text) {
     e.preventDefault();
     if (perfRunInFlight.has(brand)) return; // debounce double-click
     perfRunInFlight.add(brand);
-    btn.textContent = 'running...';
+    btn.textContent = 'running…';
     btn.style.pointerEvents = 'none';
 
     // Clear the "already refreshed once this session" guard that loadPerfBar
@@ -9748,7 +9922,7 @@ async function renderPerfBarEmpty(text) {
       loadPerfBar(perfState.currentPeriod || 7, brand);
     } catch (err) {
       if (perfState.currentBrand !== brand) return;
-      text.innerHTML = 'Couldn\'t reach the Merlin engine — try again in a moment';
+      text.innerHTML = "Merlin isn't responding. Restart Merlin and try again.";
       console.warn('[perf-bar] refresh failed:', err);
     } finally {
       perfRunInFlight.delete(brand);
@@ -9785,8 +9959,7 @@ async function loadPerfBar(days, brandOverride) {
       const link = document.getElementById('perf-empty-connect');
       if (link) link.addEventListener('click', (e) => {
         e.preventDefault();
-        const panel = document.getElementById('magic-panel');
-        if (panel) panel.classList.remove('hidden');
+        openMagicSlide(document.getElementById('magic-panel'));
       });
     }
     return;
@@ -10113,7 +10286,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
 
       <div class="agency-status" style="font-size:12px;color:var(--text-dim);margin-bottom:12px;min-height:16px" role="status" aria-live="polite"></div>
 
-      <button type="button" class="agency-gen btn-primary" style="width:100%">Generate Report</button>
+      <button type="button" class="agency-gen btn-primary" style="width:100%">Generate report</button>
     </div>
   `;
 
@@ -10169,7 +10342,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
     } else if (selectedCount === 0) {
       genBtn.textContent = 'Select at least one brand';
     } else {
-      genBtn.textContent = `Generate Report (${selectedCount})`;
+      genBtn.textContent = `Generate report (${selectedCount})`;
     }
   };
 
@@ -10231,7 +10404,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
     }
 
     if (!report || report.summary.brandsWithData === 0) {
-      setStatus('No dashboard data found for the selected brands and period. Run "dashboard" for each brand first.', 'error');
+      setStatus('No dashboard data found for the selected brands and period. Ask Merlin "how are my ads doing" for each brand first.', 'error');
       updateGenState();
       return;
     }
@@ -10269,7 +10442,7 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
 function buildReportHtml(report, allBrands) {
   const periodLabel = reportPeriodLabel(report.period);
   const s = report.summary;
-  const fmtMoney = (n) => '$' + Math.round(n || 0).toLocaleString();
+  const fmtMoney = (n) => formatMoney(n || 0); // shared money dialect
   const fmtMer = (n) => (n > 0 ? n.toFixed(2) + 'x' : '—');
   const fmtRoas = (n) => (n > 0 ? n.toFixed(2) + 'x' : '—');
   const fmtInt = (n) => Math.round(n || 0).toLocaleString();
@@ -10291,7 +10464,7 @@ function buildReportHtml(report, allBrands) {
         <section class="page-break">
           <h2>${escapeHtml(displayName)}</h2>
           <p class="subtitle">${escapeHtml(periodLabel)}</p>
-          <div class="empty">No dashboard data for this period. Run "dashboard" for this brand to populate the report.</div>
+          <div class="empty">No dashboard data for this period. Ask Merlin "how are my ads doing" for this brand to populate the report.</div>
         </section>
       `;
     }
@@ -10408,7 +10581,9 @@ document.getElementById('perf-bar').addEventListener('click', async (e) => {
   // Hide any sibling surface (sidebars, takeovers) before showing Revenue, so
   // closing Revenue never reveals a panel left open behind it. RSI 2026-06-22.
   closeOtherOverlays('stats-overlay');
-  overlay.classList.remove('hidden');
+  // Fade the .overlay scrim in WITH its card (the .stats-card runs its own
+  // fadeUp on top) instead of the backdrop popping to full opacity frame 1.
+  openTakeover(overlay);
   // REGRESSION GUARD (2026-04-15, codex per-brand revenue audit — findings #3 + #5):
   // Use perfState.cache as the SINGLE source of truth for this overlay.
   //
@@ -10569,7 +10744,7 @@ function renderActivityToolbar() {
   const bar = document.createElement('div');
   bar.className = 'activity-toolbar';
   bar.innerHTML = `
-    <input id="activity-search" type="text" placeholder="Search activity..." class="activity-search" value="${escapeHtml(_activityState.query)}">
+    <input id="activity-search" type="text" placeholder="Search activity…" class="activity-search" value="${escapeHtml(_activityState.query)}">
     <button id="activity-export" class="activity-icon-btn" title="Export to JSON file" aria-label="Export to JSON file">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     </button>
@@ -10824,9 +10999,9 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   // sidebar gets a matching `setSidebarPinned(id, false)`.
   closeOtherOverlays('archive-panel');
   const panel = document.getElementById('archive-panel');
-  panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) { showArchiveView(); }
-  else { setSidebarPinned('archive', false); }
+  const willOpen = panel.classList.contains('hidden');
+  if (willOpen) { openTakeover(panel); showArchiveView(); }
+  else { closeTakeover(panel); setSidebarPinned('archive', false); }
 });
 
 // REGRESSION GUARD (2026-05-10, BUG-F007): archive auto-refresh on visible.
@@ -10855,7 +11030,7 @@ document.getElementById('archive-btn').addEventListener('click', () => {
 // 2026-07-03: Archive is a full-page takeover now — the expand toggle and
 // pin are gone (a takeover is always full width, nothing to dock).
 document.getElementById('archive-close').addEventListener('click', () => {
-  document.getElementById('archive-panel').classList.add('hidden');
+  closeTakeover(document.getElementById('archive-panel'));
 });
 
 // ── Palantir — competitor ad feed ──────────────────────────────────
@@ -11344,7 +11519,7 @@ function palantirRenderIdea(idea) {
 function palantirGenerateFromIdea(idea) {
   const seed = (idea && idea.generateSeed) ? idea.generateSeed : '';
   if (!seed) return;
-  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeTakeover(document.getElementById('palantir-panel'));
   closePalantirDetail();
   try {
     addUserBubble(seed);
@@ -11366,7 +11541,7 @@ function palantirRenderConnectState(grid, cta, niche, note) {
     cta.innerHTML = palantirPortalHTML('connect', note || 'Connect TrendTrack to light up your idea wall.');
     const cbtn = document.getElementById('palantir-connect-btn');
     if (cbtn) cbtn.addEventListener('click', () => {
-      document.getElementById('palantir-panel')?.classList.add('hidden');
+      closeTakeover(document.getElementById('palantir-panel'));
       const magicBtn = document.getElementById('magic-btn');
       if (magicBtn) magicBtn.click();
     });
@@ -11403,7 +11578,9 @@ async function loadPalantirIdeas(opts) {
     }
   } catch { /* gate unavailable — fall through, backstop below covers it */ }
 
-  if (opts.reset && grid) grid.innerHTML = palantirPortalHTML('loading');
+  // Content-shaped loading: fill the wall with ~12 skeleton cards so the grid
+  // reads as "ideas incoming" rather than a bare portal orb over empty space.
+  if (opts.reset && grid) grid.innerHTML = Array.from({ length: 12 }, () => '<div class="skeleton-card"></div>').join('');
 
   let res = null;
   try {
@@ -11431,6 +11608,7 @@ async function loadPalantirIdeas(opts) {
   }
   grid.innerHTML = '';
   for (const idea of ideas) grid.appendChild(palantirRenderIdea(idea));
+  revealGrid(grid);
 }
 
 document.getElementById('palantir-btn').addEventListener('click', () => {
@@ -11439,17 +11617,19 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
   // FULL-FRAME takeover (toggled via .hidden = display:none in CSS).
   closeOtherOverlays('palantir-panel');
   const panel = document.getElementById('palantir-panel');
-  panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) {
+  const willOpen = panel.classList.contains('hidden');
+  if (willOpen) {
+    openTakeover(panel);
     // Auto-load the brand-tailored winning-ideas wall — zero typing required.
     loadPalantirIdeas({ reset: true });
   } else {
+    closeTakeover(panel);
     closePalantirDetail();
   }
 });
 
 document.getElementById('palantir-close').addEventListener('click', () => {
-  document.getElementById('palantir-panel')?.classList.add('hidden');
+  closeTakeover(document.getElementById('palantir-panel'));
   closePalantirDetail();
 });
 
@@ -11570,7 +11750,13 @@ function showTruesightLoading(days) {
   const periodLabel = document.getElementById('truesight-period-label');
   if (periodLabel) periodLabel.textContent = truesightWindowLabel(days);
   if (cta) { cta.style.display = 'none'; cta.innerHTML = ''; }
-  if (funnel) funnel.innerHTML = '';
+  // Content-shaped loading: 4 skeleton bars in a narrowing funnel silhouette
+  // (matching TS_BAR_WIDTHS) instead of a bare empty area under the status line.
+  if (funnel) {
+    funnel.innerHTML = TS_BAR_WIDTHS.map((w) =>
+      '<div class="ts-bar-track"><div class="skeleton-bar" style="height:30px;border-radius:var(--r-md);width:' + w + '%;margin:0 auto"></div></div>'
+    ).join('');
+  }
   if (status) { status.style.display = ''; status.textContent = 'Reading your funnel…'; }
 }
 
@@ -11598,7 +11784,7 @@ function renderTruesightResult(res, days) {
         '<div>Connect your ad platforms, Google Analytics, and store to light up every stage — from awareness to purchase.</div>' +
         '<button class="ts-portal-cta" id="ts-connect-btn">Connect your data</button>';
       const b = document.getElementById('ts-connect-btn');
-      if (b) b.addEventListener('click', () => { document.getElementById('truesight-panel')?.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
+      if (b) b.addEventListener('click', () => { closeTakeover(document.getElementById('truesight-panel')); document.getElementById('magic-btn')?.click(); });
     }
     return;
   }
@@ -11711,7 +11897,10 @@ function renderTruesightFunnel(data) {
     }
     html += '</div>';
     if (avail) {
-      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:' + pct.toFixed(1) + '%"><span class="ts-bar-num">' + tsNum(stage.value) + '</span></div></div>';
+      // Funnel draw (item 5): bar starts at width:0 with its target in data-tw;
+      // a rAF after innerHTML applies the real width so .ts-bar's width
+      // transition draws the funnel out (see the requestAnimationFrame below).
+      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:0%" data-tw="' + pct.toFixed(1) + '"><span class="ts-bar-num">' + tsNum(stage.value) + '</span></div></div>';
       if (stage.source) html += '<div class="ts-stage-source">' + escapeHtml(stage.source) + '</div>';
     } else if (stage.note) {
       html += '<div class="ts-stage-source">' + escapeHtml(stage.note) + '</div>';
@@ -11726,7 +11915,7 @@ function renderTruesightFunnel(data) {
     }
   });
   if (typeof data.revenue === 'number' && data.revenue > 0) {
-    html += '<div class="ts-revenue">Revenue this period: <strong>$' + tsNum(data.revenue) + '</strong>' +
+    html += '<div class="ts-revenue">Revenue this period: <strong>' + formatMoney(data.revenue) + '</strong>' +
       (data.revenue_source ? ' <span style="opacity:.7">(' + escapeHtml(data.revenue_source) + ')</span>' : '') + '</div>';
   }
   // Honesty: when the upper-funnel stages fall back to ad pixels (Google
@@ -11745,9 +11934,16 @@ function renderTruesightFunnel(data) {
       '<button class="ts-connect-inline" type="button">Connect Google Analytics</button> for site-wide totals.</div>';
   }
   funnel.innerHTML = html;
+  // Draw the funnel: apply each bar's target width on the next frame so the
+  // width transition plays from 0 -> stage width.
+  requestAnimationFrame(() => {
+    funnel.querySelectorAll('.ts-bar[data-tw]').forEach((bar) => {
+      bar.style.width = bar.getAttribute('data-tw') + '%';
+    });
+  });
   // Inline "Connect" buttons (for a missing stage) open the Magic panel.
   funnel.querySelectorAll('.ts-connect-inline').forEach((b) => {
-    b.addEventListener('click', () => { document.getElementById('truesight-panel')?.classList.add('hidden'); document.getElementById('magic-btn')?.click(); });
+    b.addEventListener('click', () => { closeTakeover(document.getElementById('truesight-panel')); document.getElementById('magic-btn')?.click(); });
   });
 }
 
@@ -11755,18 +11951,19 @@ document.getElementById('truesight-btn')?.addEventListener('click', () => {
   closeOtherOverlays('truesight-panel');
   const panel = document.getElementById('truesight-panel');
   if (!panel) return;
-  panel.classList.toggle('hidden');
-  if (!panel.classList.contains('hidden')) {
+  if (panel.classList.contains('hidden')) {
+    openTakeover(panel);
     loadTruesightData();
     // a11y: move focus into the aria-modal takeover so keyboard/SR users land inside it.
     document.getElementById('truesight-close')?.focus();
   } else {
+    closeTakeover(panel);
     document.getElementById('truesight-btn')?.focus();
   }
 });
 
 document.getElementById('truesight-close')?.addEventListener('click', () => {
-  document.getElementById('truesight-panel')?.classList.add('hidden');
+  closeTakeover(document.getElementById('truesight-panel'));
   document.getElementById('truesight-btn')?.focus(); // a11y: restore focus to the opener
 });
 
@@ -11793,7 +11990,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const panel = document.getElementById('truesight-panel');
   if (panel && !panel.classList.contains('hidden')) {
-    panel.classList.add('hidden');
+    closeTakeover(panel);
     document.getElementById('truesight-btn')?.focus(); // a11y: restore focus to the opener
   }
 });
@@ -11963,7 +12160,15 @@ async function loadArchive(opts = {}) {
     userWasNearBottom = oldMax > 0 && (oldMax - savedScrollTop) <= FOLLOW_NEW_CONTENT_THRESHOLD_PX;
   }
 
-  loading.style.display = 'block';
+  // Content-shaped loading: fill the loading strip with ~10 skeleton cards in
+  // the same auto-fill grid as the real archive, so the panel reads as "tiles
+  // incoming" instead of a bare "Loading…" line. Rendered in the dedicated
+  // #archive-loading element (NOT #archive-grid) so the scroll-restore
+  // MutationObserver on the grid never mistakes skeletons for real content.
+  loading.style.display = 'grid';
+  loading.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
+  loading.style.gap = '10px';
+  loading.innerHTML = Array.from({ length: 10 }, () => '<div class="skeleton-card"></div>').join('');
   grid.innerHTML = '';
   empty.style.display = 'none';
 
@@ -12072,6 +12277,7 @@ async function loadArchive(opts = {}) {
       card.addEventListener('click', () => toggleArchiveSelect(card, swipe));
       grid.appendChild(card);
     });
+    revealGrid(grid);
 
     // Show merge button if selections exist
     updateMergeButton();
@@ -12163,20 +12369,11 @@ async function loadArchive(opts = {}) {
       }, 0);
       const ageMs = newestUpdatedAt > 0 ? Date.now() - newestUpdatedAt : 0;
       if (newestUpdatedAt > 0) {
-        const fmtAgo = (ms) => {
-          if (ms < 60 * 1000) return 'just now';
-          const m = Math.round(ms / 60000);
-          if (m < 60) return `${m}m ago`;
-          const h = Math.round(m / 60);
-          if (h < 24) return `${h}h ago`;
-          const d = Math.round(h / 24);
-          return `${d}d ago`;
-        };
         const chip = document.createElement('div');
         chip.className = 'archive-staleness-chip';
         const isStale = ageMs > STALE_THRESHOLD_MS;
         if (isStale) chip.classList.add('archive-staleness-chip-stale');
-        chip.textContent = `Live ad data: ${fmtAgo(ageMs)}` + (isStale ? ' — refreshing…' : '');
+        chip.textContent = `Live ad data: ${timeAgo(newestUpdatedAt)}` + (isStale ? ' — refreshing…' : '');
         grid.appendChild(chip);
         if (isStale && !window.__merlinAutoRefreshFiredFor) {
           window.__merlinAutoRefreshFiredFor = newestUpdatedAt;
@@ -12216,7 +12413,7 @@ async function loadArchive(opts = {}) {
     const groupByKey = new Map(campaignGroups.map(g => [g.key, g]));
     ads = flatAds;
     let currentGroupKey = null;
-    const fmtGroupSpend = (n) => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n.toFixed(2)}`;
+    const fmtGroupSpend = (n) => formatMoney(n); // shared money dialect
 
     ads.forEach(ad => {
       if (showCampaignHeaders) {
@@ -12255,7 +12452,7 @@ async function loadArchive(opts = {}) {
       const budgetText = ad.budget ? `$${ad.budget}/day` : '';
 
       // Format KPIs defensively — insights may not have run yet for a new ad
-      const fmtMoney = (n) => n >= 1000 ? `$${(n/1000).toFixed(1)}k` : `$${n.toFixed(2)}`;
+      const fmtMoney = (n) => formatMoney(n); // shared money dialect
       const fmtInt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : `${Math.round(n)}`;
       const roas = Number(ad.lastRoas) || 0;
       const spend = Number(ad.spend) || 0;
@@ -12520,7 +12717,7 @@ async function loadArchive(opts = {}) {
           const platforms = ['Meta', 'TikTok', 'Google', 'Amazon'].filter(p => p.toLowerCase() !== ad.platform?.toLowerCase());
           const copyItem = document.createElement('div');
           copyItem.className = 'context-menu-item';
-          copyItem.textContent = '🚀 Copy to...';
+          copyItem.textContent = '🚀 Copy to…';
           copyItem.style.position = 'relative';
           // Track the current submenu on the copy item so mouseleave, menu
           // close, and option-click all have a single source of truth to
@@ -12623,6 +12820,7 @@ async function loadArchive(opts = {}) {
 
       grid.appendChild(card);
     });
+    revealGrid(grid);
     // Wire the load gate on this render path too — Live Ads grid uses the
     // same archive-card-thumb class as the regular archive list.
     wireArchiveThumbLoadGate(grid);
@@ -12712,6 +12910,11 @@ async function loadArchive(opts = {}) {
     const firstChunkEnd = Math.min(items.length, INITIAL_VISIBLE_ARCHIVE_CARDS);
     const initialFrag = document.createDocumentFragment();
     for (let i = 0; i < firstChunkEnd; i++) appendItem(items[i], initialFrag);
+    // Staggered arrival for the first batch only (tail chunks append silently
+    // so already-visible cards never re-animate). reveal-item is a pure add-on
+    // (class + inline animation-delay); it doesn't touch card structure or the
+    // lazy-load / selection wiring below.
+    revealGrid(initialFrag);
     grid.appendChild(initialFrag);
     if (__archiveModel) __archiveModel.syncOrder(orderedKeys);
     observeLazyVideos(grid);
@@ -13801,7 +14004,7 @@ async function updateProgressBar() {
       goal: 'Next: tell Merlin what to tee up first.',
       sales: 'Next: connect your sales platform so Merlin can see store performance.',
       platform: 'Next: connect an ad platform like Meta, Google, or TikTok.',
-      automation: 'Next: turn on your first automation.',
+      automation: 'Next: turn on your first spell.',
     };
     document.getElementById('progress-next').textContent = nextLabels[nextStep] || '';
   } catch {}
@@ -13861,7 +14064,13 @@ document.getElementById('progress-close')?.addEventListener('click', () => {
   }
   function _showOverlay(id) {
     const ov = document.getElementById(id);
-    if (ov) ov.classList.remove('hidden');
+    if (!ov) return;
+    // Fade-in mirror of _fadeHideOverlay so the 3-step onboarding flow
+    // (ToS -> referral -> goal) crossfades instead of the next card popping in
+    // at full opacity the frame the previous one finished fading out.
+    ov.classList.remove('hidden');
+    ov.style.animation = 'fadeIn .3s ease';
+    setTimeout(() => { if (ov) ov.style.animation = ''; }, 300);
   }
 
   // Wire the referral + goal overlay handlers. Idempotent across cold-start

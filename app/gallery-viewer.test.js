@@ -511,20 +511,38 @@ test('source-scan: stage pointer listeners only attach once per instance', () =>
 });
 
 // REGRESSION GUARD (2026-06-XX, lightbox-context-menu-hidden): right-clicking
-// an image while the full-frame viewer (.gv-viewer, z-index 9998) is open
-// builds the custom Copy Image / Save / Delete menu (.img-context-menu) and
-// appends it to <body> — but if its z-index sits BELOW the overlay the menu
-// renders behind the full-frame and the user sees no context menu at all. The
-// menu must stack ABOVE the viewer overlay (and any modal/dialog, z-index
-// 10000) so it's visible + clickable over the open lightbox.
+// an image while the full-frame viewer (.gv-viewer) is open builds the custom
+// Copy Image / Save / Delete menu (.img-context-menu) and appends it to <body>,
+// but if its z-index sits BELOW the overlay the menu renders behind the
+// full-frame and the user sees no context menu at all. The menu must stack
+// ABOVE the viewer overlay AND above any modal/dialog.
+// 2026-07-04 z-index tokenization: layers now come from the :root --z-* scale
+// (viewer/lightbox on --z-lightbox, menu on --z-context, dialogs on --z-modal),
+// so this test resolves the tokens (including calc offsets) before comparing.
 test('CSS: img-context-menu z-index sits above the full-frame viewer overlay', () => {
   const css = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
-  const menuZ = css.match(/\.img-context-menu\s*\{[\s\S]*?z-index:\s*(\d+)/);
-  const viewerZ = css.match(/\.gv-viewer\s*\{[\s\S]*?z-index:\s*(\d+)/);
-  assert.ok(menuZ, 'img-context-menu must declare a z-index');
-  assert.ok(viewerZ, 'gv-viewer must declare a z-index');
-  assert.ok(Number(menuZ[1]) > Number(viewerZ[1]),
-    `img-context-menu z-index (${menuZ[1]}) must exceed gv-viewer z-index (${viewerZ[1]}) so the menu shows over the open lightbox`);
-  assert.ok(Number(menuZ[1]) >= 10000,
-    'img-context-menu z-index must clear modal/dialog overlays (z-index 10000) too');
+  const tokens = {};
+  for (const m of css.matchAll(/(--z-[a-z]+):\s*(\d+)\s*;/g)) tokens[m[1]] = Number(m[2]);
+  const zOf = (selector, name) => {
+    const i = css.indexOf(selector);
+    assert.ok(i >= 0, `${name} rule must exist`);
+    const block = css.slice(i, css.indexOf('}', i));
+    const m = block.match(/z-index:\s*([^;}]+)/);
+    assert.ok(m, `${name} must declare a z-index`);
+    const raw = m[1].trim();
+    if (/^\d+$/.test(raw)) return Number(raw);
+    const tok = raw.match(/var\((--z-[a-z]+)\)/);
+    assert.ok(tok && tokens[tok[1]] !== undefined, `${name} z-index must be a --z-* token or literal, got: ${raw}`);
+    let v = tokens[tok[1]];
+    const off = raw.match(/calc\(var\(--z-[a-z]+\)\s*([+-])\s*(\d+)\s*\)/);
+    if (off) v += (off[1] === '-' ? -1 : 1) * Number(off[2]);
+    return v;
+  };
+  const menuZ = zOf('.img-context-menu{', 'img-context-menu');
+  const viewerZ = zOf('.gv-viewer{', 'gv-viewer');
+  const modalZ = zOf('#merlin-modal{', 'merlin-modal');
+  assert.ok(menuZ > viewerZ,
+    `img-context-menu z-index (${menuZ}) must exceed gv-viewer z-index (${viewerZ}) so the menu shows over the open lightbox`);
+  assert.ok(menuZ > modalZ,
+    `img-context-menu z-index (${menuZ}) must clear modal/dialog overlays (${modalZ}) too`);
 });
