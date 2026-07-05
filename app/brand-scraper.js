@@ -50,6 +50,63 @@ try {
 const BrowserWindow = _BrowserWindow;
 const path = require('path');
 
+// parseLooseIPv4 canonicalizes a host into IPv4 octets the way a browser's
+// network stack (inet_aton) does — accepting the integer, octal, hex, and
+// short forms that a dotted-decimal-only regex misses. Returns [a,b,c,d] or
+// null if `host` is not a numeric IPv4 in any base. SSRF payloads exploit
+// exactly this gap: http://2130706433/ and http://0x7f000001/ both resolve to
+// 127.0.0.1 on navigation but sail past /\d+\.\d+\.\d+\.\d+/.
+// Arithmetic (not bitwise) is used throughout — JS `<<` is signed-32-bit and
+// 127<<24 overflows to a negative number.
+function parseLooseIPv4(host) {
+  if (typeof host !== 'string' || host === '') return null;
+  if (!/^(0x[0-9a-f]+|[0-9]+)(\.(0x[0-9a-f]+|[0-9]+))*$/i.test(host)) return null;
+  const parts = host.split('.');
+  if (parts.length < 1 || parts.length > 4) return null;
+  const nums = [];
+  for (const part of parts) {
+    let n;
+    if (/^0x[0-9a-f]+$/i.test(part)) n = parseInt(part, 16);
+    else if (/^0[0-7]+$/.test(part)) n = parseInt(part, 8); // leading-zero octal
+    else if (/^[0-9]+$/.test(part)) n = parseInt(part, 10);
+    else return null;
+    if (!Number.isFinite(n) || n < 0) return null;
+    nums.push(n);
+  }
+  // inet_aton part-count semantics: the final part absorbs the low bytes.
+  const maxLast = [0, 0xffffffff, 0xffffff, 0xffff, 0xff];
+  const N = nums.length;
+  if (nums[N - 1] > maxLast[N]) return null;
+  for (let i = 0; i < N - 1; i++) if (nums[i] > 0xff) return null;
+  let value;
+  if (N === 1) value = nums[0];
+  else if (N === 2) value = nums[0] * 0x1000000 + nums[1];
+  else if (N === 3) value = nums[0] * 0x1000000 + nums[1] * 0x10000 + nums[2];
+  else value = nums[0] * 0x1000000 + nums[1] * 0x10000 + nums[2] * 0x100 + nums[3];
+  if (value > 0xffffffff) return null;
+  return [
+    Math.floor(value / 0x1000000) % 256,
+    Math.floor(value / 0x10000) % 256,
+    Math.floor(value / 0x100) % 256,
+    value % 256,
+  ];
+}
+
+// ipv4PrivacyError returns a rejection message if the octets fall in a
+// loopback / private / link-local / CGNAT range, else null. Shared by the
+// numeric-IPv4 and IPv4-mapped-IPv6 paths so both enforce the identical set.
+function ipv4PrivacyError(octets, host) {
+  const [a, b] = octets;
+  if (a === 0) return `Refusing to scrape 0.0.0.0/8: ${host}`;
+  if (a === 127) return `Refusing to scrape loopback (127.0.0.0/8): ${host}`;
+  if (a === 10) return `Refusing to scrape private 10.0.0.0/8: ${host}`;
+  if (a === 172 && b >= 16 && b <= 31) return `Refusing to scrape private 172.16.0.0/12: ${host}`;
+  if (a === 192 && b === 168) return `Refusing to scrape private 192.168.0.0/16: ${host}`;
+  if (a === 169 && b === 254) return `Refusing to scrape link-local 169.254.0.0/16: ${host}`;
+  if (a === 100 && b >= 64 && b <= 127) return `Refusing to scrape CGNAT 100.64.0.0/10: ${host}`;
+  return null;
+}
+
 // REGRESSION GUARD (2026-04-19): every scrape entrypoint must fail closed
 // before Electron loads the URL. The attack surface is wide:
 //   * file:// schemes hand the scraper the local filesystem — the same
@@ -96,40 +153,52 @@ function validateScrapeURL(input) {
   }
 
   // IPv6 literal check — URL parsing wraps these in brackets, hostname
-  // strips them. "::1" and fe80::/10 link-local addresses are flagged.
-  if (host === '::1' || host === '[::1]') {
-    return { ok: false, error: 'Refusing to scrape IPv6 loopback (::1)' };
-  }
-  if (host.startsWith('fe80:') || host.startsWith('[fe80:')) {
-    return { ok: false, error: 'Refusing to scrape IPv6 link-local (fe80::/10)' };
+  // strips them. Reject loopback (::1), link-local (fe80::/10), unique-local
+  // (fc00::/7), and any IPv4-mapped form whose embedded IPv4 is private —
+  // ::ffff:127.0.0.1 (dotted) and ::ffff:7f00:1 (hex) both reach loopback.
+  if (host.includes(':')) {
+    const v6 = host.replace(/^\[/, '').replace(/\]$/, '');
+    if (v6 === '::1') return { ok: false, error: 'Refusing to scrape IPv6 loopback (::1)' };
+    // Unspecified address (::). connect([::]) resolves to loopback on many
+    // stacks, exactly like its IPv4 twin 0.0.0.0 (which is already blocked).
+    if (v6 === '::' || v6 === '::0' || v6 === '0:0:0:0:0:0:0:0') {
+      return { ok: false, error: 'Refusing to scrape IPv6 unspecified (::)' };
+    }
+    if (/^fe80:/i.test(v6)) return { ok: false, error: 'Refusing to scrape IPv6 link-local (fe80::/10)' };
+    if (/^f[cd][0-9a-f]{0,2}:/i.test(v6)) return { ok: false, error: 'Refusing to scrape IPv6 unique-local (fc00::/7)' };
+    // IPv4-mapped / -embedded, dotted form: ::ffff:127.0.0.1 or ::127.0.0.1
+    const mDotted = v6.match(/^::(?:ffff:)?((?:\d{1,3}\.){3}\d{1,3})$/i);
+    if (mDotted) {
+      const oct = parseLooseIPv4(mDotted[1]);
+      const err = oct && ipv4PrivacyError(oct, host);
+      if (err) return { ok: false, error: err };
+    }
+    // IPv4-mapped, hex form: ::ffff:7f00:0001
+    const mHex = v6.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i);
+    if (mHex) {
+      const hi = parseInt(mHex[1], 16), lo = parseInt(mHex[2], 16);
+      const oct = [Math.floor(hi / 256) % 256, hi % 256, Math.floor(lo / 256) % 256, lo % 256];
+      const err = ipv4PrivacyError(oct, host);
+      if (err) return { ok: false, error: err };
+    }
+    // Any other IPv6 literal (global unicast) falls through to allow — brand
+    // URLs virtually never use IPv6 literals, but blanket-blocking legitimate
+    // public IPv6 would be a false negative on a real site.
+    return { ok: true, url: u.toString() };
   }
 
-  // IPv4 literal parsing. Four dot-separated decimals in 0-255 each.
-  const ipv4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const octets = ipv4.slice(1).map(Number);
-    if (octets.some(o => o < 0 || o > 255)) {
-      return { ok: false, error: `Invalid IPv4 address: ${host}` };
+  // IPv4 literal parsing — dotted-decimal AND the integer / octal / hex / short
+  // forms (2130706433, 0x7f000001, 0177.0.0.1, 127.1) that resolve to the same
+  // address under inet_aton. The old validator matched only /\d+\.\d+\.\d+\.\d+/,
+  // so every non-dotted encoding of a private/loopback address bypassed the SSRF
+  // fence. parseLooseIPv4 canonicalizes; ipv4PrivacyError enforces the ranges.
+  if (/^(0x[0-9a-f]+|[0-9]+)(\.(0x[0-9a-f]+|[0-9]+))*$/i.test(host)) {
+    const octets = parseLooseIPv4(host);
+    if (!octets) {
+      return { ok: false, error: `Refusing to scrape malformed numeric host: ${host}` };
     }
-    const [a, b] = octets;
-    // 0.0.0.0/8 — "this network"
-    if (a === 0) return { ok: false, error: `Refusing to scrape 0.0.0.0/8: ${host}` };
-    // 127.0.0.0/8 — loopback
-    if (a === 127) return { ok: false, error: `Refusing to scrape loopback (127.0.0.0/8): ${host}` };
-    // 10.0.0.0/8 — RFC1918 private
-    if (a === 10) return { ok: false, error: `Refusing to scrape private 10.0.0.0/8: ${host}` };
-    // 172.16.0.0/12 — RFC1918 private
-    if (a === 172 && b >= 16 && b <= 31) {
-      return { ok: false, error: `Refusing to scrape private 172.16.0.0/12: ${host}` };
-    }
-    // 192.168.0.0/16 — RFC1918 private
-    if (a === 192 && b === 168) {
-      return { ok: false, error: `Refusing to scrape private 192.168.0.0/16: ${host}` };
-    }
-    // 169.254.0.0/16 — link-local (covers AWS 169.254.169.254 metadata)
-    if (a === 169 && b === 254) {
-      return { ok: false, error: `Refusing to scrape link-local 169.254.0.0/16: ${host}` };
-    }
+    const err = ipv4PrivacyError(octets, host);
+    if (err) return { ok: false, error: err };
   }
 
   return { ok: true, url: u.toString() };

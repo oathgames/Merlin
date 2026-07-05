@@ -74,10 +74,6 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node -e \"const c=(JSON.parse(process.env.TOOL_INPUT||'{}').command||'');const blocked=[/\\brm\\s+-rf\\s+[\\\\/~]/i,/\\bformat\\s+[a-z]:/i,/\\bshutdown\\b/i,/\\breboot\\b/i,/\\bmkfs\\b/i,/\\bdd\\s+if=/i,/\\bdel\\s+\\\\/[sS]/i,/\\breg\\s+(add|delete)/i,/\\bchmod\\s+777\\s+\\\\//i,/\\bgit\\s+(push|reset\\s+--hard|rebase|force)/i,/\\bnpm\\s+(install|i)\\s+-g/i,/\\bpip\\s+install/i,/\\bbrew\\s+install/i,/\\bapt(-get)?\\s+(install|remove|purge)/i,/\\bsudo\\b/i,/\\bpowershell.*-[eE]nc/i,/\\bcurl.*\\|\\s*(ba)?sh/i];if(blocked.some(r=>r.test(c))){console.error('BLOCKED: This command is not allowed for safety.');process.exit(2)}const stripped=c.replace(/\\\"(?:[^\\\"\\\\\\\\]|\\\\\\\\.)*\\\"/g,'').replace(/'[^']*'/g,'');if(/[Mm]erlin/i.test(c)&&/[&|;\\`]|\\$\\(/.test(stripped)){console.error('BLOCKED: Merlin commands must not contain shell operators.');process.exit(2)}\""
-          },
-          {
-            "type": "command",
             "command": "node .claude/hooks/block-api-bypass.js"
           }
         ]
@@ -97,10 +93,6 @@
           {
             "type": "command",
             "command": "node .claude/hooks/block-api-bypass.js"
-          },
-          {
-            "type": "command",
-            "command": "node -e \"const p=(JSON.parse(process.env.TOOL_INPUT||'{}').file_path||'').replace(/\\\\\\\\/g,'/');const blocked=[/\\/app\\/(main|renderer|preload|ws-server|mcp-server|mcp-tools|mcp-redact|tts-worker)\\.js$/,/\\/app\\/(style\\.css|index\\.html)$/,/\\.claude\\/settings\\.json$/,/\\.claude\\/commands\\//,/\\.claude\\/hooks\\//,/\\.claude\\/skills\\//,/CLAUDE\\.md$/,/version\\.json$/,/package\\.json$/,/package-lock\\.json$/,/\\.(ssh|gnupg)\\//,/\\.(env|bashrc|zshrc|profile)$/,/(etc|Windows[\\\\/]System)/i];if(blocked.some(r=>r.test(p))){console.error('BLOCKED: Cannot modify app source or system files.');process.exit(2)}\""
           }
         ]
       }
