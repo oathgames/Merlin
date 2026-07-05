@@ -74,10 +74,20 @@ test('renderer.js declares STREAM_STALL_MS + bumpStreamWatchdog + stopStreamWatc
 
 test('renderer.js arms the watchdog on user send and bumps it on every SDK message', () => {
   // sendMessage MUST arm the watchdog before merlin.sendMessage(text).
-  const sendBlock = rendererSrc.match(/sessionActive\s*=\s*true;\s*\n\s*startTickingTimer\(\);[\s\S]{0,200}?merlin\.sendMessage\(text\)/);
-  assert.ok(sendBlock, 'sendMessage block must exist');
-  assert.match(sendBlock[0], /bumpStreamWatchdog\(\)/,
-    'sendMessage MUST call bumpStreamWatchdog before merlin.sendMessage to arm the stall detector');
+  // Since the 2026-07-04 stuck-chat-unarmed-watchdog fix, the arming is
+  // centralized in beginAgentTurn (sessionActive + ticker + watchdog in
+  // one helper) and sendMessage routes through it. The contract is the
+  // same: the stall detector is armed before the message leaves.
+  const sendBlock = rendererSrc.match(/beginAgentTurn\([^)]*\);[^\n]*\n\s*merlin\.sendMessage\(text\)/);
+  assert.ok(sendBlock, 'sendMessage must call beginAgentTurn immediately before merlin.sendMessage(text)');
+  const helper = rendererSrc.match(/function\s+beginAgentTurn\s*\([\s\S]{0,1500}?\n\}/);
+  assert.ok(helper, 'beginAgentTurn helper must exist');
+  assert.match(helper[0], /sessionActive\s*=\s*true/,
+    'beginAgentTurn must set sessionActive = true (single authorized assignment, see renderer-ux.test.js)');
+  assert.match(helper[0], /startTickingTimer\(\)/,
+    'beginAgentTurn must start the live ticker for non-quiet turns');
+  assert.match(helper[0], /bumpStreamWatchdog\(\)/,
+    'beginAgentTurn MUST call bumpStreamWatchdog so every turn start arms the stall detector');
 
   // onSdkMessage MUST bump on every non-_synthetic message.
   const onSdkIdx = rendererSrc.indexOf('merlin.onSdkMessage((msg) => {');

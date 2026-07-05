@@ -100,8 +100,13 @@ test('mobileHandlers.onSendMessage queues to pendingMessageQueue when resolveNex
 test('mobileHandlers.onSendMessage starts a session if none is running', () => {
   const block = extractMobileHandlersBlock(MAIN_JS);
   const body = extractOnSendMessageBody(block);
-  if (!/if\s*\(\s*!\s*activeQuery\s*\)\s*startSession\s*\(\s*\)/.test(body)) {
-    throw new Error('!activeQuery → startSession() missing from onSendMessage — queued phone messages will sit in the queue forever with no SDK to consume them');
+  // Updated 2026-07-04 (perf-rsi wrong-brand-session race): the drain-start
+  // is now routed through startSessionForQueuedMessage(), which preserves
+  // "start a session so queued phone messages get consumed" but refuses
+  // while a brand switch is mid-flight (a bare `if (!activeQuery)
+  // startSession()` could boot a wrong-brand session in the switch window).
+  if (!/startSessionForQueuedMessage\s*\(\s*\)/.test(body)) {
+    throw new Error('startSessionForQueuedMessage() missing from onSendMessage: queued phone messages will sit in the queue forever with no SDK to consume them');
   }
 });
 

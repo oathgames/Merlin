@@ -1350,6 +1350,48 @@ function noteToolUseStarted() {
   if (isStreaming || sessionActive) bumpStreamWatchdog();
 }
 
+// REGRESSION GUARD (2026-07-04, stuck-chat-unarmed-watchdog incident):
+// beginAgentTurn is the ONLY place in the renderer allowed to set
+// `sessionActive = true`. Before this helper existed, roughly nine
+// panel-initiated send paths (brand setup, spellbook panel chat, custom
+// spell, first-run "Run now", archive pause/resume/copy-to, Palantir
+// generate, competitor merge) each set sessionActive and started the
+// ticker by hand but never armed the stream watchdog. Only sendMessage
+// and onSdkMessage armed it. If the SDK emitted zero events after one
+// of those sends (engine crash before the first frame, dead IPC, SDK
+// boot failure), nothing ever scheduled _streamWatchdogFire, so
+// sessionActive never cleared and the chat wedged forever: input
+// blocked by the double-send guard, ticker counting, no recovery path.
+//
+// The fix routes EVERY transition to sessionActive=true through this
+// helper, which arms the watchdog atomically with the flag. Any future
+// code that writes `sessionActive = true` directly is this bug class
+// returning; app/renderer-ux.test.js pins the invariant with a source
+// scan (exactly one `sessionActive = true` assignment in this file,
+// and it lives inside this helper).
+//
+// Two modes:
+//   beginAgentTurn('reason')
+//     Full turn arm: typing indicator, turn timers, live ticker,
+//     watchdog. Use before any merlin.sendMessage(...) call.
+//   beginAgentTurn('reason', { quiet: true })
+//     Session (re)start arm: flag + watchdog only, no typing indicator
+//     or ticker. Use before merlin.startSession() retry paths where no
+//     user turn is pending. The watchdog still guarantees the UI
+//     recovers if the restart produces zero events.
+function beginAgentTurn(reason, opts) {
+  const quiet = !!(opts && opts.quiet);
+  if (!quiet) {
+    showTypingIndicator();
+    turnStartTime = Date.now();
+    turnTokens = 0;
+    startTickingTimer();
+  }
+  sessionActive = true;
+  bumpStreamWatchdog(); // arm the no-events stall detector
+  try { console.debug('[turn] beginAgentTurn:', reason || 'unspecified'); } catch {}
+}
+
 function finalizeBubble() {
   if (currentBubble) {
     currentBubble.classList.remove('streaming');
@@ -2002,7 +2044,13 @@ function friendlyError(raw, platformName) {
     return `${capability.charAt(0).toUpperCase()}${capability.slice(1)} credits ran out.\nTry: Open Settings → Connections to add more credits.`;
   }
   if (sl.includes('rate limit') || sl.includes('too many requests') || sl.includes('429')) return 'Too many requests — Merlin is protecting your account.\nTry: Wait 30 seconds and try again. This is normal.';
-  if (sl.includes('quota') || sl.includes('exceeded')) return `${platformName || 'API'} quota exceeded.\nTry: Check your plan limits or upgrade your ${platformName || 'API'} account.`;
+  // When we don't know which platform hit the quota, say it in plain
+  // English. "API quota exceeded" means nothing to a non-technical user.
+  if (sl.includes('quota') || sl.includes('exceeded')) {
+    return platformName
+      ? `${platformName} quota exceeded.\nTry: Check your plan limits or upgrade your ${platformName} account.`
+      : 'Daily usage limit reached. Try again tomorrow or upgrade your plan.';
+  }
 
   // ── Shopify scope-gap (stored token predates a newly-requested scope) ──
   // Sentinel `scope_gap` is emitted by shopifyRequestWithStatus / shopifyGraphQL
@@ -2689,6 +2737,16 @@ merlin.onApprovalRequest(({ toolUseID, label, cost, budget }) => {
     approval.classList.add('hidden');
     costEl.style.color = '';
     budgetEl.innerHTML = '';
+    // Remove this request's Enter/Escape key handler as soon as the card
+    // resolves so a dismissed approval never keeps intercepting keys. The
+    // replace-on-next-request removal below stays as belt-and-suspenders
+    // for any path that hides the card without calling clearApproval.
+    // (keyHandler is declared after this arrow function but is always
+    // initialized before any approve/deny click can invoke it.)
+    if (window._approvalKeyHandler === keyHandler) {
+      document.removeEventListener('keydown', keyHandler);
+      window._approvalKeyHandler = null;
+    }
   };
 
   // Replace handlers cleanly (onclick= replaces previous, no stacking)
@@ -2837,7 +2895,7 @@ merlin.onSdkError((err) => {
             bubble.textContent = 'Signed in! Starting Merlin...';
             setTimeout(() => {
               _restartAttempts = 0;
-              sessionActive = true;
+              beginAgentTurn('login-success-restart', { quiet: true });
               merlin.startSession();
             }, 1000);
             return;
@@ -2858,7 +2916,7 @@ merlin.onSdkError((err) => {
       retryBtn.style.cssText = 'margin-top:12px;width:auto;padding:8px 20px;font-size:13px';
       retryBtn.onclick = () => {
         _restartAttempts = 0;
-        sessionActive = true;
+        beginAgentTurn('login-retry-restart', { quiet: true });
         merlin.startSession();
       };
 
@@ -2877,7 +2935,7 @@ merlin.onSdkError((err) => {
               const authDialog = document.getElementById('auth-code-dialog');
               if (authDialog) authDialog.remove();
               _restartAttempts = 0;
-              sessionActive = true;
+              beginAgentTurn('login-button-restart', { quiet: true });
               merlin.startSession();
               return;
             }
@@ -3014,14 +3072,10 @@ merlin.onSdkError((err) => {
           // matching the onAuthRequired post-success path. Otherwise fall back
           // to a fresh session so the user can continue.
           if (_lastUserMessage && typeof merlin.sendMessage === 'function') {
-            showTypingIndicator();
-            turnStartTime = Date.now();
-            turnTokens = 0;
-            sessionActive = true;
-            startTickingTimer();
+            beginAgentTurn('auth-fail-fast-replay');
             merlin.sendMessage(_lastUserMessage);
           } else {
-            sessionActive = true;
+            beginAgentTurn('auth-fail-fast-restart', { quiet: true });
             merlin.startSession();
           }
           return;
@@ -3075,16 +3129,14 @@ merlin.onSdkError((err) => {
         const result = await merlin.startFreshSession();
         if (result && result.success) {
           freshBtn.remove();
-          sessionActive = true;
           // Replay the triggering message if we have one, matching the
           // auth fail-fast contract. Otherwise the fresh session will
           // just reach the ready state and wait for input.
           if (_lastUserMessage && typeof merlin.sendMessage === 'function') {
-            showTypingIndicator();
-            turnStartTime = Date.now();
-            turnTokens = 0;
-            startTickingTimer();
+            beginAgentTurn('stale-resume-replay');
             merlin.sendMessage(_lastUserMessage);
+          } else {
+            beginAgentTurn('stale-resume-fresh', { quiet: true });
           }
           return;
         }
@@ -3131,7 +3183,7 @@ merlin.onSdkError((err) => {
     retryBtn.onclick = () => {
       _restartAttempts = 0;
       retryBtn.remove();
-      sessionActive = true;
+      beginAgentTurn('retry-connection', { quiet: true });
       merlin.startSession();
     };
     bubble.appendChild(retryBtn);
@@ -3146,7 +3198,7 @@ merlin.onSdkError((err) => {
   bubble.appendChild(retryLine);
 
   setTimeout(() => {
-    sessionActive = true;
+    beginAgentTurn('auto-restart', { quiet: true });
     merlin.startSession();
   }, delay);
 });
@@ -3350,6 +3402,20 @@ merlin.onUpdateApplied((info) => {
 // the combined `code#state` string with a "Copy Code" button. Users who
 // click the button get the right format automatically. Users who partial-
 // select or type fragments get the format validation below.
+//
+// Escape-listener hygiene: the dialog's document-level Escape handler is
+// held at module scope so EVERY dismiss path (Cancel button, Escape key,
+// onAuthCodeDismiss when the CLI exits) can remove it. Pre-fix only the
+// Escape path removed the listener; Cancel and CLI-exit leaked it, and the
+// leaked handler called merlin.cancelClaudeLogin() on every future Escape
+// press, which could kill an unrelated in-flight sign-in.
+let _authCodeEscHandler = null;
+function removeAuthCodeEscHandler() {
+  if (_authCodeEscHandler) {
+    document.removeEventListener('keydown', _authCodeEscHandler);
+    _authCodeEscHandler = null;
+  }
+}
 if (merlin.onAuthCodePrompt) {
   merlin.onAuthCodePrompt(() => {
     if (document.getElementById('auth-code-dialog')) return;
@@ -3446,7 +3512,10 @@ if (merlin.onAuthCodePrompt) {
     }
 
     // Cancel actually kills the subprocess — not just the UI (Codex P2 #7).
+    // Every dismiss path removes the Escape listener via
+    // removeAuthCodeEscHandler() (see the module-scope comment above).
     async function dismissDialog() {
+      removeAuthCodeEscHandler();
       const d = document.getElementById('auth-code-dialog');
       if (d) d.remove();
       if (merlin.cancelClaudeLogin) {
@@ -3457,12 +3526,11 @@ if (merlin.onAuthCodePrompt) {
     btn.onclick = submit;
     inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
     document.getElementById('auth-code-cancel-btn').onclick = dismissDialog;
-    document.addEventListener('keydown', function escHandler(e) {
-      if (e.key === 'Escape') {
-        dismissDialog();
-        document.removeEventListener('keydown', escHandler);
-      }
-    });
+    removeAuthCodeEscHandler(); // never stack two handlers if a stale one leaked
+    _authCodeEscHandler = (e) => {
+      if (e.key === 'Escape') dismissDialog();
+    };
+    document.addEventListener('keydown', _authCodeEscHandler);
   });
 }
 
@@ -3471,6 +3539,7 @@ if (merlin.onAuthCodePrompt) {
 // the paste dialog if it was open.
 if (merlin.onAuthCodeDismiss) {
   merlin.onAuthCodeDismiss(() => {
+    removeAuthCodeEscHandler();
     const d = document.getElementById('auth-code-dialog');
     if (d) d.remove();
   });
@@ -3580,11 +3649,7 @@ async function runAuthRequiredFlow(data) {
           await new Promise(r => setTimeout(r, 250));
           bubble.remove(); // remove the "signing in" status bubble
           _lastUserMessage = pendingMessage;
-          showTypingIndicator();
-          turnStartTime = Date.now();
-          turnTokens = 0;
-          sessionActive = true;
-          startTickingTimer();
+          beginAgentTurn('auth-required-replay');
           merlin.sendMessage(pendingMessage);
         } else {
           setStatus('Signed in to Claude. Ask me anything.');
@@ -3639,10 +3704,7 @@ function addRetryButton(bubble) {
         // check) before pushing, so Claude receives the prompt exactly
         // once.
         bubble.remove();
-        showTypingIndicator();
-        sessionActive = true;
-        turnStartTime = Date.now();
-        startTickingTimer();
+        beginAgentTurn('auth-retry-button-replay');
         merlin.sendMessage(_lastUserMessage);
       } else if (result && !result.success) {
         btn.disabled = false;
@@ -3999,6 +4061,17 @@ document.getElementById('qr-modal').addEventListener('click', (e) => {
   if (e.target.id === 'qr-modal') {
     document.getElementById('qr-modal').classList.add('hidden');
   }
+});
+
+// Escape closes the QR modal, matching every other overlay's keyboard
+// affordance (wisdom, previews, archive). Visibility-gated so the handler
+// is inert while the modal is hidden; mirrors wisdomEscHandler's style.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const modal = document.getElementById('qr-modal');
+  if (!modal || modal.classList.contains('hidden')) return;
+  e.preventDefault();
+  modal.classList.add('hidden');
 });
 
 // ── Magic Panel ─────────────────────────────────────────────
@@ -4423,11 +4496,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
 
 function startBrandSetupConversation(prompt = 'Set up a new brand for me') {
   addUserBubble(prompt);
-  showTypingIndicator();
-  turnStartTime = Date.now();
-  turnTokens = 0;
-  sessionActive = true;
-  startTickingTimer();
+  beginAgentTurn('brand-setup');
   merlin.sendMessage(prompt);
 }
 
@@ -5221,11 +5290,36 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
 
 document.getElementById('wisdom-close').addEventListener('click', closeWisdom);
 
+// The info button's data-tip only shows on hover, which touch and keyboard
+// users can never trigger. Click surfaces the same privacy disclosure in
+// the standard modal so the "what data does Wisdom share" answer is
+// reachable by every input method.
+document.getElementById('wisdom-info-btn').addEventListener('click', (e) => {
+  const btn = e.currentTarget;
+  showModal({
+    title: 'About Wisdom data',
+    body: (btn && btn.dataset && btn.dataset.tip)
+      || 'Wisdom is built from anonymized, aggregated metrics (CTR, CPC, format, timing) shared across all Merlin users. No brand names, ad copy, or personal data is shared.',
+    confirmLabel: 'Got it',
+    onConfirm: () => {},
+  });
+});
+
 document.getElementById('wisdom-refresh-btn').addEventListener('click', () => {
   loadWisdom({ force: true });
 });
 document.getElementById('stats-overlay').addEventListener('click', (e) => {
   if (e.target.id === 'stats-overlay') document.getElementById('stats-overlay').classList.add('hidden');
+});
+
+// Escape closes the revenue/stats overlay, matching every other overlay's
+// keyboard affordance. Visibility-gated, wisdomEscHandler style.
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  const overlay = document.getElementById('stats-overlay');
+  if (!overlay || overlay.classList.contains('hidden')) return;
+  e.preventDefault();
+  overlay.classList.add('hidden');
 });
 
 // Share — build a self-contained PNG card via the native Canvas API and drop
@@ -5536,7 +5630,7 @@ function loadConnections() {
         } else if (MANUAL_KEY_PLATFORMS.has(t.dataset.platform)) {
           // Surface the right-click escape hatch — otherwise users with an
           // existing access token have no affordance that it's available.
-          t.dataset.tip = `${t.dataset.baseTip || t.dataset.tip} (right-click to paste a token)`;
+          t.dataset.tip = `${t.dataset.baseTip || t.dataset.tip} (right-click to paste)`;
         }
       }
     });
@@ -7025,11 +7119,7 @@ function formatTimeAgo(timestamp) {
 function sendChatFromPanel(msg) {
   hideSidebarPanel('magic');
   addUserBubble(msg);
-  showTypingIndicator();
-  turnStartTime = Date.now();
-  turnTokens = 0;
-  sessionActive = true;
-  startTickingTimer();
+  beginAgentTurn('panel-chat');
   merlin.sendMessage(msg);
 }
 
@@ -7154,11 +7244,7 @@ async function loadSpells() {
   customRow.addEventListener('click', () => {
     hideSidebarPanel('magic');
     addUserBubble('I want to create a custom scheduled task');
-    showTypingIndicator();
-    turnStartTime = Date.now();
-    turnTokens = 0;
-    sessionActive = true;
-    startTickingTimer();
+    beginAgentTurn('custom-spell');
     // REGRESSION GUARD (2026-04-24, spellbook-audit-fixes):
     // Instruct Claude to name the task with the `merlin-{brand}-` prefix
     // the Spellbook list filter expects (list-spells drops any task whose
@@ -7485,7 +7571,7 @@ async function activateSpell(template, row) {
     // installed yet. Show a friendly hint instead of a red dot — the
     // spell IS saved and will activate as soon as CCD is installed.
     row.querySelector('.spell-dot').className = 'spell-dot dot-warning';
-    row.querySelector('.spell-meta').textContent = 'Saved — open Claude Code Desktop to start running';
+    row.querySelector('.spell-meta').textContent = 'Saved. Open Claude Desktop to start running';
     row.style.pointerEvents = '';
     const firstHint = (results.find(r => r.daemonError) || {}).daemonError;
     if (firstHint) showSpellToast('Spell saved', friendlyErrorPlain(firstHint, 'spell'), 'info');
@@ -7541,11 +7627,7 @@ function showFirstRunPrompt(template, brand) {
       `Now execute: ${template.prompt}`;
 
     addUserBubble(`Run "${template.name}" now`);
-    showTypingIndicator();
-    turnStartTime = Date.now();
-    turnTokens = 0;
-    sessionActive = true;
-    startTickingTimer();
+    beginAgentTurn('spell-first-run');
     merlin.sendMessage(firstRunPrompt);
   });
 
@@ -8192,12 +8274,7 @@ function sendMessage() {
   _userMessageCount = (_userMessageCount || 0) + 1;
   _lastUserMessage = text;
   addUserBubble(text);
-  showTypingIndicator();
-  turnStartTime = Date.now();
-  turnTokens = 0;
-  sessionActive = true;
-  startTickingTimer();
-  bumpStreamWatchdog(); // arm the no-events stall detector
+  beginAgentTurn('send-message'); // arms the no-events stall detector
   merlin.sendMessage(text);
   input.value = '';
   autoResize();
@@ -10395,9 +10472,27 @@ document.addEventListener('click', async (e) => {
 // ── Activity Feed (full panel view, toggled via Activity button) ──
 let _archiveView = 'grid'; // 'grid' or 'activity'
 
+// setActivityBtnLabel updates ONLY the text inside the button's styled
+// <span class="subscribe-cta"> child. Assigning activity-btn.textContent
+// directly wiped that span, permanently killing the gradient styling after
+// a single Activity/Gallery toggle. Rebuilds the span if a legacy code
+// path already flattened the button to bare text.
+function setActivityBtnLabel(label) {
+  const btn = document.getElementById('activity-btn');
+  if (!btn) return;
+  let span = btn.querySelector('.subscribe-cta');
+  if (!span) {
+    btn.textContent = '';
+    span = document.createElement('span');
+    span.className = 'subscribe-cta';
+    btn.appendChild(span);
+  }
+  span.textContent = label;
+}
+
 function showArchiveView() {
   _archiveView = 'grid';
-  document.getElementById('activity-btn').textContent = 'Activity';
+  setActivityBtnLabel('Activity');
   document.querySelector('.archive-filters').style.display = '';
   document.getElementById('archive-grid').style.display = '';
   document.getElementById('archive-empty').style.display = 'none';
@@ -10414,10 +10509,15 @@ function showArchiveView() {
 // declarations execute, and `let` is in the temporal dead zone until its
 // declaration line runs.
 let _activityState = { items: [], query: '', full: true };
+// Monotonic token identifying the newest renderActivityBody pass. Idle-time
+// tail chunks compare against it and drop themselves when a newer pass
+// (search keystroke, feed reload, brand switch) owns the body, mirroring the
+// archive grid's isStale() guard so two passes never interleave rows.
+let _activityRenderToken = 0;
 
 function showActivityView() {
   _archiveView = 'activity';
-  document.getElementById('activity-btn').textContent = 'Gallery';
+  setActivityBtnLabel('Gallery');
   document.querySelector('.archive-filters').style.display = 'none';
   document.getElementById('archive-grid').style.display = 'none';
   document.getElementById('archive-empty').style.display = 'none';
@@ -10474,10 +10574,17 @@ function renderActivityToolbar() {
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
     </button>
   `;
+  // Debounced (300ms) like the archive search box: re-rendering the feed on
+  // every keystroke turned typing into a full rebuild per character on
+  // large histories.
+  let _activitySearchTimeout;
   bar.querySelector('#activity-search').addEventListener('input', (e) => {
-    _activityState.query = e.target.value.trim().toLowerCase();
-    const body = document.getElementById('activity-feed-body');
-    if (body) renderActivityBody(body);
+    clearTimeout(_activitySearchTimeout);
+    _activitySearchTimeout = setTimeout(() => {
+      _activityState.query = e.target.value.trim().toLowerCase();
+      const body = document.getElementById('activity-feed-body');
+      if (body) renderActivityBody(body);
+    }, 300);
   });
   bar.querySelector('#activity-export').addEventListener('click', () => {
     const filtered = filterActivity(_activityState.items);
@@ -10523,6 +10630,10 @@ function formatActivityForCopy(item) {
 
 function renderActivityBody(body) {
   body.innerHTML = '';
+  // Claim the render token FIRST (even for the empty-state early return)
+  // so any idle-time tail still pending from a previous pass cancels
+  // itself instead of appending rows after this pass's content.
+  const renderToken = ++_activityRenderToken;
   const items = filterActivity(_activityState.items);
 
   if (items.length === 0) {
@@ -10533,19 +10644,54 @@ function renderActivityBody(body) {
     return;
   }
 
+  // Chunked render, mirroring the archive grid idiom (see REGRESSION GUARD
+  // 2026-05-13, rsi-archive-perf iter 1): the first
+  // INITIAL_VISIBLE_ACTIVITY_ROWS land synchronously in one
+  // DocumentFragment; the tail renders in ACTIVITY_CHUNK_SIZE batches via
+  // requestIdleCallback (16ms setTimeout fallback) so a multi-thousand-entry
+  // history never blocks the panel's first paint. Export/copy still operate
+  // on the FULL fetched set (_activityState.items), never the rendered
+  // subset.
+  const INITIAL_VISIBLE_ACTIVITY_ROWS = 300;
+  const ACTIVITY_CHUNK_SIZE = 200;
   let lastDate = '';
-  items.forEach(item => {
+  const appendRow = (item, container) => {
     const d = item.ts ? new Date(item.ts) : new Date();
     const dateStr = formatArchiveDate(d);
     if (dateStr !== lastDate) {
       const header = document.createElement('div');
       header.className = 'activity-section-label';
       header.textContent = dateStr;
-      body.appendChild(header);
+      container.appendChild(header);
       lastDate = dateStr;
     }
-    body.appendChild(renderActivityItem(item));
-  });
+    container.appendChild(renderActivityItem(item));
+  };
+
+  const firstChunkEnd = Math.min(items.length, INITIAL_VISIBLE_ACTIVITY_ROWS);
+  const initialFrag = document.createDocumentFragment();
+  for (let i = 0; i < firstChunkEnd; i++) appendRow(items[i], initialFrag);
+  body.appendChild(initialFrag);
+
+  if (firstChunkEnd < items.length) {
+    let cursor = firstChunkEnd;
+    const scheduleNext = (fn) => {
+      if (typeof requestIdleCallback === 'function') requestIdleCallback(fn, { timeout: 500 });
+      else setTimeout(fn, 16);
+    };
+    const renderNextActivityChunk = () => {
+      // Stale-render guard: a newer pass owns the body, or the body left
+      // the DOM (user toggled back to the gallery). Drop this tail.
+      if (renderToken !== _activityRenderToken || !body.isConnected) return;
+      const chunkEnd = Math.min(items.length, cursor + ACTIVITY_CHUNK_SIZE);
+      const frag = document.createDocumentFragment();
+      for (let i = cursor; i < chunkEnd; i++) appendRow(items[i], frag);
+      body.appendChild(frag);
+      cursor = chunkEnd;
+      if (cursor < items.length) scheduleNext(renderNextActivityChunk);
+    };
+    scheduleNext(renderNextActivityChunk);
+  }
 }
 
 function renderActivityItem(item) {
@@ -11202,11 +11348,7 @@ function palantirGenerateFromIdea(idea) {
   closePalantirDetail();
   try {
     addUserBubble(seed);
-    showTypingIndicator();
-    turnStartTime = Date.now();
-    turnTokens = 0;
-    sessionActive = true;
-    startTickingTimer();
+    beginAgentTurn('palantir-generate');
     merlin.sendMessage(seed);
   } catch (e) { console.warn('[palantir-generate]', e); }
 }
@@ -12038,15 +12180,24 @@ async function loadArchive(opts = {}) {
         grid.appendChild(chip);
         if (isStale && !window.__merlinAutoRefreshFiredFor) {
           window.__merlinAutoRefreshFiredFor = newestUpdatedAt;
-          // Fire-and-forget: refreshLiveAds will rewrite ads-live.json
-          // via the binary, then a subsequent populateArchivePanel call
-          // by the user (or by the next tab activation) will pick up
-          // the new data. We don't auto-redraw because the binary call
-          // can take 5-15s and the user might be reading current data.
+          // Auto-refresh, then resolve the chip when the call settles:
+          // success flips it to a fresh timestamp, failure keeps the
+          // saved-data framing. No grid auto-redraw (the call can take
+          // 5-15s and the user may be reading current data), but the
+          // chip must never say "refreshing" forever.
           (async () => {
+            let refreshed = false;
             try {
               await merlin.refreshLiveAds(activeBrand || null);
+              refreshed = true;
             } catch {}
+            if (!chip.isConnected) return;
+            if (refreshed) {
+              chip.textContent = 'Live ad data: refreshed just now';
+              chip.classList.remove('archive-staleness-chip-stale');
+            } else {
+              chip.textContent = `Live ad data: couldn't refresh, showing saved data (${fmtAgo(Date.now() - newestUpdatedAt)})`;
+            }
           })();
         }
       }
@@ -12339,11 +12490,7 @@ async function loadArchive(opts = {}) {
             // and LLM prompt read naturally instead of saying "ad" twice.
             const label = ad.product || currentVerticalProfile.offeringNoun || 'ad';
             addUserBubble(`Pause ${label} on ${ad.platform}`);
-            showTypingIndicator();
-            turnStartTime = Date.now();
-            turnTokens = 0;
-            sessionActive = true;
-            startTickingTimer();
+            beginAgentTurn('archive-pause-ad');
             const killHint = killAction
               ? `Use ${killAction} with adId "${ad.adId}".`
               : `Use the appropriate pause action for ${ad.platform} with adId "${ad.adId}".`;
@@ -12362,11 +12509,7 @@ async function loadArchive(opts = {}) {
             hideSidebarPanel('archive');
             const label = ad.product || currentVerticalProfile.offeringNoun || 'ad';
             addUserBubble(`Resume ${label} on ${ad.platform}`);
-            showTypingIndicator();
-            turnStartTime = Date.now();
-            turnTokens = 0;
-            sessionActive = true;
-            startTickingTimer();
+            beginAgentTurn('archive-resume-ad');
             merlin.sendMessage(`Resume the paused ad "${label}" on ${ad.platform} (Ad ID: ${ad.adId}). Re-enable it at the same budget using the appropriate resume/update action for ${ad.platform}.`);
           });
           menu.appendChild(resumeItem);
@@ -12413,7 +12556,7 @@ async function loadArchive(opts = {}) {
             allOpt.addEventListener('click', () => {
               closeAll();
               addUserBubble(`Copy "${ad.product}" ad to all platforms`);
-              showTypingIndicator(); turnStartTime = Date.now(); sessionActive = true; startTickingTimer();
+              beginAgentTurn('archive-copy-all');
               merlin.sendMessage(`Duplicate the winning ad "${ad.product}" (Ad ID: ${ad.adId}, platform: ${ad.platform}) to ALL other connected platforms. Use the same creative and budget. Report what was created.`);
             });
             sub.appendChild(allOpt);
@@ -12424,7 +12567,7 @@ async function loadArchive(opts = {}) {
               opt.addEventListener('click', () => {
                 closeAll();
                 addUserBubble(`Copy "${ad.product}" ad to ${p}`);
-                showTypingIndicator(); turnStartTime = Date.now(); sessionActive = true; startTickingTimer();
+                beginAgentTurn('archive-copy-platform');
                 merlin.sendMessage(`Duplicate the winning ad "${ad.product}" (Ad ID: ${ad.adId}, platform: ${ad.platform}) to ${p}. Use the same creative and budget.`);
               });
               sub.appendChild(opt);
@@ -13323,11 +13466,7 @@ function mergeCreatives() {
   const ownPath = own.thumbnail || own.folder || '';
 
   addUserBubble(`Merge: ${competitorDesc} + ${ownDesc}`);
-  showTypingIndicator();
-  turnStartTime = Date.now();
-  turnTokens = 0;
-  sessionActive = true;
-  startTickingTimer();
+  beginAgentTurn('archive-merge');
 
   merlin.sendMessage(
     `I want to create a new ad inspired by a competitor's creative but in MY brand's style.\n\n` +
@@ -13449,12 +13588,11 @@ function openArchivePreview(item) {
         try {
           const brand = (liveAd && liveAd.brand) || (item.ad && item.ad.brand) || '';
           await merlin.refreshLiveAds(brand || null);
-          // Reload the archive panel so freshly-fetched creativeUrls take
-          // effect, then close this preview. The user can re-click the
-          // tile if they want to re-inspect.
-          if (typeof populateArchivePanel === 'function') {
-            try { await populateArchivePanel(); } catch {}
-          }
+          // Reload the archive grid so freshly-fetched creativeUrls take
+          // effect, then close this preview. loadArchive is the real grid
+          // renderer (the same call the live-ads-changed listener makes);
+          // the user can re-click the tile if they want to re-inspect.
+          try { await loadArchive(); } catch {}
           closePreview();
         } catch (e) {
           refreshBtn.disabled = false;

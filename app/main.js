@@ -469,6 +469,28 @@ function logMigration(line) {
     appendActivityLog(logPath, JSON.stringify({ ts: new Date().toISOString(), kind: 'migration', ...line }) + '\n');
   } catch {}
 }
+// moveFileSync relocates src to dst. It tries an atomic rename first (near
+// instant, no extra disk), falling back to copy only across devices (EXDEV).
+//
+// REGRESSION GUARD (2026-07-04, perf-rsi startup-critical-path): the legacy
+// Documents/Merlin migration runs synchronously before any window exists, and
+// it used copyFileSync on the ENTIRE old tree including results/ (which can be
+// gigabytes of generated video). On the one triggering launch that froze the
+// process with no UI for as long as the copy took AND doubled disk usage.
+// Rename makes the same-volume case (the overwhelming majority: Documents and
+// the new ContentDir are both under the user profile) sub-second, so the
+// pre-window block is negligible. Cross-device installs keep the bounded
+// copy+unlink fallback.
+function moveFileSync(src, dst) {
+  try {
+    fs.renameSync(src, dst);
+    return;
+  } catch (e) {
+    if (e && e.code !== 'EXDEV') throw e;
+  }
+  fs.copyFileSync(src, dst);
+  try { fs.unlinkSync(src); } catch {}
+}
 function migrateTreeToSplit(oldRoot) {
   // Walk oldRoot, routing state files to stateDir (FLAT), everything else
   // to appRoot preserving relative path. Skip-on-exists. Idempotent.
@@ -492,9 +514,9 @@ function migrateTreeToSplit(oldRoot) {
         try {
           if (fs.existsSync(dst)) { skipped++; continue; }
           fs.mkdirSync(path.dirname(dst), { recursive: true });
-          fs.copyFileSync(absSrc, dst);
+          moveFileSync(absSrc, dst);
           stateMoved++;
-        } catch (e) { console.warn('[migration] state copy failed:', absSrc, e.message); }
+        } catch (e) { console.warn('[migration] state move failed:', absSrc, e.message); }
       } else {
         // Content: preserve relative path, but collapse `.claude/tools/` state leftovers
         // (the isStateFileName check already handled that branch; anything else under
@@ -504,9 +526,9 @@ function migrateTreeToSplit(oldRoot) {
         try {
           if (fs.existsSync(dst)) { skipped++; continue; }
           fs.mkdirSync(path.dirname(dst), { recursive: true });
-          fs.copyFileSync(absSrc, dst);
+          moveFileSync(absSrc, dst);
           contentMoved++;
-        } catch (e) { console.warn('[migration] content copy failed:', absSrc, e.message); }
+        } catch (e) { console.warn('[migration] content move failed:', absSrc, e.message); }
       }
     }
   }
@@ -1465,6 +1487,12 @@ let pendingMessageQueue = []; // Queue messages sent before SDK is ready
 let pendingApprovals = new Map();
 let activeQuery = null;
 let _suppressNextResponse = false; // Suppress SDK responses for internal actions (spell toggle/create)
+// Handle for the 120s suppression safety-clear timer. Tracked so a second
+// silent send can disarm the FIRST send's stale timer before arming its own.
+// Without this, the stale timer fires mid-window and un-suppresses the newer
+// silent turn, leaking the tail of an internal spell-toggle/welcome response
+// into the user's chat (recurrence of the 2026-04-24 incident).
+let _suppressClearTimer = null;
 
 // True while we're between "auth failed" and "user completed login". While
 // this flag is set, the session finally block must NOT clear pendingMessageQueue
@@ -1491,6 +1519,25 @@ let _queueFrozenForAuth = false;
 // activeQuery singleton). Serializes switches without blocking message
 // sends from the renderer.
 let _switchInProgress = false;
+
+// REGRESSION GUARD (2026-07-04, perf-rsi wrong-brand-session race):
+// startSessionForQueuedMessage is the ONLY way the queue-drain paths may
+// boot a session. It refuses to start while a brand switch is in flight.
+// The race it closes: switch-brand clears activeQuery mid-flight (its drain
+// loop) and then calls startSession(targetBrand). If a user send lands in
+// that window, a bare `if (!activeQuery) startSession()` would boot a
+// session with NO brand override (the old activeBrand, since writeState for
+// the new brand has not run yet), win the activeQuery singleton, and the
+// switch's own startSession(targetBrand) would then no-op ("already
+// active") -> the UI shows the new brand while the live session runs the
+// old one. The queued message was already pushed to pendingMessageQueue, so
+// it drains into the switch's session instead. Any bare
+// `if (!activeQuery) startSession()` in a queue-drain path is this bug class
+// returning; a source-scan lock (perf-hygiene.test.js) enforces it.
+function startSessionForQueuedMessage() {
+  if (activeQuery || _switchInProgress) return;
+  startSession();
+}
 
 // Serializes startSession() init against rapid switch-brand toggles.
 // startSession's pre-query awaits (subscription check + SDK import + MCP
@@ -2029,7 +2076,7 @@ async function createWindow() {
             brand: '',
           });
           const { execFile } = require('child_process');
-          execFile(binaryPath, ['--config', configPath, '--cmd', cmdJson], { timeout: 5000 }, (err, stdout) => {
+          const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmdJson], { timeout: 5000 }, (err, stdout) => {
             if (err) { console.warn('[fact-binding] session-prelude failed:', err.message); return; }
             let parsed;
             try { parsed = JSON.parse(String(stdout || '').trim()); }
@@ -2056,6 +2103,10 @@ async function createWindow() {
               console.warn('[fact-binding] init send failed:', sendErr && sendErr.message);
             }
           });
+          // Resource hygiene: track the prelude child so the before-quit
+          // sweep can kill it instead of leaving a zombie Merlin.exe.
+          activeChildProcesses.add(child);
+          child.on('exit', () => activeChildProcesses.delete(child));
         }
       } catch (e) {
         // Defense-in-depth: the rollout bridge must never prevent the app
@@ -2189,7 +2240,7 @@ async function createWindow() {
           if (win && !win.isDestroyed()) {
             win.webContents.send('message-queued', { depth: pendingMessageQueue.length });
           }
-          if (!activeQuery) startSession();
+          startSessionForQueuedMessage();
         }
       }
       if (win && !win.isDestroyed()) {
@@ -3961,7 +4012,13 @@ async function startSession(brandOverride) {
         let outbound = msg;
         if (_suppressNextResponse) {
           outbound = { ...msg, _internal: true };
-          if (msg.type === 'result') _suppressNextResponse = false;
+          if (msg.type === 'result') {
+            _suppressNextResponse = false;
+            // Disarm the 120s safety timer too: left armed, it would fire
+            // inside a LATER silent send's window and un-suppress that turn
+            // (the stale-timer overlap behind the 2026-04-24 leak).
+            if (_suppressClearTimer) { clearTimeout(_suppressClearTimer); _suppressClearTimer = null; }
+          }
         }
         win.webContents.send('sdk-message', outbound);
         wsServer.broadcast('sdk-message', outbound);
@@ -5657,7 +5714,14 @@ ipcMain.handle('send-message', (_, text, options = {}) => {
     // Bumped from 30s (2026-04-24 audit) — slow silent turns (scheduled-tasks
     // MCP acks during high API load) were clearing the flag mid-turn and
     // leaking the tail of the response into the chat.
-    setTimeout(() => { _suppressNextResponse = false; }, 120000);
+    // Stale-timer overlap: a second silent send inside a prior send's 120s
+    // window must disarm the FIRST send's timer here, otherwise that stale
+    // timer fires mid-window and cuts the new suppression short.
+    if (_suppressClearTimer) clearTimeout(_suppressClearTimer);
+    _suppressClearTimer = setTimeout(() => {
+      _suppressNextResponse = false;
+      _suppressClearTimer = null;
+    }, 120000);
   }
   // Inject current active brand so Claude always knows which brand the user selected
   const content = injectActiveBrand(text);
@@ -5704,8 +5768,10 @@ ipcMain.handle('send-message', (_, text, options = {}) => {
     // If no session is running, start one so the queued message gets processed.
     // This handles the case where the session was stopped (Escape) or crashed
     // without auto-restarting — without this, messages sit in the queue forever
-    // and the typing indicator hangs indefinitely.
-    if (!activeQuery) startSession();
+    // and the typing indicator hangs indefinitely. Routed through
+    // startSessionForQueuedMessage so a send landing mid-brand-switch cannot
+    // boot a wrong-brand session (see that helper's REGRESSION GUARD).
+    startSessionForQueuedMessage();
   }
   if (!options.silent) wsServer.broadcast('user-message', { text });
   return { success: true };
@@ -5901,6 +5967,10 @@ async function transcribeAudioImpl(audioBytes) {
       // fires 'close' with code=null, which the handler below rejects — settling
       // the promise. SIGKILL because a truly wedged process can ignore SIGTERM.
       const ff = spawn(ffmpegPath, args, { windowsHide: true, timeout: FFMPEG_TIMEOUT_MS, killSignal: 'SIGKILL' });
+      // Resource hygiene: track the transcode child so the before-quit
+      // sweep can kill it instead of leaving an orphan ffmpeg.
+      activeChildProcesses.add(ff);
+      ff.on('exit', () => activeChildProcesses.delete(ff));
       let stderr = '';
       ff.stderr.on('data', (d) => { stderr += d.toString(); });
       ff.on('close', (code) => {
@@ -5963,6 +6033,10 @@ async function transcribeAudioImpl(audioBytes) {
       // — see the ffmpeg spawn above. A wedged whisper-cli on a pathological wav
       // would otherwise hang the transcribe-audio IPC forever.
       const w = spawn(whisperBin, args, { windowsHide: true, timeout: WHISPER_TIMEOUT_MS, killSignal: 'SIGKILL' });
+      // Resource hygiene: track the whisper child so the before-quit
+      // sweep can kill it instead of leaving an orphan whisper-cli.
+      activeChildProcesses.add(w);
+      w.on('exit', () => activeChildProcesses.delete(w));
       let stdout = '';
       let stderr = '';
       w.stdout.on('data', (d) => { stdout += d.toString(); });
@@ -7258,6 +7332,9 @@ function pruneBriefingLastNotified() {
 // so the cleanup block can clear them without hunting through closures.
 let _updateCheckFirstTimeout = null;
 let _updateCheckInterval = null;
+let _tokenWatchdogInterval = null;   // 4h token auto-refresh sweep
+let _oauthPendingPollInterval = null; // 30s OAuth pending-flow chip poll
+let _reconcileInterval = null;        // hourly referral bonus + subscription reconcile
 
 function startBriefingNotifier() {
   try { fs.mkdirSync(appRoot, { recursive: true }); } catch {}
@@ -7453,7 +7530,7 @@ async function _refreshPerfImpl(brandName, requestedDays) {
   const { redactOutput } = require('./mcp-redact');
   await maybeHydrateBinaryLicenseToken('dashboard');
   return new Promise((resolve) => {
-    execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
+    const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
       timeout: 90000, cwd: appRoot,
     }, (err, stdout, stderr) => {
       // Delete temp config IMMEDIATELY — don't leave decrypted credentials on disk
@@ -7485,6 +7562,10 @@ async function _refreshPerfImpl(brandName, requestedDays) {
       }
       resolve({ success: true });
     });
+    // Resource hygiene: this dashboard child runs up to 90s against live
+    // ad-platform APIs. Track it so before-quit can kill it.
+    activeChildProcesses.add(child);
+    child.on('exit', () => activeChildProcesses.delete(child));
   });
 }
 
@@ -11854,15 +11935,22 @@ async function installUpdateFromLatestRelease() {
     }
 
     if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Downloading installer...');
-    const installer = await httpsGet(asset.browser_download_url);
-    if (installer.length < 1024 * 1024) throw new Error('Installer download too small');
-    const actualInstallerHash = require('crypto').createHash('sha256').update(installer).digest('hex').toLowerCase();
+    // PERF/OOM (2026-07-04): stream the ~300-400MB installer straight to the
+    // temp file with an incremental sha256 (see httpsDownloadToFile) instead
+    // of buffering it whole, hashing it synchronously, and writeFileSync-ing
+    // it on the main process. Same tmp path, same size floor, same checksum
+    // verification and error messages as the buffered version.
+    const tmpFile = path.join(os.tmpdir(), assetName);
+    const downloaded = await httpsDownloadToFile(asset.browser_download_url, tmpFile);
+    if (downloaded.bytes < 1024 * 1024) {
+      try { fs.unlinkSync(tmpFile); } catch {}
+      throw new Error('Installer download too small');
+    }
+    const actualInstallerHash = downloaded.sha256;
     if (actualInstallerHash !== expectedInstallerHash) {
+      try { fs.unlinkSync(tmpFile); } catch {}
       throw new Error(`Installer checksum mismatch: expected ${expectedInstallerHash.slice(0, 12)}..., got ${actualInstallerHash.slice(0, 12)}...`);
     }
-
-    const tmpFile = path.join(os.tmpdir(), assetName);
-    fs.writeFileSync(tmpFile, installer);
     if (process.platform !== 'win32') fs.chmodSync(tmpFile, 0o755);
 
     if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Installing update...');
@@ -11947,6 +12035,65 @@ function httpsGet(url, _depth = 0) {
         }
         resolve(Buffer.concat(body, received));
       });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
+  });
+}
+
+// Streaming sibling of httpsGet for large artifacts (the ~300-400MB
+// installer). Buffering the whole download via httpsGet meant a chunk array
+// plus Buffer.concat (about 2x peak RAM), a synchronous full-buffer sha256,
+// and a synchronous writeFileSync on the main process: a multi-second UI
+// freeze and an OOM risk on low-RAM machines. This helper pipes the response
+// into a fs.createWriteStream at destPath while feeding the same chunks to
+// an incremental sha256, so peak memory stays at one chunk.
+//
+// It mirrors httpsGet's redirect + status handling exactly, and carries the
+// SAME two invariants as httpsGet's REGRESSION GUARD (2026-04-16): byte
+// count is validated against Content-Length, and the response stream's
+// `error` event rejects. A truncated download must fail loudly here, not
+// surface downstream as a bogus "checksum mismatch". Any failure deletes
+// the partial file so a corrupt installer never lingers at a predictable
+// temp path. Resolves { bytes, sha256 } for the caller to verify.
+function httpsDownloadToFile(url, destPath, _depth = 0) {
+  if (_depth > 10) return Promise.reject(new Error('Too many redirects'));
+  const https = require('https');
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { headers: { 'User-Agent': 'Merlin-Desktop' }, timeout: 15000 }, (res) => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume(); // drain the redirect body so the socket can be reused
+        return httpsDownloadToFile(res.headers.location, destPath, _depth + 1).then(resolve).catch(reject);
+      }
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP ${res.statusCode}`));
+      }
+      const expectedLen = Number.parseInt(res.headers['content-length'], 10);
+      const hasExpectedLen = Number.isFinite(expectedLen) && expectedLen > 0;
+      const hash = require('crypto').createHash('sha256');
+      let received = 0;
+      let settled = false;
+      const out = fs.createWriteStream(destPath);
+      const fail = (e) => {
+        if (settled) return;
+        settled = true;
+        try { out.destroy(); } catch {}
+        try { fs.unlinkSync(destPath); } catch {}
+        reject(e);
+      };
+      res.on('data', (c) => { hash.update(c); received += c.length; });
+      res.on('error', (e) => fail(new Error(`Download stream error: ${e.message}`)));
+      out.on('error', (e) => fail(new Error(`Download write error: ${e.message}`)));
+      out.on('finish', () => {
+        if (settled) return;
+        if (hasExpectedLen && received !== expectedLen) {
+          return fail(new Error(`Incomplete download: expected ${expectedLen} bytes, received ${received}`));
+        }
+        settled = true;
+        resolve({ bytes: received, sha256: hash.digest('hex').toLowerCase() });
+      });
+      res.pipe(out);
     });
     req.on('error', reject);
     req.on('timeout', () => { req.destroy(); reject(new Error('Request timeout')); });
@@ -12115,11 +12262,14 @@ async function getBinaryVersionAt(binaryPath) {
   try { fs.accessSync(binaryPath); } catch { return null; }
   const { execFile } = require('child_process');
   return new Promise((resolve) => {
-    execFile(binaryPath, ['--version'], { timeout: 10000 }, (err, stdout) => {
+    const child = execFile(binaryPath, ['--version'], { timeout: 10000 }, (err, stdout) => {
       if (err || !stdout) return resolve(null);
       const m = String(stdout).match(/Merlin Pipeline v(\d+\.\d+\.\d+)/);
       resolve(m ? m[1] : null);
     });
+    // Resource hygiene: track the probe so the before-quit sweep can kill it.
+    activeChildProcesses.add(child);
+    child.on('exit', () => activeChildProcesses.delete(child));
   });
 }
 
@@ -13812,6 +13962,11 @@ app.whenReady().then(async () => {
     // quit teardown and could race with HTTPS teardown (EPIPE in logs).
     if (_updateCheckFirstTimeout) { clearTimeout(_updateCheckFirstTimeout); _updateCheckFirstTimeout = null; }
     if (_updateCheckInterval)     { clearInterval(_updateCheckInterval);   _updateCheckInterval = null; }
+    // Same teardown-race rationale: a late watchdog/poll/reconcile tick during a
+    // prolonged quit spawns children or fires HTTPS mid-teardown (EPIPE, hung quit).
+    if (_tokenWatchdogInterval)    { clearInterval(_tokenWatchdogInterval);    _tokenWatchdogInterval = null; }
+    if (_oauthPendingPollInterval) { clearInterval(_oauthPendingPollInterval); _oauthPendingPollInterval = null; }
+    if (_reconcileInterval)        { clearInterval(_reconcileInterval);        _reconcileInterval = null; }
     // §G7 — Stop the JobStore's periodic prune timer so the event loop
     // doesn't hold the process open past before-quit. Safe to call
     // multiple times (JobStore.shutdown is idempotent) and safe when
@@ -13949,7 +14104,7 @@ app.whenReady().then(async () => {
   };
 
   setTimeout(runTokenWatchdog, 60 * 1000);
-  setInterval(runTokenWatchdog, 4 * 60 * 60 * 1000);
+  _tokenWatchdogInterval = setInterval(runTokenWatchdog, 4 * 60 * 60 * 1000);
 
   // §3.9 — OAuth pending-flow chip poller. Cluster-D landed the persistence
   // + `oauth-pending-list` / `oauth-resume` actions (7f00e6e). Here we poll
@@ -14024,7 +14179,7 @@ app.whenReady().then(async () => {
   // every 30s thereafter. The chip UI is only rendered when connections
   // panel is open so the data is free if the user never looks.
   setTimeout(() => { runOAuthPendingPoll().catch(() => {}); }, 5000);
-  setInterval(() => { runOAuthPendingPoll().catch(() => {}); }, 30000);
+  _oauthPendingPollInterval = setInterval(() => { runOAuthPendingPoll().catch(() => {}); }, 30000);
 
   // Expose a handle so the renderer can force an immediate poll after the
   // user clicks "Resume sign-in" or dismisses a chip — the caller awaits
@@ -14108,7 +14263,7 @@ app.whenReady().then(async () => {
   // tick means a canceled subscription is reflected in the app at most an
   // hour after the webhook fires, and a newly-subscribed device flips to
   // Pro without needing a relaunch.
-  setInterval(async () => {
+  _reconcileInterval = setInterval(async () => {
     try {
       const raw = await httpsGet(`https://merlingotme.com/api/check-referral?id=${getMachineId()}`);
       const data = JSON.parse(raw.toString());
