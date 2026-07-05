@@ -177,50 +177,93 @@ test('2.7 — package.json declares the merlin:// protocol for electron-builder'
 });
 
 // ─── §2.8 ────────────────────────────────────────────────────────────
-test('2.8 — releaseHasInstallerForPlatform filters Mac assets by arch', () => {
-  const fn = MAIN_JS.slice(MAIN_JS.indexOf('function releaseHasInstallerForPlatform'));
-  const end = fn.indexOf('\nfunction ');
-  const body = fn.slice(0, end);
-  assert.ok(body.includes('process.arch'), 'consults process.arch');
-  assert.ok(body.includes('hasArchDmg'), 'arch-specific DMG matcher present');
-  assert.ok(body.includes('hasUniversalDmg'), 'universal DMG fallback present');
+// REGRESSION (2026-07-03, mac-compat): these fixtures now use the REAL release
+// asset names electron-builder produces (verified against live releases), NOT
+// the fictional Merlin-mac-arm64.dmg / Merlin-mac-x64.dmg / Merlin-mac.dmg
+// names the prior tests asserted. Those fictional names let the picker match
+// zero real assets while the suite stayed green, which is how the Intel-gets-
+// arm64-zip bug shipped. Do not reintroduce hyphenated -mac-<arch> fixtures.
+const REAL_MAC_RELEASE = [
+  { name: 'Merlin-1.32.0-arm64.dmg' },      // Apple Silicon installer
+  { name: 'Merlin-1.32.0.dmg' },            // Intel x64 installer (NO arch marker)
+  { name: 'Merlin-1.32.0-arm64-mac.zip' },  // arm64 auto-update archive
+  { name: 'Merlin-1.32.0-mac.zip' },        // x64 auto-update archive
+  { name: 'MerlinSetup-mac-arm64' },        // raw bootstrapper (never an installer target)
+  { name: 'MerlinSetup-mac-intel' },        // raw bootstrapper (never an installer target)
+  { name: 'checksums.txt' },
+];
+
+function loadMacPickers() {
+  const fnStart = MAIN_JS.indexOf('function pickMacInstallerAssetName');
+  const fnEnd = MAIN_JS.indexOf('\nfunction releaseHasInstallerForPlatform', fnStart);
+  const picker = MAIN_JS.slice(fnStart, fnEnd);
+  const helperStart = MAIN_JS.indexOf('function macAssetIsArm64');
+  const helperEnd = MAIN_JS.indexOf('\nfunction pickMacInstallerAssetName', helperStart);
+  const helper = MAIN_JS.slice(helperStart, helperEnd);
+  // eslint-disable-next-line no-new-func
+  const factory = new Function('process', `${helper}\n${picker}\nreturn pickMacInstallerAssetName;`);
+  return { pickArm: factory({ arch: 'arm64' }), pickX64: factory({ arch: 'x64' }) };
+}
+
+test('2.8 — pickMacInstallerAssetName picks the native-arch DMG from REAL release names', () => {
+  assert.ok(MAIN_JS.includes('function pickMacInstallerAssetName'), 'picker defined');
+  const { pickArm, pickX64 } = loadMacPickers();
+
+  // arm64 host gets the arm64 DMG; x64 host gets the unsuffixed (Intel) DMG.
+  assert.equal(pickArm(REAL_MAC_RELEASE), 'Merlin-1.32.0-arm64.dmg', 'arm64 → arm64 DMG');
+  assert.equal(pickX64(REAL_MAC_RELEASE), 'Merlin-1.32.0.dmg', 'x64 → unsuffixed (Intel) DMG');
 });
 
-test('2.8 — pickMacInstallerAssetName prefers arch-specific DMG, falls back to universal, then zip', () => {
-  assert.ok(
-    MAIN_JS.includes('function pickMacInstallerAssetName'),
-    'picker function defined',
-  );
-  // Load picker implementation and exercise it with a synthesized asset list.
-  // Defer to ad-hoc eval: define the helper in an isolated scope using Function().
-  const fnStart = MAIN_JS.indexOf('function pickMacInstallerAssetName');
-  const fnEnd = MAIN_JS.indexOf('\nfunction ', fnStart + 1);
-  // Some versions of the file may end the function with a different terminator; guard.
-  const block = fnEnd > fnStart ? MAIN_JS.slice(fnStart, fnEnd) : MAIN_JS.slice(fnStart);
-  // eslint-disable-next-line no-new-func
-  const factory = new Function('process', `${block}\nreturn pickMacInstallerAssetName;`);
+test('2.8 — picker never returns a wrong-arch asset or a raw bootstrapper', () => {
+  const { pickArm, pickX64 } = loadMacPickers();
 
-  const pickArm = factory({ arch: 'arm64' });
-  const pickX64 = factory({ arch: 'x64' });
-
-  const archedAssets = [
-    { name: 'Merlin-mac-arm64.dmg' },
-    { name: 'Merlin-mac-x64.dmg' },
+  // arm64-only release: an Intel client must get NULL, never the arm64 build.
+  const arm64Only = [
+    { name: 'Merlin-1.32.0-arm64.dmg' },
+    { name: 'Merlin-1.32.0-arm64-mac.zip' },
     { name: 'checksums.txt' },
   ];
-  assert.equal(pickArm(archedAssets), 'Merlin-mac-arm64.dmg', 'arm64 picks arm64 DMG');
-  assert.equal(pickX64(archedAssets), 'Merlin-mac-x64.dmg', 'x64 picks x64 DMG');
+  assert.equal(pickX64(arm64Only), null, 'x64 returns null on arm64-only release (no brick)');
 
-  const universalOnly = [{ name: 'Merlin-mac.dmg' }, { name: 'checksums.txt' }];
-  assert.equal(pickArm(universalOnly), 'Merlin-mac.dmg', 'arm64 falls back to universal');
-  assert.equal(pickX64(universalOnly), 'Merlin-mac.dmg', 'x64 falls back to universal');
+  // x64-only release (never happens in practice; both arches always ship):
+  // an arm64 client skips rather than silently downgrading a native arm64
+  // install to a Rosetta x64 build. Auto-update knows process.arch, so unlike
+  // the arch-blind landing download it should not cross arches on its own.
+  const x64Only = [
+    { name: 'Merlin-1.32.0.dmg' },
+    { name: 'Merlin-1.32.0-mac.zip' },
+    { name: 'checksums.txt' },
+  ];
+  assert.equal(pickArm(x64Only), null, 'arm64 skips an x64-only release (no silent Rosetta downgrade)');
 
-  const zipOnly = [{ name: 'Merlin-mac.zip' }, { name: 'checksums.txt' }];
-  assert.equal(pickArm(zipOnly), 'Merlin-mac.zip', 'zip fallback when no DMG');
+  // Never a raw MerlinSetup-mac-* bootstrapper.
+  assert.ok(!String(pickArm(REAL_MAC_RELEASE)).startsWith('MerlinSetup'), 'arm64 never a bootstrapper');
+  assert.ok(!String(pickX64(REAL_MAC_RELEASE)).startsWith('MerlinSetup'), 'x64 never a bootstrapper');
+});
 
-  const mismatch = [{ name: 'Merlin-mac-x64.dmg' }, { name: 'checksums.txt' }];
-  assert.equal(pickArm(mismatch), null, 'arm64 returns null on x64-only release');
+test('2.8 — zip fallback is arch-correct when no DMG ships', () => {
+  const { pickArm, pickX64 } = loadMacPickers();
+  const zipsOnly = [
+    { name: 'Merlin-1.32.0-arm64-mac.zip' },
+    { name: 'Merlin-1.32.0-mac.zip' },
+    { name: 'checksums.txt' },
+  ];
+  assert.equal(pickArm(zipsOnly), 'Merlin-1.32.0-arm64-mac.zip', 'arm64 → arm64 zip');
+  assert.equal(pickX64(zipsOnly), 'Merlin-1.32.0-mac.zip', 'x64 → x64 zip (not the arm64 one)');
+});
 
+test('2.8 — picker tolerates a future arch-marked x64 DMG name', () => {
+  const { pickX64 } = loadMacPickers();
+  const future = [
+    { name: 'Merlin-2.0.0-arm64.dmg' },
+    { name: 'Merlin-2.0.0-x64.dmg' },  // hypothetical future explicit x64 marker
+    { name: 'checksums.txt' },
+  ];
+  assert.equal(pickX64(future), 'Merlin-2.0.0-x64.dmg', 'x64 accepts an explicit x64-marked DMG');
+});
+
+test('2.8 — pickMacInstallerAssetName handles empty/null input', () => {
+  const { pickArm } = loadMacPickers();
   assert.equal(pickArm([]), null, 'empty list → null');
   assert.equal(pickArm(null), null, 'null input → null');
 });

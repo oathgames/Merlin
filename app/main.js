@@ -319,6 +319,20 @@ const appInstall = app.isPackaged
     : path.join(path.dirname(app.getPath('exe')), 'resources'))
   : path.join(__dirname, '..');
 
+// REGRESSION GUARD (2026-07-03, mac-compat): the Go engine bundles ffmpeg,
+// ffprobe, and whisper-cli under <appInstall>/.claude/tools (they ship via
+// package.json extraResources into the read-only .app Resources on mac). The
+// engine binary itself is relocated to a per-user writable dir (see
+// binary-paths.js), and it is spawned with cwd = appRoot (~/Merlin), so on a
+// mac install NEITHER dir-of-executable NOR cwd reaches the bundled tools.
+// Point the engine at them explicitly. Set once on process.env so every
+// engine execFile inherits it (Node children inherit parent env by default);
+// the Go side reads $MERLIN_TOOLS_DIR first in findBundledTool. Do not clobber
+// an externally provided value.
+if (!process.env.MERLIN_TOOLS_DIR) {
+  process.env.MERLIN_TOOLS_DIR = path.join(appInstall, '.claude', 'tools');
+}
+
 // Workspace layout (RSI §1.3 — Cluster-B contract, 2026-04-23):
 //   ContentDir  — user-visible files: brands/, assets/, results/, activity.jsonl.
 //   StateDir    — hot state, FLAT layout: merlin-config.json, .merlin-vault*,
@@ -574,6 +588,58 @@ maybeMigrateFromDocuments();
 // FALLBACK (dev mode or missing binary): The old ELECTRON_RUN_AS_NODE
 // wrapper script at ~/.claude/bin/node[.cmd] is still created as a backup.
 
+// REGRESSION GUARD (2026-07-03, mac-compat): on darwin, fs.accessSync(X_OK)
+// passes for a binary of the WRONG architecture (an arm64 Mach-O is readable
+// and "executable" on an Intel Mac, it just fails at spawn with "Bad CPU
+// type"). The x64 DMG historically shipped an arm64 node, so every Intel user
+// silently trusted a node that could never run, and the working
+// ELECTRON_RUN_AS_NODE fallback was skipped. bundledNodeArchOK reads the
+// Mach-O header and rejects a thin binary whose cputype does not match
+// process.arch, so getBundledNodePath returns null and the caller falls back.
+// It is deliberately FAIL-OPEN: universal binaries, unreadable headers, or any
+// parse error return true so a genuinely-fine node is never rejected.
+function bundledNodeArchOK(filePath) {
+  if (process.platform !== 'darwin') return true;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(12);
+    let read = 0;
+    try { read = fs.readSync(fd, buf, 0, 12, 0); } finally { fs.closeSync(fd); }
+    if (read < 8) return true; // too small to judge — accept
+
+    const magicLE = buf.readUInt32LE(0);
+    const magicBE = buf.readUInt32BE(0);
+
+    // Fat / universal binary (fat headers are big-endian): contains every
+    // slice it needs, so it runs on any arch. Accept.
+    if (magicBE === 0xcafebabe || magicBE === 0xcafebabf ||
+        magicLE === 0xcafebabe || magicLE === 0xcafebabf) {
+      return true;
+    }
+
+    // Thin 64-bit Mach-O. cputype is the u32 right after the magic.
+    const CPU_X86_64 = 0x01000007;
+    const CPU_ARM64 = 0x0100000c;
+    let cputype = null;
+    if (magicLE === 0xfeedfacf) {        // little-endian (normal native layout)
+      cputype = buf.readUInt32LE(4);
+    } else if (magicBE === 0xfeedfacf) { // big-endian variant (rare)
+      cputype = buf.readUInt32BE(4);
+    } else {
+      return true; // 32-bit or non-Mach-O — not something we classify; accept
+    }
+
+    let fileArch = null;
+    if (cputype === CPU_X86_64) fileArch = 'x64';
+    else if (cputype === CPU_ARM64) fileArch = 'arm64';
+    if (!fileArch) return true; // unknown cputype — accept
+
+    return fileArch === process.arch;
+  } catch {
+    return true; // any error — accept, never break a working install
+  }
+}
+
 // Check if a real standalone Node binary is bundled with the app.
 // Returns the absolute path or null if not available.
 function getBundledNodePath() {
@@ -582,6 +648,10 @@ function getBundledNodePath() {
     const bundled = path.join(appInstall, '.claude', 'tools', 'node-runtime', binaryName);
     try {
       fs.accessSync(bundled, fs.constants.X_OK);
+      if (!bundledNodeArchOK(bundled)) {
+        console.warn('[node] Bundled Node is the wrong architecture for this Mac; falling back to ELECTRON_RUN_AS_NODE');
+        return null;
+      }
       return bundled;
     } catch {}
   }
@@ -1829,6 +1899,24 @@ async function createWindow() {
     return { action: 'deny' }; // Never open new Electron windows
   });
 
+  // REGRESSION GUARD (2026-07-04, SEC RSI): navigation lock — defense-in-depth
+  // with the index.html CSP (`default-src 'self'; script-src 'self'`). The main
+  // window only ever renders the bundled local index.html. Deny any attempt to
+  // navigate it to another document (e.g. a prompt-injection setting
+  // window.location to a remote origin); http(s) targets are handed to the OS
+  // browser like external links. In-page hash routing fires
+  // `did-navigate-in-page`, not `will-navigate`, so this does not block the SPA.
+  win.webContents.on('will-navigate', (event, navUrl) => {
+    let sameDoc = false;
+    try {
+      const current = win.webContents.getURL();
+      sameDoc = navUrl === current || navUrl === 'about:blank';
+    } catch { /* fall through to deny */ }
+    if (sameDoc) return;
+    event.preventDefault();
+    if (/^https?:\/\//i.test(navUrl)) openExternalSafe(navUrl);
+  });
+
   // Grant microphone permission for voice input.
   //
   // REGRESSION GUARD (2026-04-15, mic-in-production incident):
@@ -1989,7 +2077,13 @@ async function createWindow() {
 
         if (factBindingOn) {
           const toolsDir = path.join(appRoot, '.claude', 'tools');
-          const binaryPath = path.join(toolsDir, process.platform === 'win32' ? 'Merlin.exe' : 'Merlin');
+          // REGRESSION GUARD (2026-07-03, mac-compat): resolve the engine via
+          // getBinaryPath(), not a hardcoded <appRoot>/.claude/tools/Merlin.
+          // On mac the engine is relocated to a per-user writable dir and
+          // cleanupOrphanBinaries() DELETES the workspace copy, so the old
+          // hardcoded path did not exist on any mac install and fact-binding
+          // silently never ran there.
+          const binaryPath = getBinaryPath();
           const configPath = path.join(toolsDir, 'merlin-config.json');
           const sessionId = 'sess-' + require('crypto').randomBytes(8).toString('hex');
           // Brand is discovered lazily by the binary from workspace state;
@@ -12443,45 +12537,46 @@ async function ensureBinary(opts = {}) {
 // Mac asset naming (per release.yml): Merlin-mac-arm64.dmg, Merlin-mac-x64.dmg,
 // plus the legacy universal Merlin-mac.dmg (pre-arch-split releases). If a
 // universal DMG is present we treat it as a match for either arch.
+// REGRESSION GUARD (2026-07-03, mac-compat): the Mac installer matcher used
+// regexes (`-mac-arm64.*.dmg`, `-mac-x64.*.dmg`, universal `Merlin-mac.dmg`)
+// that matched ZERO real release assets. electron-builder's actual output,
+// verified against every release since 2026-04-23, is:
+//   arm64 DMG:  Merlin-<v>-arm64.dmg
+//   x64 DMG:    Merlin-<v>.dmg           (NO arch marker: builder default)
+//   arm64 zip:  Merlin-<v>-arm64-mac.zip
+//   x64 zip:    Merlin-<v>-mac.zip
+// Because nothing matched, BOTH arches fell through to a `-mac.*.zip` catch-all
+// whose first hit in asset order is the arm64 zip, so Intel clients auto-
+// updated onto an arm64 app they cannot launch, and arm64 clients lost the
+// in-place DMG update. A .dmg containing arm64/aarch64 is the Apple Silicon
+// build; a .dmg WITHOUT that marker is the Intel x64 build. NEVER return a
+// wrong-arch asset: return null so the caller skips the update instead of
+// bricking the install.
+function macAssetIsArm64(name) {
+  return /(arm64|aarch64)/i.test(name);
+}
+
+// Pick the single Mac asset name that matches this platform + arch, or null if
+// no arch-correct asset exists. Preference: native-arch DMG, then native-arch
+// auto-update zip. Never falls back to a wrong-arch asset.
+function pickMacInstallerAssetName(assets) {
+  if (!Array.isArray(assets)) return null;
+  const names = assets.map((a) => (a && a.name) || '').filter(Boolean);
+  const wantArm = process.arch === 'arm64';
+  const archOk = (n) => (wantArm ? macAssetIsArm64(n) : !macAssetIsArm64(n));
+  const dmg = names.find((n) => /\.dmg$/i.test(n) && archOk(n));
+  if (dmg) return dmg;
+  const zip = names.find((n) => /-mac.*\.zip$/i.test(n) && archOk(n));
+  if (zip) return zip;
+  return null;
+}
+
 function releaseHasInstallerForPlatform(assets) {
   if (!Array.isArray(assets)) return false;
   if (!assets.some(a => a && a.name === 'checksums.txt')) return false;
   if (process.platform === 'win32') return assets.some(a => /^Merlin\.Setup\..*\.exe$/i.test(a.name));
-  if (process.platform === 'darwin') {
-    const names = assets.map((a) => (a && a.name) || '');
-    const hasArchDmg = (arch) => {
-      const tag = arch === 'arm64' ? '(arm64|aarch64|apple)' : '(x64|amd64|intel)';
-      const re = new RegExp(`-mac-${tag}.*\\.dmg$`, 'i');
-      return names.some((n) => re.test(n));
-    };
-    // Universal DMG (no arch suffix): matches any arch.
-    const hasUniversalDmg = names.some((n) => /^Merlin[^-]*-mac\.dmg$/i.test(n) || /^Merlin\.dmg$/i.test(n));
-    // Legacy zip fallback (arch-less).
-    const hasZip = names.some((n) => /-mac.*\.zip$/i.test(n));
-    if (hasArchDmg(process.arch)) return true;
-    if (hasUniversalDmg) return true;
-    if (hasZip) return true;
-    return false;
-  }
+  if (process.platform === 'darwin') return pickMacInstallerAssetName(assets) !== null;
   return true;
-}
-
-// Pick the single Mac asset name that matches this platform + arch. Returns
-// null if no suitable asset exists. Caller decides whether to surface the
-// "no installer for your arch" error vs retry later. Preference order:
-// arch-specific DMG > universal DMG > any zip (last-resort).
-function pickMacInstallerAssetName(assets) {
-  if (!Array.isArray(assets)) return null;
-  const names = assets.map((a) => (a && a.name) || '').filter(Boolean);
-  const arch = process.arch;
-  const tag = arch === 'arm64' ? '(arm64|aarch64|apple)' : '(x64|amd64|intel)';
-  const archRe = new RegExp(`-mac-${tag}.*\\.dmg$`, 'i');
-  const archHit = names.find((n) => archRe.test(n));
-  if (archHit) return archHit;
-  const universal = names.find((n) => /^Merlin[^-]*-mac\.dmg$/i.test(n) || /^Merlin\.dmg$/i.test(n));
-  if (universal) return universal;
-  const zip = names.find((n) => /-mac.*\.zip$/i.test(n));
-  return zip || null;
 }
 
 async function checkForUpdates() {
