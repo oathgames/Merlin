@@ -11,7 +11,7 @@ bytes_justification: ~50KB — the creative brief (7 locks × 7 ad-type modules 
 
 ## MANDATORY pre-tool checklist (every image / video / voice / refine call)
 
-Live incident 2026-04-29 (POG): the agent generated 12 product images without loading any of the brand's reference photos — output was generic, $1+ of fal spend wasted, 36 minutes of wall clock burned, the user lost trust. Live incident 2026-05-01 (POG): 5 ads shipped to internal review with hallucinated tubs (wrong shape, wrong label, wrong color) because `productRefPath` was empty. This checklist is the prevention. It runs BEFORE the tool call, not as a "best effort" inside the prompt assembler.
+Why mandatory: skipping it has twice shipped generic or hallucinated creative (references never loaded, empty `productRefPath` → wrong product shape/label/color): wasted fal spend, burned wall-clock, lost user trust. This runs BEFORE the tool call, not best-effort inside the prompt assembler.
 
 0. **brand-manifest.json check.** If the brand repo (or `assets/brands/<brand>/`) contains `brand-manifest.json`, the binary will REFUSE every image-gen call that doesn't satisfy the manifest contract. You MUST: (a) Read the manifest, (b) pass `productRefPath` set to one of `products[].assets.*` or `generic_assets.*` from the manifest, (c) pass `compositeMode: true`. The binary's refusal carries the prefix `mcp__merlin__content: brand_manifest_violation:` — if you see that, your call shape was wrong; pick a canonical asset, set composite, retry. The manifest's `visual_direction` (when present) is the editorial north star — premium-playful brands (POG, Liquid Death, Olipop, Poppi) refuse the dollar-store aesthetic (comic POW bursts, lightning bolts, all-3-colors-competing, "BUY NOW" pressure). Read `visual_direction.do_not_use` and `visual_direction.do_use` BEFORE writing the prompt; both lists translate directly into prompt anchors and negative anchors. Brands without a manifest get a soft warning and proceed — no breaking change for legacy installs.
 1. **Brand resolved.** Read `[ACTIVE_BRAND]` from the message tag. Never infer brand from product name, never reuse a brand from earlier in the session if the tag changed.
@@ -26,13 +26,11 @@ If any of (1)–(4) is unresolved, STOP and surface the exact missing item. Neve
 
 When the `content` tool returns image/video output, the binary emits a sentinel block that the renderer replaces with `<div class="merlin-gallery">…<figure class="merlin-artifact">…</figure>…</div>` HTML. **You MUST include the entire gallery `<div>` block VERBATIM in your reply** — do NOT paraphrase the images as inline backticked paths (`` `results/image/.../image_1_portrait.jpg` ``). Paraphrasing prevents the renderer from converting the open grid into the fanned card stack the user expects to click.
 
-Live incident 2026-05-03: the model summarized 3 variant images as "Variant C — `path`, Variant D — `path`, Variant E — `path`" instead of echoing the gallery `<div>`s. The user saw text-with-paths in chat, no image previews, no clickable carousel. The renderer's `__transformChatGalleries` walks `.merlin-gallery` elements and converts them to the fanned stack — when the model paraphrases, the walk finds nothing.
+Why: the renderer's `__transformChatGalleries` walks `.merlin-gallery` elements to build the fanned card stack. If the model paraphrases images as backticked paths instead of echoing the `<div>`s, the walk finds nothing, so the user sees no previews and no clickable carousel.
 
 Concrete contract:
-- If the tool result contains one or more `<div class="merlin-gallery"…>…</div>` blocks, your final assistant text MUST echo each block verbatim somewhere in the reply (typically once per block, ordered as the binary emitted them).
-- Prose around the blocks is fine and encouraged — describe each variant, call out the standout, recommend the next action. But the gallery div itself must appear unmodified.
-- Adding extra prose paths in backticks IS fine as long as the gallery div is also present. The renderer renders both — duplicate display is rare in practice because the path matching the gallery already shows the image.
-- If you only see ONE gallery block but the tool generated multiple images (concatenated into one bundle), the single block is correct — echo it once.
+- Echo each `<div class="merlin-gallery">…</div>` block verbatim, once per block, in the order the binary emitted them. Prose around them (describe each variant, call the standout, recommend the next action) is encouraged, but the div itself must appear unmodified.
+- One gallery block for a multi-image bundle is correct — echo it once. Extra backticked paths alongside the div are harmless (the renderer renders both).
 
 ## Image Prompts (`mcp__merlin__content({action: "image"})`)
 
@@ -447,7 +445,7 @@ Every brief declares a `creativeAngle` — the WHY behind the ad. Format is the 
 1. **hidden_cost** — name the invisible cost of NOT solving the problem (time, money, relationships, self-image). "The real cost of [problem] isn't [obvious] — it's [invisible]."
 2. **failed_solution** — "You've tried X, Y, Z. Here's why none of them worked and what actually does." Respects the audience's history.
 3. **social_proof_pivot** — "I was skeptical too" → peer reveals they converted, specific number. Default when no angle is better-matched.
-4. **mechanism** — explain HOW the product works at an ingredient / system level. Converts skeptical, research-driven buyers.
+4. **mechanism** — explain HOW the product works at an ingredient / system level. Converts skeptical, research-driven buyers. Distinguish the *problem-mechanism* (the root cause rivals miss) from your *solution-mechanism* (your active principle), then NAME the solution-mechanism so it's believable, distinct, and ownable ("free-T bound by SHBG", not a generic "how it works"). A named mechanism is what makes this angle land.
 5. **enemy** — name a villain (an industry practice, a myth, a category norm) and stand opposite it. High-energy; clashes with trust-centered brands.
 6. **identity_shift** — the product isn't what you BUY, it's what you BECOME. Highest AOV lift when it matches positioning.
 7. **urgency_of_now** — external timing trigger makes inaction expensive TODAY (deadline, inventory, season, policy change). Avoid on trust-brands (reads manipulative).
@@ -460,6 +458,7 @@ Every brief declares a `creativeAngle` — the WHY behind the ad. Format is the 
 - Brand guide's `preferred_angles` drive selection when the brief is ambiguous; `forbidden_angles` are a hard veto.
 - Angle × format compatibility is advisory (see `angle.go` `CompatibleFormats`). Mismatches generate but score 10–15% lower at judge time.
 - Angle is encoded in the ad name as `/ angle:<key>` — wisdom system aggregates ROAS per angle for brand-guide synthesis feedback loops.
+- `objection_first` briefs use the objection taxonomy + logic/proof/emotion rebuttal structure (see "Creative & offer frameworks" in `merlin-ads`).
 
 ## Content Action Reference (`mcp__merlin__content`)
 

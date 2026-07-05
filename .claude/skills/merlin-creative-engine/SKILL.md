@@ -2,7 +2,7 @@
 name: merlin-creative-engine
 description: Use when the user wants BREADTH of creatives in one shot — "fan out 30 ads", "give me 50 hooks", "spin up a creative pass for [brand]", "20 variants across demos", "creative pass", "batch ad ideas", "test a bunch of angles", "I need 40 retargeting variants". Autonomously generates N (5–60) distinct creatives at uber-premium quality, randomized across creative-angle × demo × awareness × ad-type-module × aspect × emotional-register, each anchored to real product references via brand-manifest, audited at brief-time with EvaluateBrief + Copy Quality Gate, then rendered in parallel via mcp__merlin__content / mcp__merlin__video. Chat output is MINIMAL — one status line up front, then the gallery of generated creatives. All planning, matrix detail, and per-variant briefs are computed silently and attached to image metadata for click-through inspection. Cross-references merlin-content for the 7 locks, hook archetypes, 10 creative angles, AdBrief struct, EvaluateBrief rubric, Copy Quality Gate; cross-references merlin-brand-guide for brand-manifest + brand.md ground truth.
 owner: ryan
-bytes_justification: ~22KB — autonomous-generation orchestration layer, well under Tier C 50KB cap. Does NOT duplicate the 7 locks, hook archetypes, creative angles, AdBrief, EvaluateBrief, Copy Quality Gate, or vendor cards (those live in merlin-content). Unique here: the 8-axis randomization matrix with at-least-once sampling, the silent-orchestration output contract that hides planning detail until the user explicitly asks, the parallel-render fan-out that calls mcp__merlin__content per variant with imageCount + varyDimension for Andromeda-friendly axis rotation, and the brand-manifest enforcement that makes mass-gen safe (every brief carries productRefPath + compositeMode:true so banana-pro-edit composites the real product photo instead of hallucinating it). Cross-refs the canon rather than copying it.
+bytes_justification: ~22KB — autonomous-generation orchestration layer, well under Tier C 50KB cap. Does NOT duplicate the 7 locks, hook archetypes, creative angles, AdBrief, EvaluateBrief, Copy Quality Gate, or vendor cards (those live in merlin-content). Unique here: the 13-axis randomization matrix with at-least-once sampling, the silent-orchestration output contract that hides planning detail until the user explicitly asks, the parallel-render fan-out that calls mcp__merlin__content per variant with imageCount + varyDimension for Andromeda-friendly axis rotation, and the brand-manifest enforcement that makes mass-gen safe (every brief carries productRefPath + compositeMode:true so banana-pro-edit composites the real product photo instead of hallucinating it). Cross-refs the canon rather than copying it.
 ---
 
 # Creative Engine — Autonomous Mass Creative Generation
@@ -63,7 +63,7 @@ The creative foundations live in `merlin-content`. This skill orchestrates them;
 - **The 10 hook archetypes** — `curiosity-gap`, `pattern-interrupt`, `problem-agitation`, `POV`, `social-proof-frontload`, `skit`, `before-after`, `direct-address`, `voiceover-demo`, `testimonial-open`
 - **AdBrief struct + 4 camouflage fields** — `openingScenario`, `conflictBeat`, `interruptBeats[]`, `platformNative`
 - **EvaluateBrief rubric** — Core 8pt + Polish 8pt; band A/B/C/D/F
-- **Copy Quality Gate** — 7-expert panel + AI detector (≥40% = block) + banned vocab list + humanizer patterns
+- **Copy Quality Gate** — 8-expert panel + AI detector (≥40% = block) + banned vocab list + humanizer patterns
 - **Vendor capability cards** — fal.ai, HeyGen, ElevenLabs (defaults: image = `banana-pro-edit`, video = `seedance-2`, talking-head = `heygen-agent`)
 - **Realism gradient + 6 technical anchors** for video
 
@@ -89,7 +89,7 @@ If everything resolves, no chat output yet. Move to Phase 1.
 
 ## Phase 1 — Build the randomization matrix (silent)
 
-Variety is engineered at sample-time, not filtered post-hoc. Sample N cells from a **13-axis space** (the 8 legacy axes + 5 added in RSI-persona-lp iter 3, 2026-05-13):
+Variety is engineered at sample-time, not filtered post-hoc. Sample N cells from a **13-axis space**:
 
 | # | Axis | Cardinality | Source |
 |---|------|-------------|--------|
@@ -111,13 +111,13 @@ Variety is engineered at sample-time, not filtered post-hoc. Sample N cells from
 
 - **No repeated `(demo, creative angle, ad-type module)` triple** in the same run — that 3-tuple is what most determines audience read
 - **`forbidden_angles` from brand-manifest.json = hard veto**; never sample
-- **`forbidden_personas` from brand-manifest.json = hard veto**; never sample (extends the angle-veto pattern to personas — RSI iter 3)
+- **`forbidden_personas` from brand-manifest.json = hard veto**; never sample (extends the angle-veto pattern to personas)
 - **`forbidden_landing_pages` from brand-manifest.json = hard veto**; never sample
 - **At-least-once-each on creative angles** before any reuse (forces breadth across the 10)
 - **At-least-once-each on ad-type modules** before any reuse (forces breadth across the 7)
-- **At-least-once-each on Persona** before any reuse (RSI iter 3 — forces every brand persona to be exercised before any one gets a second variant)
-- **At-least-once-each on Landing page** before any reuse (RSI iter 3 — forces every funnel entry point to be exercised)
-- **At-least-once-each on Race** before any reuse (RSI iter 3 — load-bearing demographic-representation invariant; defaults to US Census distribution when manifest doesn't override; NEVER mono-ethnic batch)
+- **At-least-once-each on Persona** before any reuse (forces every brand persona to be exercised before any one gets a second variant)
+- **At-least-once-each on Landing page** before any reuse (forces every funnel entry point to be exercised)
+- **At-least-once-each on Race** before any reuse (load-bearing demographic-representation invariant; defaults to US Census distribution when manifest doesn't override; NEVER mono-ethnic batch)
 - **Persona ↔ Landing-page compatibility = HARD** — sampler MUST verify the LP's `persona_slugs[]` contains the sampled persona's slug before pairing them. Incompatible pairs are sampler bugs; CheckBrief's `persona_landing_page_incompatible` error catches stragglers.
 - **Awareness distribution** matches `--awareness=`; default `cold` = 80% problem-aware / 20% unaware; `all` = 60/30/10 cold/warm/hot. When a persona declares its own `awareness_level`, that overrides the global distribution for variants tagged to that persona.
 - **Demo distribution** honors brand-manifest avatar weights; if absent, even split across roster
@@ -360,11 +360,3 @@ If everything's clean, **stay silent**. The user's already looking at 12 creativ
 - **Promotion Gate (post-launch winner detection)** → `merlin-ads`
 - **Wisdom feedback loop (top performers' angle/module/hook → memory.md ## What Works)** → `merlin-analytics`
 - **Asset organization (inbox routing)** → `mcp__merlin__bulk_upload`
-
----
-
-## What changed from the prior version
-
-The original skill emitted a verbose text-brief block per variant, requiring the user to scroll a mile of plan before seeing any creative. The 2026-05-04 user feedback was unambiguous: *"please do not show the full details, the user will only need to see the creatives. All of the copy/details can be hidden until the images are shown. The priority is to make it super simple so claude/merlin handle ALL of the andromeda friendly mass creative generation (uber premium quality)."*
-
-This rewrite preserves every quality gate (matrix sampling rules, EvaluateBrief audit, Copy Quality Gate, forbidden_angles veto, brand-manifest enforcement, model defaults) but inverts the output contract: chat sees a one-line status and the final gallery; everything else is computed silently. Power users can still get the verbose output via `--show-briefs`.
