@@ -734,13 +734,20 @@ function buildTools(tool, z, ctx) {
         'audit-events',
         'audit-frequency-caps',
         'audit-catalog',
-      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0 — call this when the user asks about match quality, CAPI param coverage, or "is my pixel set up right". For best results pass agentName (the Conversions API integration name).'),
+        'audit-change-history',
+        'audit-account-state',
+        'audit-delivery-breakdown',
+      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall.'),
       brand: brandSchema.describe('Brand name for vault-scoped Meta credentials.'),
       adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel and audit-events: optional pixel id override (defaults to brand cfg metaPixelId).'),
       agentName: z.string().optional().describe('For audit-events: the Conversions API integration\'s agent name, used to scope Meta\'s Dataset Quality API EMQ query. Find it in Events Manager → Data Sources → your dataset → the integration\'s name (e.g. the Shopify/Stape/Elevar/GTM integration). Optional — if omitted Merlin still attempts the query and tells the user how to find it.'),
       catalogId: z.string().optional().describe('For audit-catalog: the Meta product catalog id (find it via mcp__merlin__meta_ads({action:"catalog"}) or in Commerce Manager).'),
       status: z.enum(['active', 'all']).optional().describe('For audit-retargeting-cascade and audit-frequency-caps: filter ad sets. Default "active" (paused ad sets are noise).'),
       limit: z.number().optional().describe('Max records to return per page. Defaults: list-audiences=250, list-conversions=100, audit-catalog=200. Hard caps: 500.'),
+      windowDays: z.number().optional().describe('For audit-change-history and audit-delivery-breakdown: lookback window in days. Default 7. Use e.g. 30 to trace a change further back.'),
+      timeIncrement: z.number().optional().describe('For audit-delivery-breakdown: insights bucket size in days. 1 = daily (default, to see WHICH day delivery moved). Pass -1 for a single aggregate window.'),
+      breakdowns: z.string().optional().describe('For audit-delivery-breakdown: comma-separated dimensions to slice by (allow-listed): publisher_platform, platform_position, device_platform, impression_device, age, gender, country, region, dma. Unknown values are dropped.'),
+      level: z.enum(['account', 'campaign', 'adset', 'ad']).optional().describe('For audit-delivery-breakdown: aggregation level. Default account.'),
     },
     handler: async (args) => {
       const action = 'meta-' + (
@@ -752,6 +759,9 @@ function buildTools(tool, z, ctx) {
         args.action === 'audit-catalog' ? 'audit-catalog' :
         args.action === 'audit-retargeting-cascade' ? 'audit-retargeting-cascade' :
         args.action === 'audit-audience-rule' ? 'audit-audience-rule' :
+        args.action === 'audit-change-history' ? 'audit-change-history' :
+        args.action === 'audit-account-state' ? 'audit-account-state' :
+        args.action === 'audit-delivery-breakdown' ? 'audit-delivery-breakdown' :
         args.action
       );
       return toEnvelope(await runBinary(ctx, action, args));

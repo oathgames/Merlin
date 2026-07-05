@@ -1226,3 +1226,22 @@ test('klaviyo tool exposes campaign-send / campaign-schedule + their params', ()
       `klaviyo tool must declare the ${param} input for campaign-send/schedule`);
   }
 });
+
+// ── meta_audit change-history / delivery-breakdown / account-state ──────
+// (2026-07-05) New read-only diagnostic actions must be in the enum + wired in
+// the handler mapper + carry their params, and meta_audit must STAY read-only.
+test('meta_audit exposes the new diagnostic read actions (change-history, account-state, delivery-breakdown)', () => {
+  const i = SRC_TOOLS.indexOf("name: 'meta_audit'");
+  assert.ok(i > 0, 'meta_audit tool block must exist');
+  const block = SRC_TOOLS.slice(i, i + 5200);
+  for (const a of ['audit-change-history', 'audit-account-state', 'audit-delivery-breakdown']) {
+    assert.ok(block.includes(`'${a}'`), `meta_audit action enum must include ${a}`);
+    assert.ok(block.includes(`args.action === '${a}'`), `meta_audit handler mapper must route ${a}`);
+  }
+  for (const p of ['windowDays:', 'timeIncrement:', 'breakdowns:']) {
+    assert.ok(block.includes(p), `meta_audit must declare the ${p} input for the diagnostic reads`);
+  }
+  // Stays read-only: no destructive annotation, no approval preview.
+  assert.ok(block.includes('destructive: false'), 'meta_audit must remain destructive:false');
+  assert.ok(block.includes('preview: false'), 'meta_audit must remain preview:false (no approval card on reads)');
+});
