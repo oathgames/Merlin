@@ -111,7 +111,6 @@
         "dmg",
         "zip"
       ],
-      "minimumSystemVersion": "12.0",
       "icon": "app/icon-1024.png",
       "files": [
         "!.claude${/*}",
@@ -136,6 +135,7 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
+        "LSMinimumSystemVersion": "12.0",
         "NSMicrophoneUsageDescription": "Merlin uses your microphone for voice input — transcribing what you say into messages. Audio is processed locally on your device and never uploaded."
       }
     },
