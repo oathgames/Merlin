@@ -164,6 +164,69 @@ const WINDOWS_HTTP_TOOLS = [
   /\bStart-BitsTransfer\b/i,
 ];
 
+// ── Destructive shell commands ────────────────────────────────────────────
+// REGRESSION GUARD (2026-07-04, SEC RSI — fold-in of the fail-open inline hook):
+// This blocklist previously lived ONLY as an inline `node -e` hook in
+// .claude/settings.json that parsed `process.env.TOOL_INPUT`. The Claude Agent
+// SDK delivers PreToolUse payloads on STDIN, not env — so TOOL_INPUT was always
+// unset, the inline guard saw an empty command, every pattern short-circuited on
+// the empty string, and the ENTIRE destructive-command blocklist was a silent
+// no-op under the real harness (fail-OPEN). A prompt-injection from scraped
+// brand HTML / competitor ad copy could therefore drive the agent into any of
+// these. Moving them here — into the stdin-first, fail-CLOSED reader — makes the
+// guard actually run. In a Merlin end-user session the agent is an ad-creation
+// assistant; it never legitimately needs any of these, so enforcement has zero
+// UX cost. Do NOT move these back inline. See settings.json for the removed hook.
+const DESTRUCTIVE_COMMAND_PATTERNS = [
+  /\brm\s+-rf\s+[\\/~]/i,               // recursive force-delete of root / home / abs path
+  /\bformat\s+[a-z]:/i,                 // Windows drive format
+  /\bshutdown\b/i,
+  /\breboot\b/i,
+  /\bmkfs\b/i,                          // *nix filesystem create
+  /\bdd\s+if=/i,                        // raw disk write
+  /\bdel\s+\/[sSqQ]\b/i,                // Windows recursive / quiet delete
+  /\breg\s+(add|delete)\b/i,            // Windows registry mutation
+  /\bchmod\s+777\s+\//i,                // world-writable on an absolute path
+  /\bgit\s+(push|reset\s+--hard|rebase|force)\b/i,
+  /\bnpm\s+(install|i)\s+-g\b/i,        // global package install
+  /\bpip\s+install\b/i,
+  /\bbrew\s+install\b/i,
+  /\bapt(-get)?\s+(install|remove|purge)\b/i,
+  /\bsudo\b/i,
+  /\b(powershell|pwsh)\b[^\n]*-[eE]nc/i, // encoded PowerShell command
+  /\bcurl\b[^\n]*\|\s*(ba)?sh\b/i,       // curl | sh
+];
+
+// ── App-source / framework files — mutation is blocked, reads allowed ──────
+// REGRESSION GUARD (2026-07-04, SEC RSI — fold-in): the second fail-open inline
+// hook in settings.json guarded these shipped framework files against Edit/Write.
+// It also fail-opened (same TOOL_INPUT-on-env bug), so mutation of style.css,
+// index.html, CLAUDE.md, version.json, package.json, settings.json, and the
+// commands/hooks/skills trees was unprotected under the real SDK. Folded here.
+// CRITICAL DIFFERENCE from the credential patterns above: these are checked ONLY
+// for WRITE tools (Edit/Write/NotebookEdit/MultiEdit). The app legitimately READS
+// several of them at runtime (version.json for /update, CLAUDE.md as instructions,
+// etc.), so a read+write block would break the product. The security intent is
+// to stop the agent from REWRITING shipped framework files (which would re-route
+// skills, disable hooks, or bump the update manifest) — that is a write concern.
+const APP_SOURCE_WRITE_PATTERNS = [
+  /[/\\]app[/\\](style\.css|index\.html)$/i,
+  /[/\\]\.claude[/\\]settings\.json$/i,
+  /[/\\]\.claude[/\\]commands[/\\]/i,
+  /[/\\]\.claude[/\\]hooks[/\\]/i,
+  /[/\\]\.claude[/\\]skills[/\\]/i,
+  /(^|[/\\])CLAUDE\.md$/i,
+  /(^|[/\\])version\.json$/i,
+  /(^|[/\\])package(-lock)?\.json$/i,
+  // Shell login / profile files — mutation is a persistence-attack vector.
+  /[/\\]\.(bashrc|zshrc|bash_profile|profile)$/i,
+  // OS config trees — the agent never needs to write these.
+  /(^|[/\\])etc[/\\]/i,
+  /[/\\]Windows[/\\]System/i,
+];
+// Write-shape tools (payload carries file_path AND the tool mutates it).
+const WRITE_TOOL_NAMES = /^(Edit|Write|NotebookEdit|MultiEdit)$/i;
+
 // Keywords inside inline scripts that indicate network intent.
 const NETWORK_INTENT_KEYWORDS = [
   /require\(['"]https?['"]\)/,
@@ -302,6 +365,14 @@ const PROTECTED_PATH_PATTERNS = [
   // and .tmp atomic-write siblings per Hard-Won Rule 7.
   /\.merlin-active-spend(\.|$)/i,
   /\.merlin-dashboard-prev(\.|$)/i,
+  // REGRESSION GUARD (2026-07-04, SEC RSI — fold-in): private-key / credential
+  // stores outside the Merlin namespace. The removed settings.json inline hook
+  // guarded these against Read/Edit/Write; folded here (read+write blocked —
+  // exfiltration is the risk, same treatment as .claude/.credentials.json).
+  // `.ssh` is also in permissions.deny for Bash; this closes the file-tool shape.
+  /[/\\]\.(ssh|gnupg|aws)[/\\]/i,
+  /[/\\]\.env(\.|$)/i,
+  /(^|[/\\])id_(rsa|ed25519|ecdsa|dsa)(\.|$)/i,
 ];
 const PROTECTED_COMMAND_PATTERNS = [
   /merlin-config\.json\b/i,
@@ -489,6 +560,42 @@ function matchesProtectedFilePath(filePath) {
   return null;
 }
 
+function matchesDestructiveCommand(cmd) {
+  for (const pat of DESTRUCTIVE_COMMAND_PATTERNS) {
+    if (pat.test(cmd)) return pat.source;
+  }
+  return null;
+}
+
+// A Merlin binary invocation must not be chained with shell operators — a
+// prompt-injection could smuggle a second command after a benign
+// `Merlin.exe --cmd '...'`. Quoted regions are stripped first so operators
+// INSIDE a --cmd JSON payload don't false-positive. Mirrors the intent of the
+// removed settings.json inline hook (which fail-opened on the env-vs-stdin bug).
+//
+// The trigger is an actual Merlin BINARY invocation — `Merlin.exe`, or `merlin
+// --cmd/--config` — NOT the mere substring "merlin". Without this narrowing a
+// benign `grep merlin log.txt | head` or `cat x | grep merlin` would be blocked
+// (the removed inline hook used the broad substring and would have over-blocked
+// these had it ever actually run).
+function matchesMerlinShellOperator(cmd) {
+  const invokesMerlinBinary =
+    /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin\s+--(cmd|config)\b/i.test(cmd);
+  if (!invokesMerlinBinary) return false;
+  const stripped = cmd
+    .replace(/"(?:[^"\\]|\\.)*"/g, '')
+    .replace(/'[^']*'/g, '');
+  return /[&|;`]|\$\(/.test(stripped);
+}
+
+function matchesAppSourceWrite(filePath) {
+  if (!filePath) return null;
+  for (const pat of APP_SOURCE_WRITE_PATTERNS) {
+    if (pat.test(filePath)) return pat.source;
+  }
+  return null;
+}
+
 function block(reason, toolName, cmd) {
   auditLog(reason, toolName, cmd);
   process.stderr.write(
@@ -567,6 +674,20 @@ function main() {
         filePath
       );
     }
+    // App-source / framework mutation guard — WRITE tools only. Reads of
+    // version.json / CLAUDE.md / style.css are legitimate app behavior; only
+    // rewriting a shipped framework file (which re-routes skills, disables a
+    // hook, or bumps the update manifest) is blocked. See APP_SOURCE_WRITE.
+    if (WRITE_TOOL_NAMES.test(toolName)) {
+      const srcHit = matchesAppSourceWrite(filePath);
+      if (srcHit) {
+        block(
+          'Cannot modify shipped Merlin app source or framework files: ' + filePath,
+          toolName,
+          filePath
+        );
+      }
+    }
   }
 
   // ── WebFetch ───────────────────────────────────────────────────────
@@ -581,6 +702,19 @@ function main() {
 
   // ── Bash ───────────────────────────────────────────────────────────
   if (cmd) {
+    // Destructive shell commands (rm -rf /, format, shutdown, git push, sudo,
+    // curl|sh, …). Folded from the fail-open settings.json inline hook.
+    const destructiveHit = matchesDestructiveCommand(cmd);
+    if (destructiveHit) {
+      block('This command is not allowed in a Merlin session (destructive / out-of-scope for an ad assistant)', toolName, cmd);
+    }
+
+    // A Merlin binary call chained with a shell operator (;, &&, |, `, $()) —
+    // blocks smuggling a second command after a benign Merlin.exe invocation.
+    if (matchesMerlinShellOperator(cmd)) {
+      block('Merlin commands must not be chained with shell operators', toolName, cmd);
+    }
+
     // Protected file access via shell verbs
     const fileHit = matchesProtectedFileCommand(cmd);
     if (fileHit) {

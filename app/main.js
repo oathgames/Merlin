@@ -1782,6 +1782,24 @@ async function createWindow() {
     return { action: 'deny' }; // Never open new Electron windows
   });
 
+  // REGRESSION GUARD (2026-07-04, SEC RSI): navigation lock — defense-in-depth
+  // with the index.html CSP (`default-src 'self'; script-src 'self'`). The main
+  // window only ever renders the bundled local index.html. Deny any attempt to
+  // navigate it to another document (e.g. a prompt-injection setting
+  // window.location to a remote origin); http(s) targets are handed to the OS
+  // browser like external links. In-page hash routing fires
+  // `did-navigate-in-page`, not `will-navigate`, so this does not block the SPA.
+  win.webContents.on('will-navigate', (event, navUrl) => {
+    let sameDoc = false;
+    try {
+      const current = win.webContents.getURL();
+      sameDoc = navUrl === current || navUrl === 'about:blank';
+    } catch { /* fall through to deny */ }
+    if (sameDoc) return;
+    event.preventDefault();
+    if (/^https?:\/\//i.test(navUrl)) openExternalSafe(navUrl);
+  });
+
   // Grant microphone permission for voice input.
   //
   // REGRESSION GUARD (2026-04-15, mic-in-production incident):

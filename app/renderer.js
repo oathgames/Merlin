@@ -9576,7 +9576,7 @@ function renderPerfBar(perf) {
         dd.id = 'platform-dropdown';
         dd.className = 'platform-dropdown';
         dd.innerHTML = `<div class="platform-dd-header">Spend by Platform</div>${perf.platformBreakdown.map(p =>
-          `<div class="platform-dd-row"><span class="platform-badge platform-${p.name.split(' ')[0].toLowerCase()}">${p.name}</span><span>$${Math.round(p.spend)}</span><span>${p.roas > 0 ? p.roas.toFixed(1) + 'x' : '—'}</span></div>`
+          `<div class="platform-dd-row"><span class="platform-badge platform-${String(p.name || '').split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '')}">${escapeHtml(p.name)}</span><span>$${Math.round(p.spend)}</span><span>${p.roas > 0 ? p.roas.toFixed(1) + 'x' : '—'}</span></div>`
         ).join('')}`;
         const rect = indicator.getBoundingClientRect();
         dd.style.top = (rect.bottom + 4) + 'px';
@@ -12083,7 +12083,7 @@ async function loadArchive(opts = {}) {
           // inject class- or attribute-breakout markup into the header's
           // innerHTML assignment.
           const platformBadge = g.platform
-            ? `<span class="platform-badge platform-${escapeHtml(g.platform.toLowerCase())}">${escapeHtml(g.platform)}</span>`
+            ? `<span class="platform-badge platform-${g.platform.toLowerCase().replace(/[^a-z0-9]/g, '')}">${escapeHtml(g.platform)}</span>`
             : '';
           const spendChip = spend > 0 ? ` · ${fmtGroupSpend(spend)}` : '';
           header.innerHTML = `
@@ -12193,7 +12193,7 @@ async function loadArchive(opts = {}) {
           <div class="archive-card-title" title="${escapeHtml(displayTitle)}">${escapeHtml(displayTitle)}</div>
           <div class="archive-card-meta">
             <span class="archive-card-badge ${statusClass}">${statusText}</span>
-            <span class="platform-badge platform-${(ad.platform || '').toLowerCase()}">${escapeHtml(ad.platform || '')}</span>
+            <span class="platform-badge platform-${(ad.platform || '').toLowerCase().replace(/[^a-z0-9]/g, '')}">${escapeHtml(ad.platform || '')}</span>
             ${budgetText ? `<span>${budgetText}</span>` : ''}
           </div>
           ${kpiChips.length ? `<div class="archive-card-kpis">${kpiChips.join('')}</div>` :
