@@ -3936,8 +3936,14 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .ts-step-pct { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .ts-step-soft { font-size:var(--fs-2xs); color: var(--text-muted); opacity: .8; }
 .ts-step-soft::before { content: "≈ "; }
-/* unavailable stage: dimmed + inline connect CTA */
-.ts-stage.unavailable .ts-bar { background: rgba(127,127,127,.18); box-shadow: none; width: 64px; }
+/* unavailable stage: the bar renders at its natural funnel width but grey /
+   desaturated — "this stage exists, data is not flowing yet". No glow, no
+   fixed width (the data-tw funnel width governs, same as live bars). */
+.ts-stage.unavailable .ts-bar {
+  background: rgba(127,127,127,.14);
+  border: 1px dashed rgba(148,163,184,.35);
+  box-shadow: none;
+}
 .ts-stage.unavailable .ts-stage-num { color: var(--text-muted); }
 .ts-connect-inline {
   background: none; border: 1px solid rgba(34,211,238,.4); color: var(--text);

@@ -170,9 +170,10 @@ test('streaming auto-follow scrollToBottom stays instant (no smooth)', () => {
 
 test('truesight bars start at width:0 and animate to their target width', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
-  // Slice widened 5200 -> 6600 after the density pass (2026-07-06) added the
-  // tooltip + single-CTA logic ahead of the rAF block.
-  const fn = RENDERER_JS.slice(idx, idx + 6600);
+  // Slice to the next top-level function so comment growth can't silently
+  // push the rAF block out of the scan window.
+  const fnEnd = RENDERER_JS.indexOf('\nfunction ', idx + 1);
+  const fn = RENDERER_JS.slice(idx, fnEnd === -1 ? idx + 9000 : fnEnd);
   assert.match(fn, /width:0%/, 'bars are built at width:0');
   assert.match(fn, /data-tw=/, 'target width is stashed in data-tw');
   assert.match(fn, /requestAnimationFrame\([\s\S]{0,200}data-tw/,

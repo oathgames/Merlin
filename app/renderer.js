@@ -11890,7 +11890,10 @@ function renderTruesightFunnel(data) {
     // data-proportional — a ~500:1 impressions->orders range would otherwise
     // collapse the lower stages into slivers. The big numbers + conversion %s
     // carry the exact values; the bar is just an at-a-glance funnel cue.
-    const pct = avail ? TS_BAR_WIDTHS[Math.min(i, TS_BAR_WIDTHS.length - 1)] : 0;
+    // Unavailable stages keep their natural funnel width too — the bar renders
+    // grey/desaturated (see .ts-stage.unavailable .ts-bar) so the slot reads
+    // as "this stage exists, data is not flowing yet", not as a layout gap.
+    const pct = TS_BAR_WIDTHS[Math.min(i, TS_BAR_WIDTHS.length - 1)];
     // stage.key lands in an HTML attribute; escapeHtml doesn't escape quotes,
     // so also neutralize them (defense-in-depth — keys are fixed today, but the
     // renderer must be safe regardless of payload source).
@@ -11910,14 +11913,14 @@ function renderTruesightFunnel(data) {
       html += '<button class="ts-connect-inline" type="button">Connect</button>';
     }
     html += '</div>';
-    if (avail) {
-      // Funnel draw (item 5): bar starts at width:0 with its target in data-tw;
-      // a rAF after innerHTML applies the real width so .ts-bar's width
-      // transition draws the funnel out (see the requestAnimationFrame below).
-      // No number inside the bar — the stage head already shows it (density
-      // contract: each number appears once).
-      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:0%" data-tw="' + pct.toFixed(1) + '"></div></div>';
-    }
+    // Funnel draw (item 5): bar starts at width:0 with its target in data-tw;
+    // a rAF after innerHTML applies the real width so .ts-bar's width
+    // transition draws the funnel out (see the requestAnimationFrame below).
+    // No number inside the bar — the stage head already shows it (density
+    // contract: each number appears once). Rendered for unavailable stages
+    // too (greyed via the .unavailable ancestor) so the funnel shape stays
+    // continuous.
+    html += '<div class="ts-bar-track"><div class="ts-bar" style="width:0%" data-tw="' + pct.toFixed(1) + '"></div></div>';
     html += '</div>';
     const step = stepByFrom[stage.key];
     if (step && i < barStages.length - 1) {

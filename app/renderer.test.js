@@ -2261,9 +2261,10 @@ test('Truesight — prefetches so the tab opens instantly (startup + brand + win
 
 test('Truesight — ad-attributed stages show an honest "connect GA" note', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
-  // Slice widened 4600 -> 5200 -> 6200 across the funnel-draw and density
-  // (2026-07-06) passes.
-  const fn = RENDERER_JS.slice(idx, idx + 6200);
+  // Slice to the next top-level function so comment growth can't silently
+  // push assertions out of the scan window (bit us 3x in the density pass).
+  const fnEnd = RENDERER_JS.indexOf('\nfunction ', idx + 1);
+  const fn = RENDERER_JS.slice(idx, fnEnd === -1 ? idx + 9000 : fnEnd);
   assert.ok(fn.includes("s.provider === 'ads'") && fn.includes("s.key === 'visits'") && fn.includes("s.key === 'add_to_cart'"),
     'detects upper-funnel stages that fell back to ad pixels');
   assert.ok(fn.includes('ts-note') && fn.includes('Connect Google Analytics'),
@@ -2331,7 +2332,8 @@ test('Truesight WoW — compare label adapts to the selected window (7d vs prev 
 
 test('Truesight WoW — funnel prepends the growth header; deltas appear exactly once', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
-  const fn = RENDERER_JS.slice(idx, idx + 6600);
+  const fnEnd = RENDERER_JS.indexOf('\nfunction ', idx + 1);
+  const fn = RENDERER_JS.slice(idx, fnEnd === -1 ? idx + 9000 : fnEnd);
   assert.ok(fn.includes('truesightGrowthHeader(stages, data.wow_days)'),
     'the funnel opens with the WoW growth header, fed the engine wow_days');
   // Density contract (2026-07-06, "too much text" feedback): when the growth
@@ -2348,6 +2350,15 @@ test('Truesight WoW — funnel prepends the growth header; deltas appear exactly
   // The "directional" jargon chip became an approx prefix + tooltip.
   assert.ok(!fn.includes('ts-step-soft') && fn.includes('&asymp;'),
     'soft cross-source rates render as an approx-prefixed pct, not a jargon chip');
+  // Unavailable stages render their bar too (grey/desaturated via the
+  // .unavailable ancestor) so the funnel shape stays continuous — the slot
+  // reads "data not flowing yet", never a layout gap (2026-07-06 feedback).
+  assert.ok(fn.includes('Rendered for unavailable stages'),
+    'the funnel bar is emitted for unavailable stages as well (greyed), not skipped');
+  assert.ok(/\.ts-stage\.unavailable \.ts-bar \{/.test(STYLE_CSS),
+    'unavailable bars have a dedicated grey/desaturated style');
+  assert.ok(!/\.ts-stage\.unavailable \.ts-bar \{[^}]*width:/.test(STYLE_CSS),
+    'unavailable bars must NOT carry a fixed CSS width — the data-tw funnel width governs');
 });
 
 test('Truesight WoW — styles exist for the growth header and delta chips', () => {
