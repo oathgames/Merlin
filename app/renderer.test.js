@@ -2305,7 +2305,8 @@ test('Truesight WoW — growth header leads with Reach + Mindshare + List Joins'
   // + compare-label plumbing are unchanged.
   const idx = RENDERER_JS.indexOf('function truesightGrowthHeader');
   assert.ok(idx > 0, 'truesightGrowthHeader helper exists');
-  const fn = RENDERER_JS.slice(idx, idx + 1900);
+  const fnEnd = RENDERER_JS.indexOf('\nfunction ', idx + 1);
+  const fn = RENDERER_JS.slice(idx, fnEnd === -1 ? idx + 4000 : fnEnd);
   assert.ok(fn.includes("label: 'Reach'") && fn.includes('byKey.awareness'),
     'Reach tile is the awareness stage');
   assert.ok(fn.includes("label: 'Mindshare'") && fn.includes('byKey.visits'),
@@ -2318,6 +2319,15 @@ test('Truesight WoW — growth header leads with Reach + Mindshare + List Joins'
     'header requires at least one leading indicator (reach/mindshare) before showing');
   assert.ok(fn.includes('truesightCompareLabel(wowDays)'),
     'header titles via the per-window compare-label helper');
+  // Placeholder (2026-07-06): when email/SMS is NOT connected, the List Joins
+  // slot still renders — dimmed, with a Connect button — so users can see the
+  // metric exists and will light up once a source is connected.
+  assert.ok(fn.includes('ts-growth-tile-off') && /!jl\.available/.test(fn),
+    'unconnected joined_list renders a dimmed placeholder tile');
+  assert.ok(/ts-growth-tile-off[\s\S]{0,400}ts-connect-inline/.test(fn),
+    'the placeholder tile carries a Connect button wired to the Magic panel');
+  assert.ok(/\.ts-growth-tile-off\s*\{/.test(STYLE_CSS),
+    'placeholder growth tile has its dashed/desaturated style');
 });
 
 test('Truesight WoW — compare label adapts to the selected window (7d vs prev 7d, 30d vs prev 30d, …)', () => {

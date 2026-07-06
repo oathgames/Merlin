@@ -3936,6 +3936,13 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .ts-step-pct { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .ts-step-soft { font-size:var(--fs-2xs); color: var(--text-muted); opacity: .8; }
 .ts-step-soft::before { content: "≈ "; }
+/* placeholder growth tile: the metric slot exists, data not flowing yet —
+   same dashed/desaturated language as the unavailable funnel bar below */
+.ts-growth-tile-off {
+  opacity: .6;
+  border: 1px dashed rgba(148,163,184,.35);
+  background: rgba(127,127,127,.08);
+}
 /* unavailable stage: the bar renders at its natural funnel width but grey /
    desaturated — "this stage exists, data is not flowing yet". No glow, no
    fixed width (the data-tw funnel width governs, same as live bars). */

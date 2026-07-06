@@ -11859,6 +11859,20 @@ function truesightGrowthHeader(stages, wowDays) {
       '<div class="ts-growth-sub">' + escapeHtml(t.sub) + '</div>' +
       '</div>';
   });
+  // List-growth placeholder (2026-07-06): joined_list is a header-only metric,
+  // so when email/SMS isn't connected it had NO representation anywhere on the
+  // panel — users couldn't tell the surface exists. Render a dimmed tile with
+  // a Connect button (same .ts-connect-inline class, so the funnel's click
+  // wiring opens the Magic panel) in the spot the live tile will occupy.
+  const jl = byKey.joined_list;
+  if (jl && !jl.available) {
+    const jlTip = escapeHtml(jl.note || 'Connect your email/SMS platform to track list growth week over week.').replace(/"/g, '&quot;');
+    h += '<div class="ts-growth-tile ts-growth-tile-off" title="' + jlTip + '">' +
+      '<div class="ts-growth-metric">List Joins</div>' +
+      '<div class="ts-growth-delta"><button class="ts-connect-inline" type="button">Connect</button></div>' +
+      '<div class="ts-growth-sub">joined email/SMS list</div>' +
+      '</div>';
+  }
   h += '</div>';
   h += '</div>';
   return h;
