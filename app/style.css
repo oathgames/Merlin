@@ -3898,10 +3898,15 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 
 /* The funnel itself — narrowing stacked stages */
 .truesight-funnel { max-width: 760px; margin: 0 auto; }
-.ts-stage { margin: 0 auto; }
+/* Vertical rhythm (2026-07-06 density pass): the caption line under each bar
+   used to space the stages; with captions tooltip-only the stage carries a
+   12px bottom margin instead. Unavailable stages (label + Connect, no bar)
+   get balancing padding so they don't read jammed between neighbors' bars. */
+.ts-stage { margin: 0 auto 12px; }
+.ts-stage.unavailable { padding: 4px 0; }
 .ts-stage-head {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 .ts-stage-label { font-size:var(--fs-base); font-weight: 600; color: var(--text); }
 .ts-stage-num { font-size:var(--fs-xl); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
@@ -3924,6 +3929,9 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .ts-step {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   font-size:var(--fs-xs); color: var(--text-muted); padding: 2px 0;
+  /* pull the rate up toward the bar it describes, then breathe before the
+     next stage label (pairs with .ts-stage's 12px bottom margin) */
+  margin: -8px 0 8px;
 }
 .ts-step-pct { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .ts-step-soft { font-size:var(--fs-2xs); color: var(--text-muted); opacity: .8; }
