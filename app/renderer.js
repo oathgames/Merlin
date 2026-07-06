@@ -11873,6 +11873,13 @@ function renderTruesightFunnel(data) {
   steps.forEach((s) => { if (s && s.from) stepByFrom[s.from] = s; });
   // Lead with the growth story (reach + mindshare WoW), then the funnel bars.
   let html = truesightGrowthHeader(stages, data.wow_days);
+  // Density contract (2026-07-06, "too much text" feedback): every number and
+  // delta appears exactly ONCE on the panel. When the growth header renders,
+  // it owns the WoW deltas (every funnel stage with a prior also gets a header
+  // tile), so the stage rows drop their delta chips; with no header the rows
+  // keep them. Per-stage source captions and the unavailable-stage note live
+  // in native title tooltips instead of visible text.
+  const headerShown = html !== '';
   // joined_list is a growth-header-only metric (WoW tile), not a funnel step —
   // list joins sit alongside the funnel, not inside the narrowing shape.
   const barStages = stages.filter((s) => s && s.key !== 'joined_list');
@@ -11888,10 +11895,17 @@ function renderTruesightFunnel(data) {
     // so also neutralize them (defense-in-depth — keys are fixed today, but the
     // renderer must be safe regardless of payload source).
     const keyAttr = escapeHtml(stage.key || '').replace(/"/g, '&quot;');
-    html += '<div class="ts-stage' + (avail ? '' : ' unavailable') + '" data-key="' + keyAttr + '">';
+    // Source / note text is tooltip-only (title attr): the info stays
+    // reachable on hover without a visible caption line under every bar.
+    // escapeHtml doesn't escape quotes, so neutralize them for the attribute.
+    const tipRaw = avail ? (stage.source || '') : (stage.note || '');
+    const tipAttr = tipRaw ? ' title="' + escapeHtml(tipRaw).replace(/"/g, '&quot;') + '"' : '';
+    html += '<div class="ts-stage' + (avail ? '' : ' unavailable') + '" data-key="' + keyAttr + '"' + tipAttr + '>';
     html += '<div class="ts-stage-head"><span class="ts-stage-label">' + escapeHtml(stage.label || '') + '</span>';
     if (avail) {
-      html += '<span class="ts-stage-num">' + tsNum(stage.value) + tsDeltaBadge(stage) + '</span>';
+      // Delta chip only when the growth header is NOT shown — the header
+      // tiles already carry every stage's WoW delta (density contract above).
+      html += '<span class="ts-stage-num">' + tsNum(stage.value) + (headerShown ? '' : tsDeltaBadge(stage)) + '</span>';
     } else {
       html += '<button class="ts-connect-inline" type="button">Connect</button>';
     }
@@ -11900,17 +11914,18 @@ function renderTruesightFunnel(data) {
       // Funnel draw (item 5): bar starts at width:0 with its target in data-tw;
       // a rAF after innerHTML applies the real width so .ts-bar's width
       // transition draws the funnel out (see the requestAnimationFrame below).
-      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:0%" data-tw="' + pct.toFixed(1) + '"><span class="ts-bar-num">' + tsNum(stage.value) + '</span></div></div>';
-      if (stage.source) html += '<div class="ts-stage-source">' + escapeHtml(stage.source) + '</div>';
-    } else if (stage.note) {
-      html += '<div class="ts-stage-source">' + escapeHtml(stage.note) + '</div>';
+      // No number inside the bar — the stage head already shows it (density
+      // contract: each number appears once).
+      html += '<div class="ts-bar-track"><div class="ts-bar" style="width:0%" data-tw="' + pct.toFixed(1) + '"></div></div>';
     }
     html += '</div>';
     const step = stepByFrom[stage.key];
     if (step && i < barStages.length - 1) {
       const pctTxt = (typeof step.pct === 'number') ? step.pct.toFixed(1) + '%' : '—';
-      html += '<div class="ts-step"><span class="ts-step-pct">' + pctTxt + '</span>';
-      if (step.soft) html += '<span class="ts-step-soft" title="These two stages come from different measurement sources, so this rate is directional.">directional</span>';
+      // Cross-source ("soft") rates read as approximate: an ≈ prefix + a
+      // tooltip, instead of a visible "directional" jargon chip.
+      const softTip = step.soft ? ' title="These two stages come from different measurement sources, so this rate is directional."' : '';
+      html += '<div class="ts-step"><span class="ts-step-pct"' + softTip + '>' + (step.soft ? '&asymp; ' : '') + pctTxt + '</span>';
       html += '</div>';
     }
   });
@@ -11929,9 +11944,14 @@ function renderTruesightFunnel(data) {
   // exactly the "thin data" signal. Verified against truesight.go (provider
   // values: ads | ga4 | shopify | stripe | triplewhale).
   const adAttributed = stages.some((s) => s && s.available && s.provider === 'ads' && (s.key === 'visits' || s.key === 'add_to_cart'));
-  if (adAttributed) {
-    html += '<div class="ts-note">Some stages show <strong>ad-attributed</strong> activity only. ' +
-      '<button class="ts-connect-inline" type="button">Connect Google Analytics</button> for site-wide totals.</div>';
+  // One GA4 call-to-action max (density contract): when an unavailable stage
+  // row already shows its own Connect button, skip this footer entirely —
+  // two "Connect Google Analytics" prompts on one panel was noise. The
+  // ad-attributed honesty stays, one short line.
+  const hasRowConnect = barStages.some((s) => s && !s.available);
+  if (adAttributed && !hasRowConnect) {
+    html += '<div class="ts-note"><strong>Ad-attributed</strong> numbers. ' +
+      '<button class="ts-connect-inline" type="button">Connect Google Analytics</button> for site totals.</div>';
   }
   funnel.innerHTML = html;
   // Draw the funnel: apply each bar's target width on the next frame so the

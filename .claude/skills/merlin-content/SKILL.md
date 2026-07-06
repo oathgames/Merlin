@@ -29,7 +29,7 @@ When the `content` tool returns image/video output, the binary emits a sentinel 
 Why: the renderer's `__transformChatGalleries` walks `.merlin-gallery` elements to build the fanned card stack. If the model paraphrases images as backticked paths instead of echoing the `<div>`s, the walk finds nothing, so the user sees no previews and no clickable carousel.
 
 Concrete contract:
-- Echo each `<div class="merlin-gallery">…</div>` block verbatim, once per block, in the order the binary emitted them. Prose around them (describe each variant, call the standout, recommend the next action) is encouraged, but the div itself must appear unmodified.
+- You must echo each block verbatim: every `<div class="merlin-gallery">…</div>`, once per block, in the order the binary emitted them. Prose around them (describe each variant, call the standout, recommend the next action) is encouraged, but the div itself must appear unmodified.
 - One gallery block for a multi-image bundle is correct — echo it once. Extra backticked paths alongside the div are harmless (the renderer renders both).
 
 ## Image Prompts (`mcp__merlin__content({action: "image"})`)
