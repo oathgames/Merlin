@@ -42,6 +42,7 @@
       "node_modules/@anthropic-ai/claude-agent-sdk/**/*",
       "node_modules/onnxruntime-node/**/*",
       "node_modules/onnxruntime-common/**/*",
+      "node_modules/onnxruntime-web/**/*",
       "node_modules/kokoro-js/**/*",
       "node_modules/@huggingface/transformers/**/*",
       "node_modules/phonemizer/**/*",
