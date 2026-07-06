@@ -1752,7 +1752,7 @@ function buildTools(tool, z, ctx) {
   //     the key. Read-only by construction — triplewhale.go ships no writes.
   tools.push(defineTool({
     name: 'triplewhale',
-    description: 'Triple Whale analytics (read-only). Pulls the full topline a CMO steers on: Blended Sales, Ad Spend, Net Profit, Net Margin, ROAS (attributed + blended), MER, NC-ROAS (new-customer ROAS), NCPA (new-customer CPA), new-customer revenue/orders, AOV, plus Triple Whale\'s peer benchmarks (NC-ROAS / NCPA / blended-ROAS). Actions: summary (the metric pull for a date window — batchCount = days, default 30); status (connection check, no API call); connect (instructions to mint a personal API key); verify (validate + save a pasted personal API key, requires apiKey). OAuth sign-in is the primary connect path via platform_login platform "triplewhale"; the personal API key is the no-registration fallback. Read-only — no write surface.',
+    description: 'Triple Whale analytics (read-only). Pulls the full topline a CMO steers on: Blended Sales, Ad Spend, Net Profit, Net Margin, ROAS (attributed + blended), MER, NC-ROAS (new-customer ROAS), NCPA (new-customer CPA), new-customer revenue/orders, AOV, plus Triple Whale\'s peer benchmarks (NC-ROAS / NCPA / blended-ROAS). Actions: weekly (PREFERRED for reporting: dashboard-true metric set via fixed SQL against the same warehouse the dashboard tiles read: tile-true Total Sales, blended spend, NCPA, blended ROAS, NC-ROAS, MER, plus per-channel ROAS by attribution model; default 7 trailing days, or exact startDate+endDate); summary (LEGACY, not dashboard-true: the old Summary Page pull; batchCount = days, default 30); status (connection check, no API call); connect (instructions to mint a personal API key); verify (validate + save a pasted personal API key, requires apiKey). OAuth sign-in is the primary connect path via platform_login platform "triplewhale"; the personal API key is the no-registration fallback. Read-only, no write surface.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -1760,7 +1760,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'triplewhale' },
     input: {
-      action: z.enum(['summary', 'status', 'connect', 'verify']).describe('summary → pull NC-ROAS / NCPA / MER / blended ROAS for the window. status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey; also pass shopDomain when the brand has no Shopify connected, so the shop scope is saved).'),
+      action: z.enum(['weekly', 'summary', 'status', 'connect', 'verify']).describe('weekly → dashboard-true weekly metric set (tile-true Total Sales, NCPA, blended/NC ROAS, MER, channel ROAS by attribution model) via fixed SQL on the dashboard warehouse; prefer this for reporting; default 7 trailing days, exact windows via startDate+endDate. summary → the LEGACY Summary Page pull (not dashboard-true). status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey; also pass shopDomain when the brand has no Shopify connected, so the shop scope is saved).'),
       brand: brandSchema.optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data for summary (default 30, trailing window anchored to today). For exact calendar windows use startDate + endDate instead.'),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD').optional().describe('Exact window start, YYYY-MM-DD, shop timezone; with endDate, takes precedence over batchCount. Use for calendar-aligned reporting (e.g. Sun-Sat weeks) — trailing windows cannot express those.'),
@@ -1775,7 +1775,7 @@ function buildTools(tool, z, ctx) {
           instructions: 'Mint a personal API key at app.triplewhale.com/api-keys (Create Key → select the "Summary Page: Read" and "Pixel Attribution: Read" scopes → save it somewhere safe). Then call mcp__merlin__triplewhale with action "verify" and apiKey set to that key. OAuth sign-in is the primary path and becomes available once the Triple Whale OAuth app is registered — use mcp__merlin__platform_login with platform "triplewhale" then.',
         };
       }
-      const actionMap = { summary: 'triplewhale-summary', status: 'triplewhale-status', verify: 'triplewhale-verify-key' };
+      const actionMap = { weekly: 'triplewhale-weekly', summary: 'triplewhale-summary', status: 'triplewhale-status', verify: 'triplewhale-verify-key' };
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
     },
   }, tool, z, ctx));
