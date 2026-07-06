@@ -11839,7 +11839,7 @@ function truesightGrowthHeader(stages, wowDays) {
   const tiles = [
     { stage: byKey.awareness, label: 'Reach', sub: 'people who saw you' },
     { stage: byKey.visits, label: 'Mindshare', sub: 'came to your site' },
-    { stage: byKey.joined_list, label: 'List Joins', sub: 'joined email/SMS list' },
+    { stage: byKey.joined_list, label: 'List Growth', sub: 'joined email/SMS list' },
     { stage: byKey.add_to_cart, label: 'Intent', sub: 'added to cart' },
     { stage: byKey.converted, label: 'Revenue', sub: 'bought' },
   ];
@@ -11868,7 +11868,7 @@ function truesightGrowthHeader(stages, wowDays) {
   if (jl && !jl.available) {
     const jlTip = escapeHtml(jl.note || 'Connect your email/SMS platform to track list growth week over week.').replace(/"/g, '&quot;');
     h += '<div class="ts-growth-tile ts-growth-tile-off" title="' + jlTip + '">' +
-      '<div class="ts-growth-metric">List Joins</div>' +
+      '<div class="ts-growth-metric">List Growth</div>' +
       '<div class="ts-growth-delta"><button class="ts-connect-inline" type="button">Connect</button></div>' +
       '<div class="ts-growth-sub">joined email/SMS list</div>' +
       '</div>';

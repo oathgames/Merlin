@@ -1762,7 +1762,9 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['summary', 'status', 'connect', 'verify']).describe('summary → pull NC-ROAS / NCPA / MER / blended ROAS for the window. status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey; also pass shopDomain when the brand has no Shopify connected, so the shop scope is saved).'),
       brand: brandSchema.optional(),
-      batchCount: z.coerce.number().int().optional().describe('Days of data for summary (default 30).'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for summary (default 30, trailing window anchored to today). For exact calendar windows use startDate + endDate instead.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD').optional().describe('Exact window start, YYYY-MM-DD, shop timezone; with endDate, takes precedence over batchCount. Use for calendar-aligned reporting (e.g. Sun-Sat weeks) — trailing windows cannot express those.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'YYYY-MM-DD').optional().describe('Exact window end, YYYY-MM-DD, inclusive, not in the future. Requires startDate — one-sided input is rejected.'),
       apiKey: z.string().optional().describe('Personal API key to validate (required for verify). Minted at app.triplewhale.com/api-keys with the "Summary Page: Read" + "Pixel Attribution: Read" scopes.'),
       shopDomain: z.string().optional().describe('The store\'s .myshopify.com domain (e.g. "apotheke.myshopify.com"). Pass this when the brand has NO Shopify connected so Triple Whale knows which shop to report on. On "verify" it is saved so every future pull (including scheduled ones) stays scoped automatically; on "summary" it scopes that one pull. If Shopify IS connected, omit it (the connected store is used automatically).'),
     },

@@ -4,7 +4,7 @@
 //  DP-1 archive-blank-thumbs: creativePath is brand-relative + Windows-backslashed;
 //       every consumer must resolve through liveAdCreativeSrc, and the Go side
 //       writes forward slashes (locked in Go tests).
-//  DP-4 WoW report: "List Joins" tile present; "mindshare precedes revenue" line gone;
+//  DP-4 WoW report: "List Growth" tile present (renamed from List Joins 2026-07-06); "mindshare precedes revenue" line gone;
 //       joined_list excluded from the funnel bars.
 //  DP-5 palantir portal jitter: connection gate BEFORE the Scrying portal paint.
 //  DP-6 async data warm: warmBrandData exists, covers all five windows + live ads,
@@ -53,10 +53,10 @@ test('archive card thumb falls back to the CDN URL before the placeholder', () =
 });
 
 // ── DP-4: WoW growth header ─────────────────────────────────────────────
-test('WoW growth header has the List Joins tile and no mindshare-precedes-revenue line', () => {
+test('WoW growth header has the List Growth tile and no mindshare-precedes-revenue line', () => {
   const body = fnBody(R, 'function truesightGrowthHeader(', 2200);
   assert.ok(/byKey\.joined_list/.test(body), 'joined_list stage must be a growth tile');
-  assert.ok(/List Joins/.test(body), 'tile label must be "List Joins"');
+  assert.ok(/List Growth/.test(body), 'tile label must be "List Growth"');
   assert.ok(!/Mindshare precedes revenue/i.test(R), 'the mindshare-precedes-revenue copy line must be gone');
 });
 
