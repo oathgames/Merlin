@@ -394,7 +394,10 @@ async function handleInitialize(id) {
   return rpcOk(id, {
     protocolVersion: PROTOCOL_VERSION,
     capabilities: {
-      tools: {},
+      // listChanged: we emit notifications/tools/list_changed when the
+      // Merlin desktop app comes (back) up, so Claude Desktop re-fetches
+      // the real tool list without an app restart. See createRecoveryWatcher.
+      tools: { listChanged: true },
     },
     serverInfo: {
       name: 'merlin',
@@ -403,24 +406,27 @@ async function handleInitialize(id) {
   });
 }
 
-async function handleToolsList(id, ipc) {
+async function handleToolsList(id, ipc, watcher) {
   let resp;
   try {
     resp = await ipc.send('tools/list');
   } catch (e) {
     logErr('tools/list IPC send failed — returning app-not-running placeholder', e);
+    if (watcher) watcher.start();
     return rpcOk(id, { tools: notRunningPlaceholderTools() });
   }
   if (!resp || !resp.ok) {
     const errMsg = resp && resp.error && resp.error.message ? resp.error.message : 'no ok flag';
     logErr(`tools/list IPC returned non-ok (${errMsg}) — returning placeholder`);
+    if (watcher) watcher.start();
     return rpcOk(id, { tools: notRunningPlaceholderTools() });
   }
+  if (watcher) watcher.noteSuccess();
   // The endpoint returns { tools: [...] }; pass through unchanged.
   return rpcOk(id, resp.result || { tools: [] });
 }
 
-async function handleToolsCall(id, params, ipc, contentDir) {
+async function handleToolsCall(id, params, ipc, contentDir, watcher) {
   const name = params && params.name;
   const rawArgs = (params && params.arguments) || {};
   if (!name || typeof name !== 'string') {
@@ -430,6 +436,7 @@ async function handleToolsCall(id, params, ipc, contentDir) {
   // "open the app" message instead of forwarding (which would just
   // fail on the connect step).
   if (name === 'merlin_app_not_running') {
+    if (watcher) watcher.start();
     return rpcOk(id, notRunningCallResult());
   }
   const args = injectActiveBrand(rawArgs, contentDir);
@@ -437,10 +444,11 @@ async function handleToolsCall(id, params, ipc, contentDir) {
   try {
     resp = await ipc.send('tools/call', { name, arguments: args });
   } catch (e) {
+    if (watcher) watcher.start();
     return rpcOk(id, {
       content: [{
         type: 'text',
-        text: `Merlin desktop app could not be reached: ${e.message}. Open Merlin and try again.`,
+        text: `Merlin desktop app could not be reached: ${e.message}. It reconnects automatically — open Merlin (or wait for it to finish restarting) and just ask again.`,
       }],
       isError: true,
     });
@@ -452,15 +460,101 @@ async function handleToolsCall(id, params, ipc, contentDir) {
       isError: true,
     });
   }
+  if (watcher) watcher.noteSuccess();
   // Pass through the CallToolResult unchanged.
   return rpcOk(id, resp.result);
+}
+
+// ──────────────────────────────────────────────────────────────
+// Backend recovery watcher — the anti "restart Claude Desktop" fix
+// ──────────────────────────────────────────────────────────────
+
+// PROBLEM (2026-07-06, Ryan): when the Merlin desktop app quits or
+// restarts, Claude Desktop's cached view of this server goes stale.
+// Worst case: Desktop (re)fetched tools/list while Merlin was down, got
+// the one-tool placeholder, and cached it for the whole session — Merlin
+// coming back up fixed nothing, because NOTHING told Desktop to re-fetch.
+// The only user remedy was restarting Claude Desktop.
+//
+// FIX: while the backend is down ("degraded"), probe the IPC endpoint on
+// an interval. The moment Merlin answers again, emit the MCP
+// notifications/tools/list_changed notification (we declare
+// capabilities.tools.listChanged in initialize) — Claude Desktop then
+// re-fetches tools/list and gets the real tool list back, no restart.
+//
+// Probe cost while Merlin stays closed: an existsSync + one failed pipe
+// connect per tick — negligible. Backoff: PROBE_FAST_MS for the first
+// PROBE_FAST_TICKS ticks (a restart is usually seconds), then
+// PROBE_SLOW_MS indefinitely.
+const PROBE_FAST_MS = 2500;
+const PROBE_SLOW_MS = 10_000;
+const PROBE_FAST_TICKS = 48; // ~2 minutes of fast probing
+
+function createRecoveryWatcher(ipc, stateDir, notifyListChanged, opts) {
+  const fastMs = (opts && opts.fastMs) || PROBE_FAST_MS;
+  const slowMs = (opts && opts.slowMs) || PROBE_SLOW_MS;
+  const fastTicks = (opts && opts.fastTicks) || PROBE_FAST_TICKS;
+  let timer = null;
+  let degraded = false;
+  let ticks = 0;
+  let probing = false;
+
+  function schedule() {
+    const ms = ticks < fastTicks ? fastMs : slowMs;
+    timer = setTimeout(probe, ms);
+    // unref: the probe must never be the thing keeping the process alive
+    // (stdin owns liveness — see the keep-alive block in main()).
+    if (typeof timer.unref === 'function') timer.unref();
+  }
+
+  async function probe() {
+    ticks += 1;
+    if (probing) { schedule(); return; }
+    probing = true;
+    try {
+      // Cheap pre-check: no handshake file means the app hasn't (re)started
+      // yet — skip the connect attempt entirely.
+      if (readEndpointHandshake(stateDir)) {
+        const resp = await ipc.send('tools/list');
+        if (resp && resp.ok) { recovered(); return; }
+      }
+    } catch (_) { /* still down — keep probing */ }
+    finally { probing = false; }
+    if (degraded) schedule();
+  }
+
+  function recovered() {
+    if (!degraded) return;
+    degraded = false;
+    if (timer) { clearTimeout(timer); timer = null; }
+    ticks = 0;
+    logInfo('backend recovered — sending tools/list_changed so the client refreshes');
+    try { notifyListChanged(); } catch (e) { logErr('list_changed notify failed', e); }
+  }
+
+  return {
+    // Enter degraded mode (idempotent) and begin probing.
+    start() {
+      if (degraded) return;
+      degraded = true;
+      ticks = 0;
+      logInfo('backend unreachable — probing for recovery');
+      schedule();
+    },
+    // A live call succeeded: if we thought the backend was down, it is
+    // back — notify. (Lazy recovery beats the probe when the user calls
+    // a tool right after Merlin relaunches.)
+    noteSuccess() { recovered(); },
+    isDegraded() { return degraded; },
+    stop() { if (timer) { clearTimeout(timer); timer = null; } },
+  };
 }
 
 // ──────────────────────────────────────────────────────────────
 // Main loop
 // ──────────────────────────────────────────────────────────────
 
-async function dispatch(message, ipc, contentDir) {
+async function dispatch(message, ipc, contentDir, watcher) {
   if (!message || typeof message !== 'object') return null;
   const id = message.id;
   const method = message.method;
@@ -473,8 +567,8 @@ async function dispatch(message, ipc, contentDir) {
       return null;
     }
     if (method === 'ping') return rpcOk(id, {});
-    if (method === 'tools/list') return handleToolsList(id, ipc);
-    if (method === 'tools/call') return handleToolsCall(id, message.params, ipc, contentDir);
+    if (method === 'tools/list') return handleToolsList(id, ipc, watcher);
+    if (method === 'tools/call') return handleToolsCall(id, message.params, ipc, contentDir, watcher);
     // Unsupported — return JSON-RPC method-not-found per spec.
     return rpcError(id, -32601, `method "${method}" is not supported by the Merlin shim`);
   } catch (e) {
@@ -495,6 +589,13 @@ function main() {
   logInfo(`startup pid=${process.pid} stateDir=${stateDir} version=${SERVER_VERSION}`);
 
   const ipc = createIpcClient(stateDir);
+
+  // Recovery watcher: probes for the desktop app while it is down and
+  // emits notifications/tools/list_changed the moment it is back, so
+  // Claude Desktop refreshes the tool list without an app restart.
+  const watcher = createRecoveryWatcher(ipc, stateDir, () => {
+    writeMessage({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
+  });
 
   // REGRESSION GUARD (2026-04-29, silent-shim-exit at 17:17:30 incident):
   // Pre-fix the shim process exited when stdin's readline emitted 'close',
@@ -546,7 +647,7 @@ function main() {
     }
     let resp;
     try {
-      resp = await dispatch(msg, ipc, contentDir);
+      resp = await dispatch(msg, ipc, contentDir, watcher);
     } catch (e) {
       logErr(`dispatch error (method=${msg && msg.method})`, e);
       resp = rpcError(msg && msg.id, -32603, `shim dispatch error: ${e.message}`);
@@ -556,6 +657,7 @@ function main() {
   rl.on('close', () => {
     logInfo('stdin closed (parent client disconnected) — exiting cleanly');
     try { clearInterval(keepAlive); } catch {}
+    try { watcher.stop(); } catch {}
     try { ipc.destroy(); } catch {}
     process.exit(0);
   });
@@ -564,6 +666,7 @@ function main() {
   process.stdin.on('error', (e) => {
     logErr('stdin error — exiting', e);
     try { clearInterval(keepAlive); } catch {}
+    try { watcher.stop(); } catch {}
     try { ipc.destroy(); } catch {}
     process.exit(0);
   });
@@ -587,6 +690,7 @@ module.exports = {
   notRunningPlaceholderTools,
   notRunningCallResult,
   createIpcClient,
+  createRecoveryWatcher,
   dispatch,
   readVersion,  // exported for tests asserting version-fallback behavior
   PROTOCOL_VERSION,

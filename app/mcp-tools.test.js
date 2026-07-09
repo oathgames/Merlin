@@ -1245,3 +1245,45 @@ test('meta_audit exposes the new diagnostic read actions (change-history, accoun
   assert.ok(block.includes('destructive: false'), 'meta_audit must remain destructive:false');
   assert.ok(block.includes('preview: false'), 'meta_audit must remain preview:false (no approval card on reads)');
 });
+
+test('triplewhale exposes explicit startDate/endDate window params (2026-07-06)', () => {
+  // Weekly reporting needs exact calendar windows (Sun-Sat); trailing
+  // batchCount windows cannot express them and the client-side subtraction
+  // workaround shipped a deck with a partial-extra-day topline (2026-07-06
+  // incident). The tool must declare both params, format-guarded, with the
+  // precedence documented; the Go side (tripleWhaleResolveWindow) validates
+  // and passes them through verbatim.
+  const i = SRC_TOOLS.indexOf("name: 'triplewhale'");
+  assert.ok(i > 0, 'triplewhale tool block must exist');
+  const nextTool = SRC_TOOLS.indexOf("name: '", i + 1);
+  const block = SRC_TOOLS.slice(i, nextTool === -1 ? undefined : nextTool);
+  for (const p of ['startDate:', 'endDate:']) {
+    assert.ok(block.includes(p), `triplewhale must declare the ${p} input`);
+  }
+  const sdLine = block.split('\n').find((l) => l.includes('startDate:')) || '';
+  const edLine = block.split('\n').find((l) => l.includes('endDate:')) || '';
+  assert.ok(sdLine.includes('regex(/^\\d{4}-\\d{2}-\\d{2}$/'),
+    'startDate must be format-guarded to YYYY-MM-DD');
+  assert.ok(edLine.includes('regex(/^\\d{4}-\\d{2}-\\d{2}$/'),
+    'endDate must be format-guarded to YYYY-MM-DD');
+  assert.ok(/precedence over batchCount/.test(block),
+    'the precedence contract (explicit dates beat batchCount) must be documented on the param');
+  assert.ok(block.includes('destructive: false'), 'triplewhale must remain destructive:false (read-only)');
+});
+
+test('triplewhale exposes the dashboard-true weekly action (2026-07-06 Data-Out migration)', () => {
+  // The legacy Summary pull has no published tile-title -> metric-id map, so
+  // its topline cannot be proven dashboard-true (the weekly-deck incident).
+  // "weekly" routes to triplewhale-weekly: fixed Data-Out SQL against the
+  // warehouse the dashboard tiles read. The tool must expose the action, route
+  // it, mark the legacy summary as such, and stay read-only.
+  const i = SRC_TOOLS.indexOf("name: 'triplewhale'");
+  assert.ok(i > 0, 'triplewhale tool block must exist');
+  const nextTool = SRC_TOOLS.indexOf("name: '", i + 1);
+  const block = SRC_TOOLS.slice(i, nextTool === -1 ? undefined : nextTool);
+  assert.ok(block.includes("'weekly'"), 'the action enum must include weekly');
+  assert.ok(block.includes("weekly: 'triplewhale-weekly'"), 'weekly must route to the triplewhale-weekly binary action');
+  assert.ok(/dashboard-true/.test(block), 'the weekly action must be described as dashboard-true');
+  assert.ok(/LEGACY, not dashboard-true/.test(block), 'the summary action must be flagged as legacy, not dashboard-true');
+  assert.ok(block.includes('destructive: false'), 'triplewhale must remain destructive:false (read-only)');
+});

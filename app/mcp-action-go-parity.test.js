@@ -107,7 +107,12 @@ const TOOL_ROUTING = [
   },
   { name: 'shopify', prefix: 'shopify' },
   { name: 'klaviyo', prefix: 'klaviyo' },
-  { name: 'mailchimp', prefix: 'mailchimp' },
+  { name: 'mailchimp', prefix: 'mailchimp',
+    // 'verify' routes to the engine's verify-key action (live ping +
+    // vault persist) via an inline branch in the handler — the
+    // sanctioned save path added after the 2026-07-09 plaintext incident.
+    actionMap: { 'verify': 'mailchimp-verify-key' },
+  },
   { name: 'applovin', prefix: 'applovin' },
   { name: 'postscript', prefix: 'postscript' },
   { name: 'clarity', prefix: 'clarity' },

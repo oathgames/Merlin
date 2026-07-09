@@ -3893,15 +3893,28 @@ body{transition:padding-right var(--dur-med) var(--ease)}
    window (scroll viewport ~577px) with no scrolling. overflow-y:auto stays as
    the safety net for smaller-than-default windows, with the app's themed
    scrollbar (same treatment as #chat) instead of the OS default. */
-.truesight-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 10px 24px 14px; }
+/* Flex column + auto margins on the funnel = vertical centering that
+   degrades safely: when the content fits the default window it floats
+   centered; when it overflows, auto margins collapse to 0 and the area
+   scrolls from the top as before (justify-content:center would CLIP the
+   top on overflow — never use it here). */
+.truesight-scroll { flex: 1; overflow-y: auto; overscroll-behavior: contain; padding: 10px 24px 14px; display: flex; flex-direction: column; }
 /* .truesight-scroll scrollbar: grouped 5px-convention rule near the top. */
 
 /* The funnel itself — narrowing stacked stages */
-.truesight-funnel { max-width: 760px; margin: 0 auto; }
-.ts-stage { margin: 0 auto; }
+.truesight-funnel { max-width: 760px; width: 100%; margin: auto; }
+/* An empty funnel (connect CTA / error states) must not hold auto margins,
+   or it would steal half the free space from the visible sibling. */
+.truesight-funnel:empty { display: none; }
+/* Vertical rhythm (2026-07-06 density pass): the caption line under each bar
+   used to space the stages; with captions tooltip-only the stage carries a
+   12px bottom margin instead. Unavailable stages (label + Connect, no bar)
+   get balancing padding so they don't read jammed between neighbors' bars. */
+.ts-stage { margin: 0 auto 12px; }
+.ts-stage.unavailable { padding: 4px 0; }
 .ts-stage-head {
   display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 .ts-stage-label { font-size:var(--fs-base); font-weight: 600; color: var(--text); }
 .ts-stage-num { font-size:var(--fs-xl); font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
@@ -3924,12 +3937,28 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .ts-step {
   display: flex; align-items: center; justify-content: center; gap: 8px;
   font-size:var(--fs-xs); color: var(--text-muted); padding: 2px 0;
+  /* pull the rate up toward the bar it describes, then breathe before the
+     next stage label (pairs with .ts-stage's 12px bottom margin) */
+  margin: -8px 0 8px;
 }
 .ts-step-pct { font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
 .ts-step-soft { font-size:var(--fs-2xs); color: var(--text-muted); opacity: .8; }
 .ts-step-soft::before { content: "≈ "; }
-/* unavailable stage: dimmed + inline connect CTA */
-.ts-stage.unavailable .ts-bar { background: rgba(127,127,127,.18); box-shadow: none; width: 64px; }
+/* placeholder growth tile: the metric slot exists, data not flowing yet —
+   same dashed/desaturated language as the unavailable funnel bar below */
+.ts-growth-tile-off {
+  opacity: .6;
+  border: 1px dashed rgba(148,163,184,.35);
+  background: rgba(127,127,127,.08);
+}
+/* unavailable stage: the bar renders at its natural funnel width but grey /
+   desaturated — "this stage exists, data is not flowing yet". No glow, no
+   fixed width (the data-tw funnel width governs, same as live bars). */
+.ts-stage.unavailable .ts-bar {
+  background: rgba(127,127,127,.14);
+  border: 1px dashed rgba(148,163,184,.35);
+  box-shadow: none;
+}
 .ts-stage.unavailable .ts-stage-num { color: var(--text-muted); }
 .ts-connect-inline {
   background: none; border: 1px solid rgba(34,211,238,.4); color: var(--text);
@@ -3940,7 +3969,9 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .ts-revenue { text-align: center; margin-top: 8px; font-size:var(--fs-sm); color: var(--text-muted); }
 .ts-revenue strong { color: var(--text); font-size:var(--fs-md); }
 /* connect portal (no sources at all) + status */
-.truesight-connect-cta, .truesight-status { max-width: 620px; margin: 40px auto; text-align: center; color: var(--text-muted); }
+/* auto vertical margins: the empty-state CTA + status center in the takeover
+   too (the funnel sibling is display:none when empty, so nothing competes) */
+.truesight-connect-cta, .truesight-status { max-width: 620px; width: 100%; margin: auto; text-align: center; color: var(--text-muted); }
 .ts-portal-title { font-size:var(--fs-xl); color: var(--text); margin: 14px 0 6px; }
 .ts-portal-cta {
   margin-top: 16px; background: linear-gradient(135deg, rgba(34,211,238,.9), rgba(139,92,246,.9));

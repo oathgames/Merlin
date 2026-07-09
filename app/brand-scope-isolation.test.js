@@ -137,6 +137,16 @@ test('getConnections checkBrand reads brandCfg only, never falls back to globalC
     'checkBrand must not coalesce brandCfg || globalCfg (would re-introduce the leak)');
 });
 
+test('getConnections reports mailchimp (2026-07-09 tile incident)', () => {
+  // Through v1.34.x getConnections never pushed a mailchimp entry, so the
+  // Connections tile could NOT turn green after a correct key save. The fix
+  // routes through checkBrand (brand-scoped, vault-placeholder-resolving),
+  // same as the other single-credential platforms.
+  const body = extractFunction('getConnections', MAIN_JS);
+  assert.ok(/checkBrand\('mailchimpApiKey',\s*'mailchimp'\)/.test(body),
+    "getConnections must call checkBrand('mailchimpApiKey', 'mailchimp'); without it the Mailchimp tile can never turn green");
+});
+
 // ── Layer 4: BRAND_KEYS / UNIVERSAL_KEYS sync with disconnect ───
 
 test('BRAND_KEYS and UNIVERSAL_KEYS partitions are disjoint', () => {

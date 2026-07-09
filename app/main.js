@@ -9542,6 +9542,12 @@ function getConnections(brandName) {
     if (klaviyoKey) {
       connected.push({ platform: 'klaviyo', status: 'connected' });
     }
+    // Mailchimp — brand-scoped, single API key. Missing from this function
+    // through v1.34.x (2026-07-09 incident): the tile could NEVER turn green
+    // after a save because nothing here ever reported the platform. API keys
+    // carry no refresh cycle, so no _tokenTimestamps entry exists and
+    // checkBrand never false-flags it 'expired'.
+    checkBrand('mailchimpApiKey', 'mailchimp');
     if (globalCfg.falApiKey || vaultGet('_global', 'falApiKey')) connected.push({ platform: 'fal', status: 'connected' });
     if (globalCfg.elevenLabsApiKey || vaultGet('_global', 'elevenLabsApiKey')) connected.push({ platform: 'elevenlabs', status: 'connected' });
     if (globalCfg.heygenApiKey || vaultGet('_global', 'heygenApiKey')) connected.push({ platform: 'heygen', status: 'connected' });

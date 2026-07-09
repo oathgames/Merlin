@@ -2190,13 +2190,15 @@ test('Truesight — preload exposes the truesight bridge', () => {
 test('Truesight — renders funnel via escaped sinks (no raw innerHTML of source/label)', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
   assert.ok(idx > 0, 'renderTruesightFunnel exists');
-  // Slice widened 2600 -> 3000 after the funnel-draw pass added the width:0 +
-  // data-tw bar markup and the rAF that plays the width transition; the escaped
-  // stage.source sink sits a little further into the function now.
-  const fn = RENDERER_JS.slice(idx, idx + 3000);
+  // Slice widened 2600 -> 3000 -> 4000 across the funnel-draw and density
+  // (2026-07-06) passes; the escaped sinks sit further into the function now.
+  const fn = RENDERER_JS.slice(idx, idx + 4000);
   // every dynamic field is wrapped in escapeHtml; numbers go through tsNum
   assert.ok(fn.includes('escapeHtml(stage.label'), 'stage label is escaped');
-  assert.ok(fn.includes('escapeHtml(stage.source'), 'stage source is escaped');
+  // Density pass: stage.source/stage.note render as a title tooltip (tipRaw),
+  // escaped AND quote-neutralized since they land in an HTML attribute.
+  assert.ok(fn.includes('escapeHtml(tipRaw)') && /escapeHtml\(tipRaw\)\.replace\(\/"\/g/.test(fn),
+    'tooltip source/note text is escaped and quote-neutralized for the title attribute');
   assert.ok(/escapeHtml\(stage\.key/.test(fn), 'stage key is escaped into the data attribute');
   assert.ok(fn.includes('tsNum(stage.value)'), 'numbers render through tsNum (digits + K/M/B only)');
 });
@@ -2259,13 +2261,19 @@ test('Truesight — prefetches so the tab opens instantly (startup + brand + win
 
 test('Truesight — ad-attributed stages show an honest "connect GA" note', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
-  // Slice widened 4600 -> 5200 after the funnel-draw pass added the rAF width
-  // application block between the bar loop and the ts-note nudge.
-  const fn = RENDERER_JS.slice(idx, idx + 5200);
+  // Slice to the next top-level function so comment growth can't silently
+  // push assertions out of the scan window (bit us 3x in the density pass).
+  const fnEnd = RENDERER_JS.indexOf('\nfunction ', idx + 1);
+  const fn = RENDERER_JS.slice(idx, fnEnd === -1 ? idx + 9000 : fnEnd);
   assert.ok(fn.includes("s.provider === 'ads'") && fn.includes("s.key === 'visits'") && fn.includes("s.key === 'add_to_cart'"),
     'detects upper-funnel stages that fell back to ad pixels');
   assert.ok(fn.includes('ts-note') && fn.includes('Connect Google Analytics'),
     'surfaces a site-wide-totals nudge wired to the Magic panel');
+  // Density contract (2026-07-06): at most ONE GA4 call-to-action per panel.
+  // When an unavailable stage row already renders its own Connect button, the
+  // footer nudge is suppressed.
+  assert.ok(fn.includes('hasRowConnect') && fn.includes('adAttributed && !hasRowConnect'),
+    'footer GA nudge is suppressed when a stage row already shows a Connect button');
 });
 
 test('Truesight — concurrent re-opens / window changes drop stale renders (req-seq token)', () => {
@@ -2290,26 +2298,36 @@ test('Truesight WoW — delta badge helper handles up / down / new / flat', () =
   assert.ok(fn.includes('delta_pct'), 'reads the rounded delta_pct from the Go payload');
 });
 
-test('Truesight WoW — growth header leads with Reach + Mindshare + List Joins', () => {
+test('Truesight WoW — growth header leads with Reach + Mindshare + List Growth', () => {
   // Updated 2026-07-02 (data-pipeline sweep): the "mindshare precedes revenue"
   // note line was removed at user request, and the joined_list (email/SMS list
   // growth) tile joined the header. The tile lineup + leading-indicator gate
   // + compare-label plumbing are unchanged.
   const idx = RENDERER_JS.indexOf('function truesightGrowthHeader');
   assert.ok(idx > 0, 'truesightGrowthHeader helper exists');
-  const fn = RENDERER_JS.slice(idx, idx + 1900);
+  const fnEnd = RENDERER_JS.indexOf('\nfunction ', idx + 1);
+  const fn = RENDERER_JS.slice(idx, fnEnd === -1 ? idx + 4000 : fnEnd);
   assert.ok(fn.includes("label: 'Reach'") && fn.includes('byKey.awareness'),
     'Reach tile is the awareness stage');
   assert.ok(fn.includes("label: 'Mindshare'") && fn.includes('byKey.visits'),
     'Mindshare tile is the visits stage');
-  assert.ok(fn.includes("label: 'List Joins'") && fn.includes('byKey.joined_list'),
-    'List Joins tile is the joined_list stage');
+  assert.ok(fn.includes("label: 'List Growth'") && fn.includes('byKey.joined_list'),
+    'List Growth tile is the joined_list stage');
   assert.ok(!/Mindshare precedes revenue/i.test(fn),
     'the mindshare-precedes-revenue note line must stay removed');
   assert.ok(fn.includes('hasLeading') || /Reach.*Mindshare/.test(fn),
     'header requires at least one leading indicator (reach/mindshare) before showing');
   assert.ok(fn.includes('truesightCompareLabel(wowDays)'),
     'header titles via the per-window compare-label helper');
+  // Placeholder (2026-07-06): when email/SMS is NOT connected, the List Joins
+  // slot still renders — dimmed, with a Connect button — so users can see the
+  // metric exists and will light up once a source is connected.
+  assert.ok(fn.includes('ts-growth-tile-off') && /!jl\.available/.test(fn),
+    'unconnected joined_list renders a dimmed placeholder tile');
+  assert.ok(/ts-growth-tile-off[\s\S]{0,400}ts-connect-inline/.test(fn),
+    'the placeholder tile carries a Connect button wired to the Magic panel');
+  assert.ok(/\.ts-growth-tile-off\s*\{/.test(STYLE_CSS),
+    'placeholder growth tile has its dashed/desaturated style');
 });
 
 test('Truesight WoW — compare label adapts to the selected window (7d vs prev 7d, 30d vs prev 30d, …)', () => {
@@ -2322,13 +2340,35 @@ test('Truesight WoW — compare label adapts to the selected window (7d vs prev 
   assert.ok(fn.includes('vs yesterday'), '1d → "vs yesterday"');
 });
 
-test('Truesight WoW — funnel prepends the growth header and badges each stage', () => {
+test('Truesight WoW — funnel prepends the growth header; deltas appear exactly once', () => {
   const idx = RENDERER_JS.indexOf('function renderTruesightFunnel');
-  const fn = RENDERER_JS.slice(idx, idx + 2400);
+  const fnEnd = RENDERER_JS.indexOf('\nfunction ', idx + 1);
+  const fn = RENDERER_JS.slice(idx, fnEnd === -1 ? idx + 9000 : fnEnd);
   assert.ok(fn.includes('truesightGrowthHeader(stages, data.wow_days)'),
     'the funnel opens with the WoW growth header, fed the engine wow_days');
-  assert.ok(fn.includes('tsNum(stage.value) + tsDeltaBadge(stage)'),
-    'every available stage number carries its own WoW delta chip');
+  // Density contract (2026-07-06, "too much text" feedback): when the growth
+  // header renders it OWNS the WoW deltas, so stage rows drop their chips;
+  // without a header the rows keep them. Never both.
+  assert.ok(fn.includes("tsNum(stage.value) + (headerShown ? '' : tsDeltaBadge(stage))"),
+    'stage rows show a delta chip only when the growth header is absent');
+  // The number inside the bar was a duplicate of the stage-head number.
+  assert.ok(!fn.includes('ts-bar-num'),
+    'no number rendered inside the funnel bar (stage head already shows it)');
+  // Source/note captions moved into title tooltips; no visible caption line.
+  assert.ok(!fn.includes('ts-stage-source'),
+    'per-stage source captions are tooltip-only, not visible text');
+  // The "directional" jargon chip became an approx prefix + tooltip.
+  assert.ok(!fn.includes('ts-step-soft') && fn.includes('&asymp;'),
+    'soft cross-source rates render as an approx-prefixed pct, not a jargon chip');
+  // Unavailable stages render their bar too (grey/desaturated via the
+  // .unavailable ancestor) so the funnel shape stays continuous — the slot
+  // reads "data not flowing yet", never a layout gap (2026-07-06 feedback).
+  assert.ok(fn.includes('Rendered for unavailable stages'),
+    'the funnel bar is emitted for unavailable stages as well (greyed), not skipped');
+  assert.ok(/\.ts-stage\.unavailable \.ts-bar \{/.test(STYLE_CSS),
+    'unavailable bars have a dedicated grey/desaturated style');
+  assert.ok(!/\.ts-stage\.unavailable \.ts-bar \{[^}]*width:/.test(STYLE_CSS),
+    'unavailable bars must NOT carry a fixed CSS width — the data-tw funnel width governs');
 });
 
 test('Truesight WoW — styles exist for the growth header and delta chips', () => {

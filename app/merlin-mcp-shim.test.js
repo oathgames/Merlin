@@ -452,6 +452,61 @@ test('createIpcClient: socket close does NOT throw / does NOT exit process', asy
   } finally { rmTmp(d); }
 });
 
+// ── Recovery watcher (2026-07-06, stale-toolset / "restart Claude
+//    Desktop to reconnect" fix) ─────────────────────────────────
+
+test('initialize declares tools.listChanged so clients honor refresh notifications', async () => {
+  const resp = await shim.dispatch({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }, null, '');
+  assert.strictEqual(resp.result.capabilities.tools.listChanged, true,
+    'capabilities.tools.listChanged must be true — the recovery watcher emits notifications/tools/list_changed');
+});
+
+test('recovery watcher: probe detects the backend returning and notifies exactly once', async () => {
+  const d = tmpDir();
+  try {
+    // Valid handshake file so the probe attempts the (fake) connect.
+    fs.writeFileSync(path.join(d, 'mcp-shim-token'), JSON.stringify({
+      token: 'a'.repeat(32), socketPath: path.join(d, 'sock'), pid: 1,
+    }));
+    let notified = 0;
+    let up = false;
+    const fakeIpc = { send: async () => { if (!up) throw new Error('down'); return { ok: true, result: { tools: [] } }; } };
+    const w = shim.createRecoveryWatcher(fakeIpc, d, () => { notified++; }, { fastMs: 15, slowMs: 15, fastTicks: 1000 });
+    w.start();
+    assert.strictEqual(w.isDegraded(), true, 'start() enters degraded mode');
+    await new Promise((r) => setTimeout(r, 60)); // a few failing probes
+    assert.strictEqual(notified, 0, 'no notification while the backend is down');
+    up = true;
+    await new Promise((r) => setTimeout(r, 120)); // next probe succeeds
+    assert.strictEqual(notified, 1, 'backend recovery emits exactly one list_changed notification');
+    assert.strictEqual(w.isDegraded(), false, 'watcher leaves degraded mode after recovery');
+    w.stop();
+  } finally { rmTmp(d); }
+});
+
+test('recovery watcher: noteSuccess is the lazy-recovery path; idempotent when healthy', () => {
+  let notified = 0;
+  const w = shim.createRecoveryWatcher({ send: async () => { throw new Error('down'); } }, tmpDir(), () => { notified++; }, { fastMs: 60_000 });
+  w.noteSuccess();
+  assert.strictEqual(notified, 0, 'noteSuccess while healthy must not notify');
+  w.start();
+  w.start(); // idempotent
+  w.noteSuccess(); // a live tool call succeeded before the probe did
+  assert.strictEqual(notified, 1, 'first recovery notifies once');
+  w.noteSuccess();
+  assert.strictEqual(notified, 1, 'repeat successes never re-notify');
+  w.stop();
+});
+
+test('tools/list failure starts the recovery watcher (dispatch wiring)', async () => {
+  let started = 0;
+  const watcher = { start: () => { started++; }, noteSuccess: () => {}, isDegraded: () => true, stop: () => {} };
+  const failIpc = { send: async () => { throw new Error('no backend'); } };
+  const resp = await shim.dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, failIpc, '', watcher);
+  assert.strictEqual(resp.result.tools[0].name, 'merlin_app_not_running', 'placeholder still served');
+  assert.strictEqual(started, 1, 'a failed tools/list must start the recovery probe');
+});
+
 // ── Run async tests sequentially ─────────────────────────────
 
 (async () => {
