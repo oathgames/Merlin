@@ -1148,6 +1148,11 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'mailchimp' },
     input: {
       action: z.enum([
+        // Connect: validate + save a pasted Marketing API key (live ping,
+        // vault-persisted, brand-scoped). The ONLY sanctioned way to save a
+        // Mailchimp key from chat — never write mailchimpApiKey to the
+        // config directly (the 2026-07-09 plaintext incident).
+        'verify',
         // Read-only reporting.
         'status', 'audiences', 'campaigns', 'performance',
         // Email template CRUD + bulk.
@@ -1162,6 +1167,7 @@ function buildTools(tool, z, ctx) {
         'automation-start',
       ]).describe('Operation'),
       brand: brandSchema,
+      apiKey: z.string().optional().describe('Marketing API key to validate + save (required for verify). Looks like abc123…-us6; create at Mailchimp → Account → Extras → API keys.'),
       limit: z.coerce.number().int().optional().describe('Max rows for campaigns (1-1000, default 25) and performance (1-100, default 10).'),
       status: z.enum(['save', 'paused', 'schedule', 'sending', 'sent']).optional().describe('Filter campaigns by status. Only used by action="campaigns".'),
       // Template fields.
@@ -1181,7 +1187,12 @@ function buildTools(tool, z, ctx) {
       scheduleTime: z.string().optional().describe('RFC-3339 UTC timestamp for campaign-schedule, e.g. "2026-06-01T14:00:00+00:00". Mailchimp rounds to the nearest 15-minute slot.'),
       testEmails: z.string().optional().describe('Comma-separated list of recipient addresses for campaign-send-test (max 50 — Mailchimp\'s hard cap on /actions/test). Addresses must be on the authenticated account\'s allowlist.'),
     },
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'mailchimp-' + args.action, args)),
+    handler: async (args) => {
+      // 'verify' routes to the engine's mailchimp-verify-key (validate +
+      // vault-persist); every other action maps by prefix.
+      const binaryAction = args.action === 'verify' ? 'mailchimp-verify-key' : 'mailchimp-' + args.action;
+      return toEnvelope(await runBinary(ctx, binaryAction, args));
+    },
   }, tool, z, ctx));
 
   // ── applovin ─────────────────────────────────────────────
