@@ -1087,6 +1087,11 @@ function buildTools(tool, z, ctx) {
         // Flow CRUD + bulk
         'flows-list', 'flow-get', 'flow-create',
         'flow-update-status', 'flow-delete', 'flows-bulk-import',
+        // Segments: list (read-only) + programmatic create — unblocks
+        // segment-triggered flows (winback/sunset) without a manual
+        // Klaviyo-UI step. Condition GROUPS are ANDed; conditions WITHIN
+        // a group are ORed.
+        'segments-list', 'segment-create',
       ]).describe('Operation'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (performance/campaigns/flow-performance/flow-message-performance/metric-aggregate). Default 30.'),
@@ -1107,6 +1112,7 @@ function buildTools(tool, z, ctx) {
       // Performance fields
       metricId: z.string().optional().describe('Klaviyo metric ID for metric-aggregate (pick one from the metrics list shown by the legacy "performance" action). Required for metric-aggregate.'),
       flowBody: z.any().optional().describe('Full flow body for flow-create. Shape: {name, trigger:{type, list_id?, metric?}, steps:[{type, ...}]}. Step types: "delay" {duration_seconds}, "send_email" {subject, preheader, from_email, from_name, template_id?, body?}, "wait_until" {time_of_day, timezone}, "branch" {condition}. The binary runs CheckFlowCANSPAM before any HTTP — trigger.type must be on the documented-consent allowlist (list_added, segment_added, profile_subscribed_marketing, ecommerce_placed_order, ecommerce_started_checkout, viewed_product, custom_event), every send_email step must have an unsubscribe token + physical address + subject + from_name. Failures REFUSE the create (no auto-fix).'),
+      segmentBody: z.any().optional().describe('Full segment body for segment-create. Shape: {name, definition:{condition_groups:[{conditions:[{type:"profile-metric", metric_id, measurement:"count"|"sum", measurement_filter:{type:"numeric",operator,value}, timeframe_filter:{type:"date",operator:"in-the-last"|"alltime"|..., quantity?, unit?}}]}]}}. Condition GROUPS are ANDed together; conditions WITHIN a group are ORed — "zero opens AND zero clicks in 60d" needs two groups of one condition each. metric_id values come from the "performance" action\'s tracked-metrics list. The binary validates the envelope (name + non-empty condition_groups) and refuses duplicate segment names against live Klaviyo state; condition-schema errors surface verbatim from Klaviyo\'s 400 responses.'),
       // REGRESSION GUARD (2026-04-29, Gitar PR #166): was z.string().optional()
       // — switched to z.enum so the LLM sees the valid set in the JSON Schema
       // tool spec without parsing the .describe() text, and typos are
