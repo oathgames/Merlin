@@ -52,6 +52,9 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   'templates-list', 'template-get',
   'automations-list', 'automation-emails',
   'flows-list', 'flow-get',
+  // Klaviyo segment enumeration (GET, no writes). segment-create stays
+  // carded via the destructive-tool default.
+  'segments-list',
 ]));
 
 // SPEND_ACTIONS gate the approval card. `push` is the only action eligible
