@@ -107,7 +107,11 @@ test('content SKILL instructs Claude to echo gallery <div> blocks verbatim', () 
   const skill = fs.readFileSync(contentSkillPath, 'utf8');
   assert.match(skill, /MANDATORY post-tool: echo the gallery block verbatim/, 'content SKILL must contain the post-tool gallery-echo instruction');
   assert.match(skill, /merlin-gallery/, 'content SKILL must reference the merlin-gallery class so Claude knows what to echo');
-  assert.match(skill, /must echo each block verbatim/i, 'content SKILL must instruct Claude to echo verbatim — paraphrasing was the original incident');
+  // Wording tracked loosely: the SKILL's current phrasing is "Echo each
+  // <div ...> block verbatim" (was "must echo each block verbatim") — the
+  // guard cares that an explicit echo-verbatim instruction exists, not the
+  // exact sentence shape.
+  assert.match(skill, /echo each .*block verbatim/i, 'content SKILL must instruct Claude to echo verbatim — paraphrasing was the original incident');
 });
 
 test('creative_refinement.go emits artifact bundle for refine winners', { skip: skipCrossRepo }, () => {

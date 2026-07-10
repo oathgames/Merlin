@@ -45,7 +45,10 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   // Adding these here means the destructive=true tool wrapper auto-
   // approves GET endpoints (templates-list / template-get / etc.)
   // while still routing the CRUD verbs (-create / -update / -delete /
-  // -bulk-upload) through the approval card.
+  // -bulk-upload) through the approval card. campaign-content is the
+  // Mailchimp rendered-HTML export (two GETs, no writes) — NOT to be
+  // confused with campaign-set-content, which stays carded.
+  'campaign-content',
   'templates-list', 'template-get',
   'automations-list', 'automation-emails',
   'flows-list', 'flow-get',
