@@ -730,3 +730,72 @@ for (const engineAction of [
       `the engine's requireApproval() gate refuses ${engineAction} unless approved reaches it as true.`);
   });
 }
+
+// ── Contract N (2026-07-10, audit P0-02): no live-spend / customer-facing
+//    write may auto-approve. main.js's approval path consults ONLY the three
+//    action sets, so any dangerous action absent from SPEND ∪ CARDED falls
+//    through to the catch-all auto-approve (the legacy meta_ads multiplexer
+//    fail-open). This locks the exact class Codex flagged. ─────────────────
+
+// DANGEROUS_ACTIONS: every action string that fires real ad spend OR mutates
+// live customer-facing state. Each MUST resolve to a card (SPEND or CARDED),
+// never the catch-all auto-approve. Adding a new spend/live-write action
+// without adding it here is the regression this catches.
+const DANGEROUS_ACTIONS = [
+  // Legacy meta_ads multiplexer spend verbs (the P0-02 fail-open) + linkedin.
+  'activate', 'retarget', 'budget', 'bulk-push', 'lockdown',
+  // Universal spend verbs.
+  'push', 'duplicate', 'kill', 'setup', 'setup-retargeting',
+  'create-campaign', 'create-ad',
+  // Email/SMS live sends + destructive structural writes.
+  'campaign-send', 'campaign-schedule', 'campaign-delete',
+  'segment-create', 'flow-update-status', 'flow-delete', 'flows-bulk-import',
+  'template-delete', 'bulk-import-flow',
+  'automation-pause', 'automation-start', 'automation-activate',
+  'automation-deactivate', 'automation-delete',
+  // Live social channel posts.
+  'post',
+  // Live product-catalog push to Google Merchant.
+  'sync-shopify',
+  // GA4 Admin writes (also fail-closed server-side; carded for the human gate).
+  'create-key-event', 'archive-key-event', 'create-custom-dimension',
+  'create-custom-metric', 'create-audience', 'update-property-settings',
+  'update-stream-settings', 'attach-shopify-events',
+];
+
+test('P0-02: no dangerous action can auto-approve (every one is in SPEND ∪ CARDED)', () => {
+  const carded = new Set([...policy.SPEND_ACTIONS, ...policy.CARDED_DESTRUCTIVE_ACTIONS]);
+  const leaked = DANGEROUS_ACTIONS.filter((a) => !carded.has(a));
+  assert.deepEqual(leaked, [],
+    `these live-spend / customer-facing actions AUTO-APPROVE (fall through main.js's catch-all); add each to SPEND_ACTIONS or CARDED_DESTRUCTIVE_ACTIONS: ${leaked.join(', ')}`);
+});
+
+test('P0-02: the specific Codex-reported fail-opens are carded', () => {
+  // Regression pins for the exact actions the 2026-07-10 audit named.
+  for (const a of ['activate', 'budget', 'bulk-push', 'retarget']) {
+    assert.ok(policy.SPEND_ACTIONS.has(a), `meta_ads '${a}' must be a SPEND action (fires real ad dollars)`);
+  }
+  assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has('segment-create'),
+    "klaviyo 'segment-create' must be carded (creates live audience targeting)");
+  assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has('post'),
+    "discord/slack 'post' must be carded (live channel message)");
+});
+
+test('P0-02: the false "carded via destructive-tool default" comment is gone', () => {
+  // main.js AUTO-APPROVES anything not in the three sets; there is no
+  // destructive-tool default. The old comment asserted a protection that
+  // did not exist. It must not come back.
+  const SRC = fs.readFileSync(path.join(__dirname, 'mcp-approval-policy.js'), 'utf8');
+  assert.ok(!/carded via the destructive-tool default/.test(SRC),
+    'the false "destructive-tool default" claim must not reappear; there is no such default');
+});
+
+test('P0-02: every dangerous action really exists in a tool schema (no dead entries)', () => {
+  // Guard against carding phantom actions: each DANGEROUS_ACTIONS entry must
+  // appear as a quoted action string somewhere in the tool schemas, so this
+  // list stays honest as tools evolve.
+  const SRC = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  const missing = DANGEROUS_ACTIONS.filter((a) => !SRC.includes(`'${a}'`));
+  assert.deepEqual(missing, [],
+    `these carded actions are not present in any tool schema (stale entries): ${missing.join(', ')}`);
+});
