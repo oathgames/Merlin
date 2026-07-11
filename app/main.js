@@ -8666,7 +8666,12 @@ const BRAND_KEYS = [
   'metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaConfigId',
   'tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId',
   'shopifyStore', 'shopifyAccessToken',
-  'googleAccessToken', 'googleRefreshToken', 'googleAdsCustomerId', 'googleAdsDeveloperToken',
+  // googleTokenScope rides with googleAccessToken (same oauthVaultScope()
+  // write in runGoogleLogin). Mirror of brandScopedKeys in
+  // autocmo-core/vault.go, added 2026-07-11 with the Go-side entry. NOTE:
+  // comments inside this array must avoid apostrophes; the source-scan in
+  // brand-scope-isolation.test.js extracts entries with a quote regex.
+  'googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsCustomerId', 'googleAdsDeveloperToken',
   'amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId', 'amazonSellerId',
   'amazonAdClientId', 'amazonAdClientSecret', 'amazonSpClientId', 'amazonSpClientSecret',
   'etsyAccessToken', 'etsyRefreshToken', 'etsyShopId', 'etsyKeystring',
@@ -9599,7 +9604,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
     const keyMap = {
       meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId'],
       tiktok: ['tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId'],
-      google: ['googleAccessToken', 'googleRefreshToken', 'googleAdsDeveloperToken', 'googleAdsCustomerId'],
+      google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsDeveloperToken', 'googleAdsCustomerId'],
       shopify: ['shopifyAccessToken', 'shopifyStore'],
       // revenueSourcePreference is cleared with Stripe so a reconnect picks
       // up a fresh disambiguation prompt instead of silently honoring stale
