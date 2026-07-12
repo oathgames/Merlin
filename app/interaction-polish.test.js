@@ -46,21 +46,32 @@ test('openTakeover / closeTakeover helpers are defined', () => {
     'closeTakeover(el) must exist');
   // openTakeover gates the .open flip on a double rAF after removing .hidden so
   // the resting frame paints before the transition runs.
+  // Window 400 -> 1000 (2026-07-11): openTakeover now also cancels a
+  // still-pending close (timer + transitionend) before reopening.
   const idx = RENDERER_JS.indexOf('function openTakeover');
-  const fn = RENDERER_JS.slice(idx, idx + 400);
+  const fn = RENDERER_JS.slice(idx, idx + 1000);
   assert.match(fn, /classList\.add\(['"]takeover-anim['"]\)/, 'adds the takeover-anim transition class');
   assert.match(fn, /classList\.remove\(['"]hidden['"]\)/, 'removes hidden to render the element');
   assert.match(fn, /requestAnimationFrame\([\s\S]*?requestAnimationFrame/, 'double-rAF gate before adding .open');
   assert.match(fn, /classList\.add\(['"]open['"]\)/, 'flips .open to trigger the transition');
+  // 2026-07-11: a fast close-then-reopen must not be re-hidden by the stale
+  // close's 260ms fallback timer (or its late transitionend listener).
+  assert.match(fn, /clearTimeout\(el\._takeoverCloseTimer\)/, 'openTakeover cancels a pending close timer');
+  assert.match(fn, /removeEventListener\(['"]transitionend['"],\s*el\._takeoverCloseDone\)/,
+    'openTakeover detaches the pending close transitionend listener');
 });
 
 test('closeTakeover adds hidden only after the exit transition', () => {
+  // Window 500 -> 1400 (2026-07-11): the fallback timer is now stashed on
+  // the element so openTakeover can cancel it.
   const idx = RENDERER_JS.indexOf('function closeTakeover');
-  const fn = RENDERER_JS.slice(idx, idx + 500);
+  const fn = RENDERER_JS.slice(idx, idx + 1400);
   assert.match(fn, /classList\.remove\(['"]open['"]\)/, 'removes .open to start the exit transition');
   assert.match(fn, /transitionend/, 'waits for transitionend before hiding');
   assert.match(fn, /classList\.add\(['"]hidden['"]\)/, 'ends in the hidden resting state');
   assert.match(fn, /setTimeout\(/, 'has a fallback timer in case transitionend never fires');
+  assert.match(fn, /el\._takeoverCloseTimer\s*=\s*setTimeout\(/,
+    'the fallback timer is stashed on the element for cancellation by openTakeover');
 });
 
 test('magic slide helpers make the authored translateX transition play', () => {

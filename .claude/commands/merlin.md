@@ -16,13 +16,14 @@ Active skills:
 
 - **merlin-ads** — Meta/TikTok/Google/Amazon/Reddit/Etsy/LinkedIn paid ads, autonomous loop, Promotion Gate, triage.
 - **merlin-analytics** — cross-platform dashboard, wisdom, calendar, landing-page Conversion Rubric.
+- **merlin-brand-guide**: palette/typography/voice synthesis into brand-guide.json; refresh/rebuild the brand guide.
 - **merlin-content** — image/video prompts (7 locks, ad modules), Copy Quality Gate, Content Scoring, HeyGen.
-- **merlin-creative-engine**: mass creative fan-out. N diverse ad variants across angle/demographic/format in one pass. Use for "make me 20 ads" / "a creative pass" / "batch variants" (breadth, not a single hero creative).
+- **merlin-creative-engine**: mass creative fan-out. N diverse ad variants across angle/demographic/format in one pass (breadth, not a single hero creative).
 - **merlin-ecom** — Shopify products/orders/cohorts + Stripe revenue/MRR/ARR (read-only) + revenue-source preference.
 - **merlin-seo** — SEO audit/keywords/rankings/gaps/alt-text + blog generation with internal linking.
 - **merlin-social** — Discord, Klaviyo email, Reddit organic, Threads, competitor ad intel, Slack.
 - **merlin-setup** — first-run onboarding, platform OAuth, scheduled tasks (daily/optimize/digest/memory).
-- **merlin-tournament** — adversarial creative iteration: critic → blind author → blind 3-judge Borda, with k=2 incumbent-wins-twice stop. Use when the user wants to *beat* an existing winner, not write fresh.
+- **merlin-tournament**: adversarial creative iteration, critic → blind author → blind 3-judge Borda, with k=2 incumbent-wins-twice stop (beat an existing winner, not write fresh).
 - **clarify-intent** — fallback routing when the request is ambiguous.
 
 ## Fuzzy intent inference

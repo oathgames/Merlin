@@ -33,6 +33,7 @@
     "app/artifact-parser.js",
     "app/async-barrier.js",
     "app/auth-credentials.js",
+    "app/auth-failures.js",
     "app/binary-paths.js",
     "app/brand-manifest-scaffolder.js",
     "app/brand-scaffold.js",
@@ -62,6 +63,7 @@
     "app/claude-desktop-config.js",
     "app/codex-config.js",
     "app/oauth-fast-open.js",
+    "app/oauth-pending-gate.js",
     "app/oauth-persist.js",
     "app/oauth-provider-config.js",
     "app/pasted-media.js",
@@ -113,7 +115,8 @@
   "removed": [
     ".claude/commands/merlin-platforms.md",
     ".claude/commands/merlin-setup.md",
-    ".claude/tools/ggml-tiny.en.bin"
+    ".claude/tools/ggml-tiny.en.bin",
+    ".claude/tools/.merlin-spells.json"
   ],
   "preserveUserBrands": "assets/brands/* except assets/brands/example/ (example is updatable, user brands are not)",
   "binaryName": "Merlin",

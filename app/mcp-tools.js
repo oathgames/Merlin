@@ -286,6 +286,69 @@ function isBrandMissing(brand) {
   return false;
 }
 
+// ── Revoked-grant signal (2026-07-11 audit fix) ─────────────────────
+//
+// getConnections in main.js marks 'expired' by token age alone, so a grant
+// revoked server-side keeps a green tile while every action 401s. runBinary
+// is the single funnel for every platform action, so this is where the real
+// auth outcome is observable: a result that classifies as TOKEN_EXPIRED
+// flags the platform (per brand) via ctx.notePlatformAuthResult, and any
+// success clears the flag. main.js persists the flag (auth-failures.js) and
+// getConnections downgrades flagged platforms to 'expired' so the existing
+// reconnect UX takes over.
+//
+// Only actions with an unambiguous platform prefix participate: aggregate
+// actions (dashboard, wisdom, generate) cannot attribute a token failure to
+// one platform and are intentionally unmapped. Longest prefix first.
+const AUTH_SIGNAL_PLATFORM_PREFIXES = [
+  ['google-analytics-', 'google'],
+  ['google-ads-', 'google'],
+  // Google Merchant Center rides the same Google OAuth grant.
+  ['merchant-', 'google'],
+  ['meta-', 'meta'],
+  ['tiktok-', 'tiktok'],
+  ['amazon-', 'amazon'],
+  ['shopify-', 'shopify'],
+  ['etsy-', 'etsy'],
+  ['reddit-', 'reddit'],
+  ['linkedin-', 'linkedin'],
+  ['stripe-', 'stripe'],
+  ['klaviyo-', 'klaviyo'],
+  // Threads rides the Meta grant (no separate OAuth): a Threads token
+  // failure means the Meta connection needs reconnecting.
+  ['threads-', 'meta'],
+];
+
+function platformForAuthSignal(action) {
+  if (typeof action !== 'string') return null;
+  for (const [prefix, platform] of AUTH_SIGNAL_PLATFORM_PREFIXES) {
+    if (action.startsWith(prefix)) return platform;
+  }
+  return null;
+}
+
+// Feed one binary result into the auth-failure store via the optional ctx
+// hook. Never throws: this is telemetry for the connections panel, a bug
+// here must not break the tool result path.
+function noteAuthSignalFromResult(ctx, action, args, errored, text) {
+  try {
+    if (!ctx || typeof ctx.notePlatformAuthResult !== 'function') return;
+    const platform = platformForAuthSignal(action);
+    if (!platform) return;
+    const brand = (args && typeof args.brand === 'string') ? args.brand : '';
+    if (!errored) {
+      ctx.notePlatformAuthResult(platform, brand, 'success');
+      return;
+    }
+    const classified = errors.classifyBinaryError(text || '');
+    if (classified && classified.code === 'TOKEN_EXPIRED') {
+      ctx.notePlatformAuthResult(platform, brand, 'token_expired');
+    }
+    // Other error classes (rate limit, timeout, 5xx) say nothing about the
+    // grant: leave the flag as-is.
+  } catch {}
+}
+
 // ── Shared binary runner ─────────────────────────────────────
 
 /**
@@ -407,6 +470,11 @@ async function runBinary(ctx, action, args, opts = {}) {
       {
         timeout,
         cwd: ctx.appRoot,
+        // Node's execFile default maxBuffer is 1MB, which SIGTERM-kills the
+        // engine mid-response on large outputs (catalog pulls, insights
+        // sweeps). main.js grants the same binary 32MB for its own execFile
+        // sites; keep this call site in lockstep.
+        maxBuffer: 32 * 1024 * 1024,
       },
       (err, stdout, stderr) => {
         // Track for cleanup on app exit
@@ -415,11 +483,14 @@ async function runBinary(ctx, action, args, opts = {}) {
         if (err && !stdout) {
           // Binary failed with no output — redact the error message too
           const errMsg = redactOutput('', stderr || err.message);
+          noteAuthSignalFromResult(ctx, action, args, true, errMsg);
           return resolve({ text: errMsg || 'Action failed. Try again.', error: true });
         }
 
         // Redact BOTH stdout and stderr
         const sanitized = redactOutput(stdout || '', stderr || '');
+        // Revoked-grant tile signal: see noteAuthSignalFromResult above.
+        noteAuthSignalFromResult(ctx, action, args, !!err, sanitized);
         // Extract artifact bundles emitted by the binary's sentinel block.
         // `cleanText` substitutes each sentinel with a markdown gallery so
         // Claude echoes the inline previews verbatim; `bundles` is the
@@ -2136,17 +2207,25 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'threads']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
     handler: async (args) => {
-      // Meta: App Review pending — OAuth not available. User connects via
-      // manual token entry in the UI (Meta tile in Connections panel).
-      if (args.platform === 'meta') {
+      // Meta App Review PASSED (Live mode, see CLAUDE.md "Meta Ads API").
+      // The old branch here returned "App Review pending, paste a manual
+      // token from developers.facebook.com/tools/explorer", a dead end
+      // that contradicted the tile's real OAuth flow. Meta is in
+      // ACTIVE_PLATFORMS (oauth-provider-config.js) and now falls through
+      // to the same ctx.runOAuthFlow path as tiktok/google below.
+      //
+      // Threads has NO standalone OAuth: it inherits the Meta grant
+      // (threadsAccessToken rides the Meta token, see the disconnect
+      // keyMap comment in main.js). Route the agent to connect Meta.
+      if (args.platform === 'threads') {
         return {
-          summary: 'Meta is connected via manual token entry (App Review pending)',
-          instructions: 'Ask the user to click the Meta tile in the Connections panel and paste their token from developers.facebook.com/tools/explorer. Then use connection_status to verify.',
+          summary: 'Threads rides the Meta connection, no separate login',
+          instructions: 'Threads uses the same authorization as Meta: there is no separate Threads OAuth. If Meta is not connected yet, call platform_login with platform "meta" (or ask the user to click the Meta tile in the Connections panel). Once Meta is connected, Threads works automatically. Use connection_status to verify.',
         };
       }
       // REGRESSION GUARD (2026-05-10, v1.22.0 RSI bug A003):
@@ -2871,6 +2950,9 @@ module.exports = {
   isBrandMissing,
   BRAND_OPTIONAL_ACTIONS,
   BUDGET_HARD_CEILING,
+  // Revoked-grant tile signal: exported for tests (auth-failures wiring).
+  platformForAuthSignal,
+  noteAuthSignalFromResult,
   // Progress + fallback internals — exported so tests can clear the tracker
   // between runs. `_resetScrapeTimeoutTrackerForTests` MUST NOT be called
   // from production code; it exists solely to keep test isolation clean.

@@ -626,3 +626,103 @@ test('ws-server.js — keepalive REGRESSION GUARD comment is present', () => {
     'ws-server.js missing REGRESSION GUARD (2026-05-01) for application-level keepalive — restore it before merging any change to the message handler.',
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// Static-file handler crash-loop fix (2026-07-11 audit)
+// ─────────────────────────────────────────────────────────────────────
+//
+// The SPA-index fallback used to do res.end(fs.readFileSync(...)) with no
+// try/catch inside the http request handler: a missing pwa/index.html
+// (broken or half-updated install) threw synchronously, escaped as an
+// uncaughtException, and burned main.js's crash-relaunch cap on every
+// phone request. The handler must answer 500 and keep the server alive.
+
+function httpGet(port, urlPath) {
+  const http = require('node:http');
+  return new Promise((resolve, reject) => {
+    const req = http.get({ host: '127.0.0.1', port, path: urlPath }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
+    });
+    req.on('error', reject);
+  });
+}
+
+test('missing pwa/index.html yields a 500 and the server survives', async () => {
+  await withTempCertDir(async () => {
+    // Force the HTTP (no-cert) path so the test needs no openssl.
+    _testHooks.setExecFileImpl((file, args, opts, cb) => {
+      const err = new Error('spawn openssl ENOENT');
+      err.code = 'ENOENT';
+      cb(err);
+    });
+    const emptyPwa = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-empty-pwa-'));
+    _testHooks.setPwaDirForTest(emptyPwa);
+    try {
+      const port = await _testHooks.startServerOnly();
+      const first = await httpGet(port, '/');
+      assert.equal(first.status, 500, 'missing index must answer 500, not crash');
+      assert.match(first.headers['content-type'] || '', /text\/plain/);
+      assert.ok(first.body.length > 0 && first.body.length < 200, 'short plain-text body');
+      // The killer assertion: the server is still alive for the NEXT request.
+      const second = await httpGet(port, '/anything.js');
+      assert.equal(second.status, 500, 'server must keep answering after the failure');
+    } finally {
+      _testHooks.setPwaDirForTest(null);
+      _testHooks.setExecFileImpl(null);
+      await _testHooks.closeServer();
+      try { fs.rmSync(emptyPwa, { recursive: true, force: true }); } catch {}
+    }
+  });
+});
+
+test('missing asset falls back to the SPA index without a pre-read exists/stat check', async () => {
+  await withTempCertDir(async () => {
+    _testHooks.setExecFileImpl((file, args, opts, cb) => {
+      const err = new Error('spawn openssl ENOENT');
+      err.code = 'ENOENT';
+      cb(err);
+    });
+    const tmpPwa = fs.mkdtempSync(path.join(os.tmpdir(), 'ws-pwa-'));
+    fs.writeFileSync(path.join(tmpPwa, 'index.html'), '<html>spa-index</html>');
+    fs.writeFileSync(path.join(tmpPwa, 'app.js'), 'console.log(1)');
+    _testHooks.setPwaDirForTest(tmpPwa);
+    try {
+      const port = await _testHooks.startServerOnly();
+      const asset = await httpGet(port, '/app.js');
+      assert.equal(asset.status, 200);
+      assert.match(asset.headers['content-type'] || '', /application\/javascript/);
+      const missing = await httpGet(port, '/nope.css');
+      assert.equal(missing.status, 200, 'unknown paths fall back to the SPA index');
+      assert.match(missing.body, /spa-index/);
+      // Traversal attempts still land on the index, never outside pwaDir.
+      const traversal = await httpGet(port, '/..%2F..%2Fpackage.json');
+      assert.equal(traversal.status, 200);
+      assert.match(traversal.body, /spa-index/);
+    } finally {
+      _testHooks.setPwaDirForTest(null);
+      _testHooks.setExecFileImpl(null);
+      await _testHooks.closeServer();
+      try { fs.rmSync(tmpPwa, { recursive: true, force: true }); } catch {}
+    }
+  });
+});
+
+test('requestHandler has no existsSync/statSync TOCTOU and wraps its body in try/catch', () => {
+  const src = fs.readFileSync(path.join(APP_DIR, 'ws-server.js'), 'utf8');
+  const start = src.indexOf('const requestHandler = (req, res) => {');
+  assert.ok(start >= 0, 'requestHandler not found');
+  // The handler's closing brace sits at 4-space indent inside startServer's
+  // Promise callback; inner blocks close deeper, so this match is the real
+  // end of the arrow function.
+  const endMatch = /\r?\n    \};/.exec(src.slice(start));
+  assert.ok(endMatch, 'requestHandler closing brace not found');
+  const body = src.slice(start, start + endMatch.index);
+  // Strip line comments: the handler's own doc comment names the removed
+  // calls and must not trip the scan.
+  const code = body.replace(/^\s*\/\/.*$/gm, '');
+  assert.doesNotMatch(code, /existsSync|statSync/,
+    'the handler must read directly and catch, not check-then-read (TOCTOU)');
+  assert.match(code, /res\.writeHead\(500/, 'the catch path must answer 500');
+});

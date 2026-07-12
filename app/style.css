@@ -322,6 +322,17 @@ a:hover{text-decoration:underline}
   margin:0 auto;
   width:100%;
 }
+/* Screen-reader-only content: visually removed, still announced. Standard
+   clip pattern (WAI tutorial); used by #sr-announcer for turn completion. */
+.visually-hidden{
+  position:absolute;
+  width:1px;height:1px;
+  margin:-1px;padding:0;border:0;
+  overflow:hidden;
+  clip:rect(0 0 0 0);
+  clip-path:inset(50%);
+  white-space:nowrap;
+}
 .chat-status-row{
   display:flex;align-items:center;gap:6px;
   font-size:var(--fs-xs);color:var(--text-dim);
@@ -460,6 +471,15 @@ a:hover{text-decoration:underline}
 .msg-bubble pre code{background:none;padding:0;word-break:normal}
 .msg-bubble p{margin:0 0 8px;line-height:1.6}
 .msg-bubble p:last-child{margin-bottom:0}
+/* Streaming split containers (2026-07-11): .stream-prefix/.stream-tail are
+   layout-transparent wrappers that exist only WHILE a reply streams
+   (finalizeBubble flattens them). display:contents keeps block flow
+   identical to the flat structure; the p:last-child override restores the
+   inter-paragraph gap at the prefix/tail seam, which the rule above would
+   otherwise collapse (the prefix's last p matches :last-child of its
+   wrapper even though more content follows in the tail). */
+.stream-prefix,.stream-tail{display:contents}
+.msg-bubble .stream-prefix p:last-child{margin-bottom:8px}
 .msg-bubble strong{font-weight:600;color:var(--text)}
 .msg-bubble em{font-style:italic;color:var(--text-muted)}
 .msg-bubble ul,.msg-bubble ol{padding-left:20px;margin:6px 0}
@@ -501,25 +521,6 @@ a:hover{text-decoration:underline}
 .briefing-section{margin-bottom:8px}
 .briefing-label{font-size:var(--fs-xs);font-weight:600;color:var(--text-dim);text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px}
 .briefing-content{font-size:var(--fs-base);color:var(--text-muted);line-height:1.5;white-space:pre-line}
-.briefing-dismiss{
-  display:block;width:100%;margin-top:10px;padding:6px;
-  background:var(--hover-5);border:1px solid var(--border);
-  border-radius:var(--r-md);color:var(--text-dim);font-size:var(--fs-xs);
-  cursor:pointer;font-family:var(--font);transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
-}
-.briefing-dismiss:hover{background:var(--hover-10);color:var(--text)}
-
-/* Onboarding Progress */
-.onboarding-progress{
-  background:linear-gradient(135deg,rgba(167,139,250,.06),rgba(52,211,153,.04));
-  border:1px solid rgba(167,139,250,.15);border-radius:var(--r-lg);padding:14px 16px;
-}
-.onboarding-bar-track{height:4px;background:var(--surface);border-radius:var(--r-xs);margin-bottom:10px;overflow:hidden}
-.onboarding-bar-fill{height:100%;background:linear-gradient(90deg,#a78bfa,#34d399);border-radius:var(--r-xs);transition:width .5s var(--ease)}
-.onboarding-steps{display:flex;flex-wrap:wrap;gap:6px 14px;margin-bottom:8px}
-.onboarding-step{font-size:var(--fs-sm);color:var(--text-dim)}
-.onboarding-step.done{color:var(--success)}
-.onboarding-next{font-size:var(--fs-sm);color:var(--text-muted)}
 
 /* Tables */
 .msg-bubble table{width:100%;border-collapse:collapse;margin:8px 0;font-size:var(--fs-sm)}
@@ -1075,7 +1076,6 @@ a:hover{text-decoration:underline}
   line-height:1.4;
 }
 .approval-budget:empty{display:none}
-.approval-budget .over-budget{color:var(--danger);font-weight:600}
 #approval-actions{display:flex;gap:8px}
 /* ── Offline Banner ──────────────────────────────────────── */
 #offline-banner{
@@ -1239,12 +1239,6 @@ a:hover{text-decoration:underline}
 .perf-bar:hover { background: linear-gradient(135deg, rgba(167,139,250,.1), rgba(52,211,153,.1)); }
 .perf-bar.hidden { display: none; }
 .perf-bar-content { display: flex; align-items: center; gap: 6px; }
-.perf-sparkle {
-  font-size:var(--fs-2xs);
-  background: linear-gradient(135deg, #a78bfa, #34d399);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-}
 .perf-text {
   font-size:var(--fs-xs);
   color: var(--text-muted);
@@ -1303,7 +1297,7 @@ a:hover{text-decoration:underline}
   border-radius:var(--r-xs);
   transition: background var(--dur-fast) var(--ease);
 }
-.activity-item:hover { background: rgba(255,255,255,.03); }
+.activity-item:hover { background: var(--hover-3); }
 .activity-item:last-child { border-bottom: none; }
 .activity-item .activity-desc { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-item--error { border-left: 2px solid var(--danger); padding-left: 8px; background: rgba(239,68,68,.05); }
@@ -1335,7 +1329,7 @@ a:hover{text-decoration:underline}
   display: flex;
   gap: 6px;
   padding: 10px 0 8px;
-  border-bottom: 1px solid rgba(255,255,255,.04);
+  border-bottom: 1px solid var(--hover-4);
   margin-bottom: 6px;
   align-items: center;
 }
@@ -1343,8 +1337,8 @@ a:hover{text-decoration:underline}
   flex: 1 1 auto;
   min-width: 0;
   padding: 6px 10px;
-  background: rgba(255,255,255,.04);
-  border: 1px solid rgba(255,255,255,.08);
+  background: var(--hover-4);
+  border: 1px solid var(--hover-8);
   color: var(--text);
   border-radius:var(--r-sm);
   font-size:var(--fs-xs);
@@ -1359,14 +1353,14 @@ a:hover{text-decoration:underline}
   height: 28px;
   padding: 0;
   box-sizing: border-box;
-  background: rgba(255,255,255,.04);
-  border: 1px solid rgba(255,255,255,.1);
+  background: var(--hover-4);
+  border: 1px solid var(--hover-10);
   color: var(--text-muted);
   border-radius:var(--r-sm);
   cursor: pointer;
   transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.activity-icon-btn:hover { background: rgba(255,255,255,.08); color: var(--text); }
+.activity-icon-btn:hover { background: var(--hover-8); color: var(--text); }
 .activity-icon-btn.flash { background: rgba(52,211,153,.15); color: var(--success-soft); border-color: rgba(52,211,153,.4); }
 
 /* Raw JSON reveal under a clicked entry */
@@ -1375,7 +1369,7 @@ a:hover{text-decoration:underline}
   margin: 4px 0 10px 14px;
   padding: 10px 12px;
   background: rgba(0,0,0,.25);
-  border: 1px solid rgba(255,255,255,.06);
+  border: 1px solid var(--hover-6);
   border-radius:var(--r-sm);
   font-size:var(--fs-2xs);
   animation:activity-raw-in var(--dur-fast) var(--ease);
@@ -1402,13 +1396,13 @@ a:hover{text-decoration:underline}
   right: 6px;
   padding: 2px 8px;
   font-size:var(--fs-2xs);
-  background: rgba(255,255,255,.06);
-  border: 1px solid rgba(255,255,255,.1);
+  background: var(--hover-6);
+  border: 1px solid var(--hover-10);
   color: var(--text-muted);
   border-radius:var(--r-xs);
   cursor: pointer;
 }
-.activity-raw-copy:hover { background: rgba(255,255,255,.1); color: var(--text); }
+.activity-raw-copy:hover { background: var(--hover-10); color: var(--text); }
 
 .activity-empty, .activity-empty-filtered {
   color: var(--text-dim);
@@ -1745,6 +1739,22 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 }
 .magic-tile.needs-brand .tile-name{color:var(--warn)}
 
+/* OAuth waiting state (2026-07-11): the clicked tile shows a pulse plus a
+   Cancel affordance while the browser sign-in is pending, instead of
+   looking dead for up to 5 minutes. */
+.magic-tile.oauth-waiting{border-color:var(--accent-border);background:var(--accent-bg)}
+.magic-tile.oauth-waiting .tile-icon{animation:oauth-waiting-pulse 1.6s var(--ease) infinite}
+@keyframes oauth-waiting-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.tile-cancel{
+  font-size:var(--fs-2xs);
+  color:var(--text-dim);
+  border:1px solid var(--border);
+  border-radius:var(--r-xs);
+  padding:1px 8px;
+  cursor:pointer;
+}
+.tile-cancel:hover,.tile-cancel:focus{color:var(--danger);border-color:currentColor;outline:none}
+
 .magic-tile.unavailable,
 .magic-tile[data-stubbed]{
   opacity:.38;
@@ -1763,12 +1773,6 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .magic-tile[data-stubbed] .tile-icon{filter:saturate(0) brightness(.75)}
 .magic-tile.unavailable .tile-name,
 .magic-tile[data-stubbed] .tile-name{color:var(--text-dim)}
-
-.magic-empty{
-  font-size:var(--fs-sm);color:var(--text-dim);
-  text-align:center;padding:8px 0;
-  display:none;
-}
 
 /* ── Window-level drop overlay (paste/drop chat injection) ────
    Covers the entire window while a file drag is in flight so the drop
@@ -1990,7 +1994,6 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .spell-info{flex:1;min-width:0;overflow:hidden}
 .spell-info .spell-name{display:block}
 .spell-meta{font-size:var(--fs-xs);color:var(--text-dim);margin-top:1px}
-.spell-time{font-size:var(--fs-xs);color:var(--text-dim);flex-shrink:0}
 .spell-toggle{
   font-size:var(--fs-2xs);padding:2px 8px;border-radius:var(--r-xs);
   border:1px solid var(--border);background:transparent;
@@ -2019,8 +2022,6 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 }
 .spellbook-empty:empty{display:none}
 /* ── Brand Selector ──────────────────────────────────────── */
-.brand-selector-section{padding-bottom:8px}
-.brand-selector{display:flex;gap:6px;align-items:center}
 .brand-select{
   flex:1;
   background:var(--surface);border:1px solid var(--border);
@@ -2173,7 +2174,6 @@ body{transition:padding-right var(--dur-med) var(--ease)}
   margin-bottom:4px;gap:16px;flex-wrap:wrap;
 }
 .wisdom-benchmark-row:last-child{margin-bottom:0}
-.wisdom-benchmark-label{font-size:var(--fs-xs);color:var(--text-dim)}
 .wisdom-benchmark-value{font-size:var(--fs-sm);font-weight:600;color:var(--text)}
 .wisdom-benchmark-value.positive{color:var(--success)}
 .wisdom-benchmark-value.negative{color:var(--danger-soft)}
@@ -2369,40 +2369,8 @@ body{transition:padding-right var(--dur-med) var(--ease)}
   margin-top:8px;
 }
 
-.autopilot-row{cursor:pointer;padding:6px 8px;border-radius:var(--r-md);transition:background var(--dur-fast)}
-.autopilot-row:hover{background:var(--surface)}
-.autopilot-last:empty{display:none}
-
 /* ── Typing Indicator ────────────────────────────────────── */
 .typing-indicator{animation:fadeIn var(--dur-slow) var(--ease)}
-.tool-status{
-  font-size:var(--fs-xs);color:var(--text-dim);
-  text-transform:uppercase;letter-spacing:.5px;font-weight:500;
-  padding:6px 12px;
-  background:var(--bg-deep);
-  border-color:var(--hover-4);
-  animation:fadeIn var(--dur-slow) var(--ease);
-}
-.tool-status::before{
-  content:'';display:inline-block;
-  width:6px;height:6px;border-radius:50%;
-  background:var(--accent);margin-right:6px;
-  animation:dotBounce 1.2s infinite ease-in-out;
-  vertical-align:middle;
-}
-.dot-pulse{display:flex;gap:4px;padding:4px 0}
-.dot-pulse span{
-  width:6px;height:6px;
-  border-radius:50%;
-  background:var(--text-dim);
-  animation:dotBounce 1.2s infinite ease-in-out;
-}
-.dot-pulse span:nth-child(2){animation-delay:.2s}
-.dot-pulse span:nth-child(3){animation-delay:.4s}
-@keyframes dotBounce{
-  0%,80%,100%{opacity:.3;transform:scale(.8)}
-  40%{opacity:1;transform:scale(1)}
-}
 
 /* ── Demo Slides (welcome animation) ────────────────────── */
 .demo-slides{display:flex;flex-direction:column;gap:8px;margin-top:16px}
@@ -2641,9 +2609,7 @@ body{transition:padding-right var(--dur-med) var(--ease)}
   transition:border-color var(--dur-fast);
 }
 .merlin-modal-input:focus{border-color:var(--accent-border)}
-.merlin-modal-input.input-error{border-color:var(--danger);animation:shake var(--dur-slow) var(--ease)}
 .merlin-modal-input::placeholder{color:var(--text-dim)}
-@keyframes shake{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-4px)}40%,80%{transform:translateX(4px)}}
 .merlin-modal-error{
   font-size:var(--fs-sm);color:var(--danger);
   min-height:18px;margin-bottom:8px;
@@ -3024,19 +2990,6 @@ body{transition:padding-right var(--dur-med) var(--ease)}
   -webkit-backdrop-filter: blur(4px);
   z-index: 2;
 }
-.placeholder-label {
-  font-size:var(--fs-2xs);
-  color: var(--text-dim);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  opacity: .85;
-  padding: 0 4px;
-  position: relative;
-  z-index: 1;
-}
-
 .archive-date-header {
   grid-column: 1 / -1;
   font-size:var(--fs-xs);
@@ -3384,6 +3337,10 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .platform-reddit { background:rgba(255,69,0,.12); color:#FF4500; }
 .platform-linkedin { background:rgba(10,102,194,.15); color:#0a66c2; }
 .platform-snapchat { background:rgba(255,252,0,.15); color:#fffc00; }
+/* Snapchat's brand yellow is unreadable as text on light surfaces (about
+   1.1:1 on white). Light theme flips to Snapchat's own black-on-yellow
+   pairing, which keeps the brand identity and passes AA easily. */
+[data-theme="light"] .platform-snapchat { background:#fffc00; color:#0f0b1d; }
 
 /* ── Collapsed gallery stack (chat) ─────────────────────────────
    Replaces the open .merlin-gallery-grid with a fanned stack of 1–4
@@ -3830,16 +3787,6 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .swipe-card.archive-selected{
   border-color:var(--accent-deep) !important;
   box-shadow:0 0 0 2px rgba(124,92,255,.3), 0 8px 16px rgba(124,92,255,.12);
-}
-
-/* ── Light-mode tweaks for the viewer ───────────────────────────
-   The viewer's dark scrim works fine over the light theme too, but the
-   filmstrip thumbs need a slightly lighter unselected state so currents
-   still pop. */
-.theme-light .gv-thumb{ background:rgba(0,0,0,.08); }
-.theme-light .gv-thumb-placeholder{ color:rgba(0,0,0,.4); }
-.theme-light .archive-selection-toolbar{
-  background:linear-gradient(135deg, rgba(124,92,255,.08), rgba(52,211,153,.04));
 }
 
 /* ── Palantir — competitor ad feed ───────────────────────────────── */
@@ -4385,25 +4332,19 @@ body{transition:padding-right var(--dur-med) var(--ease)}
    frame after removing .hidden; .hidden stays the resting hidden state). */
 .takeover-anim{opacity:0;transform:scale(.985);transition:opacity var(--dur-med) var(--ease),transform var(--dur-med) var(--ease)}
 .takeover-anim.open{opacity:1;transform:none}
-/* Panel slide variant for the magic sidebar. */
-.panel-slide{transform:translateX(16px);opacity:0;transition:transform var(--dur-med) var(--ease),opacity var(--dur-med) var(--ease)}
-.panel-slide.open{transform:none;opacity:1}
 /* Content-shaped loading placeholders (contract classes; one shimmer language).
    background-size 200% is required: the shared shimmer keyframes animate
    background-position, which is a no-op at the default 100% size. The shape
    modifiers are self-sufficient (renderer.js builds bare `.skeleton-card`
    tiles), so the base styles apply to the whole family, not only `.skeleton`. */
-.skeleton,.skeleton-card,.skeleton-bar,.skeleton-line{position:relative;overflow:hidden;background:var(--surface);border-radius:var(--r-md)}
-.skeleton::after,.skeleton-card::after,.skeleton-bar::after,.skeleton-line::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,var(--hover-6),transparent);background-size:200% 100%;animation:shimmer 1.4s infinite}
+.skeleton,.skeleton-card,.skeleton-bar{position:relative;overflow:hidden;background:var(--surface);border-radius:var(--r-md)}
+.skeleton::after,.skeleton-card::after,.skeleton-bar::after{content:'';position:absolute;inset:0;background:linear-gradient(90deg,transparent,var(--hover-6),transparent);background-size:200% 100%;animation:shimmer 1.4s infinite}
 .skeleton-card{aspect-ratio:1;border:1px solid var(--border)}
 .skeleton-bar{height:28px;border-radius:var(--r-sm)}
-.skeleton-line{height:12px;border-radius:var(--r-xs)}
 /* Pressed states (contract selector list; 40ms so the press reads instantly). */
 #send-btn:not(:disabled):active,.btn-primary:not(:disabled):active,.btn-action:not(:disabled):active,.btn-secondary:not(:disabled):active,.magic-tile:active,.brand-tile:active,.archive-filter:active,.perf-period-btn:active,.magic-close:active,.starter-chip:active{transform:scale(.97);transition-duration:40ms}
-/* Staggered reveal. `.reveal-up` is the contract class; `.reveal-item` is the
-   alias renderer.js already ships (fadeUp + per-child animation-delay). */
-.reveal-up{opacity:0;transform:translateY(6px);animation:revealUp var(--dur-med) var(--ease) both}
-@keyframes revealUp{to{opacity:1;transform:none}}
+/* Staggered reveal. `.reveal-item` is the class renderer.js ships
+   (fadeUp + per-child animation-delay). */
 .reveal-item{animation:fadeUp var(--dur-med) var(--ease) both}
 /* Reduced motion. */
 @media (prefers-reduced-motion: reduce){

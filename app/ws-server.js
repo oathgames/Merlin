@@ -35,7 +35,9 @@ let httpServer = null;
 let wsPort = 0;
 let useTLS = false;
 const authenticatedClients = new Set();
-const pwaDir = path.join(__dirname, '..', 'pwa');
+// `let` (not const) solely so _testHooks.setPwaDirForTest can point the
+// static server at a temp directory; production never reassigns it.
+let pwaDir = path.join(__dirname, '..', 'pwa');
 
 // Message handlers — set by main.js to bridge into SDK
 let onSendMessage = null;
@@ -204,29 +206,58 @@ function startServer() {
     const mimeTypes = { '.html': 'text/html', '.js': 'application/javascript', '.css': 'text/css', '.json': 'application/json' };
 
     const requestHandler = (req, res) => {
-      // S10: Restrict CORS to localhost and local network
-      const origin = req.headers.origin || '';
-      const allowedOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$/.test(origin) ? origin : '';
+      // REGRESSION GUARD (2026-07-11 audit fix): the ENTIRE handler body
+      // runs inside try/catch. Before this, the SPA-index fallback did a
+      // bare readFileSync with no guard: a missing pwa/index.html (broken
+      // or half-updated install) threw inside the http request handler,
+      // escaped as an uncaughtException, and burned the crash-relaunch cap
+      // in main.js on every phone request. A static-file server bug must
+      // never take down the desktop app: answer 500 and keep serving.
+      try {
+        // S10: Restrict CORS to localhost and local network
+        const origin = req.headers.origin || '';
+        const allowedOrigin = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+)(:\d+)?$/.test(origin) ? origin : '';
 
-      let filePath = req.url.split('?')[0];
-      if (filePath === '/') filePath = '/index.html';
-      // Decode percent-encoded traversal attempts (`..%2F..%2F` etc.) and
-      // resolve under pwaDir. Any resolved path that escapes pwaDir (via
-      // `..`, absolute paths, or Windows drive letters) falls through to
-      // the SPA index — never reads arbitrary files off disk.
-      let decoded;
-      try { decoded = decodeURIComponent(filePath); } catch { decoded = filePath; }
-      const resolved = path.resolve(pwaDir, '.' + decoded);
-      const pwaPrefix = pwaDir + path.sep;
-      const insidePwa = resolved === pwaDir || resolved.startsWith(pwaPrefix);
-      const ext = path.extname(resolved);
-      const secHeaders = { 'Access-Control-Allow-Origin': allowedOrigin, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' };
-      if (insidePwa && fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
-        res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain', ...secHeaders });
-        res.end(fs.readFileSync(resolved));
-      } else {
-        res.writeHead(200, { 'Content-Type': 'text/html', ...secHeaders });
-        res.end(fs.readFileSync(path.join(pwaDir, 'index.html')));
+        let filePath = req.url.split('?')[0];
+        if (filePath === '/') filePath = '/index.html';
+        // Decode percent-encoded traversal attempts (`..%2F..%2F` etc.) and
+        // resolve under pwaDir. Any resolved path that escapes pwaDir (via
+        // `..`, absolute paths, or Windows drive letters) falls through to
+        // the SPA index: never reads arbitrary files off disk.
+        let decoded;
+        try { decoded = decodeURIComponent(filePath); } catch { decoded = filePath; }
+        const resolved = path.resolve(pwaDir, '.' + decoded);
+        const pwaPrefix = pwaDir + path.sep;
+        const insidePwa = resolved === pwaDir || resolved.startsWith(pwaPrefix);
+        const ext = path.extname(resolved);
+        const secHeaders = { 'Access-Control-Allow-Origin': allowedOrigin, 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' };
+        // Read directly instead of existsSync/statSync first: the old
+        // check-then-read raced file deletion (TOCTOU) and a passed check
+        // did not stop the read from throwing anyway. A failed read of the
+        // requested file (missing, directory, permission) falls through to
+        // the SPA index, exactly like the old isFile() routing.
+        let body = null;
+        let contentType = 'text/html';
+        if (insidePwa) {
+          try {
+            body = fs.readFileSync(resolved);
+            contentType = mimeTypes[ext] || 'text/plain';
+          } catch { body = null; }
+        }
+        if (body === null) {
+          body = fs.readFileSync(path.join(pwaDir, 'index.html'));
+          contentType = 'text/html';
+        }
+        res.writeHead(200, { 'Content-Type': contentType, ...secHeaders });
+        res.end(body);
+      } catch (e) {
+        // Missing SPA index or any unexpected throw: short plain-text 500,
+        // server stays up. Guarded again because writeHead throws if the
+        // headers already went out.
+        try {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Merlin mobile files are missing. Reinstall Merlin to fix this.');
+        } catch {}
       }
     };
 
@@ -524,6 +555,11 @@ module.exports = {
     getBroadcastStats() { return { ...broadcastStats }; },
     getAuthenticatedClients() { return authenticatedClients; },
     setExecFileImpl(fn) { _execFileImpl = (typeof fn === 'function') ? fn : execFile; },
+    // Point the static server at a temp directory (pass a falsy value to
+    // restore the real pwa/ dir). Used by the 500-on-missing-index tests.
+    setPwaDirForTest(dir) {
+      pwaDir = (typeof dir === 'string' && dir) ? dir : path.join(__dirname, '..', 'pwa');
+    },
     readCachedCert,
     generateCertAsync,
     getCertDir,

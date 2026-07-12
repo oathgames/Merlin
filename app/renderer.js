@@ -506,12 +506,12 @@ let _trialExpired = false;
       btn.style.borderColor = 'rgba(239,68,68,.4)';
       btn.style.animation = 'none'; // stop any pulsing
     } else if (days <= 2) {
-      const dayText = `${days} days left`;
+      const dayText = `${days} day${days === 1 ? '' : 's'} left`;
       trialEl.textContent = bonus > 0 ? `${dayText} (+${bonus})` : dayText;
       ctaEl.textContent = 'Get Pro';
       btn.style.borderColor = 'rgba(251,191,36,.4)';
     } else {
-      const dayText = `${days} days left`;
+      const dayText = `${days} day${days === 1 ? '' : 's'} left`;
       trialEl.textContent = bonus > 0 ? `${dayText} (+${bonus})` : dayText;
     }
   }
@@ -601,6 +601,26 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   try { localStorage.setItem('merlin.theme', next); } catch (_) { /* storage disabled */ }
 });
 
+// ── Startup IPC snapshot ────────────────────────────────────
+// getBrands / loadState / getBriefing each fire exactly ONCE at launch.
+// Two boot readers used to issue them independently (the module-level
+// loadBrands() chain near loadPerfBar startup wiring, and init() below),
+// doubling the launch IPC for identical data. bootSnapshot() memoizes the
+// three promises; both boot readers await the same objects. Later callers
+// (turn-end refresh, brand-activated, magic-panel open) must NOT use this:
+// they need live data, so they call the merlin.* IPC directly.
+let _bootSnapshot = null;
+function bootSnapshot() {
+  if (!_bootSnapshot) {
+    _bootSnapshot = {
+      brands: merlin.getBrands().catch(() => []),
+      state: merlin.loadState().catch(() => ({})),
+      briefing: merlin.getBriefing().catch(() => null),
+    };
+  }
+  return _bootSnapshot;
+}
+
 // ── Setup Flow ──────────────────────────────────────────────
 async function init() {
   // Warmup-perf: every IPC in this function used to be awaited serially before
@@ -663,10 +683,13 @@ async function init() {
 
   // Fire the three main-process reads in parallel (previously awaited serially,
   // ~100 ms × 3 = up to ~300 ms of chained IPC latency during first paint).
+  // bootSnapshot() shares the promises with the boot loadBrands() chain so
+  // launch issues each IPC exactly once (dedup pass, 2026-07-11).
+  const bootReads = bootSnapshot();
   const [existingBrands, savedState, briefing] = await Promise.all([
-    merlin.getBrands().catch(() => []),
-    merlin.loadState().catch(() => ({})),
-    merlin.getBriefing().catch(() => null),
+    bootReads.brands,
+    bootReads.state,
+    bootReads.briefing,
   ]);
   const isReturning = existingBrands && existingBrands.length > 0;
   const activeBrand = savedState?.activeBrand || (isReturning ? existingBrands[0].name : null);
@@ -679,8 +702,8 @@ async function init() {
   const productCount = isReturning ? existingBrands.reduce((sum, b) => sum + (b.productCount || 0), 0) : 0;
 
   if (isReturning) {
-    // Check for morning briefing FIRST (cached, instant)
-    const briefing = await merlin.getBriefing().catch(() => null);
+    // Morning briefing: already fetched by the parallel bootSnapshot() reads
+    // above (this branch used to re-issue getBriefing, doubling the IPC).
     // Look up the active brand's prior conversation. If we have one, skip
     // the "Welcome back — loading..." placeholder and paint the history
     // instead — the user resumes exactly where they left off per brand.
@@ -1086,6 +1109,36 @@ let lastRenderedLength = 0;
 // Reset on new bubble via `_streamRenderState = null` in addClaudeBubble.
 let _streamRenderState = null; // {prefixText, prefixHtml}
 
+// Two-container streaming write (2026-07-11, DOM-churn follow-up to the
+// guard above): caching prefix HTML cut the markdown+DOMPurify parse to
+// O(tail), but the final `innerHTML = prefixHtml + tailHtml` assignment
+// still made the BROWSER re-parse the whole reply's DOM every rAF tick.
+// The bubble now streams into two child containers: `.stream-prefix`
+// (written only when the paragraph boundary advances) and `.stream-tail`
+// (the only per-frame innerHTML write). Both are display:contents in CSS
+// so block flow is identical to the flat structure. finalizeBubble still
+// does ONE full flat render, so the finished bubble's DOM is exactly what
+// it always was; the containers exist only mid-stream. The fact-binding
+// path (factBindingEnabled) keeps the legacy full-bubble write because
+// _factApplyAndMount operates on the whole document.
+function ensureStreamContainers(bubble) {
+  let els = bubble._streamEls;
+  if (!els || els.prefixEl.parentNode !== bubble || els.tailEl.parentNode !== bubble) {
+    bubble.innerHTML = '';
+    const prefixEl = document.createElement('div');
+    prefixEl.className = 'stream-prefix';
+    const tailEl = document.createElement('div');
+    tailEl.className = 'stream-tail';
+    bubble.appendChild(prefixEl);
+    bubble.appendChild(tailEl);
+    els = { prefixEl, tailEl, created: true };
+    bubble._streamEls = els;
+    return els;
+  }
+  els.created = false;
+  return els;
+}
+
 // REGRESSION GUARD (2026-04-23, §4.4):
 // Hoisted `factBindingEnabled` check to top-level of the per-frame callback
 // so the boolean short-circuit (false in all production builds today) skips
@@ -1156,7 +1209,9 @@ function appendText(text) {
         // UI metadata tag never flashes visibly during streaming.
         const { speak, cleaned, resolved } = stripVoiceTag(textBuffer);
         // §4.2 / §5.2: try to reuse the cached prefix HTML.
-        let rendered = null;
+        let prefixHtml = '';
+        let tailHtml = '';
+        let prefixAdvanced = false;
         const boundary = cleaned.lastIndexOf('\n\n');
         const canReuse = _streamRenderState
           && boundary > 0
@@ -1175,32 +1230,54 @@ function appendText(text) {
           const newTail = cleaned.slice(boundary);
           const deltaPrefix = cleaned.slice(oldBoundary, boundary);
           const newPrefixHtml = _streamRenderState.prefixHtml + renderMarkdown(deltaPrefix);
-          const tailHtml = renderMarkdown(newTail);
-          rendered = newPrefixHtml + tailHtml;
+          prefixHtml = newPrefixHtml;
+          tailHtml = renderMarkdown(newTail);
+          prefixAdvanced = true;
           _streamRenderState = { prefixText: newPrefix, prefixHtml: newPrefixHtml };
+        } else if (canReuse) {
+          // Boundary unchanged: only the tail paragraph grew. Reuse the
+          // cached prefix untouched and re-render just the tail. Pre-split,
+          // this case fell into the full-re-render branch below, which
+          // nuked the cache and re-seeded it next frame: an alternating
+          // full parse the two-container structure exists to avoid.
+          prefixHtml = _streamRenderState.prefixHtml;
+          tailHtml = renderMarkdown(cleaned.slice(_streamRenderState.prefixText.length));
         } else if (boundary > 0 && !_streamRenderState) {
           // First paragraph break — seed the cache.
           const newPrefix = cleaned.slice(0, boundary);
           const newTail = cleaned.slice(boundary);
           const newPrefixHtml = renderMarkdown(newPrefix);
-          const tailHtml = renderMarkdown(newTail);
-          rendered = newPrefixHtml + tailHtml;
+          prefixHtml = newPrefixHtml;
+          tailHtml = renderMarkdown(newTail);
+          prefixAdvanced = true;
           _streamRenderState = { prefixText: newPrefix, prefixHtml: newPrefixHtml };
         } else {
           // Pre-first-paragraph or content before the cached prefix
           // changed (rare — happens when upstream rewrites an earlier
-          // chunk). Full re-render.
-          rendered = renderMarkdown(cleaned);
+          // chunk). Full re-render (lands entirely in the tail container;
+          // prefixAdvanced forces the prefix container clear).
+          prefixHtml = '';
+          tailHtml = renderMarkdown(cleaned);
+          prefixAdvanced = true;
           _streamRenderState = null;
         }
         // §4.4: top-level gate — skip the bridge helpers entirely when the
         // flag is off. _factApplyAndMount / _factMountCharts return the
         // HTML unchanged when disabled, but we avoid even entering them.
+        // Fact binding rewrites the WHOLE document, so that path keeps the
+        // legacy full-bubble write.
         if (factBindingEnabled) {
-          currentBubble.innerHTML = _factApplyAndMount(rendered);
+          currentBubble.innerHTML = _factApplyAndMount(prefixHtml + tailHtml);
           _factMountCharts(currentBubble);
         } else {
-          currentBubble.innerHTML = rendered;
+          // Two-container write (see ensureStreamContainers): the browser
+          // re-parses the committed prefix ONLY when the paragraph boundary
+          // advances; the tail is the sole per-frame innerHTML write.
+          const els = ensureStreamContainers(currentBubble);
+          if (els.created || prefixAdvanced) {
+            els.prefixEl.innerHTML = prefixHtml;
+          }
+          els.tailEl.innerHTML = tailHtml;
         }
         lastRenderedLength = textBuffer.length;
         // Streaming TTS: feed complete sentences as they arrive so the
@@ -1421,8 +1498,12 @@ function finalizeBubble() {
     const { speak, cleaned } = stripVoiceTag(textBuffer);
     // §4.2 / §5.2: on finalize we do a full render — the incremental
     // streaming cache is discarded so the complete document flows through
-    // fact-binding / chart-mount pipelines one more time.
+    // fact-binding / chart-mount pipelines one more time. The full innerHTML
+    // write below also flattens the mid-stream .stream-prefix/.stream-tail
+    // containers, so the finished bubble's DOM is the same flat structure
+    // it always was; drop the container refs with the cache.
     _streamRenderState = null;
+    delete currentBubble._streamEls;
     if (factBindingEnabled) {
       currentBubble.innerHTML = _factApplyAndMount(renderMarkdown(cleaned));
       _factMountCharts(currentBubble);
@@ -1439,6 +1520,16 @@ function finalizeBubble() {
     if (cleaned && cleaned.trim().length > 0) {
       currentBubble.dataset.speakText = cleaned;
       addReplayButton(currentBubble, cleaned);
+      // a11y: announce completion via the visually-hidden live region
+      // (#sr-announcer in index.html). Clearing first, then writing on a
+      // short delay, makes repeat announcements register with AT.
+      try {
+        const announcer = document.getElementById('sr-announcer');
+        if (announcer) {
+          announcer.textContent = '';
+          setTimeout(() => { announcer.textContent = 'Merlin finished responding.'; }, 30);
+        }
+      } catch {}
     }
     if (voiceEnabled && speak && cleaned && cleaned.trim().length > 0) {
       // If a streaming-speak session already fed sentences during the
@@ -2110,6 +2201,14 @@ function friendlyError(raw, platformName) {
     else if (platformName) capability = platformName.toLowerCase();
     return `${capability.charAt(0).toUpperCase()}${capability.slice(1)} credits ran out.\nTry: Open the ✦ Magic panel to add more credits.`;
   }
+  // Safe mode is NOT a wait-30-seconds situation: the binary paused the
+  // platform for up to 24h after detecting tampering or repeated limit hits,
+  // and it resumes on its own. Telling the user to retry in 30 seconds is a
+  // lie that trains them to hammer a locked door. Must run BEFORE the generic
+  // rate-limit branch below (safe-mode strings usually mention rate limits).
+  if (sl.includes('safe mode') || sl.includes('safe-mode') || sl.includes('safemode')) {
+    return `${platformName || 'This platform'} is paused for safety after too many requests.\nTry: Nothing needed. Merlin resumes it automatically.`;
+  }
   if (sl.includes('rate limit') || sl.includes('too many requests') || sl.includes('429')) return 'Too many requests — Merlin is protecting your account.\nTry: Wait 30 seconds and try again. This is normal.';
   // When we don't know which platform hit the quota, say it in plain
   // English. "API quota exceeded" means nothing to a non-technical user.
@@ -2126,6 +2225,25 @@ function friendlyError(raw, platformName) {
   // the generic "check permissions" message does not.
   if (sl.includes('scope_gap') || (sl.includes('shopify') && sl.includes('merchant approval'))) {
     return 'Your Shopify connection needs to be refreshed to unlock new features.\nTry: Open the ✦ Magic panel and reconnect your Shopify store — it takes 10 seconds.';
+  }
+
+  // ── OAuth sign-in flow errors (oauth-fast-open.js) ──
+  // These fire on the connection tiles and must run BEFORE the generic
+  // auth / network branches below, whose copy misdiagnoses them: the
+  // sign-in timeout is not an internet problem, a state mismatch is not
+  // a permissions problem, and a user-declined consent is not an error
+  // at all.
+  if (sl.includes('timed out waiting for authorization')) {
+    return 'The sign-in window timed out.\nTry: Click the tile to try again.';
+  }
+  if (sl.includes('state mismatch')) {
+    return 'That sign-in window was stale.\nTry: Click the tile to try again.';
+  }
+  if (sl.includes('access_denied') || sl.includes('user_denied') || sl.includes('user denied') || sl.includes('user cancelled') || sl.includes('user canceled')) {
+    return "You declined the connection.\nTry: Click the tile whenever you're ready.";
+  }
+  if (sl.includes('oauth_canceled_by_user')) {
+    return "Sign-in canceled.\nTry: Click the tile whenever you're ready.";
   }
 
   // ── Auth errors ──
@@ -4075,10 +4193,10 @@ document.getElementById('mobile-btn').addEventListener('click', async () => {
     const payload = await ipc;
     paintQrPayload(img, url, note, payload);
   } catch (err) {
-    // Rule 6: raw IPC errors must pass through friendlyError before surfacing
-    // to the user — `err.message` can carry Go stack traces or relay details
-    // we don't want leaking into the QR modal.
-    url.textContent = friendlyError(String(err && err.message || err), 'Mobile');
+    // Rule 6: raw IPC errors must pass through friendlyErrorPlain before
+    // surfacing to the user. `err.message` can carry Go stack traces or relay
+    // details, and this textContent sink can't render [[chip:...]] sentinels.
+    url.textContent = friendlyErrorPlain(String(err && err.message || err), 'Mobile');
   }
 });
 
@@ -4303,11 +4421,15 @@ function getVerticalProfile(raw) {
 // prompt bubbles) read from here instead of re-normalizing every time.
 let currentVerticalProfile = UNKNOWN_VERTICAL_PROFILE;
 
-async function loadBrands() {
+// bootReads (optional): the shared { brands, state } promises from
+// bootSnapshot(). ONLY the startup chain passes this; every other caller
+// (turn-end refresh, brand-activated, magic-panel open) omits it so the
+// dropdown rebuilds from live data.
+async function loadBrands(bootReads) {
   try {
-    const brands = await merlin.getBrands();
+    const brands = await (bootReads?.brands ?? merlin.getBrands());
     const select = document.getElementById('brand-select');
-    const state = await merlin.loadState();
+    const state = await (bootReads?.state ?? merlin.loadState());
     select.innerHTML = '';
     const addBrandOption = () => {
       const addOpt = document.createElement('option');
@@ -4447,6 +4569,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   // §4.8: optimistic preseed — drop a placeholder bubble BEFORE awaiting
   // the IPC so the chat doesn't freeze on the prior brand's transcript
   // for the 150-450ms the swap takes. paintBrandThread below wipes it.
+  let preseedPlaceholder = null;
   if (newBrand && prevBrand !== newBrand) {
     const preseedLabel = (() => {
       try {
@@ -4454,7 +4577,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
         return opt?.textContent?.trim() || newBrand;
       } catch { return newBrand; }
     })();
-    preseedBrandSwitch(preseedLabel);
+    preseedPlaceholder = preseedBrandSwitch(preseedLabel);
   }
   let swapResult = null;
   if (newBrand) {
@@ -4495,6 +4618,36 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
     // reverts to prevBrand too (the optimistic tile-swap label showed the
     // new brand; setting .value above fires no change event) — Gitar #279.
     updateBrandSwitcherLabel();
+    // The optimistic preseed wiped the chat and left "Switching to X…" as
+    // the last visible message. Repaint the previous brand's thread: the
+    // main process is still on prevBrand, so switch-brand's same-brand
+    // no-op path returns its bubbles without restarting anything. If even
+    // that fails, replace the placeholder with an honest error line so the
+    // chat never reads as wiped with no explanation.
+    if (preseedPlaceholder) {
+      let recovered = null;
+      if (prevBrand) {
+        try { recovered = await merlin.switchBrand(prevBrand); } catch {}
+      }
+      if (recovered && recovered.success) {
+        paintBrandThread(recovered.bubbles);
+      } else if (preseedPlaceholder.isConnected) {
+        preseedPlaceholder.style.fontStyle = 'normal';
+        preseedPlaceholder.textContent = "Couldn't switch brands. Pick a brand to try again.";
+      }
+      const prevLabel = (() => {
+        try {
+          const opt = e.target.querySelector(`option[value="${CSS.escape(prevBrand)}"]`);
+          return opt?.textContent?.trim() || prevBrand;
+        } catch { return prevBrand; }
+      })();
+      showToast(
+        prevBrand
+          ? `Couldn't switch brands. You're still on ${prevLabel}.`
+          : "Couldn't switch brands. Try again.",
+        { kind: 'error' },
+      );
+    }
     return;
   }
 
@@ -4578,6 +4731,11 @@ function updateBrandSwitcherLabel() {
 // next frame so the authored CSS transition has a value to animate FROM.
 function openTakeover(el) {
   if (!el) return;
+  // Cancel any still-pending close: its 260ms fallback timer (or a late
+  // transitionend) would re-hide the freshly opened panel on a fast
+  // close-then-reopen.
+  if (el._takeoverCloseTimer) { clearTimeout(el._takeoverCloseTimer); el._takeoverCloseTimer = null; }
+  if (el._takeoverCloseDone) { el.removeEventListener('transitionend', el._takeoverCloseDone); el._takeoverCloseDone = null; }
   el.classList.add('takeover-anim');
   el.classList.remove('hidden');
   requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add('open')));
@@ -4585,14 +4743,22 @@ function openTakeover(el) {
 function closeTakeover(el) {
   if (!el) return;
   el.classList.remove('open');
+  // Replace any pending close cleanly (double-close is a no-op, not a leak).
+  if (el._takeoverCloseTimer) clearTimeout(el._takeoverCloseTimer);
+  if (el._takeoverCloseDone) el.removeEventListener('transitionend', el._takeoverCloseDone);
   const done = () => {
     el.classList.add('hidden');
     el.removeEventListener('transitionend', done);
+    clearTimeout(el._takeoverCloseTimer);
+    el._takeoverCloseTimer = null;
+    if (el._takeoverCloseDone === done) el._takeoverCloseDone = null;
   };
+  el._takeoverCloseDone = done;
   el.addEventListener('transitionend', done, { once: true });
   // Fallback in case transitionend never fires (element removed, reduced
   // motion collapsing the transition to ~0ms, or a display change racing it).
-  setTimeout(done, 260);
+  // Stashed on the element so openTakeover can cancel it (see above).
+  el._takeoverCloseTimer = setTimeout(done, 260);
 }
 // Magic panel: make its authored translateX slide actually play. On open we
 // remove `.hidden` (element now rendered) but force translateX(100%) inline
@@ -4701,7 +4867,7 @@ function closeBrandSwitcher() {
 // agency overlay (created-on-open / removed-on-close, so presence == open).
 // RSI 2026-06-22 (overlay click-fallthrough).
 function anyModalTakeoverOpen() {
-  return ['brand-switcher-overlay', 'wisdom-overlay', 'palantir-panel', 'agency-overlay'].some((id) => {
+  return ['brand-switcher-overlay', 'wisdom-overlay', 'palantir-panel', 'agency-overlay', 'truesight-panel', 'archive-panel'].some((id) => {
     const el = document.getElementById(id);
     return !!el && !el.classList.contains('hidden');
   });
@@ -4754,12 +4920,24 @@ async function openBrandSwitcher() {
   closeOtherOverlays('brand-switcher-overlay');
   showBrandNewForm(false);
   openTakeover(ov);
+  // a11y: move focus into the aria-modal takeover (mirrors Truesight).
+  document.getElementById('brand-switcher-close')?.focus();
   grid.innerHTML = '<div class="palantir-portal"><div class="palantir-portal-orb">✦</div><div class="palantir-portal-sub">Loading your brands…</div></div>';
 
   let brands = [];
-  try { brands = await merlin.getBrands(); } catch (e) { console.warn('[brand-switcher]', e); }
+  let brandsLoadFailed = false;
+  try { brands = await merlin.getBrands(); } catch (e) { brandsLoadFailed = true; console.warn('[brand-switcher]', e); }
   const active = getActiveBrandSelection();
   grid.innerHTML = '';
+  // Load failure is NOT "you have no brands": rendering only "+ New Brand"
+  // here read as data loss. Say what happened and how to recover.
+  if (brandsLoadFailed) {
+    const note = document.createElement('div');
+    note.className = 'palantir-portal';
+    note.innerHTML = '<div class="palantir-portal-orb">✦</div><div class="palantir-portal-sub"></div>';
+    note.querySelector('.palantir-portal-sub').textContent = "Couldn't load your brands. Close and reopen to try again.";
+    grid.appendChild(note);
+  }
   (brands || []).forEach((b) => {
     const tile = document.createElement('button');
     tile.className = 'brand-tile' + (b.name === active ? ' active' : '');
@@ -4874,10 +5052,17 @@ function addBrandFromForm() {
     // RSI 2026-06-22 (overlay click-fallthrough).
     e.stopPropagation();
     const ov = document.getElementById('brand-switcher-overlay');
-    if (ov && !ov.classList.contains('hidden')) closeBrandSwitcher();
-    else openBrandSwitcher();
+    if (ov && !ov.classList.contains('hidden')) {
+      closeBrandSwitcher();
+      document.getElementById('brand-switcher-btn')?.focus(); // a11y: restore focus to the opener
+    } else {
+      openBrandSwitcher();
+    }
   });
-  document.getElementById('brand-switcher-close')?.addEventListener('click', closeBrandSwitcher);
+  document.getElementById('brand-switcher-close')?.addEventListener('click', () => {
+    closeBrandSwitcher();
+    document.getElementById('brand-switcher-btn')?.focus(); // a11y: restore focus to the opener
+  });
   document.getElementById('brand-new-back')?.addEventListener('click', () => showBrandNewForm(false));
   document.getElementById('brand-new-add')?.addEventListener('click', addBrandFromForm);
   ['brand-new-name', 'brand-new-url'].forEach((id) => {
@@ -4894,6 +5079,7 @@ function addBrandFromForm() {
     const form = document.getElementById('brand-new-form');
     if (form && !form.classList.contains('hidden')) { showBrandNewForm(false); return; }
     closeBrandSwitcher();
+    document.getElementById('brand-switcher-btn')?.focus(); // a11y: restore focus to the opener
   });
 })();
 
@@ -4958,8 +5144,10 @@ function setStatsEmpty() {
 function setStatsPeriodActive(days) {
   document.querySelectorAll('.stats-period-btn').forEach(btn => {
     const d = parseInt(btn.dataset.days, 10);
-    if (days && d === days) btn.classList.add('active');
-    else btn.classList.remove('active');
+    const isActive = !!days && d === days;
+    btn.classList.toggle('active', isActive);
+    // a11y: the visual .active state must also be announced (toggle buttons).
+    btn.setAttribute('aria-pressed', isActive ? 'true' : 'false');
   });
 }
 
@@ -5139,6 +5327,7 @@ function wisdomEscHandler(e) {
   if (!overlay || overlay.classList.contains('hidden')) return;
   e.preventDefault();
   closeWisdom();
+  document.getElementById('wisdom-header-btn')?.focus(); // a11y: restore focus to the opener
 }
 
 function closeWisdom() {
@@ -5157,9 +5346,18 @@ async function loadWisdom({ force = false } = {}) {
   if (refreshBtn) refreshBtn.classList.add('refreshing');
 
   let w = null;
-  try { w = await merlin.getWisdom(undefined, { force }); } catch {}
+  let wisdomFetchFailed = false;
+  try { w = await merlin.getWisdom(undefined, { force }); } catch { wisdomFetchFailed = true; }
 
   if (refreshBtn) refreshBtn.classList.remove('refreshing');
+
+  // A fetch failure is not "no data yet": say the truth so the user knows
+  // a refresh can fix it, instead of the misleading genuine-empty copy.
+  if (wisdomFetchFailed) {
+    sampleEl.textContent = '';
+    grid.innerHTML = '<div class="wisdom-loading">Couldn\'t reach Wisdom. Check your connection and tap refresh.</div>';
+    return;
+  }
 
   if (!w) {
     sampleEl.textContent = '';
@@ -5286,7 +5484,7 @@ async function renderWisdom(w) {
   const platItems = platformItems.map(p => {
     const ctrPart = p.ctr !== undefined ? fmtCtr(p.ctr) : '';
     const display = platformHasRoas ? fmtRoas(p.roas) : (ctrPart || '—');
-    const subParts = [(p.n || 0) + ' ads'];
+    const subParts = [(p.n || 0) + ' ad' + ((p.n || 0) === 1 ? '' : 's')];
     if (platformHasRoas && ctrPart) subParts.push(ctrPart);
     return {
       label: prettyPlatform(p.platform),
@@ -5387,7 +5585,7 @@ async function renderWisdom(w) {
         const subParts = [n + ' ad' + (n === 1 ? '' : 's')];
         if (hook > 0) subParts.push(hook.toFixed(0) + '% hook');
         if (hold > 0) subParts.push(hold.toFixed(0) + '% hold');
-        return { label: prettify(key), display: roas > 0 ? roas.toFixed(2) + 'x' : (n + ' ads'), sub: subParts.join(' · '), val: roas, n };
+        return { label: prettify(key), display: roas > 0 ? roas.toFixed(2) + 'x' : (n + ' ad' + (n === 1 ? '' : 's')), sub: subParts.join(' · '), val: roas, n };
       }).filter(it => it.label).sort((a, b) => (b.val - a.val) || (b.n - a.n)).slice(0, 4);
       if (!items.length) return '';
       const mx = items.reduce((m, it) => Math.max(m, it.val), 0.0001);
@@ -5463,11 +5661,17 @@ document.getElementById('wisdom-header-btn').addEventListener('click', async () 
   }
 
   openTakeover(overlay);
+  // a11y: move focus into the aria-modal takeover so keyboard/SR users land
+  // inside it (mirrors Truesight).
+  document.getElementById('wisdom-close')?.focus();
   document.addEventListener('keydown', wisdomEscHandler);
   await loadWisdom();
 });
 
-document.getElementById('wisdom-close').addEventListener('click', closeWisdom);
+document.getElementById('wisdom-close').addEventListener('click', () => {
+  closeWisdom();
+  document.getElementById('wisdom-header-btn')?.focus(); // a11y: restore focus to the opener
+});
 
 // The info button's data-tip only shows on hover, which touch and keyboard
 // users can never trigger. Click surfaces the same privacy disclosure in
@@ -5492,23 +5696,15 @@ document.getElementById('stats-overlay').addEventListener('click', (e) => {
 });
 
 // Escape closes the revenue/stats overlay, matching every other overlay's
-// keyboard affordance. Visibility-gated, wisdomEscHandler style.
+// keyboard affordance. Visibility-gated, wisdomEscHandler style. Exactly one
+// handler: a second Esc listener that set .hidden directly used to race this
+// one and kill the close animation.
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const overlay = document.getElementById('stats-overlay');
   if (!overlay || overlay.classList.contains('hidden')) return;
   e.preventDefault();
   closeTakeover(overlay);
-});
-
-// Escape closes the revenue/stats overlay, matching every other overlay's
-// keyboard affordance. Visibility-gated, wisdomEscHandler style.
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  const overlay = document.getElementById('stats-overlay');
-  if (!overlay || overlay.classList.contains('hidden')) return;
-  e.preventDefault();
-  overlay.classList.add('hidden');
 });
 
 // Share — build a self-contained PNG card via the native Canvas API and drop
@@ -5890,10 +6086,12 @@ function loadConnections() {
     console.warn('[connections]', err);
     if (err && err.message === 'connection-status-timeout') {
       try {
+        // Honest guidance: clicking a tile starts a sign-in flow, it does not
+        // re-run the check. Reopening the panel is what re-runs loadConnections.
         if (typeof showSpellToast === 'function') {
-          showSpellToast('Connection check timed out', 'Click any tile to retry.', 'error');
+          showSpellToast('Connection check timed out', 'Close and reopen this panel to try again.', 'error');
         } else if (typeof showToast === 'function') {
-          showToast('Connection check timed out — retry?', { kind: 'error', duration: 5000 });
+          showToast('Connection check timed out. Close and reopen this panel to try again.', { kind: 'error', duration: 5000 });
         }
       } catch {}
     }
@@ -6305,6 +6503,66 @@ function runShopifyOAuthWithStore(activeBrand) {
 // browser windows for the same platform. Cleared when the OAuth promise
 // settles (success, error, or rejection).
 const _oauthInFlight = new Set();
+// Per-key flow tokens: a canceled-then-restarted flow for the same
+// platform:brand must not have its guard or tile state torn down when the
+// STALE flow finally settles (the abandoned listener can take up to 5
+// minutes to time out). Each start bumps the token; every settle callback
+// checks it still owns the key before touching shared state.
+const _oauthFlowTokens = new Map();
+let _oauthFlowSeq = 0;
+
+// ── OAuth tile waiting state (2026-07-11) ──
+// After a tile click opens the browser, the tile used to look dead for up
+// to 5 minutes (re-clicks silently swallowed by the in-flight guard).
+// setOAuthTileWaiting gives it a visible "Waiting…" state plus a Cancel
+// affordance; clearOAuthTileWaiting restores the tile when the flow
+// settles. Cancel clears the renderer guard immediately and calls
+// merlin.cancelOAuth when the bridge exists (see the WIRING NOTE in
+// oauth-fast-open.js: the main.js/preload.js half ships separately; until
+// then the orphaned listener self-expires on its 5-minute timeout).
+function setOAuthTileWaiting(tile, onCancel) {
+  if (!tile || !tile.isConnected) return;
+  tile.classList.add('oauth-waiting');
+  const nameEl = tile.querySelector('.tile-name');
+  if (nameEl) {
+    if (!tile.dataset.waitingPrevName) tile.dataset.waitingPrevName = nameEl.textContent || '';
+    nameEl.textContent = 'Waiting…';
+  }
+  if (!tile.dataset.baseTip && tile.dataset.tip) tile.dataset.baseTip = tile.dataset.tip;
+  tile.dataset.tip = 'Waiting for you in the browser…';
+  if (!tile.querySelector('.tile-cancel')) {
+    // span, not <button>: the tile itself is a <button> and nested buttons
+    // are invalid HTML with inconsistent click routing.
+    const cancel = document.createElement('span');
+    cancel.className = 'tile-cancel';
+    cancel.setAttribute('role', 'button');
+    cancel.setAttribute('tabindex', '0');
+    cancel.setAttribute('aria-label', 'Cancel this sign-in');
+    cancel.textContent = 'Cancel';
+    const doCancel = (ev) => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      onCancel();
+    };
+    cancel.addEventListener('click', doCancel);
+    cancel.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Enter' || ev.key === ' ') doCancel(ev);
+    });
+    tile.appendChild(cancel);
+  }
+}
+function clearOAuthTileWaiting(platform) {
+  let tile = null;
+  try { tile = document.querySelector(`.magic-tile[data-platform="${CSS.escape(platform)}"]`); } catch {}
+  if (!tile) return;
+  tile.classList.remove('oauth-waiting');
+  const nameEl = tile.querySelector('.tile-name');
+  if (nameEl && tile.dataset.waitingPrevName) nameEl.textContent = tile.dataset.waitingPrevName;
+  delete tile.dataset.waitingPrevName;
+  if (tile.dataset.baseTip) tile.dataset.tip = tile.dataset.baseTip;
+  const cancel = tile.querySelector('.tile-cancel');
+  if (cancel) cancel.remove();
+}
 
 document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
@@ -6328,7 +6586,12 @@ document.addEventListener('click', async (e) => {
   }
 
   const inFlightKey = `${platform}:${activeBrand || ''}`;
-  if (_oauthInFlight.has(inFlightKey)) return;
+  if (_oauthInFlight.has(inFlightKey)) {
+    // A re-click while a flow is pending used to be swallowed in silence
+    // for up to 5 minutes. Say what's happening instead.
+    showToast(`Still waiting for you to finish the ${displayName} sign-in in your browser. Use Cancel on the tile to start over.`, { kind: 'info', id: 'oauth-waiting-' + inFlightKey });
+    return;
+  }
 
   if (platform === 'shopify') {
     _oauthInFlight.add(inFlightKey);
@@ -6340,16 +6603,37 @@ document.addEventListener('click', async (e) => {
 
   if (OAUTH_PLATFORMS.has(platform)) {
     _oauthInFlight.add(inFlightKey);
+    const flowToken = (_oauthFlowSeq += 1);
+    _oauthFlowTokens.set(inFlightKey, flowToken);
+    const isCurrentFlow = () => _oauthFlowTokens.get(inFlightKey) === flowToken;
+    setOAuthTileWaiting(tile, () => {
+      // Cancel: invalidate this flow so its eventual settle (cancel ack,
+      // or the 5-minute timeout when the cancel bridge isn't wired yet)
+      // can't touch the guard or the tile, then free the click path.
+      _oauthFlowTokens.delete(inFlightKey);
+      _oauthInFlight.delete(inFlightKey);
+      clearOAuthTileWaiting(platform);
+      try { merlin.cancelOAuth?.(platform, activeBrand); } catch {}
+      showToast('Sign-in canceled. You can close the browser tab it opened.', { kind: 'info' });
+    });
     merlin.runOAuth(platform, activeBrand).then(result => {
+      if (!isCurrentFlow()) return; // canceled (and maybe restarted): stay quiet
       if (result.error) {
-        showModal({ title: 'Connection Failed', body: friendlyError(result.error, displayName), confirmLabel: 'OK', onConfirm: () => {} });
+        // The user's own cancel is not a failure: no modal for the sentinel.
+        if (!String(result.error).includes('oauth_canceled_by_user')) {
+          showModal({ title: 'Connection Failed', body: friendlyError(result.error, displayName), confirmLabel: 'OK', onConfirm: () => {} });
+        }
       } else {
         loadConnections();
       }
     }).catch(err => {
+      if (!isCurrentFlow()) return;
       showModal({ title: 'Connection Failed', body: friendlyError(err.message, displayName), confirmLabel: 'OK', onConfirm: () => {} });
     }).finally(() => {
+      if (!isCurrentFlow()) return;
+      _oauthFlowTokens.delete(inFlightKey);
       _oauthInFlight.delete(inFlightKey);
+      clearOAuthTileWaiting(platform);
     });
     return;
   }
@@ -7296,13 +7580,6 @@ function formatTimeAgo(timestamp) {
   return timeAgo(timestamp);
 }
 
-function sendChatFromPanel(msg) {
-  hideSidebarPanel('magic');
-  addUserBubble(msg);
-  beginAgentTurn('panel-chat');
-  merlin.sendMessage(msg);
-}
-
 // Morning-briefing preset + SPELLS template list now live in spellbook.js
 // (loaded as a <script> tag before this file; attaches to window.MerlinSpellbook).
 // Re-export the preset under the original name so downstream code that references
@@ -7400,6 +7677,10 @@ async function loadSpells() {
     if (activeSlugs.has(t.spell)) return;
     const row = document.createElement('div');
     row.className = 'spell-row spell-row-template';
+    // a11y: keyboard-activatable row (same pattern as the gallery cards).
+    row.setAttribute('tabindex', '0');
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-label', `Turn on spell: ${t.name}`);
     row.innerHTML = `
       <span class="spell-dot dot-pending"></span>
       <div class="spell-info">
@@ -7408,12 +7689,19 @@ async function loadSpells() {
       </div>
     `;
     row.addEventListener('click', () => activateSpell(t, row));
+    row.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activateSpell(t, row); }
+    });
     allRows.push(row);
   });
 
   // Add "Create custom spell" row at the end
   const customRow = document.createElement('div');
   customRow.className = 'spell-row spell-row-template';
+  // a11y: keyboard-activatable row (same pattern as the gallery cards).
+  customRow.setAttribute('tabindex', '0');
+  customRow.setAttribute('role', 'button');
+  customRow.setAttribute('aria-label', 'Create your own spell');
   customRow.innerHTML = `
     <span class="spell-dot" style="background:var(--accent);opacity:.5"></span>
     <div class="spell-info">
@@ -7421,6 +7709,9 @@ async function loadSpells() {
       <div class="spell-meta">Create your own spell</div>
     </div>
   `;
+  customRow.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); customRow.click(); }
+  });
   customRow.addEventListener('click', () => {
     hideSidebarPanel('magic');
     addUserBubble('I want to create a custom spell');
@@ -7458,6 +7749,13 @@ async function loadSpells() {
     const showMore = document.createElement('div');
     showMore.className = 'spell-show-more';
     showMore.textContent = `Show ${hiddenCount} more`;
+    // a11y: keyboard-activatable expander (same pattern as the gallery cards).
+    showMore.setAttribute('tabindex', '0');
+    showMore.setAttribute('role', 'button');
+    showMore.setAttribute('aria-expanded', 'false');
+    showMore.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showMore.click(); }
+    });
     showMore.addEventListener('click', (e) => {
       e.stopPropagation();
       if (showMore.dataset.expanded === 'true') {
@@ -7467,11 +7765,13 @@ async function loadSpells() {
         });
         showMore.textContent = `Show ${hiddenCount} more`;
         showMore.dataset.expanded = 'false';
+        showMore.setAttribute('aria-expanded', 'false');
       } else {
         // Expand
         list.querySelectorAll('.spell-collapsed').forEach(r => r.classList.remove('spell-collapsed'));
         showMore.textContent = 'Show less';
         showMore.dataset.expanded = 'true';
+        showMore.setAttribute('aria-expanded', 'true');
       }
     });
     list.appendChild(showMore);
@@ -9804,7 +10104,7 @@ function renderPerfBar(perf) {
 
   let budgetHtml = '';
   if (perf.dailyBudget > 0) {
-    budgetHtml = ` · <span id="budget-indicator" class="budget-indicator">Daily Budget: $${perf.dailyBudget}/day</span>`;
+    budgetHtml = ` · <span id="budget-indicator" class="budget-indicator">Daily Budget: ${formatMoney(perf.dailyBudget)}/day</span>`;
   }
 
   let updatedHtml = '';
@@ -9815,29 +10115,58 @@ function renderPerfBar(perf) {
 
   text.innerHTML = parts + trendHtml + budgetHtml + updatedHtml;
 
-  // Platform spend hover dropdown
+  // Platform spend breakdown dropdown. House rule (see the wisdom-info-btn
+  // comment): hover-only affordances are unreachable for touch and keyboard
+  // users, so the breakdown opens on hover, click, OR focus.
   if (perf.platformBreakdown && perf.platformBreakdown.length > 0) {
     setTimeout(() => {
       const indicator = document.getElementById('budget-indicator');
       if (!indicator) return;
-      indicator.addEventListener('mouseenter', () => {
-        let existing = document.getElementById('platform-dropdown');
-        if (existing) existing.remove();
+      indicator.setAttribute('tabindex', '0');
+      indicator.setAttribute('role', 'button');
+      indicator.setAttribute('aria-label', 'Show spend by platform');
+      const closeDropdown = () => {
+        const el = document.getElementById('platform-dropdown');
+        if (el) el.remove();
+      };
+      const openDropdown = () => {
+        closeDropdown();
         const dd = document.createElement('div');
         dd.id = 'platform-dropdown';
         dd.className = 'platform-dropdown';
         dd.innerHTML = `<div class="platform-dd-header">Spend by Platform</div>${perf.platformBreakdown.map(p =>
-          `<div class="platform-dd-row"><span class="platform-badge platform-${String(p.name || '').split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '')}">${escapeHtml(p.name)}</span><span>$${Math.round(p.spend)}</span><span>${p.roas > 0 ? p.roas.toFixed(1) + 'x' : '—'}</span></div>`
+          `<div class="platform-dd-row"><span class="platform-badge platform-${String(p.name || '').split(' ')[0].toLowerCase().replace(/[^a-z0-9]/g, '')}">${escapeHtml(p.name)}</span><span>${formatMoney(p.spend)}</span><span>${p.roas > 0 ? p.roas.toFixed(1) + 'x' : '—'}</span></div>`
         ).join('')}`;
         const rect = indicator.getBoundingClientRect();
         dd.style.top = (rect.bottom + 4) + 'px';
         dd.style.left = Math.max(4, rect.left - 40) + 'px';
         document.body.appendChild(dd);
+        dd.addEventListener('mouseleave', () => dd.remove());
+      };
+      indicator.addEventListener('mouseenter', () => {
+        openDropdown();
         indicator.addEventListener('mouseleave', () => {
           setTimeout(() => { const el = document.getElementById('platform-dropdown'); if (el && !el.matches(':hover')) el.remove(); }, 200);
         }, { once: true });
-        dd.addEventListener('mouseleave', () => dd.remove());
       });
+      // Focus opens the dropdown; a click that arrives right after that
+      // focus (same tap or same mouse press) must NOT instantly toggle it
+      // closed, or the first touch-tap would open-and-close in one gesture.
+      let focusOpenedAt = 0;
+      indicator.addEventListener('click', (e) => {
+        // Don't bubble to the perf-bar click handler (it opens the Revenue
+        // overlay); a click on the indicator toggles the breakdown instead.
+        e.stopPropagation();
+        const open = document.getElementById('platform-dropdown');
+        if (open && Date.now() - focusOpenedAt < 400) return;
+        if (open) closeDropdown();
+        else openDropdown();
+      });
+      indicator.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); indicator.click(); }
+      });
+      indicator.addEventListener('focus', () => { focusOpenedAt = Date.now(); openDropdown(); });
+      indicator.addEventListener('blur', closeDropdown);
     }, 100);
   }
 }
@@ -9955,11 +10284,14 @@ async function loadPerfBar(days, brandOverride) {
   if (!brand) {
     const text = document.getElementById('perf-text');
     if (text) {
-      text.innerHTML = 'No ad data for this brand — <a href="#" id="perf-empty-connect" style="color:var(--accent);text-decoration:underline;cursor:pointer">run a campaign</a> to see performance here.';
+      // Truthful copy: this branch means NO brand is selected at all, so the
+      // fix is brand setup, not "run a campaign". Mirrors the brand-switcher
+      // label ("Set up a brand") and opens the same surface.
+      text.innerHTML = '<a href="#" id="perf-empty-connect" style="color:var(--accent);text-decoration:underline;cursor:pointer">Set up a brand</a> to start tracking performance.';
       const link = document.getElementById('perf-empty-connect');
       if (link) link.addEventListener('click', (e) => {
         e.preventDefault();
-        openMagicSlide(document.getElementById('magic-panel'));
+        openBrandSwitcher();
       });
     }
     return;
@@ -10033,7 +10365,9 @@ if (merlin.onPerfDataChanged) {
 
 // Load on startup — wait for brands to load FIRST, then load perf bar with the active brand.
 // Previous bug: loadPerfBar(7) ran before brands loaded, so it used empty brand → global data.
-loadBrands().then(() => {
+// bootSnapshot() shares the getBrands/loadState reads with init() so launch
+// issues each IPC exactly once (dedup pass, 2026-07-11).
+loadBrands(bootSnapshot()).then(() => {
   loadConnections();
   loadSpells();
   const activeBrand = document.getElementById('brand-select')?.value || '';
@@ -10398,7 +10732,9 @@ document.getElementById('agency-report-btn').addEventListener('click', async (e)
       report = await merlin.getAgencyReport(currentPeriod, selectedBrands);
     } catch (err) {
       console.error('[report]', err);
-      setStatus(friendlyError(err?.message || String(err), 'report'), 'error');
+      // friendlyErrorPlain: this status pill is textContent, [[chip:...]]
+      // sentinels from friendlyError would show as literal markup.
+      setStatus(friendlyErrorPlain(err?.message || String(err), 'report'), 'error');
       updateGenState();
       return;
     }
@@ -10584,6 +10920,9 @@ document.getElementById('perf-bar').addEventListener('click', async (e) => {
   // Fade the .overlay scrim in WITH its card (the .stats-card runs its own
   // fadeUp on top) instead of the backdrop popping to full opacity frame 1.
   openTakeover(overlay);
+  // a11y: the overlay is aria-modal, so move focus into it on open. No
+  // restore target on close: the opener is the (non-focusable) perf bar.
+  document.getElementById('stats-close')?.focus();
   // REGRESSION GUARD (2026-04-15, codex per-brand revenue audit — findings #3 + #5):
   // Use perfState.cache as the SINGLE source of truth for this overlay.
   //
@@ -10737,7 +11076,28 @@ async function loadActivityFeed(forceFull = false) {
 
     const grid = document.getElementById('archive-grid');
     grid.parentNode.insertBefore(section, grid);
-  } catch (err) { console.warn('[activity]', err); }
+  } catch (err) {
+    console.warn('[activity]', err);
+    // A rejected feed pull used to leave the panel fully blank. Render the
+    // empty shell with honest copy plus a one-click retry instead.
+    const section = document.createElement('div');
+    section.id = 'activity-feed-section';
+    section.className = 'activity-section';
+    const empty = document.createElement('div');
+    empty.className = 'activity-empty';
+    empty.innerHTML = '<div class="activity-empty-icon">✦</div>Couldn\'t load activity.<br><span class="activity-empty-sub"></span>';
+    const retry = document.createElement('a');
+    retry.href = '#';
+    retry.textContent = 'Try again';
+    retry.style.color = 'var(--accent)';
+    retry.style.textDecoration = 'underline';
+    retry.style.cursor = 'pointer';
+    retry.addEventListener('click', (e) => { e.preventDefault(); loadActivityFeed(forceFull); });
+    empty.querySelector('.activity-empty-sub').appendChild(retry);
+    section.appendChild(empty);
+    const grid = document.getElementById('archive-grid');
+    if (grid && grid.parentNode) grid.parentNode.insertBefore(section, grid);
+  }
 }
 
 function renderActivityToolbar() {
@@ -10959,6 +11319,14 @@ function renderActivityItem(item) {
     <span class="activity-time">${time}</span>
   `;
 
+  // a11y: keyboard-activatable row (same pattern as the gallery cards).
+  div.setAttribute('tabindex', '0');
+  div.setAttribute('role', 'button');
+  div.setAttribute('aria-label', `${desc}${time ? ', ' + time : ''}. Show details`);
+  div.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); div.click(); }
+  });
+
   // Click the row to reveal the raw JSON entry. This is the "Unity player
   // log" affordance — support asks "paste me the line", the user clicks,
   // hits copy, done. No export required for a single entry.
@@ -11000,8 +11368,16 @@ document.getElementById('archive-btn').addEventListener('click', () => {
   closeOtherOverlays('archive-panel');
   const panel = document.getElementById('archive-panel');
   const willOpen = panel.classList.contains('hidden');
-  if (willOpen) { openTakeover(panel); showArchiveView(); }
-  else { closeTakeover(panel); setSidebarPinned('archive', false); }
+  if (willOpen) {
+    openTakeover(panel);
+    showArchiveView();
+    // a11y: move focus into the aria-modal takeover (mirrors Truesight).
+    document.getElementById('archive-close')?.focus();
+  } else {
+    closeTakeover(panel);
+    setSidebarPinned('archive', false);
+    document.getElementById('archive-btn')?.focus(); // a11y: restore focus to the opener
+  }
 });
 
 // REGRESSION GUARD (2026-05-10, BUG-F007): archive auto-refresh on visible.
@@ -11031,6 +11407,7 @@ document.getElementById('archive-btn').addEventListener('click', () => {
 // pin are gone (a takeover is always full width, nothing to dock).
 document.getElementById('archive-close').addEventListener('click', () => {
   closeTakeover(document.getElementById('archive-panel'));
+  document.getElementById('archive-btn')?.focus(); // a11y: restore focus to the opener
 });
 
 // ── Palantir — competitor ad feed ──────────────────────────────────
@@ -11102,6 +11479,10 @@ function palantirRenderCard(ad) {
   const card = document.createElement('div');
   card.className = 'palantir-card';
   card.dataset.adId = ad.adId || '';
+  // a11y: keyboard-activatable card (same pattern as the gallery cards).
+  card.setAttribute('tabindex', '0');
+  card.setAttribute('role', 'button');
+  card.setAttribute('aria-label', `Competitor ad: ${ad.headline || ad.name || 'ad'}. Open details`);
   const thumb = palantirThumbUrl(ad.thumbFile);
   const headline = ad.headline || ad.name || '';
   const body = ad.description || '';
@@ -11133,6 +11514,9 @@ function palantirRenderCard(ad) {
     }, { once: true });
   }
   card.addEventListener('click', () => openPalantirDetail(ad));
+  card.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPalantirDetail(ad); }
+  });
   return card;
 }
 
@@ -11245,8 +11629,10 @@ async function loadPalantirFeed(opts) {
     return;
   }
   if (res.error) {
-    // Defend locally — never render an upstream error string raw (Rule 6).
-    palantirSetStatus(friendlyError(res.error, 'Palantir'), 'error');
+    // Defend locally: never render an upstream error string raw (Rule 6).
+    // friendlyErrorPlain, not friendlyError: this sink is textContent and
+    // cannot render [[chip:...]] sentinels.
+    palantirSetStatus(friendlyErrorPlain(res.error, 'Palantir'), 'error');
     if (reset && empty && palantirState.count === 0) empty.style.display = '';
     return;
   }
@@ -11268,8 +11654,20 @@ async function loadPalantirFeed(opts) {
     palantirState.count += 1;
   }
   // Cap the feed DOM — prune oldest cards from the top once over the cap.
-  while (grid.children.length > PALANTIR_MAX_CARDS) {
-    grid.removeChild(grid.firstChild);
+  // Scroll compensation (2026-07-11): pruning top cards shrinks the content
+  // above the viewport, which used to yank a deep scroller upward by the
+  // pruned height mid-read. Measure the scroll-height delta across the prune
+  // and subtract it from scrollTop so the on-screen cards stay visually fixed.
+  if (grid.children.length > PALANTIR_MAX_CARDS) {
+    const scroller = grid.closest('.palantir-scroll');
+    const heightBefore = scroller ? scroller.scrollHeight : 0;
+    while (grid.children.length > PALANTIR_MAX_CARDS) {
+      grid.removeChild(grid.firstChild);
+    }
+    if (scroller) {
+      const delta = heightBefore - scroller.scrollHeight;
+      if (delta > 0) scroller.scrollTop = Math.max(0, scroller.scrollTop - delta);
+    }
   }
 
   if (palantirState.count === 0) {
@@ -11278,10 +11676,11 @@ async function loadPalantirFeed(opts) {
     return;
   }
   if (empty) empty.style.display = 'none';
+  const palantirCountLabel = palantirState.count + ' ad' + (palantirState.count === 1 ? '' : 's');
   if (palantirState.hasMore) {
-    palantirSetStatus(palantirState.count + ' ads · scroll for more', '');
+    palantirSetStatus(palantirCountLabel + ' · scroll for more', '');
   } else {
-    palantirSetStatus(palantirState.count + ' ads · end of feed', '');
+    palantirSetStatus(palantirCountLabel + ' · end of feed', '');
   }
 
   palantirEnsureObserver();
@@ -11372,8 +11771,9 @@ async function palantirPlayVideo(ad, btn) {
   if (!res || res.error || !res.path) {
     btn.disabled = false;
     btn.textContent = '▶ Play video';
-    // Rule 6 — friendlyError so raw Go error strings never reach the user.
-    palantirDetailNote(res && res.error ? friendlyError(res.error, 'Palantir') : 'Could not load the video.');
+    // Rule 6: friendlyErrorPlain so raw Go error strings never reach the
+    // user, and [[chip:...]] sentinels never leak into this textContent sink.
+    palantirDetailNote(res && res.error ? friendlyErrorPlain(res.error, 'Palantir') : 'Could not load the video.');
     return;
   }
   const media = palantirEl('palantir-detail-media');
@@ -11400,8 +11800,9 @@ function palantirUseAsInspiration(ad) {
   bits.push(ad.hasVideo ? 'It is a video ad.' : 'It is a static image ad.');
   bits.push('Give me 3 fresh ad concepts in this style — keep what works about the angle, but make the copy original to my product.');
   closePalantirDetail();
-  const panel = palantirEl('palantir-panel');
-  if (panel) panel.classList.add('hidden');
+  // closeTakeover, not a raw .hidden flip: keeps the exit animation and
+  // clears the .open state so the next open animates correctly.
+  closeTakeover(palantirEl('palantir-panel'));
   if (typeof input !== 'undefined' && input) {
     input.value = bits.join(' ');
     try { autoResize(); } catch (e) {}
@@ -11590,7 +11991,9 @@ async function loadPalantirIdeas(opts) {
   palantirIdeasLoading = false;
 
   if (!res || res.error) {
-    if (grid) grid.innerHTML = palantirPortalHTML('error', (res && res.error) ? friendlyError(res.error, 'Palantir') : 'Could not load your idea wall. Try again in a moment.');
+    // friendlyErrorPlain: palantirPortalHTML escapes msg, so a [[chip:...]]
+    // sentinel would render as literal text. Plain variant strips it.
+    if (grid) grid.innerHTML = palantirPortalHTML('error', (res && res.error) ? friendlyErrorPlain(res.error, 'Palantir') : 'Could not load your idea wall. Try again in a moment.');
     return;
   }
   if (niche) niche.textContent = res.niche || '';
@@ -11620,17 +12023,21 @@ document.getElementById('palantir-btn').addEventListener('click', () => {
   const willOpen = panel.classList.contains('hidden');
   if (willOpen) {
     openTakeover(panel);
+    // a11y: move focus into the aria-modal takeover (mirrors Truesight).
+    document.getElementById('palantir-close')?.focus();
     // Auto-load the brand-tailored winning-ideas wall — zero typing required.
     loadPalantirIdeas({ reset: true });
   } else {
     closeTakeover(panel);
     closePalantirDetail();
+    document.getElementById('palantir-btn')?.focus(); // a11y: restore focus to the opener
   }
 });
 
 document.getElementById('palantir-close').addEventListener('click', () => {
   closeTakeover(document.getElementById('palantir-panel'));
   closePalantirDetail();
+  document.getElementById('palantir-btn')?.focus(); // a11y: restore focus to the opener
 });
 
 // Refresh the wall (re-pull the niche winners).
@@ -11640,13 +12047,16 @@ document.getElementById('palantir-close').addEventListener('click', () => {
 })();
 
 // Esc closes the full-frame takeover (after the detail lightbox, if open).
+// closeTakeover keeps the exit animation + .open state consistent, and focus
+// returns to the opener (mirrors Truesight's Esc handler).
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   const panel = document.getElementById('palantir-panel');
   if (!panel || panel.classList.contains('hidden')) return;
   const detail = document.getElementById('palantir-detail');
   if (detail && !detail.classList.contains('hidden')) return;
-  panel.classList.add('hidden');
+  closeTakeover(panel);
+  document.getElementById('palantir-btn')?.focus(); // a11y: restore focus to the opener
 });
 
 // ── Truesight: full-funnel takeover ────────────────────────────────
@@ -12265,6 +12675,10 @@ async function loadArchive(opts = {}) {
       card.className = 'archive-card swipe-card';
       card.dataset.path = swipe.path || '';
       card.dataset.id = swipe.id || '';
+      // a11y: keyboard-activatable card (same pattern as the gallery cards).
+      card.setAttribute('tabindex', '0');
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-label', `Competitor swipe from ${swipe.brand || 'Competitor'}`);
       const thumb = swipe.thumbnail ? `<img src="${escapeHtml(merlinUrl(swipe.thumbnail))}" alt="" loading="lazy">` : '<div class="archive-card-placeholder">✦</div>';
       card.innerHTML = `
         ${thumb}
@@ -12273,8 +12687,11 @@ async function loadArchive(opts = {}) {
           <div class="archive-card-meta">${escapeHtml(swipe.hook || '')} ${swipe.platform ? '· ' + escapeHtml(swipe.platform) : ''}</div>
         </div>
       `;
-      // Click to select for pairing
+      // Click (or Enter/Space) to select for pairing
       card.addEventListener('click', () => toggleArchiveSelect(card, swipe));
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleArchiveSelect(card, swipe); }
+      });
       grid.appendChild(card);
     });
     revealGrid(grid);
@@ -12393,7 +12810,7 @@ async function loadArchive(opts = {}) {
               chip.textContent = 'Live ad data: refreshed just now';
               chip.classList.remove('archive-staleness-chip-stale');
             } else {
-              chip.textContent = `Live ad data: couldn't refresh, showing saved data (${fmtAgo(Date.now() - newestUpdatedAt)})`;
+              chip.textContent = `Live ad data: couldn't refresh, showing saved data (${timeAgo(newestUpdatedAt)})`;
             }
           })();
         }
@@ -12449,11 +12866,15 @@ async function loadArchive(opts = {}) {
 
       const statusClass = ad.status === 'live' ? 'status-live' : ad.status === 'paused' ? 'status-paused' : 'status-pending';
       const statusText = ad.status === 'live' ? '● Live' : ad.status === 'paused' ? '○ Paused' : '◐ Pending';
-      const budgetText = ad.budget ? `$${ad.budget}/day` : '';
+      // a11y: keyboard-activatable card (same pattern as the gallery cards).
+      card.setAttribute('tabindex', '0');
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-label', `${ad.name || 'Ad'}, ${ad.platform || ''}, ${ad.status || ''}`.replace(/, $/, ''));
+      const budgetText = ad.budget ? `${formatMoney(ad.budget)}/day` : '';
 
       // Format KPIs defensively — insights may not have run yet for a new ad
       const fmtMoney = (n) => formatMoney(n); // shared money dialect
-      const fmtInt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}k` : `${Math.round(n)}`;
+      const fmtInt = (n) => n >= 1000 ? `${(n/1000).toFixed(1)}K` : `${Math.round(n)}`;
       const roas = Number(ad.lastRoas) || 0;
       const spend = Number(ad.spend) || 0;
       const impressions = Number(ad.impressions) || 0;
@@ -12612,7 +13033,7 @@ async function loadArchive(opts = {}) {
       // When neither path nor URL is available (sparkle placeholder), open
       // the preview in `noThumbnail` mode so the user sees metrics +
       // refresh action instead of a dead-pixel tile.
-      card.addEventListener('click', () => {
+      const openLiveAdPreview = () => {
         // liveAdCreativeSrc, not raw creativePath — the preview modal hits the
         // same merlin:// allowlist as the card thumb (archive-blank-thumbs).
         const previewSrc = liveAdCreativeSrc(ad);
@@ -12634,6 +13055,11 @@ async function loadArchive(opts = {}) {
             noThumbnail: true,
           });
         }
+      };
+      card.addEventListener('click', openLiveAdPreview);
+      // a11y: Enter/Space activate, same as the gallery cards.
+      card.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openLiveAdPreview(); }
       });
 
       // Right click: context menu with Pause option
@@ -13871,7 +14297,10 @@ document.addEventListener('keydown', (e) => {
       __archiveModel.clear();
       return;
     }
-    panel.classList.add('hidden');
+    // closeTakeover (not a raw .hidden flip) keeps the exit animation and
+    // .open state consistent; focus returns to the opener (mirrors Truesight).
+    closeTakeover(panel);
+    document.getElementById('archive-btn')?.focus();
     return;
   }
   if (typingInSearch) return;

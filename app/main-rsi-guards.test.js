@@ -1,8 +1,10 @@
 // main-rsi-guards.test.js: REGRESSION GUARD (2026-06-22, RSI)
 //
-// Locks four main-process fixes from the RSI audit: three IPC handlers that
-// could reject the renderer promise unhandled on a malformed brand / disk /
-// network error, and the get-brands hot-path memo. Pure source-scan.
+// Locks main-process fixes from the RSI audit: IPC handlers that could
+// reject the renderer promise unhandled on a malformed brand / disk /
+// network error, the get-brands hot-path memo, and (since the 2026-07
+// audit) the removal of the get-decrypted-config-path leak primitive.
+// Pure source-scan.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -11,21 +13,14 @@ const path = require('node:path');
 
 const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
-test('get-decrypted-config-path brand branch is strict-scoped + wrapped in try/catch', () => {
-  const i = main.indexOf("ipcMain.handle('get-decrypted-config-path'");
-  assert.ok(i >= 0, 'handler not found');
-  const block = main.slice(i, i + 1800);
-  // Updated 2026-06-30 (cross-brand leak sweep): this handler MUST resolve the
-  // brand config through buildStrictBrandConfig (strips global legacy creds), NOT
-  // readBrandConfig (global ⊕ brand overlay), and write the tmp file into
-  // .claude/tools/ (hook-protected + swept) rather than os.tmpdir().
-  const rb = block.indexOf('buildStrictBrandConfig(brandName)');
-  assert.ok(rb >= 0, 'must resolve via buildStrictBrandConfig (strict per-brand), not readBrandConfig');
-  assert.ok(!block.includes('readBrandConfig(brandName)'), 'must NOT use the leaky readBrandConfig resolver');
-  assert.match(block.slice(0, rb), /try\s*\{/, 'buildStrictBrandConfig (throws on bad brand) must sit inside a try');
-  assert.ok(/\.claude['"\s,)]*,\s*['"]tools['"]/.test(block) || block.includes("'.claude', 'tools'"),
-    'tmp config must live under .claude/tools/ (swept + hook-protected), not os.tmpdir()');
-  assert.ok(block.includes('return null'), 'returns null on failure instead of rejecting');
+test('get-decrypted-config-path handler stays removed (2026-07 audit)', () => {
+  // Updated 2026-07 audit: the handler was a dead leak primitive (no preload
+  // bridge, no invoker) hardened in place on 2026-06-30 and then fully
+  // removed. Absence is the strongest form of the 2026-06-30 guard. If it
+  // ever comes back it must strict-scope via buildStrictBrandConfig and
+  // write only under .claude/tools/; see the removal comment in main.js.
+  assert.ok(!main.includes("ipcMain.handle('get-decrypted-config-path'"),
+    'get-decrypted-config-path must stay deleted; see main.js removal comment');
 });
 
 test('get-wisdom guards readBrandConfig against a malformed brand', () => {

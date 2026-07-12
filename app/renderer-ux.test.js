@@ -68,8 +68,12 @@ test('beginAgentTurn carries its REGRESSION GUARD anchor', () => {
 test('every send/restart surface routes through beginAgentTurn', () => {
   // Spot-check the call sites that were the original bug: each previously
   // set sessionActive by hand without arming the watchdog.
+  // 'panel-chat' was removed from this list in the 2026-07 audit: its only
+  // call site was the dead sendChatFromPanel helper (zero callers), which
+  // was deleted. The guard's intent (every LIVE send/restart surface arms
+  // the watchdog) is unchanged.
   for (const reason of [
-    'brand-setup', 'panel-chat', 'custom-spell', 'spell-first-run',
+    'brand-setup', 'custom-spell', 'spell-first-run',
     'palantir-generate', 'archive-pause-ad', 'archive-resume-ad',
     'archive-copy-all', 'archive-copy-platform', 'archive-merge',
     'send-message',

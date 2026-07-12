@@ -133,3 +133,56 @@ test('rate-limit classifier catches every merlin-rate-limit phrasing emitted by 
     assert.ok(e.retry_after_sec > 0, `arm missing retry_after: ${arm}`);
   }
 });
+
+// ── Safe-mode classification (2026-07-11 audit fix) ──────────────────
+// The engine's tamper/rollback safe mode lasts 24 hours, but the generic
+// rate-limit arm mapped its error string to "Retrying in ~30s": a lie that
+// left users watching an endless retry loop. Safe mode must classify FIRST
+// and tell the truth.
+
+test('safe-mode string classifies distinctly, not as the ~30s retry copy', () => {
+  const e = errors.classifyBinaryError('merlin rate limit: safe mode engaged');
+  assert.equal(e.code, 'RATE_LIMITED');
+  assert.match(e.message, /paused this platform to keep your account safe/i,
+    'safe mode must get the truthful pause copy');
+  assert.match(e.message, /start working again on its own/i,
+    'copy must say it resumes automatically');
+  assert.doesNotMatch(e.message, /Retrying in ~/,
+    'the generic 30s retry copy is a lie for a 24h pause');
+  assert.equal(e.retry_after_sec, 24 * 3600,
+    'no remaining time in the raw string means the full 24h window');
+});
+
+test('safe-mode copy carries the remaining duration when the raw error has one', () => {
+  const e = errors.classifyBinaryError('merlin rate limit: safe mode engaged, resets in 18h');
+  assert.equal(e.code, 'RATE_LIMITED');
+  assert.equal(e.retry_after_sec, 18 * 3600);
+  assert.match(e.message, /in about 18 hours/, 'copy must surface the real remaining time');
+});
+
+test('safe-mode marker variants (safe-mode, safe_mode) also classify as the pause copy', () => {
+  for (const raw of ['engine entered safe-mode after tamper check', 'ratelimit safe_mode active']) {
+    const e = errors.classifyBinaryError(raw);
+    assert.equal(e.code, 'RATE_LIMITED', raw);
+    assert.match(e.message, /paused this platform/i, raw);
+  }
+});
+
+test('ordinary 429 and merlin rate limits still map to the retry copy, not the safe-mode copy', () => {
+  const plain = errors.classifyBinaryError('merlin rate limit: meta minute cap reached, try again in 12s');
+  assert.match(plain.message, /Retrying in ~12s/);
+  assert.doesNotMatch(plain.message, /paused this platform/i);
+  const http = errors.classifyBinaryError('HTTP 429 Too Many Requests');
+  assert.equal(http.code, 'RATE_LIMITED');
+  assert.doesNotMatch(http.message, /paused this platform/i);
+});
+
+test('describeDuration reads like plain English at every magnitude', () => {
+  assert.equal(errors.describeDuration(24 * 3600), 'in about 24 hours');
+  assert.equal(errors.describeDuration(3600), 'in about an hour');
+  assert.equal(errors.describeDuration(300), 'in about 5 minutes');
+  assert.equal(errors.describeDuration(60), 'in about a minute');
+  assert.equal(errors.describeDuration(12), 'in about 12 seconds');
+  assert.equal(errors.describeDuration(0), 'soon');
+  assert.equal(errors.describeDuration(NaN), 'soon');
+});
