@@ -206,17 +206,32 @@ test('6.5 — non-Error reasons are wrapped before ping', () => {
 });
 
 test('6.5 — _pingWisdomCrash is timeout-guarded and error-silent', () => {
-  // Wisdom pings fire on every crash. If the request stalls (flaky
-  // wifi, captive portal), the process must not hang waiting for it.
+  // Wisdom pings fire on every crash. If the transport stalls, the process
+  // must not hang waiting for it. Since the 2026-07-11 signed-telemetry fix
+  // the ping is proxied through the Go engine (sendSignedPing) because the
+  // worker 401s unsigned posts: the timeout + error-silence guarantees now
+  // live on the engine spawn instead of a raw https.request.
   const fnStart = MAIN_JS.indexOf('function _pingWisdomCrash(');
   const fnEnd = MAIN_JS.indexOf("\nprocess.on('uncaughtException'", fnStart);
   const body = MAIN_JS.slice(fnStart, fnEnd);
   assert.ok(
-    /timeout:\s*3000/.test(body),
-    'https request has a 3s timeout',
+    body.includes('sendSignedPing('),
+    'crash ping delegates to the signed-telemetry proxy',
+  );
+  const helperStart = MAIN_JS.indexOf('function sendSignedPing(');
+  assert.ok(helperStart > 0, 'sendSignedPing helper exists');
+  const helperEnd = MAIN_JS.indexOf('\nfunction _pingWisdomCrash', helperStart);
+  const helper = MAIN_JS.slice(helperStart, helperEnd);
+  assert.ok(
+    /timeout:\s*5000/.test(helper),
+    'engine spawn has a 5s timeout (fire-and-forget)',
   );
   assert.ok(
-    body.includes("req.on('error'"),
-    'request error is silently swallowed',
+    helper.includes("child.on('error'") && helper.includes('catch'),
+    'spawn errors are silently swallowed',
+  );
+  assert.ok(
+    !/\bawait\b/.test(helper),
+    'sendSignedPing stays synchronous-spawn-and-forget so the crash handler never blocks exit',
   );
 });

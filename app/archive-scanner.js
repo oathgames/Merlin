@@ -83,14 +83,15 @@ function archiveShouldIgnoreName(name) {
   return false;
 }
 
-function loadKnownBrands(appRoot) {
+async function loadKnownBrands(appRoot) {
   // Returns a Set of lowercase brand folder names for reverse-matching
-  // loose files to a brand inferred from their path.
+  // loose files to a brand inferred from their path. Async since the
+  // 2026-07-11 audit fix: the whole scan path is non-blocking now.
   const set = new Set();
   if (!appRoot || typeof appRoot !== 'string') return set;
   const brandsDir = path.join(appRoot, 'assets', 'brands');
   try {
-    for (const d of fs.readdirSync(brandsDir, { withFileTypes: true })) {
+    for (const d of await fs.promises.readdir(brandsDir, { withFileTypes: true })) {
       if (d.isDirectory() && d.name !== 'example') set.add(d.name.toLowerCase());
     }
   } catch {}
@@ -129,73 +130,130 @@ function prettifyTitle(base) {
     .replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function walk(root, relRoot, knownBrands, depth, runs, loose) {
-  // One recursive pass that collects:
+// Concurrency bound for the async walk (2026-07-11 audit fix). 8 directory
+// tasks in flight at once: enough to hide per-call disk latency, small
+// enough to stay polite on HDDs and AV-scanned Windows installs.
+const WALK_CONCURRENCY = 8;
+
+async function statSafe(p) {
+  try { return await fs.promises.stat(p); } catch { return null; }
+}
+
+// Tiny semaphore: bounds how many directory tasks run concurrently.
+function makeSemaphore(limit) {
+  let active = 0;
+  const waiters = [];
+  return async function run(fn) {
+    if (active >= limit) await new Promise((resolve) => waiters.push(resolve));
+    active += 1;
+    try {
+      return await fn();
+    } finally {
+      active -= 1;
+      const next = waiters.shift();
+      if (next) next();
+    }
+  };
+}
+
+async function walk(rootDir, relRoot, runs, loose) {
+  // One traversal pass that collects:
   //   runs  — Map keyed by relative folder path → { name, fullPath, relPath, files[] }
   //   loose — Array of { fullPath, relPath, ext, size, mtime, parentRel }
   //
+  // ASYNC WALK (2026-07-11 audit fix): the old implementation was a
+  // synchronous recursive readdirSync/statSync walk that blocked the
+  // Electron main process (and therefore ALL IPC) for 300-800ms per cold
+  // scan. This version uses fs.promises with a bounded worker pool
+  // (WALK_CONCURRENCY directory tasks in flight): same discovery contract,
+  // same depth budget, zero main-thread blocking.
+  //
   // REGRESSION GUARD (2026-05-10, H001): depth MUST be checked at the top of
-  // walk AND before every recursive descent below. If a future refactor
-  // removes either site, a pathological results/ tree (symlink loop a user
-  // accidentally created, deeply-nested junk drawer left over from an old
-  // pipeline) will spin the scanner indefinitely and freeze the Electron
-  // main process. ARCHIVE_MAX_DEPTH = 6 means we walk results/ itself at
-  // depth 0 and stop at depth 7 (i.e. 6 levels of nested directories under
-  // results/). Confirmed by archive-scanner.test.js's
-  // "ADVERSARIAL: beyond-depth files…" + "REGRESSION GUARD H001 …" tests.
-  if (depth > ARCHIVE_MAX_DEPTH) return;
-  let entries;
-  try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return; }
+  // every directory task AND before every descent below. If a future
+  // refactor removes either site, a pathological results/ tree (symlink
+  // loop a user accidentally created, deeply-nested junk drawer left over
+  // from an old pipeline) will spin the scanner indefinitely.
+  // ARCHIVE_MAX_DEPTH = 6 means we walk results/ itself at depth 0 and stop
+  // at depth 7 (i.e. 6 levels of nested directories under results/).
+  // Confirmed by archive-scanner.test.js's "ADVERSARIAL: beyond-depth
+  // files…" + "REGRESSION GUARD H001 …" tests.
+  const withSlot = makeSemaphore(WALK_CONCURRENCY);
+  const pending = new Set();
 
-  for (const e of entries) {
-    const name = e.name;
-    if (name === '.' || name === '..') continue;
-    // Skip the scanner's own index file AND any atomic-write tmp sidecar
-    // (archive-index.json.<hex>.tmp) so the writer doesn't race with itself.
-    if (name === 'archive-index.json' || /^archive-index\.json\..*\.tmp$/.test(name)) continue;
-    // Skip transient directories we never want to surface (logo assets, tmp dirs)
-    if (e.isDirectory() && ARCHIVE_IGNORE_DIRS.has(name.toLowerCase())) continue;
-    const fullPath = path.join(root, name);
-    const relPath = path.relative(relRoot, fullPath).replace(/\\/g, '/');
+  function schedule(dir, depth) {
+    const p = withSlot(() => processDir(dir, depth)).catch(() => {});
+    pending.add(p);
+    p.finally(() => pending.delete(p));
+  }
 
-    if (e.isDirectory()) {
-      if (ARCHIVE_RUN_FOLDER.test(name)) {
-        // Claim this folder as a run — list its files (shallow, no recursion)
-        const runFiles = [];
-        try {
-          for (const f of fs.readdirSync(fullPath, { withFileTypes: true })) {
+  async function processDir(root, depth) {
+    if (depth > ARCHIVE_MAX_DEPTH) return; // H001: top-of-task guard
+    let entries;
+    try { entries = await fs.promises.readdir(root, { withFileTypes: true }); } catch { return; }
+
+    for (const e of entries) {
+      const name = e.name;
+      if (name === '.' || name === '..') continue;
+      // Skip the scanner's own index file AND any atomic-write tmp sidecar
+      // (archive-index.json.<hex>.tmp) so the writer doesn't race with itself.
+      if (name === 'archive-index.json' || /^archive-index\.json\..*\.tmp$/.test(name)) continue;
+      // Skip transient directories we never want to surface (logo assets, tmp dirs)
+      if (e.isDirectory() && ARCHIVE_IGNORE_DIRS.has(name.toLowerCase())) continue;
+      const fullPath = path.join(root, name);
+      const relPath = path.relative(relRoot, fullPath).replace(/\\/g, '/');
+
+      if (e.isDirectory()) {
+        // Note: Dirent.isDirectory() is false for symlinks, so symlinked
+        // directories are never walked, same semantics as the old
+        // readdirSync walk (pinned by the symlink adversarial test).
+        if (ARCHIVE_RUN_FOLDER.test(name)) {
+          // Claim this folder as a run: list its files (shallow, no recursion)
+          const runFiles = [];
+          let files;
+          try { files = await fs.promises.readdir(fullPath, { withFileTypes: true }); } catch { files = []; }
+          for (const f of files) {
             if (!f.isFile()) continue;
-            const fp = path.join(fullPath, f.name);
-            let stat;
-            try { stat = fs.statSync(fp); } catch { continue; }
-            runFiles.push({ name: f.name, size: stat.size, mtime: stat.mtimeMs });
+            const st = await statSafe(path.join(fullPath, f.name));
+            if (!st) continue;
+            runFiles.push({ name: f.name, size: st.size, mtime: st.mtimeMs });
           }
-        } catch {}
-        runs.set(relPath, { name, fullPath, relPath, files: runFiles });
-      } else {
-        // Non-run directory — recurse, but only if the next level is still
-        // within the depth budget. The top-of-function guard catches it on
-        // the next call frame too, but checking before the call avoids one
-        // extra readdirSync syscall per pathological subtree (H001 guard).
-        if (depth + 1 > ARCHIVE_MAX_DEPTH) continue;
-        walk(fullPath, relRoot, knownBrands, depth + 1, runs, loose);
+          runs.set(relPath, { name, fullPath, relPath, files: runFiles });
+        } else {
+          // Non-run directory: descend, but only if the next level is
+          // still within the depth budget. The top-of-task guard catches
+          // it on the next task too, but checking before scheduling avoids
+          // one extra readdir per pathological subtree (H001 guard).
+          if (depth + 1 > ARCHIVE_MAX_DEPTH) continue;
+          schedule(fullPath, depth + 1);
+        }
+      } else if (e.isFile()) {
+        if (!ARCHIVE_VIDEO_EXT.test(name) && !ARCHIVE_IMAGE_EXT.test(name)) continue;
+        if (archiveShouldIgnoreName(name)) continue;
+        const st = await statSafe(fullPath);
+        if (!st) continue;
+        loose.push({
+          name,
+          fullPath,
+          relPath,
+          parentRel: path.dirname(relPath),
+          ext: path.extname(name).toLowerCase(),
+          size: st.size,
+          mtime: st.mtimeMs,
+        });
       }
-    } else if (e.isFile()) {
-      if (!ARCHIVE_VIDEO_EXT.test(name) && !ARCHIVE_IMAGE_EXT.test(name)) continue;
-      if (archiveShouldIgnoreName(name)) continue;
-      let stat;
-      try { stat = fs.statSync(fullPath); } catch { continue; }
-      loose.push({
-        name,
-        fullPath,
-        relPath,
-        parentRel: path.dirname(relPath),
-        ext: path.extname(name).toLowerCase(),
-        size: stat.size,
-        mtime: stat.mtimeMs,
-      });
     }
   }
+
+  schedule(rootDir, 0);
+  // Drain: the pending set grows while tasks discover subdirectories.
+  while (pending.size > 0) {
+    await Promise.all(Array.from(pending));
+  }
+
+  // The concurrent walk discovers entries in nondeterministic order; sort
+  // so downstream item order (and therefore tie-broken output order) is
+  // stable across scans.
+  loose.sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
 }
 
 function applyFilters(items, filters = {}) {
@@ -219,46 +277,56 @@ function applyFilters(items, filters = {}) {
   return filtered;
 }
 
-function atomicWriteFile(target, data) {
+async function atomicWriteFile(target, data) {
   // Write to a sibling tmp file then rename. Rename is atomic on both Windows
   // and POSIX (within the same filesystem), so a reader never sees a half-
   // written file. The .tmp suffix uses a random token so concurrent writers
   // don't clobber each other's temp files before rename.
   const token = crypto.randomBytes(4).toString('hex');
   const tmp = target + '.' + token + '.tmp';
-  fs.writeFileSync(tmp, data);
+  await fs.promises.writeFile(tmp, data);
   try {
-    fs.renameSync(tmp, target);
+    await fs.promises.rename(tmp, target);
   } catch (err) {
     // Clean up on failure so we don't leave stray .tmp files on disk
-    try { fs.unlinkSync(tmp); } catch {}
+    try { await fs.promises.unlink(tmp); } catch {}
     throw err;
   }
 }
 
-function scanArchive(appRoot, filters = {}) {
+// ASYNC (2026-07-11 audit fix): scanArchive is now async end-to-end: the
+// walk, metadata reads, index cache read, and index write all go through
+// fs.promises so a cold scan never blocks the Electron main process (it
+// used to freeze ALL IPC for 300-800ms). The only caller is the
+// get-archive-items IPC handler in main.js, which awaits it. Result shape,
+// cache-key semantics, and watcher invalidation are unchanged.
+async function scanArchive(appRoot, filters = {}) {
   // Defensive guards: appRoot could be null/undefined during unusual startup
   // races (e.g. IPC fires before the workspace path is resolved).
   if (!appRoot || typeof appRoot !== 'string') return [];
 
   // FAST PATH (RSI-archive-perf iter 1, fix 1-1): if the watcher hasn't
   // invalidated the in-memory cache since the last walk, return the cached
-  // items directly. Skips the 200-500ms recursive readdirSync + statSync
-  // tree walk that previously fired on every IPC call. Filters are still
-  // applied per-call because they're cheap and call-specific.
+  // items directly. Skips the 200-500ms recursive tree walk that
+  // previously fired on every IPC call. Filters are still applied per-call
+  // because they're cheap and call-specific.
   if (_walkCache && _walkCache.appRoot === appRoot && Array.isArray(_walkCache.items)) {
     return applyFilters(_walkCache.items, filters);
   }
 
   const resultsDir = path.join(appRoot, 'results');
-  if (!fs.existsSync(resultsDir)) return [];
+  const resultsStat = await statSafe(resultsDir);
+  if (!resultsStat || !resultsStat.isDirectory()) return [];
 
   const indexPath = path.join(resultsDir, 'archive-index.json');
-  const knownBrands = loadKnownBrands(appRoot);
+  const knownBrands = await loadKnownBrands(appRoot);
 
   const runs = new Map();
   const loose = [];
-  walk(resultsDir, appRoot, knownBrands, 0, runs, loose);
+  await walk(resultsDir, appRoot, runs, loose);
+  // Deterministic run order regardless of concurrent discovery order.
+  const runList = Array.from(runs.values())
+    .sort((a, b) => (a.relPath < b.relPath ? -1 : a.relPath > b.relPath ? 1 : 0));
 
   // Hash over the full discovery set — runs + loose files, sorted for
   // determinism. We stringify mtime via Math.floor (NOT `|0`, which coerces
@@ -267,7 +335,7 @@ function scanArchive(appRoot, filters = {}) {
   // so that creating a new brand folder busts the cache and loose files get
   // their brand re-inferred on the next scan.
   const runHashBits = [];
-  for (const run of runs.values()) {
+  for (const run of runList) {
     const bits = run.files.map(f => `${f.name}:${f.size}:${Math.floor(f.mtime)}`).sort().join(',');
     runHashBits.push(`R:${run.relPath}|${bits}`);
   }
@@ -281,7 +349,7 @@ function scanArchive(appRoot, filters = {}) {
     .digest('hex');
 
   try {
-    const raw = fs.readFileSync(indexPath, 'utf8');
+    const raw = await fs.promises.readFile(indexPath, 'utf8');
     const cached = JSON.parse(raw);
     if (cached && cached.hash === currentHash && Array.isArray(cached.items)) {
       return applyFilters(cached.items, filters);
@@ -292,7 +360,7 @@ function scanArchive(appRoot, filters = {}) {
   const items = [];
   const claimedFiles = new Set(); // relPaths inside run folders — don't double-count
 
-  for (const run of runs.values()) {
+  for (const run of runList) {
     const item = {
       id: run.name,
       type: run.name.startsWith('ad_') ? 'video' : 'image',
@@ -319,32 +387,36 @@ function scanArchive(appRoot, filters = {}) {
 
     const metaPath = path.join(run.fullPath, 'metadata.json');
     try {
-      if (fs.existsSync(metaPath)) {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        if (meta.brand) item.brand = meta.brand;
-        if (meta.product) item.product = meta.product;
-        if (meta.status) item.status = meta.status;
-        if (meta.model) item.model = meta.model;
-        if (meta.qaPassed !== undefined) item.qaPassed = meta.qaPassed;
-        if (meta.type) item.type = meta.type;
-        if (meta.tags) item.tags = meta.tags;
-        if (meta.createdAt) {
-          const t = new Date(meta.createdAt).getTime();
-          if (!isNaN(t)) item.timestamp = t;
-        }
-        // RSI iter 4 (2026-05-13): pass-through persona × LP × Andromeda
-        // signature fields written by the binary's runImagePipeline. The
-        // archive card render in renderer.js uses these to surface
-        // "→ <persona> → <LP path>" on every card. Missing on pre-iter-4
-        // runs — card render handles absence gracefully.
-        if (meta.personaSlug)    item.personaSlug    = meta.personaSlug;
-        if (meta.personaLabel)   item.personaLabel   = meta.personaLabel;
-        if (meta.landingPageUrl) item.landingPageUrl = meta.landingPageUrl;
-        if (meta.race)           item.race           = meta.race;
-        if (meta.context)        item.context        = meta.context;
-        if (meta.style)          item.style          = meta.style;
+      // Direct async read; ENOENT is the normal "no metadata" case and is
+      // silent (the old code gated on existsSync for the same effect).
+      const meta = JSON.parse(await fs.promises.readFile(metaPath, 'utf8'));
+      if (meta.brand) item.brand = meta.brand;
+      if (meta.product) item.product = meta.product;
+      if (meta.status) item.status = meta.status;
+      if (meta.model) item.model = meta.model;
+      if (meta.qaPassed !== undefined) item.qaPassed = meta.qaPassed;
+      if (meta.type) item.type = meta.type;
+      if (meta.tags) item.tags = meta.tags;
+      if (meta.createdAt) {
+        const t = new Date(meta.createdAt).getTime();
+        if (!isNaN(t)) item.timestamp = t;
       }
-    } catch (err) { console.warn(`[archive] Bad metadata in ${run.name}: ${err.message}`); }
+      // RSI iter 4 (2026-05-13): pass-through persona × LP × Andromeda
+      // signature fields written by the binary's runImagePipeline. The
+      // archive card render in renderer.js uses these to surface
+      // "→ <persona> → <LP path>" on every card. Missing on pre-iter-4
+      // runs, card render handles absence gracefully.
+      if (meta.personaSlug)    item.personaSlug    = meta.personaSlug;
+      if (meta.personaLabel)   item.personaLabel   = meta.personaLabel;
+      if (meta.landingPageUrl) item.landingPageUrl = meta.landingPageUrl;
+      if (meta.race)           item.race           = meta.race;
+      if (meta.context)        item.context        = meta.context;
+      if (meta.style)          item.style          = meta.style;
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        console.warn(`[archive] Bad metadata in ${run.name}: ${err.message}`);
+      }
+    }
 
     if (!item.brand) {
       const inferred = inferBrandFromPath(run.relPath, knownBrands);
@@ -484,7 +556,7 @@ function scanArchive(appRoot, filters = {}) {
   items.sort((a, b) => b.timestamp - a.timestamp);
 
   try {
-    atomicWriteFile(indexPath, JSON.stringify({ hash: currentHash, items }, null, 2));
+    await atomicWriteFile(indexPath, JSON.stringify({ hash: currentHash, items }, null, 2));
   } catch {}
 
   // Populate the in-memory walk cache so subsequent calls within the same

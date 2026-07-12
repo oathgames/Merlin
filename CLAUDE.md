@@ -26,9 +26,8 @@ The `/merlin` command handles all setup on first run:
 **Folder:** `assets/brands/<brand>/` has `brand.md`, `memory.md`, `products/<product>/references/`. Output → `results/`.
 
 ## Updates
-Type `/update` to check for and install new versions.
-Downloads the latest engine + framework files from GitHub while preserving user data (brand folders with memory.md, config).
-Backups are saved to `.merlin-backup/{version}/` before overwriting.
+Type `/update` to check for new versions and see what's new.
+Installing happens through Merlin's built-in updater (click the version number in the title bar, then Install now), which verifies the release and preserves user data (brand folders with memory.md, config). Backups are saved to `.merlin-backup/{version}/` before files change.
 
 ## How Merlin Improves Over Time
 Merlin learns from anonymous, aggregated performance trends across all users.

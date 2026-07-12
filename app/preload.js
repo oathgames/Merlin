@@ -292,6 +292,9 @@ contextBridge.exposeInMainWorld('merlin', {
   updateSpellMeta: (id, meta) => ipcRenderer.invoke('update-spell-meta', assertStr(id, 200), assertObj(meta)),
   savePastedMedia: (dataUrl, filename) => ipcRenderer.invoke('save-pasted-media', assertStr(dataUrl, 5000000), assertStr(filename, 200)),
   runOAuth: (platform, brand, extra) => ipcRenderer.invoke('run-oauth', assertPlatform(platform), assertBrand(brand), assertObj(extra)),
+  // Cancels a pending fast-open OAuth flow (the tile's Cancel affordance).
+  // Resolves true when a flow was found and canceled, false otherwise.
+  cancelOAuth: (platform, brand) => ipcRenderer.invoke('cancel-oauth', assertPlatform(platform), assertBrand(brand)),
   // App-Store-compliant Shopify install handoff. Delivered to the
   // renderer via merlin://oauth-complete?handoff=<code>&shop=<slug>
   // through onMerlinDeepLink, then dispatched here to spawn the binary

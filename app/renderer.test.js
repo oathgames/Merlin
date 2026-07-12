@@ -922,9 +922,20 @@ test('§F006 — loadPerfBar renders empty-state for unset brand instead of shim
   const fnEnd = RENDERER_JS.indexOf('\n}\n', fnStart);
   const body = RENDERER_JS.slice(fnStart, fnEnd);
   // The empty-brand early-out must come before the cache+fetch path.
+  // 2026-07-11: copy is truthful now. No brand selected means the fix is
+  // brand setup (brand switcher), not "run a campaign" (which opened
+  // connections, a surface that can't create a brand).
   assert.ok(
-    /if \(!brand\) \{[\s\S]*?No ad data for this brand[\s\S]*?run a campaign/.test(body),
-    'empty-brand branch renders the F006 empty-state copy',
+    /if \(!brand\) \{[\s\S]*?Set up a brand[\s\S]*?to start tracking performance/.test(body),
+    'empty-brand branch renders the truthful set-up-a-brand empty state',
+  );
+  assert.ok(
+    /if \(!brand\) \{[\s\S]*?openBrandSwitcher\(\)/.test(body),
+    'empty-brand link opens the brand switcher, not the connections panel',
+  );
+  assert.ok(
+    !/No ad data for this brand/.test(body),
+    'the misleading "run a campaign" no-brand copy must not return',
   );
   assert.ok(
     /BUG-F006/.test(body),
@@ -999,7 +1010,9 @@ test('§F008 — pending-restart dismiss is hidden via class + display + disable
 });
 
 test('§F010 — empty-brand state shows "Set up your first brand" instead of "No brand"', () => {
-  const fnStart = RENDERER_JS.indexOf('async function loadBrands()');
+  // Anchor is signature-agnostic: loadBrands gained an optional bootReads
+  // parameter in the 2026-07-11 startup-IPC dedup pass.
+  const fnStart = RENDERER_JS.indexOf('async function loadBrands(');
   assert.ok(fnStart > 0, 'loadBrands defined');
   const fnEnd = RENDERER_JS.indexOf('\nfunction updateVertical', fnStart);
   const body = RENDERER_JS.slice(fnStart, fnEnd);
@@ -1020,7 +1033,7 @@ test('§F010 — empty-brand state shows "Set up your first brand" instead of "N
 });
 
 test('§F010 — when brands exist but savedBrand is unmatched, first option auto-selected', () => {
-  const fnStart = RENDERER_JS.indexOf('async function loadBrands()');
+  const fnStart = RENDERER_JS.indexOf('async function loadBrands(');
   const fnEnd = RENDERER_JS.indexOf('\nfunction updateVertical', fnStart);
   const body = RENDERER_JS.slice(fnStart, fnEnd);
   assert.ok(
@@ -1750,7 +1763,9 @@ test('Brand switcher — toolbar button toggles the takeover (open <-> close), 3
   // button toggles. Three intentional exits = button toggle, ✕ close, Esc.
   const idx = RENDERER_JS.indexOf('function wireBrandSwitcher');
   assert.ok(idx >= 0, 'wireBrandSwitcher exists');
-  const fn = RENDERER_JS.slice(idx, idx + 2000);
+  // Window widened 2000 -> 3200 (2026-07-11): the a11y focus-restore lines
+  // in the toggle/close/Esc paths pushed the Esc handler past the old slice.
+  const fn = RENDERER_JS.slice(idx, idx + 3200);
   assert.ok(/brand-switcher-btn'\)\?\.addEventListener\('click'/.test(fn), 'button has a click handler');
   assert.ok(fn.includes('closeBrandSwitcher') && fn.includes('openBrandSwitcher'), 'toggles open<->close');
   assert.ok(fn.includes("contains('hidden')"), 'toggle decision keys on overlay visibility');
@@ -1824,7 +1839,9 @@ test('Palantir — all ad media loads through the merlin:// protocol', () => {
     'thumbnails resolve through merlin:// under results/');
   const playIdx = RENDERER_JS.indexOf('async function palantirPlayVideo');
   assert.ok(playIdx >= 0, 'palantirPlayVideo defined');
-  assert.ok(RENDERER_JS.slice(playIdx, playIdx + 900).includes('merlinUrl(res.path)'),
+  // Window widened 900 -> 1400 (2026-07-11): the Rule 6 comment block in the
+  // error branch pushed the merlinUrl call past the old slice.
+  assert.ok(RENDERER_JS.slice(playIdx, playIdx + 1400).includes('merlinUrl(res.path)'),
     'downloaded video plays via a merlin:// URL');
 });
 
@@ -1894,10 +1911,14 @@ test('RSI — Palantir feed grid is capped (no unbounded infinite scroll)', () =
     'oldest cards are pruned from the top once over the cap');
 });
 
-test('RSI — Palantir surfaces the binary error through friendlyError', () => {
-  // Rule 6 — never render an upstream error string raw.
-  assert.ok(/palantirSetStatus\(friendlyError\(res\.error/.test(RENDERER_JS),
-    'res.error is wrapped in friendlyError() before it reaches the DOM');
+test('RSI: Palantir surfaces the binary error through friendlyErrorPlain', () => {
+  // Rule 6: never render an upstream error string raw. Plain variant
+  // (2026-07-11): palantirSetStatus writes textContent, so a [[chip:...]]
+  // sentinel from friendlyError would surface as literal markup.
+  assert.ok(/palantirSetStatus\(friendlyErrorPlain\(res\.error/.test(RENDERER_JS),
+    'res.error is wrapped in friendlyErrorPlain() before it reaches the DOM');
+  assert.ok(!/palantirSetStatus\(friendlyError\(res\.error/.test(RENDERER_JS),
+    'the chip-capable friendlyError() must not feed the textContent status sink');
 });
 
 test('RSI — Palantir "open landing page" failure is not silent', () => {
@@ -1914,12 +1935,13 @@ test('RSI — Palantir "open landing page" failure is not silent', () => {
 // never reach a paying user. It previously passed res.error straight to
 // palantirDetailNote (the textContent write dodged the explicit BLOCK
 // trigger, but it still leaked).
-test('RSI — Palantir video-play failure routes through friendlyError (Rule 6)', () => {
+test('RSI: Palantir video-play failure routes through friendlyErrorPlain (Rule 6)', () => {
   const idx = RENDERER_JS.indexOf("btn.textContent = '▶ Play video';");
   assert.ok(idx >= 0, 'palantirPlayVideo error branch present');
   const slice = RENDERER_JS.slice(idx, idx + 400);
-  assert.ok(/friendlyError\(res\.error/.test(slice),
-    'the video-play error must be wrapped in friendlyError(res.error, ...) before display');
+  // Plain variant (2026-07-11): palantirDetailNote is a textContent sink.
+  assert.ok(/friendlyErrorPlain\(res\.error/.test(slice),
+    'the video-play error must be wrapped in friendlyErrorPlain(res.error, ...) before display');
   // The raw unwrapped pass-through must be gone.
   assert.ok(!/palantirDetailNote\(\(res && res\.error\) \|\| 'Could not load the video\.'\)/.test(RENDERER_JS),
     'the raw `(res && res.error) ||` pass-through must not return');

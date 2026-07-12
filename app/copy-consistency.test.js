@@ -48,11 +48,15 @@ test('trial pill reads "N days left", never "ND Left"', () => {
     'index.html trial pill must read "7 days left", not "7D Left"');
   assert.doesNotMatch(rendererCode, /\$\{days\}D Left/,
     'renderer.js trial pill template must read "${days} days left", not "${days}D Left"');
-  // Positive: the sentence-case form is present in both.
+  // Positive: the sentence-case form is present in both. The renderer
+  // template pluralizes: "1 day left" vs "2 days left" (2026-07-11 pass).
   assert.match(indexSrc, /7 days left/,
     'index.html must ship the "7 days left" trial pill');
-  assert.match(rendererCode, /\$\{days\} days left/,
-    'renderer.js must build the trial pill as "${days} days left"');
+  assert.match(rendererCode, /\$\{days\} day\$\{days === 1 \? '' : 's'\} left/,
+    'renderer.js must build the trial pill as "${days} day${days === 1 ? \'\' : \'s\'} left" (pluralized)');
+  // Anti-pattern: the always-plural template that rendered "1 days left".
+  assert.doesNotMatch(rendererCode, /\$\{days\} days left/,
+    'the always-plural "${days} days left" template must not return ("1 days left" bug)');
   // Expired / Get Pro states are preserved.
   assert.match(rendererCode, /'Expired'/, 'the Expired trial state must be preserved');
   assert.match(rendererCode, /'Get Pro'/, 'the Get Pro CTA must be preserved');

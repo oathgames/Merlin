@@ -537,10 +537,8 @@ All `taskId`s use the `merlin-` prefix.
 
 When the user later asks to publish ads / connect Shopify / etc., use one-click OAuth:
 
-- Meta: `platform_login({platform: "meta", brand})` **— EXCEPT Meta is currently in App Review, so OAuth unavailable.** Tell users to click the Meta tile in Connections and paste their token from `developers.facebook.com/tools/explorer`. Do NOT use `platform_login` for Meta.
-- TikTok / Shopify / Google / Amazon / Etsy / Reddit / Discord / Slack / Stripe: `platform_login({platform: "X", brand})` — browser OAuth, one click, token exchanged via Worker BFF.
-
-**CRITICAL: OAuth timeout.** The app waits up to 5 minutes for in-browser authorization. Any Bash call running an OAuth action MUST set `timeout: 300000`. Default 120s kills before the user finishes.
+- Meta / TikTok / Shopify / Google / Amazon / Etsy / Reddit / Discord / Slack / Stripe: `platform_login({platform: "X", brand})` or the platform tile in Connections: browser OAuth, one click, token exchanged via Worker BFF.
+- Threads: no separate login. Connecting Meta enables Threads automatically (Threads rides the Meta grant).
 
 **When connecting any ad platform**, ask ONE question: *"How much do you want to spend per day on ads? (e.g., $20, $50, $100)"*
 
@@ -554,7 +552,7 @@ Merlin infers everything from `dailyAdBudget`:
 - Scale threshold = ROAS > 1.5× after 48h → promote
 - Fatigue threshold = CTR drops 30%+ from peak over 3 days → kill + replace
 
-Default: **$20/day** if the user doesn't answer (enough for 3–4 ads at $5 each).
+Only persist the budget (`maxDailyAdBudget`) when the user gives an explicit answer. If they don't answer, leave it unset and say the first ad push will ask for approval before any spend. Never write a default budget on the user's behalf.
 
 Always say: *"You can change this anytime — just say 'change my daily budget to $X'."*
 
@@ -691,7 +689,7 @@ If unsure during setup: default to `channels:online` and continue silently — d
 ## Routing hints
 
 - "set up / onboard / add brand X" / no brands exist → run Setup Flow (section A)
-- "connect Meta / TikTok / Google / Shopify / Stripe / Klaviyo / Amazon / Discord / Slack / Etsy / Reddit / LinkedIn / Threads" → `platform_login` (section C, exception for Meta)
+- "connect Meta / TikTok / Google / Shopify / Stripe / Klaviyo / Amazon / Discord / Slack / Etsy / Reddit / LinkedIn / Threads" → `platform_login` (section C; Threads rides the Meta connection)
 - "change daily budget to $X" → config write via `mcp__merlin__config`
 - "what scheduled tasks are running" → `mcp__scheduled-tasks__list_scheduled_tasks`
 - "turn off daily / optimize / digest" → `mcp__scheduled-tasks__update_scheduled_task({taskId, enabled: false})`

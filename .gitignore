@@ -30,6 +30,7 @@ build.ps1
 .claude/tools/.merlin-vault*
 .claude/tools/.merlin-ratelimit*
 .claude/tools/.merlin-audit*
+.claude/tools/.merlin-spells.json
 .merlin-ref-claim-attempted
 
 # Output
@@ -45,6 +46,8 @@ merlin-music-pack.zip
 # Brand-specific assets (users bring their own)
 assets/brands/*/
 !assets/brands/example/
+# Runtime-generated brand index (rebuilt by the app on brand changes)
+assets/brands/brands-index.json
 assets/music/*.mp3
 assets/music/*.wav
 assets/music/*.ogg

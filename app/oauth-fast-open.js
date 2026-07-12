@@ -380,6 +380,35 @@ function parseLastBalancedJsonObject(text) {
 //                                          (contains vault-split tokens
 //                                          and discovered metadata).
 //   { error: '<message>' }               — any failure path.
+// ── User-initiated cancel (2026-07-11, tile pending-state UX) ───────
+// A flow can sit open for up to 5 minutes waiting on the provider redirect.
+// The renderer's tile Cancel affordance needs a way to end it early:
+// cancelFastOpenOAuth closes the local listener and settles the pending
+// promise with the stable `oauth_canceled_by_user` sentinel (friendlyError
+// maps it to calm copy; the renderer suppresses the failure modal for
+// flows it canceled itself).
+//
+// WIRING NOTE: the renderer half is shipped (tile Cancel calls
+// merlin.cancelOAuth?.(platform, brand) with optional chaining), but the
+// bridge does NOT exist yet: main.js needs
+//   ipcMain.handle('cancel-oauth', (_e, p, b) => cancelFastOpenOAuth(p, b))
+// and preload.js needs
+//   cancelOAuth: (p, b) => ipcRenderer.invoke('cancel-oauth', p, b)
+// Both files are owned by a concurrent change; until it lands, Cancel
+// still restores the tile and re-arms the click, and the orphaned
+// listener self-expires on its 5-minute timeout.
+const OAUTH_CANCELED_SENTINEL = 'oauth_canceled_by_user';
+const _activeFlowCancels = new Map(); // `${platform}:${brand}` -> cancel fn
+function flowCancelKey(platform, brand) {
+  return `${platform}:${brand || ''}`;
+}
+function cancelFastOpenOAuth(platform, brand) {
+  const cancel = _activeFlowCancels.get(flowCancelKey(platform, brand));
+  if (!cancel) return false;
+  cancel();
+  return true;
+}
+
 async function runFastOpenOAuth(platform, opts = {}) {
   const startMs = Date.now();
   const cfg = PROVIDERS[platform];
@@ -428,15 +457,24 @@ async function runFastOpenOAuth(platform, opts = {}) {
 
   // Return a promise that resolves when the callback fires + the binary
   // finishes the exchange, or rejects on timeout / error.
+  const cancelKey = flowCancelKey(platform, opts.brand);
   return new Promise((resolve) => {
     let settled = false;
     const resolveOnce = (v) => {
       if (settled) return;
       settled = true;
+      // Only drop the registry entry if it still points at THIS flow: a
+      // canceled-then-restarted flow for the same key must not have its
+      // fresh cancel fn deleted by the stale flow settling late.
+      if (_activeFlowCancels.get(cancelKey) === cancelThisFlow) {
+        _activeFlowCancels.delete(cancelKey);
+      }
       try { srv.close(); } catch { /* ignore */ }
       clearTimeout(timeoutHandle);
       resolve(v);
     };
+    const cancelThisFlow = () => resolveOnce({ error: OAUTH_CANCELED_SENTINEL });
+    _activeFlowCancels.set(cancelKey, cancelThisFlow);
 
     // 5 minute budget — matches oauth.go:717. Long enough for 2FA,
     // password reset flows, SSO bounces.
@@ -553,6 +591,8 @@ async function runFastOpenOAuth(platform, opts = {}) {
 
 module.exports = {
   runFastOpenOAuth,
+  cancelFastOpenOAuth,
+  OAUTH_CANCELED_SENTINEL,
   timingSafeCompareString,
   validateIncomingState,
   extractJsonBlock,

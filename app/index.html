@@ -114,7 +114,11 @@
 <!-- Chat -->
 <div id="chat">
   <div id="messages"></div>
-  <div id="chat-status" class="chat-status"></div>
+  <div id="chat-status" class="chat-status" aria-live="polite"></div>
+  <!-- Screen-reader announcer: turn completion lands here (finalizeBubble),
+       never on the streaming container, so AT hears one calm "finished"
+       instead of every streamed delta. -->
+  <div id="sr-announcer" class="visually-hidden" aria-live="polite"></div>
   <div id="scroll-anchor"></div>
 </div>
 
@@ -474,7 +478,7 @@
 </div>
 
 <!-- Revenue Tracker (Merlin Made Me) -->
-<div id="stats-overlay" class="overlay hidden">
+<div id="stats-overlay" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Revenue tracker">
   <div class="stats-card" id="stats-card">
     <button id="stats-close" class="qr-close" aria-label="Close revenue tracker">&times;</button>
     <div id="stats-brand-name" class="stats-brand"></div>
@@ -485,12 +489,15 @@
 
     <div class="stats-period-row">
       <div id="stats-period" class="stats-period">This month</div>
-      <div class="stats-period-toggle" role="tablist" aria-label="Reporting window">
-        <button type="button" class="stats-period-btn" data-days="1" role="tab">1D</button>
-        <button type="button" class="stats-period-btn" data-days="7" role="tab">7D</button>
-        <button type="button" class="stats-period-btn" data-days="30" role="tab">30D</button>
-        <button type="button" class="stats-period-btn" data-days="90" role="tab">90D</button>
-        <button type="button" class="stats-period-btn" data-days="365" role="tab">12M</button>
+      <!-- Toggle buttons with aria-pressed (managed in setStatsPeriodActive),
+           not a tablist: tabs require roving tabindex + aria-selected wiring
+           these simple period buttons never had. -->
+      <div class="stats-period-toggle" role="group" aria-label="Reporting window">
+        <button type="button" class="stats-period-btn" data-days="1" aria-pressed="false">1D</button>
+        <button type="button" class="stats-period-btn" data-days="7" aria-pressed="false">7D</button>
+        <button type="button" class="stats-period-btn" data-days="30" aria-pressed="false">30D</button>
+        <button type="button" class="stats-period-btn" data-days="90" aria-pressed="false">90D</button>
+        <button type="button" class="stats-period-btn" data-days="365" aria-pressed="false">12M</button>
       </div>
     </div>
 
@@ -579,9 +586,9 @@
 </div>
 
 <!-- QR Code Modal -->
-<div id="qr-modal" class="overlay hidden">
+<div id="qr-modal" class="overlay hidden" role="dialog" aria-modal="true" aria-label="Mobile access">
   <div class="qr-card">
-    <button id="qr-close" class="qr-close">&times;</button>
+    <button id="qr-close" class="qr-close" aria-label="Close">&times;</button>
     <div class="qr-title">✦ Mobile Access</div>
     <p class="qr-desc">Scan with your phone to chat with Merlin on the go</p>
     <img id="qr-image" class="qr-image" alt="QR Code">

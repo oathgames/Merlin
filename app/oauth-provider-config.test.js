@@ -550,6 +550,33 @@ test('REGRESSION 2026-05-09: COMPREHENSIVE parity (clientId, authUrl, usesPKCE, 
     return m ? m[1] : null;
   }
 
+  // 2026-07 oauth.go refactor: the ten literal
+  // "https://merlingotme.com/auth/callback" strings became a single
+  // `const oauthRedirectURI = "..."` referenced as
+  // `RedirectURI: oauthRedirectURI` in each factory. Resolve that const
+  // here so the parity guarantee is UNCHANGED: the JS redirectUri literal
+  // must still equal the exact URL the binary registers. Fail closed on
+  // anything unresolvable (unknown identifier, missing const) so a rename
+  // or indirection on the Go side surfaces as drift, never as a silent
+  // "loopback" misread.
+  const goRedirectConstMatch = oauthGoSrc.match(/\bconst\s+oauthRedirectURI\s*=\s*"([^"]*)"/);
+  const goRedirectConstValue = goRedirectConstMatch ? goRedirectConstMatch[1] : null;
+
+  function extractGoRedirectURI(body) {
+    const lit = body.match(/\bRedirectURI:\s*"([^"]*)"/);
+    if (lit) return lit[1];
+    const ref = body.match(/\bRedirectURI:\s*([A-Za-z_]\w*)/);
+    if (ref) {
+      if (ref[1] === 'oauthRedirectURI' && goRedirectConstValue !== null) {
+        return goRedirectConstValue;
+      }
+      // Unknown identifier or const not found: return a sentinel that can
+      // never equal a JS redirectUri, forcing a visible drift entry.
+      return `<unresolved Go identifier: ${ref[1]}>`;
+    }
+    return null; // field absent = loopback convention
+  }
+
   function fnBody(fnName) {
     const fnAnchor = `func ${fnName}(`;
     const fnStart = oauthGoSrc.indexOf(fnAnchor);
@@ -601,8 +628,9 @@ test('REGRESSION 2026-05-09: COMPREHENSIVE parity (clientId, authUrl, usesPKCE, 
     //              (or RedirectURI="" — both express loopback in Go's
     //              runOAuthWithResume which constructs http://localhost:<port>/callback).
     //   worker-relay → JS redirectUri="https://...callback" AND Go has
-    //                  matching RedirectURI literal.
-    const goRedirectURI = extractGoField(body, 'RedirectURI');
+    //                  matching RedirectURI literal or the shared
+    //                  oauthRedirectURI const (resolved above).
+    const goRedirectURI = extractGoRedirectURI(body);
     const fastIsLoopback = !provider.redirectUri;
     const binaryIsLoopback = goRedirectURI === null || goRedirectURI === '';
     if (fastIsLoopback !== binaryIsLoopback) {

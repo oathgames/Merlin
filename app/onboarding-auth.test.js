@@ -95,7 +95,9 @@ test('3.6 — preload exposes onMcpProgress(cb) subscription', () => {
 
 // ─── §3.9 ────────────────────────────────────────────────────────────
 test('3.9 — runOAuthPendingPoll polls the Go binary via oauth-pending-list', () => {
-  const fnIdx = MAIN_JS.indexOf('const runOAuthPendingPoll = async () => {');
+  // Shape updated 2026-07-11: the poll gained an opts parameter ({force})
+  // for the stat-gate added by the fable-audit perf fix (oauth-pending-gate.js).
+  const fnIdx = MAIN_JS.indexOf('const runOAuthPendingPoll = async (opts) => {');
   assert.ok(fnIdx > 0, 'runOAuthPendingPoll defined');
   const end = MAIN_JS.indexOf('  };\n', fnIdx);
   const body = MAIN_JS.slice(fnIdx, end);
@@ -126,7 +128,10 @@ test('3.9 — oauth-pending-refresh IPC handler triggers an immediate poll', () 
   assert.ok(handlerIdx > 0, 'oauth-pending-refresh handler registered');
   const end = MAIN_JS.indexOf('});', handlerIdx);
   const body = MAIN_JS.slice(handlerIdx, end);
-  assert.ok(body.includes('runOAuthPendingPoll()'), 'handler invokes runOAuthPendingPoll');
+  // {force: true} bypasses the stat-gate so a user-triggered refresh always
+  // polls. The body slice ends at the first '});', which sits inside this very
+  // call's argument list, so match the call prefix only.
+  assert.ok(body.includes('runOAuthPendingPoll({ force: true'), 'handler invokes runOAuthPendingPoll with force');
 });
 
 test('3.9 — preload exposes onOAuthPending subscription', () => {

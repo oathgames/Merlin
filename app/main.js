@@ -11,7 +11,8 @@ const { verifyChecksumsSignature } = require('./update-verifier');
 const { cleanWhisperTranscript } = require('./whisper-transcript-clean');
 const spellConfig = require('./spell-config');
 const scheduledTasksDaemon = require('./scheduled-tasks-daemon');
-const { runFastOpenOAuth, ACTIVE_PLATFORMS: FAST_OPEN_PLATFORMS } = require('./oauth-fast-open');
+const { runFastOpenOAuth, cancelFastOpenOAuth, ACTIVE_PLATFORMS: FAST_OPEN_PLATFORMS } = require('./oauth-fast-open');
+const { clampWindowBounds, createBoundsSaver } = require('./window-state');
 const { scaffoldBrandManifest } = require('./brand-manifest-scaffolder');
 const { scaffoldBrandStub } = require('./brand-scaffold');
 
@@ -141,25 +142,53 @@ function installApplicationMenu() {
     // The -l flag sources login configs. The -i (interactive) flag is OMITTED
     // because it triggers zsh compinit, conda hooks, and iterm2 integrations
     // that can hang or print garbage to stdout in a non-TTY context.
-    try {
-      const { execSync } = require('child_process');
-      const shell = process.env.SHELL || '/bin/bash';
-      // Detect non-POSIX shells that need different invocation
-      let pathCmd;
-      if (shell.endsWith('/fish')) {
-        pathCmd = `${shell} -l -c 'string join : $PATH' 2>/dev/null`;
-      } else if (shell.endsWith('/nu') || shell.endsWith('/nushell')) {
-        pathCmd = `${shell} -l -c '$env.PATH | str join ":"' 2>/dev/null`;
-      } else {
-        pathCmd = `${shell} -lc 'echo "$PATH"' 2>/dev/null`;
-      }
-      const shellPath = execSync(pathCmd, {
-        timeout: 5000,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (shellPath) extra.push(...shellPath.split(':').filter(Boolean));
-    } catch { /* fall through to static paths below */ }
+    const shell = process.env.SHELL || '/bin/bash';
+    // Detect non-POSIX shells that need different invocation
+    let pathCmd;
+    if (shell.endsWith('/fish')) {
+      pathCmd = `${shell} -l -c 'string join : $PATH' 2>/dev/null`;
+    } else if (shell.endsWith('/nu') || shell.endsWith('/nushell')) {
+      pathCmd = `${shell} -l -c '$env.PATH | str join ":"' 2>/dev/null`;
+    } else {
+      pathCmd = `${shell} -lc 'echo "$PATH"' 2>/dev/null`;
+    }
+    // PERF (Fable audit P6): the synchronous login-shell spawn cost every
+    // mac/linux launch 30-300ms before first paint (up to the full 5s
+    // timeout on a slow .zprofile). The resolved PATH barely ever changes,
+    // so it is cached at ~/.merlin-shell-path: launches with a cache apply
+    // it instantly and refresh it in the background; the blocking spawn
+    // only ever runs on the first launch, when no cache exists yet.
+    const shellPathCacheFile = path.join(home, '.merlin-shell-path');
+    let cachedShellPath = '';
+    try { cachedShellPath = require('fs').readFileSync(shellPathCacheFile, 'utf8').trim(); } catch { /* first launch */ }
+    if (cachedShellPath) {
+      extra.push(...cachedShellPath.split(':').filter(Boolean));
+      // Background refresh: pick up PATH edits without blocking this launch.
+      try {
+        const { exec } = require('child_process');
+        exec(pathCmd, { timeout: 5000, encoding: 'utf8' }, (err, stdout) => {
+          const fresh = String(stdout || '').trim();
+          if (err || !fresh || fresh === cachedShellPath) return;
+          try { require('fs').writeFileSync(shellPathCacheFile, fresh, 'utf8'); } catch { /* best effort */ }
+          const have = new Set(String(process.env.PATH || '').split(path.delimiter));
+          const add = fresh.split(':').filter((p) => p && !have.has(p));
+          if (add.length) process.env.PATH = process.env.PATH + path.delimiter + add.join(path.delimiter);
+        });
+      } catch { /* keep the cached PATH */ }
+    } else {
+      try {
+        const { execSync } = require('child_process');
+        const shellPath = execSync(pathCmd, {
+          timeout: 5000,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        if (shellPath) {
+          extra.push(...shellPath.split(':').filter(Boolean));
+          try { require('fs').writeFileSync(shellPathCacheFile, shellPath, 'utf8'); } catch { /* best effort */ }
+        }
+      } catch { /* fall through to static paths below */ }
+    }
 
     // Static fallbacks for common locations that may not be in shell PATH yet
     extra.push(
@@ -275,23 +304,61 @@ function _tryRelaunchWithCap() {
   try { app.exit(1); } catch { process.exit(1); }
 }
 
+// ── Signed telemetry pings, proxied through the Go engine ──────────────
+// The wisdom worker (api.merlingotme.com/api/ping) requires an X-Merlin-Sig
+// HMAC header and hard-401s unsigned posts, so a direct https.request from
+// the Electron side never lands: every crash/spell/bypass/launch ping was
+// silently dropped. The Go engine owns the signing key, so we hand it the
+// exact HTTP body via {"action":"telemetry-ping","payload":"<JSON string>"}
+// and it signs + POSTs best-effort. Payload contract: a JSON object string
+// under 8KB whose "e" field matches ^[a-z][a-z0-9_-]{1,39}$ (the worker
+// rejects anything else). Event strings in use: 'crash',
+// 'unhandled_rejection', 'render_crash', 'spell-<status>' (spell-completed /
+// spell-failed / spell-error), 'bypass_blocked', 'launch'. Do NOT rename
+// them: the worker's
+// ALLOWED_PING_EVENTS allowlist is a superset of exactly these strings
+// (telemetry-signing.test.js pins both sides).
+//
+// Fire-and-forget by design: spawn is synchronous under the hood, the
+// callback ignores the result, all errors are swallowed (one console.warn
+// max), and the child is intentionally NOT added to activeChildProcesses so
+// app-exit cleanup cannot kill an in-flight crash ping. A missing binary
+// silently drops the ping: crash pings during a broken install are
+// acceptable losses. This function must NEVER throw and must never block
+// process exit (the uncaughtException handler calls it on the way out;
+// app.exit terminates regardless of the child's 5s timeout timer).
+function sendSignedPing(payloadObj) {
+  try {
+    const body = JSON.stringify(payloadObj || {});
+    if (Buffer.byteLength(body, 'utf8') > 8 * 1024) return; // worker rejects >8KB, do not spawn for a doomed ping
+    const binaryPath = getBinaryPath();
+    if (!binaryPath) return;
+    try { fs.accessSync(binaryPath); } catch { return; }
+    // Config path hint matches every other engine invocation in this file so
+    // the binary resolves the same projectRoot + StateDir (signing key home).
+    const configPathHint = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
+    const cmd = JSON.stringify({ action: 'telemetry-ping', payload: body });
+    const { execFile } = require('child_process');
+    const child = execFile(
+      binaryPath,
+      ['--config', configPathHint, '--cmd', cmd],
+      { timeout: 5000, cwd: appRoot, windowsHide: true, maxBuffer: 256 * 1024 },
+      () => {}, // result intentionally ignored
+    );
+    child.on('error', () => {});
+  } catch (e) {
+    try { console.warn('[ping]', e && e.message ? e.message : String(e)); } catch {}
+  }
+}
+
 function _pingWisdomCrash(kind, err) {
   try {
-    const https = require('https');
     const msg = err && err.message ? String(err.message) : String(err || '');
     const stack = err && err.stack ? String(err.stack) : '';
-    const payload = JSON.stringify({
+    sendSignedPing({
       id: '', v: require('../package.json').version, p: process.platform,
       e: kind, error: msg.slice(0, 500), stack: stack.slice(0, 500),
     });
-    const req = https.request('https://api.merlingotme.com/api/ping', {
-      method: 'POST',
-      timeout: 3000,
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-    });
-    req.on('error', () => {}); // best-effort — never let the ping throw
-    req.write(payload);
-    req.end();
   } catch (e) { console.error('[ping]', e.message); }
 }
 
@@ -1600,7 +1667,36 @@ async function createWindow() {
   if (process.platform !== 'darwin') {
     windowOptions.icon = path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
   }
+  // Restore the last window geometry (Fable audit F7: every launch previously
+  // reset to 900x670). Clamped against the live display set so a detached
+  // monitor can never strand the window off-screen; a stale position falls
+  // back to size-only and Electron centers the window.
+  let savedWinBounds = null;
+  try { savedWinBounds = readState().windowBounds || null; } catch { /* fresh install */ }
+  try {
+    const { screen } = require('electron');
+    const restored = clampWindowBounds(savedWinBounds, screen.getAllDisplays(), {
+      minWidth: windowOptions.minWidth,
+      minHeight: windowOptions.minHeight,
+    });
+    if (restored) Object.assign(windowOptions, restored);
+  } catch { /* keep defaults */ }
   win = new BrowserWindow(windowOptions);
+  if (savedWinBounds && savedWinBounds.maximized) {
+    try { win.maximize(); } catch { /* cosmetic */ }
+  }
+  // Persist geometry: debounced on resize/move, final flush on close. Normal
+  // bounds are saved while maximized so un-maximizing later restores the real
+  // size instead of the maximized rectangle.
+  const winBoundsSnapshot = () => {
+    const maximized = win.isMaximized();
+    const b = maximized ? win.getNormalBounds() : win.getBounds();
+    return { x: b.x, y: b.y, width: b.width, height: b.height, maximized };
+  };
+  const winBoundsSaver = createBoundsSaver((snap) => writeState({ windowBounds: snap }));
+  win.on('resize', () => winBoundsSaver.schedule(winBoundsSnapshot));
+  win.on('move', () => winBoundsSaver.schedule(winBoundsSnapshot));
+  win.on('close', () => { try { winBoundsSaver.flush(winBoundsSnapshot); } catch { /* best effort */ } });
 
   // Register protocol for inline media — images, video, audio, PDFs.
   //
@@ -2347,6 +2443,16 @@ async function createWindow() {
   warmMobileQrCache().catch(() => {});
 }
 
+// Unique id for every approval / question card. Date.now().toString() was
+// the old key: two cards created in the same millisecond (parallel tool
+// calls in one SDK turn) collided in pendingApprovals, the second card's
+// entry overwrote the first, and the first promise never resolved: a
+// hang-forever for that tool call. randomUUID is collision-free and stays
+// within ws-server.js's 64-char toolUseID validation (UUIDs are 36 chars).
+function newApprovalId() {
+  return require('crypto').randomUUID();
+}
+
 // Store a pending approval with auto-expiry timeout
 function setPendingApproval(toolUseID, fn) {
   const timer = setTimeout(() => {
@@ -2841,7 +2947,7 @@ async function handleToolApproval(toolName, input) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
-      const toolUseID = Date.now().toString();
+      const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
       wsServer.broadcast('approval-request', payload);
@@ -2871,7 +2977,7 @@ async function handleToolApproval(toolName, input) {
     if (approvalPolicy.CARDED_DESTRUCTIVE_ACTIONS &&
         approvalPolicy.CARDED_DESTRUCTIVE_ACTIONS.has(action)) {
       const translated = translateTool(toolName, input);
-      const toolUseID = Date.now().toString();
+      const toolUseID = newApprovalId();
       const labelOverride = intentToolLabel ||
         (translated && translated.label) ||
         `${toolName.replace('mcp__merlin__', '')} — ${action}`;
@@ -2972,7 +3078,7 @@ async function handleToolApproval(toolName, input) {
     // exactly what's about to happen. cost field reused as a body preview
     // (first 200 chars — card layout is compact).
     const preview = body.length > 200 ? body.slice(0, 197) + '…' : body;
-    const toolUseID = Date.now().toString();
+    const toolUseID = newApprovalId();
     const label = postMode === 'draft-only'
       ? `Save draft for manual paste — r/${sub}`
       : `Post reply to r/${sub}`;
@@ -3070,7 +3176,7 @@ async function handleToolApproval(toolName, input) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
-      const toolUseID = Date.now().toString();
+      const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
       wsServer.broadcast('approval-request', payload);
@@ -3103,7 +3209,7 @@ async function handleToolApproval(toolName, input) {
       'mailchimp-automation-pause', 'mailchimp-automation-start',
     ]);
     if (BASH_CARDED_DESTRUCTIVE.has(bashAction)) {
-      const toolUseID = Date.now().toString();
+      const toolUseID = newApprovalId();
       const translated = translateTool(toolName, input);
       const payload = {
         toolUseID,
@@ -3123,7 +3229,7 @@ async function handleToolApproval(toolName, input) {
   }
 
   if (toolName === 'AskUserQuestion') {
-    const toolUseID = Date.now().toString();
+    const toolUseID = newApprovalId();
     const payload = { toolUseID, questions: input.questions };
     win.webContents.send('ask-user-question', payload);
     wsServer.broadcast('ask-user-question', payload);
@@ -3135,7 +3241,7 @@ async function handleToolApproval(toolName, input) {
     });
   }
 
-  const toolUseID = Date.now().toString();
+  const toolUseID = newApprovalId();
   const translated = translateTool(toolName, input);
   const payload = { toolUseID, label: translated.label, cost: translated.cost };
   win.webContents.send('approval-request', payload);
@@ -3429,6 +3535,16 @@ async function startSession(brandOverride) {
       ensureBinaryLicenseToken: maybeHydrateBinaryLicenseToken,
       runOAuthFlow,
       getConnections,
+      // Revoked-grant tile signal (2026-07-11 audit fix): runBinary in
+      // mcp-tools.js reports the real auth outcome of every platform action
+      // here. TOKEN_EXPIRED flags the platform (per brand) so getConnections
+      // shows 'expired'; any success clears the flag. See auth-failures.js.
+      notePlatformAuthResult: (platform, brandName, outcome) => {
+        try {
+          if (outcome === 'token_expired') authFailureStore.mark(platform, brandName);
+          else if (outcome === 'success') authFailureStore.clear(platform, brandName);
+        } catch {}
+      },
       appRoot,
       // Installer-resolved Resources directory (where bundled voice tools
       // live in a packaged build). Required by tools that resolve binaries
@@ -4113,20 +4229,16 @@ async function startSession(brandOverride) {
           } catch (e) { console.error('[spell-log]', e.message); }
 
           win.webContents.send('spell-completed', { taskId, status, summary, timestamp });
-          // Report spell completion to wisdom API for aggregate insights
+          // Report spell completion to wisdom API for aggregate insights.
+          // Routed through the Go engine so the ping carries X-Merlin-Sig
+          // (unsigned posts 401 at the worker). See sendSignedPing.
           try {
-            const https = require('https');
-            const req = https.request('https://api.merlingotme.com/api/ping', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 5000,
-            });
-            req.write(JSON.stringify({
+            sendSignedPing({
               id: getMachineId(), v: getCurrentVersion(), p: process.platform,
               e: `spell-${status}`, vt: readConfig().vertical || '',
               t: getSubscriptionState().subscribed ? 'pro' : 'trial',
               spell: taskId.replace(/^merlin-/, ''),
-            }));
-            req.end();
-            req.on('error', () => {});
+            });
           } catch (e) { console.error('[spell-ping]', e.message); }
         }
       }
@@ -4936,6 +5048,10 @@ function applyExchangeResult(platform, brandName, isGlobalPlatform, parsed) {
     cfg._tokenTimestamps[platform] = Date.now();
     writeConfig(cfg);
   }
+  // A completed OAuth exchange is the definitive "grant is valid again"
+  // signal: clear any revoked-grant flag so the tile flips back to green.
+  // Scope mirrors the vault scope above ('' maps to _global in the store).
+  try { authFailureStore.clear(platform, (brandName && !isGlobalPlatform) ? brandName : ''); } catch {}
   if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
 }
 
@@ -4960,6 +5076,10 @@ const SHOPIFY_CONNECT_URL = 'https://merlingotme.com/connect/shopify';
 // Standalone OAuth flow — callable from both the IPC handler (UI clicks)
 // and the MCP platform_login tool. Returns { success, platform } or { error }.
 async function runOAuthFlow(platform, brandName, extra) {
+  // A new OAuth flow may create a pending entry at any moment: reset the
+  // pending-poll stat-gate so the next 30s tick (and any renderer-forced
+  // refresh) reaches the binary instead of skipping on stale-empty state.
+  try { if (_oauthPendingGate) _oauthPendingGate.force(); } catch {}
   // Shopify short-circuit. App Store requirement 2.3.1 prohibits the
   // binary from collecting a shop URL or binding localhost; we just
   // open the server-driven install URL in the user's browser and
@@ -5036,6 +5156,10 @@ async function runOAuthFlow(platform, brandName, extra) {
       // If the binary persisted tokens via its own VaultPut + updateConfigField
       // but we couldn't parse a result JSON, still broadcast connections-changed
       // so the tile re-reads disk state and flips green.
+      // This IS a successful reconnect: clear any revoked-grant flag too,
+      // otherwise the auth-failures overlay keeps the tile 'expired' even
+      // though the binary just persisted a fresh token.
+      try { authFailureStore.clear(platform, (brandName && !isGlobalPlatform) ? brandName : ''); } catch {}
       if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
       return { success: true, platform };
     }
@@ -5132,6 +5256,19 @@ ipcMain.handle('run-oauth', async (_, platform, brandName, extra) => {
     // and emits the [[chip:Reconnect ...]] sentinel so the user gets
     // a one-click recovery, not a cryptic string.
     return { ok: false, error: String(raw).slice(0, 500), platform: platform || '' };
+  }
+});
+
+// cancel-oauth: the renderer tile's Cancel affordance for a pending fast-open
+// flow. Closes the local listener and settles the pending promise with the
+// oauth_canceled_by_user sentinel (see the cancel section in oauth-fast-open.js).
+// Returns false when no flow is in flight for that platform/brand, which the
+// renderer treats as already-finished.
+ipcMain.handle('cancel-oauth', (_e, platform, brandName) => {
+  try {
+    return cancelFastOpenOAuth(String(platform || ''), String(brandName || ''));
+  } catch {
+    return false;
   }
 });
 
@@ -6095,42 +6232,10 @@ async function transcribeAudioImpl(audioBytes) {
 
 ipcMain.handle('transcribe-audio', async (_, audioBytes) => transcribeAudioImpl(audioBytes));
 
-// ── burn-captions: Hormozi-style word-level caption burn-in ──
-//
-// Reuses the same bundled toolchain (ffmpeg + whisper-cli + small.en
-// model) that transcribe-audio above resolves via findTool. The
-// orchestration lives in app/captions.js so it's testable without
-// the renderer or Electron context. We pass appRoot + appInstall so
-// the captions module's own findVoiceTools() resolves to the same
-// install-first, workspace-fallback paths as voice transcription.
-//
-// Args contract:
-//   { videoPath: <abs path>, style?: 'hormozi', outputDir?: <abs path> }
-//
-// Returns the captions module envelope verbatim:
-//   { success: true, outputPath, wordCount, durationMs }
-//   | { error: 'captions:<step>', errorDetail: <human-readable> }
-//
-// AbortController is mainly defensive — long-running runs (a 10-min
-// video on a slow CPU) would otherwise tie up the renderer. The
-// SUBPROCESS_TIMEOUT_MS in captions.js is the per-step ceiling; this
-// IPC boundary doesn't add a wall-clock kill on top.
-ipcMain.handle('burn-captions', async (_, args) => {
-  let captionsMod;
-  try {
-    captionsMod = require('./captions');
-  } catch (err) {
-    return { error: 'captions:internal', errorDetail: `captions module failed to load: ${err.message}` };
-  }
-  const safeArgs = (args && typeof args === 'object') ? args : {};
-  return captionsMod.burnCaptions({
-    videoPath: safeArgs.videoPath,
-    style: safeArgs.style,
-    outputDir: safeArgs.outputDir,
-    appRoot,
-    appInstall,
-  });
-});
+// Caption burn-in orchestration lives in app/captions.js; the MCP
+// captions tool in mcp-tools.js calls burnCaptions() directly. The old
+// 'burn-captions' IPC handler had no invoker and was removed in the
+// 2026-07 audit.
 
 // §2.6: OS-level microphone permission status + request.
 //
@@ -7352,6 +7457,7 @@ let _updateCheckFirstTimeout = null;
 let _updateCheckInterval = null;
 let _tokenWatchdogInterval = null;   // 4h token auto-refresh sweep
 let _oauthPendingPollInterval = null; // 30s OAuth pending-flow chip poll
+let _oauthPendingGate = null;         // stat-gate for the pending poll (oauth-pending-gate.js); assigned in whenReady, force()d by runOAuthFlow
 let _reconcileInterval = null;        // hourly referral bonus + subscription reconcile
 
 function startBriefingNotifier() {
@@ -8033,7 +8139,9 @@ const archiveScanner = require('./archive-scanner');
 
 ipcMain.handle('get-archive-items', async (_, filters = {}) => {
   try {
-    return archiveScanner.scanArchive(appRoot, filters || {});
+    // scanArchive is async since the 2026-07-11 audit fix (bounded-
+    // concurrency fs.promises walk): a cold scan no longer blocks IPC.
+    return await archiveScanner.scanArchive(appRoot, filters || {});
   } catch (err) {
     console.warn('[archive] scan failed:', err.message);
     return [];
@@ -8095,44 +8203,16 @@ ipcMain.handle('accept-tos', (_, opts) => {
   return { success: true };
 });
 
-ipcMain.handle('get-decrypted-config-path', (_, brandName) => {
-  // Config is plaintext now — return path directly (no temp file needed)
-  // For brand-specific, still need a merged temp file since brand tokens are in a separate file
-  if (brandName) {
-    // A malformed brand (readBrandConfig -> assertBrandSafe throws) or a disk
-    // error (ENOSPC/EACCES on writeFileSync) must return null, not reject the
-    // renderer promise unhandled. RSI 2026-06-22.
-    try {
-      // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): this handler is
-      // currently unreferenced (no preload bridge), but it is a ready-made
-      // leak primitive one refactor away from being wired back. Two hardenings
-      // so it can never leak: (1) buildStrictBrandConfig, NOT readBrandConfig,
-      // so no global legacy creds merge into the brand; (2) write into
-      // .claude/tools/ (matched by the hook block-list AND swept by the 24h
-      // orphan cleaner) instead of os.tmpdir(), which nothing ever cleans and
-      // the hook cannot protect. The timer/exit cleanup below is kept as the
-      // fast path.
-      const cfg = buildStrictBrandConfig(brandName);
-      if (!cfg || Object.keys(cfg).length === 0) return null;
-      const toolsDir = path.join(appRoot, '.claude', 'tools');
-      try { fs.mkdirSync(toolsDir, { recursive: true }); } catch {}
-      const tmpPath = path.join(toolsDir, `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
-      fs.writeFileSync(tmpPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
-      // Clean up temp config aggressively: 10s grace for binary to read it, then delete
-      setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch (e) { console.error('[config-cleanup]', e.message); } }, 10000);
-      // Failsafe: also register for process exit cleanup
-      const cleanup = () => { try { fs.unlinkSync(tmpPath); } catch {} };
-      process.once('exit', cleanup);
-      setTimeout(() => { process.removeListener('exit', cleanup); }, 15000);
-      return tmpPath;
-    } catch (e) {
-      console.warn('[get-decrypted-config-path]', e && e.message);
-      return null;
-    }
-  }
-  const configPath = path.join(appRoot, '.claude', 'tools', 'merlin-config.json');
-  try { fs.accessSync(configPath); return configPath; } catch { return null; }
-});
+// REGRESSION GUARD (2026-06-30, cross-brand leak sweep; handler removed
+// 2026-07 audit): the 'get-decrypted-config-path' IPC handler was a dead
+// leak primitive (no preload bridge, no invoker) that materialized a
+// brand's resolved secrets into a temp file on request. It was hardened
+// in place on 2026-06-30 and fully removed in the 2026-07 audit. Do NOT
+// reintroduce it. If a future feature genuinely needs a resolved config
+// path, it must (1) strict-scope via buildStrictBrandConfig, never
+// readBrandConfig, and (2) write only under .claude/tools/ (hook-protected
+// + swept), never os.tmpdir(). cross-brand-config-scope.test.js and
+// main-rsi-guards.test.js pin this removal.
 
 ipcMain.handle('check-claude-running', async () => {
   const status = await getClaudeDesktopStatus();
@@ -8359,6 +8439,24 @@ function writeState(data) {
   return okA || okB;
 }
 
+// ── Revoked-grant flags (2026-07-11 audit fix) ─────────────────────
+// getConnections marked 'expired' by token age alone (55 days), so a grant
+// revoked server-side kept a green tile while every action failed with a
+// real 401. The MCP layer classifies those errors as TOKEN_EXPIRED and
+// reports them through mcpCtx.notePlatformAuthResult below; this store
+// persists the flag in .merlin-state.json (authFailures key) and
+// getConnections downgrades flagged platforms to 'expired' so the existing
+// expired-tile reconnect UX takes over. Cleared on OAuth completion
+// (applyExchangeResult + the fast-open no-parse success path) and on any
+// successful action for the platform. See app/auth-failures.js.
+const authFailureStore = require('./auth-failures').createAuthFailureStore({
+  readState,
+  writeState,
+  onChange: () => {
+    try { if (win && !win.isDestroyed()) win.webContents.send('connections-changed'); } catch {}
+  },
+});
+
 // REGRESSION GUARD (2026-04-29, codex enterprise review fix #11):
 // save-state is one of the few IPC handlers that PERSISTS renderer-supplied
 // data to disk (.merlin-state.json), so the renderer must be on a strict
@@ -8434,7 +8532,9 @@ function reportBypassTelemetry(toolName, reason) {
   try {
     const crypto = require('crypto');
     const hash = crypto.createHash('sha256').update(String(reason)).digest('hex').slice(0, 16);
-    const payload = JSON.stringify({
+    // Routed through the Go engine so the ping carries X-Merlin-Sig
+    // (unsigned posts 401 at the worker). See sendSignedPing.
+    sendSignedPing({
       id: (typeof getMachineId === 'function' ? getMachineId() : ''),
       v: (typeof getCurrentVersion === 'function' ? getCurrentVersion() : ''),
       p: process.platform,
@@ -8442,15 +8542,6 @@ function reportBypassTelemetry(toolName, reason) {
       tool: toolName,
       hash,
     });
-    const https = require('https');
-    const req = https.request('https://api.merlingotme.com/api/ping', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      timeout: 5000,
-    });
-    req.on('error', () => {});
-    req.write(payload);
-    req.end();
   } catch {}
 }
 
@@ -8630,16 +8721,6 @@ function vaultDelete(brand, key) {
     vaultSave(m);
   } catch (e) {
     console.error('[vault] delete failed:', e.message);
-  }
-}
-
-function vaultAvailable() {
-  // Test by doing a round-trip write/read with a dummy key
-  try {
-    const m = vaultLoad();
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -9577,7 +9658,11 @@ function getConnections(brandName) {
       connected.push({ platform: 'slack', status: 'expired' }); // shows as needing attention
     }
     if (globalCfg.discordGuildId && globalCfg.discordChannelId) connected.push({ platform: 'discord', status: 'connected' });
-    return connected;
+    // Revoked-grant overlay (2026-07-11 audit fix): downgrade 'connected'
+    // to 'expired' for platforms the MCP layer flagged with a real
+    // TOKEN_EXPIRED. Age-based expiry above catches stale-but-valid tokens;
+    // this catches revoked-but-young ones. See app/auth-failures.js.
+    return authFailureStore.applyToConnections(connected, brandName);
   } catch { return []; }
 }
 
@@ -10668,24 +10753,6 @@ ipcMain.handle('get-wisdom', async (_, brandName, opts) => {
   } catch { return _wisdomCache[vertical] || null; }
 });
 
-// Force-invalidate the wisdom cache for a specific vertical (or all).
-// Called from the binary hook after any *-insights action reports fresh data,
-// so the next get-wisdom query bypasses the in-memory cache and pulls the
-// freshly-aggregated numbers straight from the API.
-function invalidateWisdomCache(vertical) {
-  if (vertical) {
-    delete _wisdomCache[vertical];
-    delete _wisdomCacheTime[vertical];
-  } else {
-    _wisdomCache = {};
-    _wisdomCacheTime = {};
-  }
-}
-ipcMain.handle('invalidate-wisdom-cache', (_, vertical) => {
-  invalidateWisdomCache(vertical);
-  return { ok: true };
-});
-
 // Read seasonal hints (12 months → strategy text) bundled with the app.
 // Renderer used to fetch('seasonal.json') from the file:// origin which
 // silently breaks when packaged inside asar. Going through IPC means the
@@ -10770,6 +10837,7 @@ ipcMain.handle('get-mobile-qr', async () => {
   return warmMobileQrCache();
 });
 
+// No invoker yet: reserved for the relay UI. Remove if still unwired at the next audit.
 ipcMain.handle('get-relay-state', () => relayClient.getState());
 ipcMain.handle('rotate-relay-pairing', async () => {
   // A relay outage must not reject the "Refresh pairing" button's renderer
@@ -13531,6 +13599,7 @@ async function maybePromptClaudeDesktopAutoconfig() {
   }
 }
 
+// No invoker yet: reserved for the MCP autoconfig UI. Remove if still unwired at the next audit.
 // IPC: renderer-driven "Add to Claude Desktop" button (Sidecar status
 // panel in the magic tab). Same merge logic as the autoprompt; never
 // asks for consent again. Returns { ok, changed?, error?, registered }.
@@ -14015,6 +14084,13 @@ app.whenReady().then(async () => {
     }
     _mcpIpcEndpoint = null;
     _lastMcpCtx = null;
+    // Chat threads are held in memory with a debounced async flush
+    // (threads.js, 2026-07-11 audit fix). The event loop may never run
+    // that pending flush once quit starts: persist synchronously NOW so
+    // the last debounce window of bubbles / sessionId updates survives.
+    try { threads.flushSync(appRoot); } catch (e) {
+      console.error('[before-quit] threads flush failed:', e && e.message);
+    }
   });
 
   // REGRESSION GUARD (2026-04-14, Codex P2 #4 — silent auto-start):
@@ -14155,7 +14231,22 @@ app.whenReady().then(async () => {
   // If a future refactor splits this into per-platform calls, switch to
   // Promise.all per the BATCH > PARALLEL > SERIAL standard in CLAUDE.md.
   let _oauthPendingInflight = false;
-  const runOAuthPendingPoll = async () => {
+  // Cheap stat-gate (2026-07-11 audit fix): the 30s cadence alone meant
+  // ~2,880 binary spawns/day even with zero pending flows. The gate stats
+  // the binary's pending-state file (.merlin-oauth-pending.json: flat
+  // StateDir on new installs, legacy .claude/tools nesting on old ones) and
+  // skips the spawn when the file is absent, or when its mtime is unchanged
+  // since the last empty result after 3 consecutive empty polls. Forced
+  // polls (oauth-pending-refresh IPC, OAuth flow start via runOAuthFlow)
+  // always punch through. Visibility gating below is unchanged.
+  _oauthPendingGate = require('./oauth-pending-gate').createOAuthPendingGate({
+    candidates: [
+      stateFile('.merlin-oauth-pending.json'),
+      path.join(appRoot, '.claude', 'tools', '.merlin-oauth-pending.json'),
+    ],
+  });
+  const runOAuthPendingPoll = async (opts) => {
+    if (opts && opts.force && _oauthPendingGate) _oauthPendingGate.force();
     if (_oauthPendingInflight) return;
     if (!win || win.isDestroyed() || !win.isVisible || !win.isVisible()) return;
     const binaryPath = getBinaryPath();
@@ -14167,6 +14258,14 @@ app.whenReady().then(async () => {
     try { fs.accessSync(globalConfigPath); } catch {
       // No config yet → no possible pending OAuth. Still push an empty
       // result so the renderer can clear any stale chips.
+      try { win.webContents.send('oauth-pending', { pending: [], checkedAt: Date.now() }); } catch {}
+      return;
+    }
+    const gateDecision = _oauthPendingGate.shouldSpawn();
+    if (!gateDecision.spawn) {
+      // Pending file absent, or provably unchanged since the last empty
+      // result: no possible pending OAuth. Push an empty result so the
+      // renderer clears stale chips, exactly like the missing-config branch.
       try { win.webContents.send('oauth-pending', { pending: [], checkedAt: Date.now() }); } catch {}
       return;
     }
@@ -14191,6 +14290,7 @@ app.whenReady().then(async () => {
           if (parsed && Array.isArray(parsed.pending)) payload = parsed;
         } catch (_) { /* malformed stdout — treat as empty */ }
       }
+      _oauthPendingGate.record(!payload.pending || payload.pending.length === 0, gateDecision.mtimeMs);
       if (win && !win.isDestroyed() && win.webContents) {
         try { win.webContents.send('oauth-pending', { ...payload, checkedAt: Date.now() }); } catch {}
       }
@@ -14207,18 +14307,21 @@ app.whenReady().then(async () => {
   // Expose a handle so the renderer can force an immediate poll after the
   // user clicks "Resume sign-in" or dismisses a chip — the caller awaits
   // the promise so the UI can reflect the fresh state without waiting for
-  // the next scheduled tick.
+  // the next scheduled tick. force:true punches through the stat-gate so a
+  // renderer-requested refresh always reaches the binary.
   ipcMain.handle('oauth-pending-refresh', async () => {
-    await runOAuthPendingPoll();
+    await runOAuthPendingPoll({ force: true });
     return { ok: true };
   });
 
-  // Lightweight telemetry — one ping on launch, no PII
+  // Lightweight telemetry: one ping on launch, no PII. Routed through the
+  // Go engine so the ping carries X-Merlin-Sig (unsigned posts 401 at the
+  // worker). See sendSignedPing.
   setTimeout(() => {
     try {
       const sub = getSubscriptionState();
       const cfg = readConfig();
-      const payload = JSON.stringify({
+      sendSignedPing({
         id: getMachineId(),
         v: getCurrentVersion(),
         p: process.platform,
@@ -14226,13 +14329,6 @@ app.whenReady().then(async () => {
         vt: cfg.vertical || '',
         t: sub.subscribed ? 'pro' : 'trial',
       });
-      const https = require('https');
-      const req = https.request('https://api.merlingotme.com/api/ping', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 5000,
-      });
-      req.write(payload);
-      req.end();
-      req.on('error', () => {});
     } catch {}
   }, 5000);
 

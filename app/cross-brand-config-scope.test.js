@@ -72,15 +72,14 @@ test('brands-index hasShopify/hasMeta computed per-brand via buildStrictBrandCon
 });
 
 // ── The dead get-decrypted-config-path leak primitive ───────────────────
-test('get-decrypted-config-path is strict + writes into .claude/tools (not os.tmpdir)', () => {
-  const block = sliceAround(MAIN, "ipcMain.handle('get-decrypted-config-path'", 0, 1900);
-  assert.ok(/buildStrictBrandConfig\(brandName\)/.test(block), 'must strict-scope');
-  // Assert the POSITIVE: the tmp file is joined from toolsDir (.claude/tools).
-  // (A bare os.tmpdir string check would false-match the explanatory comment.)
-  assert.ok(/tmpPath\s*=\s*path\.join\(toolsDir/.test(block),
-    'tmp config path must be built under toolsDir (.claude/tools), never os.tmpdir()');
-  assert.ok(!/path\.join\(os\.tmpdir\(\)/.test(block),
-    'must not path.join(os.tmpdir()) for the resolved-secret tmp file');
+// Removed in the 2026-07 audit: the handler had no preload bridge and no
+// invoker, and materializing resolved brand secrets into a temp file is a
+// leak primitive one refactor away from being wired back. The strongest
+// guard is absence. If a future feature genuinely needs this, see the
+// removal comment in main.js for the two mandatory hardenings.
+test('get-decrypted-config-path handler stays removed', () => {
+  assert.ok(!MAIN.includes("ipcMain.handle('get-decrypted-config-path'"),
+    'get-decrypted-config-path leak primitive must stay deleted (2026-07 audit)');
 });
 
 // ── The removed cross-brand .merlin-stats cache ─────────────────────────

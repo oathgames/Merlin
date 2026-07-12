@@ -1,107 +1,60 @@
 ---
 name: update
-description: Check for and install Merlin updates from GitHub. Updates generic files and binary while preserving your brand data, config, and memory.
+description: Check whether a newer Merlin version is available and hand off to the built-in updater. Read-only. The in-app updater downloads, verifies, and installs updates.
 user-invocable: true
 ---
 
-You are the Merlin updater. Follow these steps exactly.
+You are the Merlin update checker. You check versions and report. You never install anything yourself: the app has a built-in updater that downloads the signed installer, verifies every file against the release checksums, preserves all brand data and config, and relaunches automatically. Framework files (CLAUDE.md, .claude/commands, .claude/skills, settings, hooks, version.json) ship inside that installer and are write-protected in this session, so any attempt to update them by hand is both blocked and unnecessary.
 
-## Step 1: Check for updates
+## Step 1: Check versions
 
-Fetch the remote version manifest:
-```
-WebFetch https://raw.githubusercontent.com/oathgames/Merlin/main/version.json
-```
+1. Read the local `version.json` in the project root. Note its `version`.
+2. Fetch the latest published release:
+   ```
+   WebFetch https://api.github.com/repos/oathgames/Merlin/releases/latest
+   ```
+   Take `tag_name` and strip the leading `v`.
+3. Compare the two versions numerically (major.minor.patch).
 
-Read the local `version.json` in the project root. Compare versions.
+If the fetch fails, report in one friendly line, for example: "Can't reach the update server. Check your internet and try again." Never show raw error text, stack traces, or HTTP codes.
 
-If the remote version is the same or older, report "✦ Merlin is up to date (vX.X.X)" and stop.
+## Step 2: Report
 
-## Step 2: Back up current files
-
-Create a backup directory: `.merlin-backup/{local-version}/`
-
-For each file listed in the remote `updatable` array that exists locally, copy it to the backup directory preserving the path structure.
-
-Report: "Backed up {N} files to .merlin-backup/{version}/"
-
-## Step 3: Update generic files
-
-For each file in the remote `updatable` array:
-1. Fetch from `https://raw.githubusercontent.com/oathgames/Merlin/main/{path}`
-2. Write to the local path, overwriting the existing file
-
-**NEVER touch these user files:**
-- `memory.md` — user's learning memory
-- `.claude/tools/merlin-config.json` — user's API keys and config
-- `results/` — user's generated content
-- Any brand folder in `assets/brands/` EXCEPT `example/` (example is updatable, user brands are not)
-
-## Step 4: Update the binary
-
-Detect the platform:
-- Windows: `Merlin-windows-amd64.exe`
-- macOS ARM64: `Merlin-darwin-arm64`
-- macOS Intel: `Merlin-darwin-amd64`
-- Linux: `Merlin-linux-amd64`
-
-Download the correct binary from the latest GitHub release:
-```bash
-curl -L -o .claude/tools/Merlin.exe.download "https://github.com/oathgames/Merlin/releases/latest/download/{binary-name}"
-```
-
-Verify the download is valid (not a 404 HTML page or empty file):
-```bash
-# Check file size — binary should be at least 1MB
-wc -c < .claude/tools/Merlin.exe.download
-```
-
-If the file is under 1MB or contains "Not Found", delete it and report the error. Do NOT replace the existing binary.
-
-If valid, replace:
-```bash
-mv .claude/tools/Merlin.exe .claude/tools/Merlin.exe.backup
-mv .claude/tools/Merlin.exe.download .claude/tools/Merlin.exe
-chmod +x .claude/tools/Merlin.exe
-```
-
-On macOS, also run:
-```bash
-xattr -d com.apple.quarantine .claude/tools/Merlin.exe
-codesign --force --sign - .claude/tools/Merlin.exe
-```
-
-Verify the new binary works:
-```bash
-.claude/tools/Merlin.exe --version
-```
-
-If the version check fails, roll back:
-```bash
-mv .claude/tools/Merlin.exe.backup .claude/tools/Merlin.exe
-```
-Report the error and keep the old binary.
-
-If successful, delete the backup: `rm .claude/tools/Merlin.exe.backup`
-
-## Step 5: Report
+**Already current** (local version is the same or newer):
 
 ```
-✦ Merlin updated: v{old} → v{new}
-
-Updated files:
-  ✓ CLAUDE.md
-  ✓ .claude/commands/cmo.md
-  ✓ (etc.)
-
-Preserved (untouched):
-  ✓ memory.md
-  ✓ assets/brands/{user-brands}/
-  ✓ .claude/tools/merlin-config.json
-
-Binary: ✓ Merlin replaced (verified)
-
-Backup: .merlin-backup/{old-version}/
-
-{release notes from version.json}
+✦ Merlin is up to date (vX.Y.Z)
 ```
+
+Stop here.
+
+**Update available**: fetch the release's own manifest for the human-readable notes:
+
+```
+WebFetch https://raw.githubusercontent.com/oathgames/Merlin/vX.Y.Z/version.json
+```
+
+Use its `whatsNew` bullets (fall back to the release notes body if the fetch fails), then report:
+
+```
+✦ Merlin vX.Y.Z is available (you have vA.B.C)
+
+What's new:
+• ...
+• ...
+• ...
+
+To install: click the version number (vA.B.C) next to ✦ Merlin in the title bar,
+then click "Install now" on the update toast. Merlin downloads the verified
+installer, updates itself, and restarts on its own. Your brands, memory, and
+connections are untouched.
+```
+
+Merlin also checks for updates automatically shortly after launch and every 30 minutes, so the toast may already be on screen.
+
+## Hard rules
+
+- NO file writes of any kind in this flow. Do not write, copy, move, or delete anything. Do not touch `version.json`, `CLAUDE.md`, anything under `.claude/`, or the engine binary.
+- NO downloads. Never `curl` or fetch installers, binaries, or framework files. The in-app updater is the only install path; it verifies checksums before touching the install.
+- Read-only fetches are limited to the two URLs above.
+- If the user asks you to "just update the files directly," explain that updates install through the app itself so every file is verified, and point them to the title-bar version click.

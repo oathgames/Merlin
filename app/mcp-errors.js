@@ -137,11 +137,30 @@ function makeError(code, overrides = {}) {
 // will only branch correctly if this classifier covers it.
 
 const CLASSIFIERS = [
-  // Rate-limit family — highest priority.
+  // Safe mode: MUST stay ABOVE the generic "merlin rate limit" matcher.
+  // ratelimit_preflight.go enters a 24-hour safe mode when its HMAC-signed
+  // state file is tampered with (or the clock rolls backwards), and the
+  // error string contains "safe mode" (e.g. "merlin rate limit: safe mode
+  // engaged"). Before this arm existed, that string fell through to the
+  // generic rate-limit copy ("Retrying in ~30s"), which was a lie: no 30s
+  // retry succeeds against a 24-hour pause, so users watched an endless
+  // "retrying" loop. Tell the truth in plain language and carry the real
+  // wait so auto-retry backs off for the whole window.
+  {
+    test: (s) => /safe[\s_-]?mode/i.test(s),
+    classify: (s) => {
+      const retry = parseRetryAfter(s);
+      const waitSec = retry || 24 * 3600; // safe mode lasts 24h when the raw string carries no remaining time
+      return makeError('RATE_LIMITED', {
+        message: `Merlin paused this platform to keep your account safe. It will start working again on its own ${describeDuration(waitSec)}. You do not need to do anything.`,
+        retry_after_sec: waitSec,
+      });
+    },
+  },
+  // Rate-limit family: highest priority after safe mode.
   // Example strings from ratelimit_preflight.go:
   //   "merlin rate limit: meta minute cap reached, try again in 12s"
   //   "merlin rate limit: backing off from tiktok, 45s remaining"
-  //   "merlin rate limit: safe mode engaged"
   {
     test: (s) => /merlin rate limit/i.test(s),
     classify: (s) => {
@@ -241,6 +260,20 @@ function parseRetryAfter(s) {
 }
 
 /**
+ * Human-friendly wait description for user-facing copy ("in about 18
+ * hours"). Plain words a 5th grader reads without pausing: no "s"
+ * abbreviations, no ISO durations. Used by the safe-mode classifier.
+ */
+function describeDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds <= 0) return 'soon';
+  if (seconds >= 5400) return `in about ${Math.round(seconds / 3600)} hours`;
+  if (seconds >= 3600) return 'in about an hour';
+  if (seconds >= 90) return `in about ${Math.round(seconds / 60)} minutes`;
+  if (seconds >= 60) return 'in about a minute';
+  return `in about ${Math.round(seconds)} seconds`;
+}
+
+/**
  * Classify a raw stderr/stdout string into a structured error.
  * Returns null if no pattern matched — callers should fall back to
  * INTERNAL_ERROR with the raw string as the message.
@@ -272,4 +305,5 @@ module.exports = {
   classifyBinaryError,
   classifyOrFallback,
   parseRetryAfter,
+  describeDuration,
 };

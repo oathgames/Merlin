@@ -253,6 +253,21 @@ test('runBinary refuses when binary is flagged too old', async () => {
   assert.match(result.text, /Engine needs to update/);
 });
 
+// Node's execFile defaults maxBuffer to 1MB, which kills the engine
+// mid-response on large outputs (catalog pulls, insights sweeps) while
+// main.js grants the same binary 32MB. Source-scan lock: the runBinary
+// execFile options must carry a 32MB maxBuffer.
+test('runBinary execFile options include a 32MB maxBuffer', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  assert.match(
+    src,
+    /maxBuffer:\s*32\s*\*\s*1024\s*\*\s*1024/,
+    'runBinary must pass maxBuffer: 32 * 1024 * 1024 to execFile; the 1MB default truncate-kills large engine responses',
+  );
+});
+
 // ─────────────────────────────────────────────────────────────────────
 // Tool handler pass-through — result text + error flag preserved.
 // ─────────────────────────────────────────────────────────────────────
@@ -390,7 +405,33 @@ test('competitor_spy rejects an unknown action value', async () => {
   assert.match(out.content[0].text, /Unknown competitor_spy action/);
 });
 
-test('platform_login returns the Meta manual-token message without calling OAuth', async () => {
+// Meta App Review PASSED (Live mode, CLAUDE.md "Meta Ads API"), and meta is
+// in ACTIVE_PLATFORMS. The old handler branch returned a manual-token dead
+// end ("paste from developers.facebook.com/tools/explorer") that contradicted
+// the tile's real OAuth flow. Lock in: meta routes through runOAuthFlow like
+// tiktok/google.
+test('platform_login dispatches meta through real OAuth (App Review passed)', async () => {
+  const { tool, registry } = makeFakeTool();
+  const seen = [];
+  const ctx = makeCtx({
+    runOAuthFlow: async (platform) => { seen.push(platform); return { success: true }; },
+  });
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'platform_login');
+  const out = await entry.handler({ platform: 'meta', brand: 'madchill' });
+  assert.deepStrictEqual(seen, ['meta'], 'meta must invoke the real OAuth flow');
+  const env = envelope.parse(out);
+  assert.ok(env && env.ok, 'meta should produce an OK envelope');
+  assert.equal(env.data.platform, 'meta');
+  assert.doesNotMatch(out.content[0].text, /manual token|App Review pending/i,
+    'the stale manual-token dead end must not resurface');
+});
+
+// Threads has no standalone OAuth: it inherits the Meta grant
+// (threadsAccessToken rides the Meta token, see the disconnect keyMap in
+// main.js). platform_login must explain that instead of erroring on an
+// unknown enum value or spawning a doomed OAuth flow.
+test('platform_login routes threads to inherit-from-Meta guidance without OAuth', async () => {
   const { tool, registry } = makeFakeTool();
   let oauthInvoked = false;
   const ctx = makeCtx({
@@ -398,9 +439,11 @@ test('platform_login returns the Meta manual-token message without calling OAuth
   });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'platform_login');
-  const out = await entry.handler({ platform: 'meta', brand: 'madchill' });
-  assert.equal(oauthInvoked, false, 'Meta OAuth must not fire — App Review pending');
-  assert.match(out.content[0].text, /manual token entry/);
+  const out = await entry.handler({ platform: 'threads', brand: 'madchill' });
+  assert.equal(oauthInvoked, false, 'threads must not spawn its own OAuth flow');
+  assert.match(out.content[0].text, /Meta/, 'guidance must point at the Meta connection');
+  assert.match(out.content[0].text, /no separate Threads OAuth/i,
+    'guidance must say Threads rides the Meta grant');
 });
 
 test('platform_login routes klaviyo to its API-key tile (not OAuth, not "coming soon")', async () => {
