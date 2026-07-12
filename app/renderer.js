@@ -4570,6 +4570,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   // the IPC so the chat doesn't freeze on the prior brand's transcript
   // for the 150-450ms the swap takes. paintBrandThread below wipes it.
   let preseedPlaceholder = null;
+  let stillSwitchingTimer = null;
   if (newBrand && prevBrand !== newBrand) {
     const preseedLabel = (() => {
       try {
@@ -4578,6 +4579,16 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
       } catch { return newBrand; }
     })();
     preseedPlaceholder = preseedBrandSwitch(preseedLabel);
+    // Honest progress: a switch can legitimately take seconds when the main
+    // process is unwinding a busy turn or waiting out a prior session boot
+    // (it now queues with last-click-wins instead of failing with "try
+    // again"). Past the snappy window, say so instead of leaving a
+    // placeholder that reads as dead.
+    stillSwitchingTimer = setTimeout(() => {
+      if (preseedPlaceholder && preseedPlaceholder.isConnected) {
+        preseedPlaceholder.textContent = `Still switching to ${preseedLabel}, wrapping up the last task…`;
+      }
+    }, 800);
   }
   let swapResult = null;
   if (newBrand) {
@@ -4587,6 +4598,12 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
       console.warn('[switch-brand]', err);
     }
   }
+  if (stillSwitchingTimer) clearTimeout(stillSwitchingTimer);
+
+  // A newer brand click superseded this one while it was queued in the main
+  // process. The newer click's handler owns the UI (its own preseed already
+  // replaced ours): touch nothing, revert nothing, no toast.
+  if (swapResult && swapResult.superseded) return;
 
   if (swapResult && swapResult.success) {
     e.target.dataset.lastValue = newBrand || '';

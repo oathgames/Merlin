@@ -13,6 +13,7 @@ const spellConfig = require('./spell-config');
 const scheduledTasksDaemon = require('./scheduled-tasks-daemon');
 const { runFastOpenOAuth, cancelFastOpenOAuth, ACTIVE_PLATFORMS: FAST_OPEN_PLATFORMS } = require('./oauth-fast-open');
 const { clampWindowBounds, createBoundsSaver } = require('./window-state');
+const { createSwitchCoalescer } = require('./switch-coalescer');
 const { scaffoldBrandManifest } = require('./brand-manifest-scaffolder');
 const { scaffoldBrandStub } = require('./brand-scaffold');
 
@@ -1581,11 +1582,23 @@ let _queueFrozenForAuth = false;
 // narrowed isClaudeAuthError). A safe silent-retry can return later, designed to
 // restart ON TEARDOWN (after activeQuery clears), not on a fixed timer.
 
-// True while switch-brand is mid-flight. Prevents rapid dropdown mashing
-// from starting two sessions back-to-back (both would race on the
-// activeQuery singleton). Serializes switches without blocking message
-// sends from the renderer.
+// True while a switch-brand body is executing. Read by
+// startSessionForQueuedMessage (REGRESSION GUARD below) so queue-drain
+// paths never boot a session mid-switch. Serialization of the switches
+// themselves lives in _brandSwitchCoalescer (switch-coalescer.js): rapid
+// clicks queue with last-click-wins instead of the old reject-and-ask-the-
+// user-to-retry guard, which forced users to click a brand twice.
 let _switchInProgress = false;
+const _brandSwitchCoalescer = createSwitchCoalescer();
+// How long to wait for activeQuery.interrupt() before proceeding anyway
+// (a turn wedged inside a tool call must not hold the switch hostage; the
+// unwind wait below still confirms the loop actually cleared).
+const SWITCH_INTERRUPT_TIMEOUT_MS = 3000;
+// How long to wait for the SDK loop to unwind after the interrupt. The old
+// 2s bail returned "try again" to the user (the literal two-click bug);
+// with the renderer's progress state this patience is honest, and only a
+// genuinely wedged loop fails, with a clear message, after this window.
+const SWITCH_UNWIND_TIMEOUT_MS = 10000;
 
 // REGRESSION GUARD (2026-07-04, perf-rsi wrong-brand-session race):
 // startSessionForQueuedMessage is the ONLY way the queue-drain paths may
@@ -4863,25 +4876,33 @@ ipcMain.handle('switch-brand', async (_, targetBrand) => {
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(targetBrand)) {
     return { success: false, error: 'invalid brand format' };
   }
-  // Serialize concurrent switches. Rapid dropdown toggles must not spawn
-  // two parallel startSession() calls — the activeQuery singleton would
-  // race and one would be silently dropped.
-  if (_switchInProgress) {
-    return { success: false, error: 'switch already in progress — try again' };
-  }
-  _switchInProgress = true;
+  // Confirm the brand folder actually exists before we queue. Switching to
+  // a ghost brand would leave the UI pointing at nothing, and a fast fail
+  // here beats a queued one.
   try {
-    // Confirm the brand folder actually exists before we swap. Switching to
-    // a ghost brand would leave the UI pointing at nothing.
-    try {
-      const brandDir = path.join(appRoot, 'assets', 'brands', targetBrand);
-      if (!fs.statSync(brandDir).isDirectory()) {
-        return { success: false, error: 'brand not found' };
-      }
-    } catch {
+    const brandDir = path.join(appRoot, 'assets', 'brands', targetBrand);
+    if (!fs.statSync(brandDir).isDirectory()) {
       return { success: false, error: 'brand not found' };
     }
+  } catch {
+    return { success: false, error: 'brand not found' };
+  }
+  // Serialize concurrent switches with last-click-wins semantics. Rapid
+  // dropdown toggles must not spawn two parallel startSession() calls (the
+  // activeQuery singleton would race), but the old boolean guard REJECTED
+  // the second click with "try again", which trained users to click every
+  // brand twice. Now a click that lands mid-switch queues behind it, and a
+  // click that is still queued when a newer one arrives resolves
+  // { superseded: true } so only the newest target actually switches.
+  return _brandSwitchCoalescer.run(targetBrand, doSwitchBrand);
+});
 
+// The switch body. Runs strictly serialized (one at a time) under
+// _brandSwitchCoalescer; _switchInProgress signals the in-flight state to
+// startSessionForQueuedMessage's guard.
+async function doSwitchBrand(targetBrand) {
+  _switchInProgress = true;
+  try {
     // 0) Wait for any in-flight startSession() init to finish first. Without
     //    this, a second rapid switch lands while the prior startSession is
     //    still in its subscription/SDK-import await chain — activeQuery is
@@ -4908,7 +4929,15 @@ ipcMain.handle('switch-brand', async (_, targetBrand) => {
     //    only stops the generator AFTER it reaches its await, so a turn stuck
     //    in tool-use would otherwise keep running until it completed naturally.
     if (activeQuery && typeof activeQuery.interrupt === 'function') {
-      try { await activeQuery.interrupt(); } catch {}
+      // Bounded: a turn wedged inside a hung tool call must not hold the
+      // switch hostage (the unwind wait below still confirms the loop
+      // actually cleared before we proceed).
+      try {
+        await Promise.race([
+          activeQuery.interrupt(),
+          new Promise((r) => setTimeout(r, SWITCH_INTERRUPT_TIMEOUT_MS)),
+        ]);
+      } catch {}
     }
     settleNextMessage(null);
     pendingMessageQueue = [];
@@ -4927,12 +4956,14 @@ ipcMain.handle('switch-brand', async (_, targetBrand) => {
     //    doesn't trip the `if (activeQuery)` guard. If it still hasn't
     //    cleared after the grace period, we bail and let the next send-message
     //    retry — better than leaving the UI half-swapped.
-    const deadline = Date.now() + 2000;
+    const deadline = Date.now() + SWITCH_UNWIND_TIMEOUT_MS;
     while (activeQuery && Date.now() < deadline) {
       await new Promise(r => setTimeout(r, 50));
     }
     if (activeQuery) {
-      return { success: false, error: 'previous session did not stop in time — try again' };
+      // Genuinely wedged after extended patience. The renderer's failure
+      // branch repaints the previous brand and toasts; no self-retry punt.
+      return { success: false, error: 'the previous task would not stop, so the switch was canceled' };
     }
 
     // 3) Persist the new active brand.
@@ -4968,7 +4999,7 @@ ipcMain.handle('switch-brand', async (_, targetBrand) => {
   } finally {
     _switchInProgress = false;
   }
-});
+}
 
 // Read-only fetch of a brand's bubble log. Renderer uses this on startup
 // (and optionally on re-render) to paint the chat from persisted history.
