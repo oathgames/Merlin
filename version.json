@@ -82,6 +82,7 @@
     "app/spell-outcomes.js",
     "app/spell-skill-md.js",
     "app/spellbook.js",
+    "app/switch-coalescer.js",
     "app/threads.js",
     "app/tts-worker.js",
     "app/update-verifier.js",
