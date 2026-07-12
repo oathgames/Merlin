@@ -87,6 +87,7 @@
     "app/update-verifier.js",
     "app/voice-activity-detector.js",
     "app/whisper-transcript-clean.js",
+    "app/window-state.js",
     "app/ws-server.js",
     "app/facts/chart-renderer.js",
     "app/facts/facts-cache.js",

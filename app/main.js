@@ -12,6 +12,7 @@ const { cleanWhisperTranscript } = require('./whisper-transcript-clean');
 const spellConfig = require('./spell-config');
 const scheduledTasksDaemon = require('./scheduled-tasks-daemon');
 const { runFastOpenOAuth, cancelFastOpenOAuth, ACTIVE_PLATFORMS: FAST_OPEN_PLATFORMS } = require('./oauth-fast-open');
+const { clampWindowBounds, createBoundsSaver } = require('./window-state');
 const { scaffoldBrandManifest } = require('./brand-manifest-scaffolder');
 const { scaffoldBrandStub } = require('./brand-scaffold');
 
@@ -141,25 +142,53 @@ function installApplicationMenu() {
     // The -l flag sources login configs. The -i (interactive) flag is OMITTED
     // because it triggers zsh compinit, conda hooks, and iterm2 integrations
     // that can hang or print garbage to stdout in a non-TTY context.
-    try {
-      const { execSync } = require('child_process');
-      const shell = process.env.SHELL || '/bin/bash';
-      // Detect non-POSIX shells that need different invocation
-      let pathCmd;
-      if (shell.endsWith('/fish')) {
-        pathCmd = `${shell} -l -c 'string join : $PATH' 2>/dev/null`;
-      } else if (shell.endsWith('/nu') || shell.endsWith('/nushell')) {
-        pathCmd = `${shell} -l -c '$env.PATH | str join ":"' 2>/dev/null`;
-      } else {
-        pathCmd = `${shell} -lc 'echo "$PATH"' 2>/dev/null`;
-      }
-      const shellPath = execSync(pathCmd, {
-        timeout: 5000,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-      if (shellPath) extra.push(...shellPath.split(':').filter(Boolean));
-    } catch { /* fall through to static paths below */ }
+    const shell = process.env.SHELL || '/bin/bash';
+    // Detect non-POSIX shells that need different invocation
+    let pathCmd;
+    if (shell.endsWith('/fish')) {
+      pathCmd = `${shell} -l -c 'string join : $PATH' 2>/dev/null`;
+    } else if (shell.endsWith('/nu') || shell.endsWith('/nushell')) {
+      pathCmd = `${shell} -l -c '$env.PATH | str join ":"' 2>/dev/null`;
+    } else {
+      pathCmd = `${shell} -lc 'echo "$PATH"' 2>/dev/null`;
+    }
+    // PERF (Fable audit P6): the synchronous login-shell spawn cost every
+    // mac/linux launch 30-300ms before first paint (up to the full 5s
+    // timeout on a slow .zprofile). The resolved PATH barely ever changes,
+    // so it is cached at ~/.merlin-shell-path: launches with a cache apply
+    // it instantly and refresh it in the background; the blocking spawn
+    // only ever runs on the first launch, when no cache exists yet.
+    const shellPathCacheFile = path.join(home, '.merlin-shell-path');
+    let cachedShellPath = '';
+    try { cachedShellPath = require('fs').readFileSync(shellPathCacheFile, 'utf8').trim(); } catch { /* first launch */ }
+    if (cachedShellPath) {
+      extra.push(...cachedShellPath.split(':').filter(Boolean));
+      // Background refresh: pick up PATH edits without blocking this launch.
+      try {
+        const { exec } = require('child_process');
+        exec(pathCmd, { timeout: 5000, encoding: 'utf8' }, (err, stdout) => {
+          const fresh = String(stdout || '').trim();
+          if (err || !fresh || fresh === cachedShellPath) return;
+          try { require('fs').writeFileSync(shellPathCacheFile, fresh, 'utf8'); } catch { /* best effort */ }
+          const have = new Set(String(process.env.PATH || '').split(path.delimiter));
+          const add = fresh.split(':').filter((p) => p && !have.has(p));
+          if (add.length) process.env.PATH = process.env.PATH + path.delimiter + add.join(path.delimiter);
+        });
+      } catch { /* keep the cached PATH */ }
+    } else {
+      try {
+        const { execSync } = require('child_process');
+        const shellPath = execSync(pathCmd, {
+          timeout: 5000,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+        if (shellPath) {
+          extra.push(...shellPath.split(':').filter(Boolean));
+          try { require('fs').writeFileSync(shellPathCacheFile, shellPath, 'utf8'); } catch { /* best effort */ }
+        }
+      } catch { /* fall through to static paths below */ }
+    }
 
     // Static fallbacks for common locations that may not be in shell PATH yet
     extra.push(
@@ -1638,7 +1667,36 @@ async function createWindow() {
   if (process.platform !== 'darwin') {
     windowOptions.icon = path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
   }
+  // Restore the last window geometry (Fable audit F7: every launch previously
+  // reset to 900x670). Clamped against the live display set so a detached
+  // monitor can never strand the window off-screen; a stale position falls
+  // back to size-only and Electron centers the window.
+  let savedWinBounds = null;
+  try { savedWinBounds = readState().windowBounds || null; } catch { /* fresh install */ }
+  try {
+    const { screen } = require('electron');
+    const restored = clampWindowBounds(savedWinBounds, screen.getAllDisplays(), {
+      minWidth: windowOptions.minWidth,
+      minHeight: windowOptions.minHeight,
+    });
+    if (restored) Object.assign(windowOptions, restored);
+  } catch { /* keep defaults */ }
   win = new BrowserWindow(windowOptions);
+  if (savedWinBounds && savedWinBounds.maximized) {
+    try { win.maximize(); } catch { /* cosmetic */ }
+  }
+  // Persist geometry: debounced on resize/move, final flush on close. Normal
+  // bounds are saved while maximized so un-maximizing later restores the real
+  // size instead of the maximized rectangle.
+  const winBoundsSnapshot = () => {
+    const maximized = win.isMaximized();
+    const b = maximized ? win.getNormalBounds() : win.getBounds();
+    return { x: b.x, y: b.y, width: b.width, height: b.height, maximized };
+  };
+  const winBoundsSaver = createBoundsSaver((snap) => writeState({ windowBounds: snap }));
+  win.on('resize', () => winBoundsSaver.schedule(winBoundsSnapshot));
+  win.on('move', () => winBoundsSaver.schedule(winBoundsSnapshot));
+  win.on('close', () => { try { winBoundsSaver.flush(winBoundsSnapshot); } catch { /* best effort */ } });
 
   // Register protocol for inline media — images, video, audio, PDFs.
   //
