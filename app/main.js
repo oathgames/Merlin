@@ -9362,6 +9362,36 @@ function migrateTokensToVault() {
   }
 }
 
+// ── Stale Brand-Config Sweep ────────────────────────────────
+// Every-boot sweep: vault-or-delete stale plaintext .merlin-config-<brand>.json
+// files stranded OUTSIDE the tools dir. The workspace split migration
+// (migrateTreeToSplit) routes state-pattern files flat into StateDir, but
+// readBrandConfig/writeBrandTokens only ever touch <ContentDir>/.claude/tools,
+// so pre-vault brand configs moved there kept plaintext tokens on disk
+// indefinitely, invisible to migrateTokensToVault (tools-dir-only scan behind
+// an already-set _migrationVersion >= 3 gate). Deliberately NOT flag-gated:
+// see the REGRESSION GUARD block in app/brand-config-sweep.js before changing
+// any of this. Logic lives in that module so it is unit-testable without
+// booting Electron (same pattern as oauth-persist.js).
+const { sweepStaleBrandConfigs } = require('./brand-config-sweep');
+function sweepStaleBrandConfigsOnBoot() {
+  const result = sweepStaleBrandConfigs({
+    toolsDir: path.join(appRoot, '.claude', 'tools'),
+    strayDirs: [stateDir, defaultStateDir()],
+    brandsDir: path.join(appRoot, 'assets', 'brands'),
+    isSensitiveKey: isSensitiveConfigKey,
+    isRedactionMarker: isVaultRedactionMarker,
+    vaultGet,
+    vaultPut,
+    log: (line) => logMigration({ migration: 'brand-config-sweep', ...line }),
+  });
+  if (result.deleted.length > 0 || result.errors.length > 0) {
+    console.log('[brand-config-sweep] deleted=' + result.deleted.length
+      + ' vaultedKeys=' + result.preservedKeys
+      + (result.errors.length ? ' errors: ' + result.errors.join('; ') : ''));
+  }
+}
+
 // Encrypted read/write for sensitive local state (subscription, api keys, tokens).
 //
 // Platform behavior:
@@ -14033,6 +14063,9 @@ app.whenReady().then(async () => {
     try { migrateLegacyResultsDir(); } catch (err) { console.error('[legacy-results-migration]', err.message); }
     // Recover brand files stranded by the tmp-config projectRoot bug
     try { migrateStrayBrandFiles(); } catch (err) { console.error('[stray-brand-migration]', err.message); }
+    // Vault-or-delete stale plaintext brand configs stranded in StateDir by
+    // the workspace split migration (every boot, see brand-config-sweep.js)
+    try { sweepStaleBrandConfigsOnBoot(); } catch (err) { console.error('[brand-config-sweep]', err.message); }
   }, 600);
 
   // Start the briefing watcher now that appRoot is guaranteed to exist and

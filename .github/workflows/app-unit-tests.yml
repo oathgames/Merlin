@@ -98,6 +98,14 @@ jobs:
         run: node app/archive-campaign-group.test.js
       - name: oauth persist roundtrip
         run: node app/oauth-persist.test.js
+      # Stale brand-config sweep: the 2026-07-13 "plaintext Meta tokens
+      # stranded in %APPDATA%\Merlin" incident canary. The workspace split
+      # migration parked pre-vault .merlin-config-<brand>.json files in a
+      # directory no reader ever touched again. Locks down the vault-or-
+      # delete boot sweep + its main.js wiring (every boot, no one-shot
+      # gate, confirm-vault-write-before-delete).
+      - name: stale brand-config sweep (plaintext-in-StateDir lockdown)
+        run: node --test app/brand-config-sweep.test.js
       - name: sentence splitter
         run: node app/sentence-splitter.test.js
       - name: update-runner terminal-visibility lockdown
