@@ -52,8 +52,10 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   'templates-list', 'template-get',
   'automations-list', 'automation-emails',
   'flows-list', 'flow-get',
-  // Klaviyo segment enumeration (GET, no writes). segment-create stays
-  // carded via the destructive-tool default.
+  // Klaviyo segment enumeration (GET, no writes). NOTE: segment-create is a
+  // WRITE and is carded via CARDED_DESTRUCTIVE_ACTIONS below; there is no
+  // "destructive-tool default" (main.js's catch-all AUTO-APPROVES anything
+  // not in one of these three sets; the 2026-07-10 P0-02 fix corrects this).
   'segments-list',
 ]));
 
@@ -75,6 +77,16 @@ const SPEND_ACTIONS = Object.freeze(new Set([
   // 'create-ad' to reddit-create-campaign / reddit-create-ad in the binary —
   // both fire real spend without the universal `push` semantics).
   'create-campaign', 'create-ad',
+  // REGRESSION GUARD (2026-07-10, audit P0-02, legacy multiplexer fail-open):
+  // the intent-tool refactor (Rule 19) carded the NEW named Meta tools but
+  // left the LEGACY meta_ads multiplexer's raw spend verbs uncarded, so an
+  // agent could reactivate paused ads, change ad-set budgets, launch
+  // retargeting, and bulk-push creatives with ZERO confirmation and NO
+  // server-side requireApproval backstop (meta.go has none, unlike
+  // openai_ads / analytics_writes). Each routes to a live-spend handler in
+  // main.go (meta-activate / meta-budget / meta-retarget / meta-bulk-push /
+  // meta-lockdown). 'budget' also covers linkedin_ads' budget action.
+  'activate', 'retarget', 'budget', 'bulk-push', 'lockdown',
 ]));
 
 // CARDED_DESTRUCTIVE_ACTIONS gate the generic confirmation card for
@@ -136,6 +148,32 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   'automation-activate', 'automation-deactivate',
   'automation-step-create', 'automation-step-update', 'automation-step-delete',
   'bulk-import-flow',
+  // REGRESSION GUARD (2026-07-10, audit P0-02, uncarded live writes): these
+  // destructive, customer-facing writes fell through to the catch-all
+  // auto-approve. main.js consults ONLY these action sets; the per-tool
+  // `blastRadius` callback in mcp-tools.js is defined but NEVER read by the
+  // approval path, so a tool's "every write requires a card" promise was
+  // hollow. Card the live-external mutations here (drafts, template-create,
+  // and the creative-generation loop deliberately stay auto-approved; the
+  // gate is the SEND/activate/delete/publish, not the draft):
+  //   Klaviyo/Mailchimp: segment-create (new live audience targeting),
+  //     flow-update-status (flips a live flow on/off), flow-delete,
+  //     flows-bulk-import (creates+activates flows), template-delete,
+  //     campaign-delete.
+  //   Social: discord/slack `post` (live channel message).
+  //   GMC: sync-shopify (pushes the live product catalog to Google Merchant).
+  //   GA4 Admin writes: create-key-event / archive-key-event /
+  //     create-custom-dimension / create-custom-metric / create-audience /
+  //     update-property-settings / attach-shopify-events. These already
+  //     fail-closed at the binary (requireApproval, Rule 18); carded here so
+  //     the human confirmation the tool description promises actually fires.
+  'segment-create', 'flow-update-status', 'flow-delete', 'flows-bulk-import',
+  'template-delete', 'campaign-delete',
+  'post',
+  'sync-shopify',
+  'create-key-event', 'archive-key-event', 'create-custom-dimension',
+  'create-custom-metric', 'create-audience', 'update-property-settings',
+  'attach-shopify-events',
 ]));
 
 // ── Intent-tool routing ─────────────────────────────────────────────
