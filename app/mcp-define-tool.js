@@ -134,6 +134,41 @@ function enrichSchema(z, def, userShape) {
   return shape;
 }
 
+// ── Argument type coercion ────────────────────────────────────
+// Apply each declared field's zod schema to the incoming args, best-effort.
+// The SDK does not run the schema before invoking the handler, so declared
+// coercions (z.coerce.number(), z.array(z.string())) never fire on their own.
+// This restores them without ever failing a call:
+//   - schema.safeParse(value) succeeds  → use the coerced/validated value
+//     (this alone fixes z.coerce.number(): "7" → 7).
+//   - it fails AND the value is a string → try JSON.parse(value) and re-validate
+//     (fixes a typed field delivered as a JSON string, e.g. '["view_item"]'
+//     → ["view_item"], or a plain z.number() field given "7").
+//   - still fails → leave the raw value untouched (identical to the prior
+//     behavior, so no existing tool can regress).
+// Returns a NEW object; the caller's args are never mutated in place.
+function coerceArgsToSchema(args, inputShape) {
+  if (!inputShape || typeof inputShape !== 'object') return args;
+  const out = Object.assign({}, args);
+  for (const [key, schema] of Object.entries(inputShape)) {
+    if (!(key in out)) continue;
+    if (!schema || typeof schema.safeParse !== 'function') continue;
+    const raw = out[key];
+    let parsed = schema.safeParse(raw);
+    if (!parsed.success && typeof raw === 'string') {
+      let decoded;
+      let decodable = false;
+      try { decoded = JSON.parse(raw); decodable = true; } catch { /* not JSON */ }
+      if (decodable) {
+        const reparsed = schema.safeParse(decoded);
+        if (reparsed.success) parsed = reparsed;
+      }
+    }
+    if (parsed.success) out[key] = parsed.data;
+  }
+  return out;
+}
+
 // ── Handler wrapping ──────────────────────────────────────────
 
 function wrapHandler(def, ctx) {
@@ -189,6 +224,20 @@ function wrapHandler(def, ctx) {
           meta: { tool: toolName, durationMs: Date.now() - startedAt },
         }));
       }
+    }
+
+    // ── 0b. Type coercion against the declared schema ─────────
+    // The SDK hands the tool-call arguments straight to this wrapper without
+    // running the declared zod schema, so z.coerce.number()/z.array(...) never
+    // fire: a field the model emits as a string ("7", '["view_item"]') reaches
+    // the Go binary as a string and the strict int/[]string unmarshal REJECTS
+    // it. Live incident 2026-07-11: google_analytics funnel + traffic failed
+    // because batchCount and analyticsFunnelSteps arrived stringified. Apply
+    // each declared field's OWN schema best-effort: on a successful parse use
+    // the coerced value; on failure leave the raw value untouched (never worse
+    // than today, so no other tool's behavior can regress).
+    if (strictModeActive && args && typeof args === 'object') {
+      args = coerceArgsToSchema(args, def.input);
     }
 
     // ── 1. Brand check ────────────────────────────────────────
