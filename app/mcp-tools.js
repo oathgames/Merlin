@@ -491,6 +491,23 @@ async function runBinary(ctx, action, args, opts = {}) {
         const sanitized = redactOutput(stdout || '', stderr || '');
         // Revoked-grant tile signal: see noteAuthSignalFromResult above.
         noteAuthSignalFromResult(ctx, action, args, !!err, sanitized);
+
+        // Persist the GA4 property id from a successful discover so later GA
+        // calls (traffic, funnel, conversions) no longer need it passed on
+        // every call (live incident 2026-07-11). runGoogleAnalyticsDiscover
+        // emits GA4DiscoverResult as JSON whose PropertyID field is tagged
+        // "googleAnalyticsPropertyId" precisely so this Electron path can
+        // persist it — the same brand-scoped write meta-discover uses for its
+        // ad-account/page/pixel ids. Brand-scoped (BRAND_KEYS + vault.go
+        // brandScopedKeys) so it never leaks cross-brand. Best-effort: a parse
+        // miss never fails the tool call.
+        if (!err && action === 'google-analytics-discover' && brandName &&
+            typeof ctx.writeBrandTokens === 'function') {
+          try {
+            const m = sanitized.match(/"googleAnalyticsPropertyId"\s*:\s*"(\d{1,20})"/);
+            if (m && m[1]) ctx.writeBrandTokens(brandName, { googleAnalyticsPropertyId: m[1] });
+          } catch { /* persistence is best-effort — never break the read */ }
+        }
         // Extract artifact bundles emitted by the binary's sentinel block.
         // `cleanText` substitutes each sentinel with a markdown gallery so
         // Claude echoes the inline previews verbatim; `bundles` is the

@@ -8784,6 +8784,12 @@ const BRAND_KEYS = [
   // comments inside this array must avoid apostrophes; the source-scan in
   // brand-scope-isolation.test.js extracts entries with a quote regex.
   'googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsCustomerId', 'googleAdsDeveloperToken',
+  // googleAnalyticsPropertyId: per-brand GA4 property (each brand connects its
+  // own Google account + property). Persisted by google-analytics-discover so
+  // later GA calls no longer need it passed explicitly. Brand-scoped so it never
+  // leaks cross-brand via the global base. Mirror of brandScopedKeys in
+  // autocmo-core/vault.go, added 2026-07-11.
+  'googleAnalyticsPropertyId',
   'amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId', 'amazonSellerId',
   'amazonAdClientId', 'amazonAdClientSecret', 'amazonSpClientId', 'amazonSpClientSecret',
   'etsyAccessToken', 'etsyRefreshToken', 'etsyShopId', 'etsyKeystring',
@@ -9750,7 +9756,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
     const keyMap = {
       meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId'],
       tiktok: ['tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId'],
-      google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsDeveloperToken', 'googleAdsCustomerId'],
+      google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsDeveloperToken', 'googleAdsCustomerId', 'googleAnalyticsPropertyId'],
       shopify: ['shopifyAccessToken', 'shopifyStore'],
       // revenueSourcePreference is cleared with Stripe so a reconnect picks
       // up a fresh disambiguation prompt instead of silently honoring stale
