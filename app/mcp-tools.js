@@ -1833,11 +1833,15 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── triplewhale ───────────────────────────────────────────
-  // Triple Whale brand-specific analytics (read-only Summary Page pull).
-  // Surfaces the attribution metrics a CMO steers on that platform ROAS
-  // alone can't show — New-Customer ROAS (NC-ROAS), New-Customer CPA
-  // (NCPA), MER, blended ROAS, new-customer revenue/orders — plus Triple
-  // Whale's own peer benchmarks (benchmark NC-ROAS / NCPA / blended ROAS).
+  // Triple Whale brand-specific analytics (read-only). Two pull paths:
+  //   - weekly: dashboard-true metrics via the Data-Out SQL API (the same
+  //     warehouse the dashboard tiles read), tile-true Total Sales plus
+  //     per-channel ROAS under every attribution model. Preferred for
+  //     reporting; supports exact startDate/endDate calendar windows.
+  //   - summary: the legacy Summary Page pull (NOT tile-true; drifts up to
+  //     ~3% from the tiles). Surfaces the attribution metrics a CMO steers
+  //     on that platform ROAS alone can't show: NC-ROAS, NCPA, MER, blended
+  //     ROAS, new-customer revenue/orders, plus TW's peer benchmarks.
   //
   // TWO brand-specific credential paths, both Authorization: Bearer:
   //   - OAuth sign-in (the primary path) via mcp__merlin__platform_login
@@ -1849,7 +1853,7 @@ function buildTools(tool, z, ctx) {
   //     the key. Read-only by construction — triplewhale.go ships no writes.
   tools.push(defineTool({
     name: 'triplewhale',
-    description: 'Triple Whale analytics (read-only). Pulls the full topline a CMO steers on: Blended Sales, Ad Spend, Net Profit, Net Margin, ROAS (attributed + blended), MER, NC-ROAS (new-customer ROAS), NCPA (new-customer CPA), new-customer revenue/orders, AOV, plus Triple Whale\'s peer benchmarks (NC-ROAS / NCPA / blended-ROAS). Actions: summary (the metric pull for a date window — batchCount = days, default 30); status (connection check, no API call); connect (instructions to mint a personal API key); verify (validate + save a pasted personal API key, requires apiKey). OAuth sign-in is the primary connect path via platform_login platform "triplewhale"; the personal API key is the no-registration fallback. Read-only — no write surface.',
+    description: 'Triple Whale analytics (read-only). Pulls the full topline a CMO steers on: Blended Sales, Ad Spend, Net Profit, Net Margin, ROAS (attributed + blended), MER, NC-ROAS (new-customer ROAS), NCPA (new-customer CPA), new-customer revenue/orders, AOV, plus Triple Whale\'s peer benchmarks (NC-ROAS / NCPA / blended-ROAS). Actions: weekly (PREFERRED for reporting: dashboard-true metrics via the Data-Out SQL warehouse the dashboard tiles read, tile-true Total Sales plus per-channel spend/revenue/ROAS under every attribution model; pass startDate + endDate for an exact calendar week, e.g. Sun-Sat); summary (legacy metric pull, NOT tile-true — batchCount = days, default 30, or startDate + endDate for an exact window); status (connection check, no API call); connect (instructions to mint a personal API key); verify (validate + save a pasted personal API key, requires apiKey). OAuth sign-in is the primary connect path via platform_login platform "triplewhale"; the personal API key is the no-registration fallback. Read-only — no write surface.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -1857,9 +1861,11 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'triplewhale' },
     input: {
-      action: z.enum(['summary', 'status', 'connect', 'verify']).describe('summary → pull NC-ROAS / NCPA / MER / blended ROAS for the window. status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey; also pass shopDomain when the brand has no Shopify connected, so the shop scope is saved).'),
+      action: z.enum(['weekly', 'summary', 'status', 'connect', 'verify']).describe('weekly → dashboard-true (tile-true) pull via the Data-Out SQL warehouse: Total Sales, blended spend, orders, NCPA, NC-ROAS, MER, plus per-channel ROAS under every attribution model. Use this for weekly reporting. summary → legacy Summary Page pull (not tile-true). status → check connection. connect → how to mint a personal API key. verify → validate + save a pasted key (requires apiKey; also pass shopDomain when the brand has no Shopify connected, so the shop scope is saved).'),
       brand: brandSchema.optional(),
-      batchCount: z.coerce.number().int().optional().describe('Days of data for summary (default 30).'),
+      batchCount: z.coerce.number().int().optional().describe('Trailing days of data for summary (default 30) or weekly (default 7). Ignored when startDate + endDate are set. batchCount 1 is valid: a same-day window (used for Sunday same-day subtraction).'),
+      startDate: z.string().optional().describe('Exact window start, YYYY-MM-DD (shop timezone, applied by Triple Whale server-side). Both startDate and endDate or neither: one-sided input is rejected. Takes precedence over batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.'),
+      endDate: z.string().optional().describe('Exact window end, YYYY-MM-DD, inclusive. Must not be in the future, and endDate must not be before startDate. Max window 365 days.'),
       apiKey: z.string().optional().describe('Personal API key to validate (required for verify). Minted at app.triplewhale.com/api-keys with the "Summary Page: Read" + "Pixel Attribution: Read" scopes.'),
       shopDomain: z.string().optional().describe('The store\'s .myshopify.com domain (e.g. "apotheke.myshopify.com"). Pass this when the brand has NO Shopify connected so Triple Whale knows which shop to report on. On "verify" it is saved so every future pull (including scheduled ones) stays scoped automatically; on "summary" it scopes that one pull. If Shopify IS connected, omit it (the connected store is used automatically).'),
     },
@@ -1870,7 +1876,7 @@ function buildTools(tool, z, ctx) {
           instructions: 'Mint a personal API key at app.triplewhale.com/api-keys (Create Key → select the "Summary Page: Read" and "Pixel Attribution: Read" scopes → save it somewhere safe). Then call mcp__merlin__triplewhale with action "verify" and apiKey set to that key. OAuth sign-in is the primary path and becomes available once the Triple Whale OAuth app is registered — use mcp__merlin__platform_login with platform "triplewhale" then.',
         };
       }
-      const actionMap = { summary: 'triplewhale-summary', status: 'triplewhale-status', verify: 'triplewhale-verify-key' };
+      const actionMap = { weekly: 'triplewhale-weekly', summary: 'triplewhale-summary', status: 'triplewhale-status', verify: 'triplewhale-verify-key' };
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
     },
   }, tool, z, ctx));
