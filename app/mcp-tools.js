@@ -1450,11 +1450,19 @@ function buildTools(tool, z, ctx) {
       action: z.enum(['audit', 'keywords', 'rankings', 'fix-alt', 'track', 'gaps', 'update-rank']).describe('Operation'),
       brand: brandSchema,
       url: z.string().optional().describe('Target URL (for audit)'),
+      keywords: z.string().optional().describe('Comma-separated seed keywords. REQUIRED for "keywords" (research — each seed is expanded via Google Autocomplete + Gemini volume/difficulty estimates) and for "track" (each is added to the rank tracker). Example: "scented candles, luxury incense, reed diffuser". Ignored by other actions.'),
     },
     handler: async (args) => {
       const actionMap = { 'fix-alt': 'seo-fix-alt', 'update-rank': 'seo-update-rank' };
       const action = actionMap[args.action] || 'seo-' + args.action;
-      return toEnvelope(await runBinary(ctx, action, args));
+      // The engine reads seed keywords from blogBody (seo-keywords + seo-track).
+      // The tool exposes them as `keywords` for clarity; forward them so the seeds
+      // actually reach the binary. Pre-fix the seo tool had no seed field at all,
+      // so `keywords`/`track` always saw an empty blogBody and fatal-erred with
+      // "blogBody required" (2026-07-21 APOTHEKE incident).
+      const binArgs = { ...args };
+      if (args.keywords && !binArgs.blogBody) binArgs.blogBody = args.keywords;
+      return toEnvelope(await runBinary(ctx, action, binArgs));
     },
   }, tool, z, ctx));
 

@@ -269,6 +269,23 @@ test('runBinary execFile options include a 32MB maxBuffer', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
+// seo tool: keyword-research seeds must reach the engine.
+// Pre-fix the seo tool exposed no seed field, so { action: 'keywords' } always
+// sent an empty blogBody and the engine fatal-erred "blogBody required"
+// (2026-07-21 APOTHEKE incident). Lock the seed field + the blogBody forward.
+// ─────────────────────────────────────────────────────────────────────
+test('seo tool exposes a keyword seed field and forwards it to the engine blogBody', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const src = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  const start = src.indexOf("name: 'seo'");
+  assert.ok(start > 0, 'seo tool must exist');
+  const block = src.slice(start, start + 2000);
+  assert.match(block, /keywords:\s*z\.string\(\)/, 'seo tool must expose a `keywords` seed input');
+  assert.match(block, /blogBody\s*=\s*args\.keywords/, 'seo handler must forward `keywords` to the engine blogBody');
+});
+
+// ─────────────────────────────────────────────────────────────────────
 // Tool handler pass-through — result text + error flag preserved.
 // ─────────────────────────────────────────────────────────────────────
 
