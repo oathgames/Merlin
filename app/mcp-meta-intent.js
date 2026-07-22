@@ -144,6 +144,29 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-insights', args)),
   }, tool, z, ctx));
 
+  // ── meta_tofu (top-of-funnel analyzer) ─────────────────────────────
+  tools.push(defineTool({
+    name: 'meta_tofu',
+    description: 'Rank Meta ads by how much TOP-OF-FUNNEL (new-customer acquisition) work they do, by joining two per-ad signals: CPMr (= spend/reach*1000, the cost to reach 1,000 DISTINCT people, a pure-Meta fresh-reach metric) and NVP (new-customer percentage = new-customer orders / all attributed orders, from Triple Whale pixel attribution, joined on the native ad_id). Each ad row returns spend, reach, frequency, cpm, cpmr, and — when Triple Whale is connected — nvp, newCustomerOrders, ncCac (spend/new customers), ncPer1kReach, plus a transparent 0-100 tofuScore blending new-customer VOLUME (0.45), NEWNESS share (0.35), and fresh-reach EFFICIENCY (0.20). Sorted by tofuScore desc; pass sortBy for cpmr/nvp/nccac/ncOrders/reach/frequency/ncPer1kReach. If Triple Whale is unreachable it returns the CPMr/frequency ranking alone and sets newCustomerDataAvailable:false. Read-only; changes nothing. Meta ad_id === Triple Whale ad_id, so the newness join is exact. Use to answer "which creatives are prospecting engines vs coasting on returning buyers".',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      batchCount: z.coerce.number().int().optional().describe('Trailing days ending yesterday (default 7). Ignored when startDate+endDate are given.'),
+      startDate: z.string().optional().describe('Exact window start YYYY-MM-DD (pass with endDate). Both halves — Meta CPMr and TW NVP — use this identical window.'),
+      endDate: z.string().optional().describe('Exact window end YYYY-MM-DD (inclusive; pass with startDate).'),
+      attributionModel: z.string().optional().describe('Triple Whale attribution model for NVP: "triple" (default), "last-touch", "first-touch", "linear", "linear paid", or a verbatim TW model name.'),
+      attributionWindow: z.enum(['7_days', '14_days', '28_days', 'lifetime']).optional().describe('Pixel attribution window for NVP (default 7_days). Bounded windows avoid lifetime over-crediting.'),
+      sortBy: z.string().optional().describe('tofuScore (default) | cpmr | nvp | nccac | ncOrders | reach | frequency | ncPer1kReach'),
+      sortOrder: z.enum(['asc', 'desc']).optional().describe('Sort order (default: desc)'),
+      limit: z.number().optional().describe('Max ads to return (e.g. 10 for the top 10).'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-tofu', args)),
+  }, tool, z, ctx));
+
   // ── meta_launch_test_ad ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_launch_test_ad',
