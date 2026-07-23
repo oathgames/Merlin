@@ -1151,10 +1151,15 @@ test('REGRESSION GUARD 2026-05-11: preserve-scroll path is gated on !resetScroll
   // the follow-new-content convention fires even when savedScrollTop
   // happens to be 0 (the user is at the top AND the bottom of a tiny
   // archive). Both arms must be present.
-  const guardPattern = /if \(!resetScroll && \(savedScrollTop > 0 \|\| userWasNearBottom\) && scrollContainer/;
+  //
+  // 2026-07-23 update: the `!canReconcile` gate was added so the smooth
+  // auto-refresh reconcile path (which never wipes the grid and preserves
+  // scroll itself during the atomic swap) does NOT also wire the observer,
+  // the observer assumes a wipe-then-repopulate lifecycle it no longer has.
+  const guardPattern = /if \(!resetScroll && !canReconcile && \(savedScrollTop > 0 \|\| userWasNearBottom\) && scrollContainer/;
   assert.ok(guardPattern.test(RENDERER_JS),
     'preserve-scroll observer wiring must be gated on ' +
-    '`!resetScroll && (savedScrollTop > 0 || userWasNearBottom) && scrollContainer && ...`');
+    '`!resetScroll && !canReconcile && (savedScrollTop > 0 || userWasNearBottom) && scrollContainer && ...`');
 });
 
 test('REGRESSION GUARD 2026-05-11: filter-button + search + refresh-button callers pass resetScroll:true', () => {

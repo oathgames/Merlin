@@ -12587,16 +12587,45 @@ async function loadArchive(opts = {}) {
     userWasNearBottom = oldMax > 0 && (oldMax - savedScrollTop) <= FOLLOW_NEW_CONTENT_THRESHOLD_PX;
   }
 
+  // ── Smooth auto-refresh reconcile (2026-07-23, archive-grid-flicker) ─────
+  // The archive-changed / live-ads-changed watchers call loadArchive with
+  // resetScroll=false. Pre-fix that still ran grid.innerHTML='' + a skeleton
+  // strip + a full rebuild, so every existing thumbnail node was destroyed and
+  // re-created. Re-created <img>s re-fire the load-gate shimmer, so the whole
+  // grid appeared to "regenerate" every time a single new image landed. On
+  // these invisible refreshes we reconcile instead: snapshot the current cards
+  // by key, reuse the unchanged ones (a re-attached, already-loaded <img> does
+  // not re-fetch or re-fire load, so no shimmer), and swap the grid contents
+  // in ONE synchronous op below: no empty-grid frame, no skeleton flash, no
+  // re-animation. Only new cards fade in. Deliberate loads (resetScroll=true:
+  // filter / search / refresh button) keep the wipe+skeleton+stagger; a fresh
+  // start is the right UX there. Only the default (generated-images) branch
+  // reconciles; swipes/live always rebuild fresh.
+  const earlyTypeFilter = document.querySelector('.archive-filter.active')?.dataset.filter || 'all';
+  const canReconcile = !resetScroll
+    && earlyTypeFilter !== 'swipes' && earlyTypeFilter !== 'live'
+    && !!grid.querySelector('.archive-card[data-archive-key]');
+  const prevArchiveCards = new Map();
+  if (canReconcile) {
+    for (const c of grid.querySelectorAll('.archive-card[data-archive-key]')) {
+      prevArchiveCards.set(c.dataset.archiveKey, c);
+    }
+  }
+
   // Content-shaped loading: fill the loading strip with ~10 skeleton cards in
   // the same auto-fill grid as the real archive, so the panel reads as "tiles
   // incoming" instead of a bare "Loading…" line. Rendered in the dedicated
   // #archive-loading element (NOT #archive-grid) so the scroll-restore
   // MutationObserver on the grid never mistakes skeletons for real content.
-  loading.style.display = 'grid';
-  loading.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
-  loading.style.gap = '10px';
-  loading.innerHTML = Array.from({ length: 10 }, () => '<div class="skeleton-card"></div>').join('');
-  grid.innerHTML = '';
+  // Skipped on a reconcile so the user's current content stays on screen,
+  // untouched, until the atomic swap replaces it.
+  if (!canReconcile) {
+    loading.style.display = 'grid';
+    loading.style.gridTemplateColumns = 'repeat(auto-fill, minmax(160px, 1fr))';
+    loading.style.gap = '10px';
+    loading.innerHTML = Array.from({ length: 10 }, () => '<div class="skeleton-card"></div>').join('');
+    grid.innerHTML = '';
+  }
   empty.style.display = 'none';
 
   // Race guard: every call bumps a sequence token; async results from a
@@ -12614,7 +12643,7 @@ async function loadArchive(opts = {}) {
   // resetScroll=true short-circuits — the rebuild's natural innerHTML
   // wipe sends the panel to the top, exactly the desired UX for filter
   // / search / refresh-button paths.
-  if (!resetScroll && (savedScrollTop > 0 || userWasNearBottom) && scrollContainer && typeof MutationObserver === 'function') {
+  if (!resetScroll && !canReconcile && (savedScrollTop > 0 || userWasNearBottom) && scrollContainer && typeof MutationObserver === 'function') {
     let restored = false;
     const tryRestore = () => {
       if (restored) return;
@@ -13280,6 +13309,9 @@ async function loadArchive(opts = {}) {
     loading.style.display = 'none';
 
     if (!items || items.length === 0) {
+      // Reconcile path skipped the up-front wipe, so clear the stale cards now
+      // that we know the filtered set is empty (e.g. the last item was deleted).
+      if (canReconcile) grid.innerHTML = '';
       const p = empty.querySelector('p');
       const sub = empty.querySelector('.archive-empty-sub');
       if (search) {
@@ -13340,10 +13372,32 @@ async function loadArchive(opts = {}) {
         container.appendChild(header);
         lastDate = dateStr;
       }
-      const card = createArchiveCard(item);
+      // Reuse the existing DOM node when this exact item is already on screen
+      // (invisible-refresh reconcile). Re-attaching its already-loaded <img>
+      // keeps the thumbnail painted, no shimmer, no flicker. prevArchiveCards
+      // is empty on deliberate loads, so this transparently falls back to a
+      // fresh card there. reuseKey uses the item-only key (folder/path/id) to
+      // match the data-archive-key stamped on the prior render; loose items
+      // (no such key) simply always rebuild.
+      const reuseKey = __archiveCardKey(item, null);
+      let card = reuseKey ? prevArchiveCards.get(reuseKey) : null;
+      if (card) {
+        prevArchiveCards.delete(reuseKey);
+        // Strip any prior entrance animation: CSS animations restart when a
+        // node is re-inserted into the document, so a leftover reveal-item
+        // would replay fadeUp on the reused card and re-introduce the flicker.
+        card.classList.remove('reveal-item');
+        card.style.removeProperty('animation-delay');
+      } else {
+        card = createArchiveCard(item);
+        // On a reconcile, only genuinely new cards animate in (a gentle fade,
+        // no stagger) so new images "push in" while existing tiles hold still.
+        if (canReconcile) card.classList.add('reveal-item');
+      }
       container.appendChild(card);
       const key = __archiveCardKey(item, card);
       if (key) {
+        card.dataset.archiveKey = key; // stamp so the next reconcile can reuse
         window._archiveItemsByKey.set(key, { card, item });
         orderedKeys.push(key);
       }
@@ -13353,12 +13407,23 @@ async function loadArchive(opts = {}) {
     const firstChunkEnd = Math.min(items.length, INITIAL_VISIBLE_ARCHIVE_CARDS);
     const initialFrag = document.createDocumentFragment();
     for (let i = 0; i < firstChunkEnd; i++) appendItem(items[i], initialFrag);
-    // Staggered arrival for the first batch only (tail chunks append silently
-    // so already-visible cards never re-animate). reveal-item is a pure add-on
-    // (class + inline animation-delay); it doesn't touch card structure or the
-    // lazy-load / selection wiring below.
-    revealGrid(initialFrag);
-    grid.appendChild(initialFrag);
+    if (canReconcile) {
+      // Atomic swap: reused nodes move grid→frag→grid within one synchronous
+      // op, so they never leave the render tree for a paint (no empty frame,
+      // no flicker). No revealGrid stagger: reused cards must not re-animate;
+      // new cards already carry their own reveal-item from appendItem. Preserve
+      // the exact scroll position across the swap.
+      const keepScroll = scrollContainer ? scrollContainer.scrollTop : 0;
+      grid.replaceChildren(initialFrag);
+      if (scrollContainer) scrollContainer.scrollTop = keepScroll;
+    } else {
+      // Staggered arrival for the first batch only (tail chunks append silently
+      // so already-visible cards never re-animate). reveal-item is a pure add-on
+      // (class + inline animation-delay); it doesn't touch card structure or the
+      // lazy-load / selection wiring below.
+      revealGrid(initialFrag);
+      grid.appendChild(initialFrag);
+    }
     if (__archiveModel) __archiveModel.syncOrder(orderedKeys);
     observeLazyVideos(grid);
     wireArchiveThumbLoadGate(grid);
