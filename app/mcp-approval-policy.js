@@ -226,6 +226,78 @@ function resolveMerlinAction(toolName, input) {
   return { effectiveAction: '', label: null };
 }
 
+// ── Auto mode: long-tail auto-approve + destructive-shell keep-list ──────
+//
+// The host gate (handleToolApproval in main.js) runs, in order: a hard-deny
+// floor (checkHardDeny: banned ad-platform hosts, protected credential files,
+// raw sockets, exfiltration), then the spend / customer-send / destructive
+// card tiers, then everything else. Auto mode changes only that last "everything
+// else" step: the benign long tail (WebFetch to a non-banned host, benign Bash,
+// non-Merlin read tools, standard file/search ops) auto-approves instead of
+// carding, because the hard-deny floor already blocked every dangerous vector
+// and the tiers already carded every spend / customer-facing action. What is
+// left carries no spend or credential risk, so a card there is pure friction.
+//
+// The single exception the user asked to keep: DESTRUCTIVE SHELL. `rm -rf` and
+// its kin cause irreversible LOCAL data loss (a brand's results/ folder, a
+// media cache) that checkHardDeny does NOT cover (it guards credential files,
+// not arbitrary user data). That stays a "very specific approval" and cards
+// even in auto mode.
+
+// Patterns for irreversible local data loss / system-state commands. Kept
+// deliberately narrow to avoid carding benign work: a bare `rm file` (no
+// recursive/force flag) is allowed, `> /dev/null` is allowed, `npm run format`
+// is allowed. Only genuinely destructive shapes match.
+const DESTRUCTIVE_SHELL_PATTERNS = Object.freeze([
+  /\brm\s+-\w*[rf]/i,                     // rm -r / -f / -rf / -fr
+  /\brm\s+--(recursive|force)\b/i,        // rm --recursive / --force
+  /\b(rmdir|rd)\s+\/s\b/i,                // Windows recursive dir delete
+  /\bdel\s+\/[sfq]/i,                     // Windows del /s /f /q
+  /\bRemove-Item\b[^\n]*-(Recurse|Force)\b/i,
+  /\bgit\s+reset\s+--hard\b/i,            // discards committed + staged work
+  /\bgit\s+clean\s+-\w*f/i,               // git clean -f / -fd
+  /\bdd\s+if=/i,                          // raw disk write
+  /\bmkfs\b/i,                            // format a filesystem
+  /\bshred\b/i,                           // secure-delete
+  /\btruncate\s+-s\s*0\b/i,               // zero out a file
+  /:\(\)\s*\{/,                           // fork bomb :(){ :|:& };:
+  />\s*\/dev\/(sd|nvme|disk|hd)/i,        // overwrite a block device
+  /\b(shutdown|reboot|halt|poweroff)\b/i, // host power state
+]);
+
+/**
+ * True when a Bash command is a destructive-shell shape (irreversible local
+ * data loss or a host-state change). Pure over the command string.
+ */
+function isDestructiveShell(command) {
+  const cmd = (command || '').trim();
+  if (!cmd) return false;
+  return DESTRUCTIVE_SHELL_PATTERNS.some((p) => p.test(cmd));
+}
+
+/**
+ * Decide how the long tail of tool calls is handled AFTER checkHardDeny and the
+ * spend / customer-send / destructive card tiers have already run and not
+ * matched. Returns 'allow' (auto-approve, no card) or 'card' (show the generic
+ * confirmation card).
+ *
+ * Auto mode (the product default, strictApprovals !== true): auto-approve the
+ * long tail; card only destructive shell. Strict mode (strictApprovals ===
+ * true): card the whole long tail, the pre-auto-mode behavior, an explicit
+ * opt-in to more prompts.
+ *
+ * @param {{ toolName: string, command?: string, strictApprovals?: boolean }} args
+ * @returns {'allow'|'card'}
+ */
+function classifyLongTailApproval({ toolName, command, strictApprovals }) {
+  // Irreversible local data loss always cards, in either mode.
+  if (toolName === 'Bash' && isDestructiveShell(command)) {
+    return 'card';
+  }
+  if (strictApprovals) return 'card';
+  return 'allow';
+}
+
 module.exports = {
   READ_ONLY_ACTIONS,
   SPEND_ACTIONS,
@@ -233,4 +305,6 @@ module.exports = {
   INTENT_TOOL_TO_ACTION,
   INTENT_TOOL_LABELS,
   resolveMerlinAction,
+  isDestructiveShell,
+  classifyLongTailApproval,
 };

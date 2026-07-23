@@ -418,3 +418,102 @@ test('main.js handleToolApproval wires CARDED_DESTRUCTIVE_ACTIONS BEFORE the cat
   assert.ok(cardedIdx < catchAllIdx,
     'CARDED_DESTRUCTIVE_ACTIONS branch must precede the catch-all auto-approve — otherwise the card never shows');
 });
+
+// ── Auto mode: long-tail auto-approve + destructive-shell keep-list ──────
+//
+// The user asked Merlin to stop asking for permission so often: auto-approve
+// the benign long tail (WebFetch to a non-banned host, benign Bash, non-Merlin
+// tools) and keep a card only for the "very specific approvals" (ad spend,
+// customer sends, destructive actions). checkHardDeny + the spend/send/
+// destructive tiers still run first; these tests pin the new last step.
+
+test('isDestructiveShell flags irreversible local data loss + system-state commands', () => {
+  const destructive = [
+    'rm -rf results/',
+    'rm -r assets/brands/madchill',
+    'sudo rm -fr /',
+    'rm --recursive foo',
+    'del /s /q C:\\\\Merlin\\\\results',
+    'rmdir /s bar',
+    'Remove-Item results -Recurse -Force',
+    'git reset --hard HEAD~3',
+    'git clean -fd',
+    'dd if=/dev/zero of=/dev/sda',
+    'mkfs.ext4 /dev/sdb1',
+    'shred -u secret.txt',
+    'truncate -s 0 ledger.json',
+    ':(){ :|:& };:',
+    'echo boom > /dev/sda',
+    'shutdown -h now',
+    'reboot',
+  ];
+  for (const cmd of destructive) {
+    assert.equal(policy.isDestructiveShell(cmd), true, `should flag: ${cmd}`);
+  }
+});
+
+test('isDestructiveShell does NOT flag benign commands', () => {
+  const benign = [
+    'ls -la',
+    'cat README.md',
+    'git status',
+    'git log --oneline -5',
+    'git commit -m "x"',
+    'npm install',
+    'npm run format',
+    'node scripts/build.js',
+    'python3 tool.py',
+    'grep -r foo .',
+    'rm foo.txt',            // single-file delete, no -r/-f flag → allowed
+    'echo hi > /dev/null',   // /dev/null is not a block device
+    'mkdir -p results/new',
+    'cp a b',
+    'performance-report.sh', // must not trip the \brm heuristic
+  ];
+  for (const cmd of benign) {
+    assert.equal(policy.isDestructiveShell(cmd), false, `should NOT flag: ${cmd}`);
+  }
+  assert.equal(policy.isDestructiveShell(''), false);
+  assert.equal(policy.isDestructiveShell(undefined), false);
+});
+
+test('classifyLongTailApproval auto-approves the benign long tail in auto mode', () => {
+  const auto = { strictApprovals: false };
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'WebFetch', ...auto }), 'allow');
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'Bash', command: 'git status', ...auto }), 'allow');
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'Bash', command: 'cat brand.md', ...auto }), 'allow');
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'mcp__other__read_thing', ...auto }), 'allow');
+  // Missing strictApprovals field (undefined) defaults to auto mode.
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'WebFetch' }), 'allow');
+});
+
+test('classifyLongTailApproval always cards destructive shell, even in auto mode', () => {
+  assert.equal(
+    policy.classifyLongTailApproval({ toolName: 'Bash', command: 'rm -rf results/', strictApprovals: false }),
+    'card');
+  assert.equal(
+    policy.classifyLongTailApproval({ toolName: 'Bash', command: 'git reset --hard', strictApprovals: false }),
+    'card');
+});
+
+test('classifyLongTailApproval cards the whole long tail in strict mode', () => {
+  const strict = { strictApprovals: true };
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'WebFetch', ...strict }), 'card');
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'Bash', command: 'git status', ...strict }), 'card');
+  assert.equal(policy.classifyLongTailApproval({ toolName: 'mcp__other__read_thing', ...strict }), 'card');
+});
+
+test('main.js wires the auto-mode long-tail decision at the final fallthrough', () => {
+  // Source-scan: the final catch-all must route through the policy module's
+  // classifyLongTailApproval + read strictApprovals, and auto-approve on
+  // 'allow'. A future edit that reverts to always-carding (or always-allowing
+  // without the destructive-shell card) breaks this guard.
+  assert.match(SRC_MAIN, /classifyLongTailApproval\s*\(/,
+    'main.js must call approvalPolicy.classifyLongTailApproval at the fallthrough');
+  assert.match(SRC_MAIN, /strictApprovals/,
+    'main.js must read the strictApprovals config flag');
+  assert.match(SRC_MAIN, /longTailDecision\s*===\s*'allow'/,
+    "main.js must auto-approve when the long-tail decision is 'allow'");
+  assert.match(SRC_MAIN, /isDestructiveShell/,
+    'main.js must still surface a destructive-shell card via isDestructiveShell');
+});
