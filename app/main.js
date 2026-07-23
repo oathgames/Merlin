@@ -3254,10 +3254,49 @@ async function handleToolApproval(toolName, input) {
     });
   }
 
+  // ── Auto mode (2026-07-22, fewer-approvals) ──────────────────────────
+  // Everything reaching here is the "long tail": WebFetch to a non-banned
+  // host, benign Bash, a non-Merlin MCP read tool, or another standard tool.
+  // checkHardDeny (top of this function) already blocked banned ad-platform
+  // hosts, protected credential files, raw sockets, and exfiltration; the
+  // spend / customer-send / destructive card tiers above already carded every
+  // money- or customer-facing action. So the long tail is benign and
+  // auto-approves in auto mode. Destructive shell (rm -rf and kin) still cards;
+  // irreversible local data loss is a "very specific approval." Setting
+  // `strictApprovals: true` in config opts back into carding the whole long
+  // tail. Auto mode is the default; a config-read failure keeps auto mode,
+  // because failing to card the benign long tail removes no spend/credential
+  // guardrail (those live in checkHardDeny + the tiers above, not here).
+  let strictApprovals = false;
+  try {
+    const brandForCfg = (input && input.brand) || (() => {
+      try { return readState().activeBrand || ''; } catch { return ''; }
+    })();
+    const cfgForApproval = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
+    strictApprovals = !!(cfgForApproval && cfgForApproval.strictApprovals);
+  } catch (e) {
+    console.warn('[auto-approve] config read failed, staying in auto mode:', e && e.message);
+  }
+  const longTailPolicy = require('./mcp-approval-policy');
+  const longTailDecision = longTailPolicy.classifyLongTailApproval({
+    toolName,
+    command: input && input.command,
+    strictApprovals,
+  });
+  if (longTailDecision === 'allow') {
+    return { behavior: 'allow', updatedInput: input };
+  }
+
+  // strict mode OR destructive shell → generic confirmation card.
   const toolUseID = newApprovalId();
   const translated = translateTool(toolName, input);
+  const destructiveShell = toolName === 'Bash' &&
+    longTailPolicy.isDestructiveShell(input && input.command);
   const payload = { toolUseID, label: translated.label, cost: translated.cost };
-  win.webContents.send('approval-request', payload);
+  if (destructiveShell) {
+    payload.budget = 'This permanently deletes local files or changes system state. Auto-expires in 15 min if ignored.';
+  }
+  if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
   wsServer.broadcast('approval-request', payload);
   nudgeForApproval();
 
