@@ -153,3 +153,46 @@ test('noteArchiveDelete has a hard wall-clock timeout fallback (audit followup)'
   assert.match(fnBody, /_archiveDeletePromise\s*===\s*promise/,
     'hard-timeout fallback must identity-match the slot before clearing (mirrors the .finally() pattern)');
 });
+
+// ── Smooth auto-refresh reconcile (2026-07-23) ───────────────────────────
+//
+// Separate incident from the 2026-05-04 delete flicker above. Complaint:
+// "Every time new images are generated, the archive grid refreshes and
+// regenerates ALL of the images." Root cause: the archive-changed watcher
+// calls loadArchive(resetScroll:false), which ran grid.innerHTML='' + a full
+// rebuild, so every existing thumbnail node was destroyed and re-created,
+// re-firing the load-gate shimmer. Fix: on the invisible-refresh path reuse
+// existing card nodes by key so their already-loaded <img> stays painted.
+// These pins keep the reconcile wired so a future edit can't silently revert
+// to the wipe-and-rebuild that caused the flicker.
+
+test('loadArchive computes a canReconcile gate for invisible refreshes', () => {
+  assert.match(rendererSrc, /const\s+canReconcile\s*=\s*!resetScroll/,
+    'canReconcile must gate on !resetScroll (only invisible auto-refreshes reconcile)');
+  assert.match(rendererSrc, /earlyTypeFilter\s*!==\s*'swipes'\s*&&\s*earlyTypeFilter\s*!==\s*'live'/,
+    'reconcile must exclude the swipes/live branches (they rebuild fresh)');
+});
+
+test('the skeleton strip + grid wipe are skipped on a reconcile', () => {
+  // The up-front `grid.innerHTML = ''` + skeleton strip must sit behind
+  // `if (!canReconcile)`, otherwise the reconcile still flashes empty.
+  assert.match(rendererSrc, /if\s*\(!canReconcile\)\s*\{[\s\S]*?grid\.innerHTML\s*=\s*''/,
+    "grid.innerHTML='' must be gated behind if (!canReconcile) so reconciles never wipe");
+});
+
+test('appendItem reuses existing cards by key and stamps data-archive-key', () => {
+  const idx = rendererSrc.indexOf('const appendItem =');
+  assert.ok(idx > 0, 'appendItem must exist');
+  const body = rendererSrc.slice(idx, idx + 2000);
+  assert.match(body, /prevArchiveCards\.get\(reuseKey\)/,
+    'appendItem must look up a reusable card node from prevArchiveCards');
+  assert.match(body, /card\.dataset\.archiveKey\s*=\s*key/,
+    'appendItem must stamp data-archive-key so the NEXT reconcile can reuse this card');
+  assert.match(body, /classList\.remove\('reveal-item'\)/,
+    'a reused card must have reveal-item stripped (re-inserting a node replays CSS animations = flicker)');
+});
+
+test('the first chunk swaps atomically via replaceChildren on a reconcile', () => {
+  assert.match(rendererSrc, /if\s*\(canReconcile\)\s*\{[\s\S]*?grid\.replaceChildren\(initialFrag\)/,
+    'reconcile must swap the grid contents atomically via replaceChildren (no empty-grid frame)');
+});
