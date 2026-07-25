@@ -273,3 +273,59 @@ test('archive cards skip layout + paint while off-screen', () => {
   assert.match(card, /contain-intrinsic-size:\s*auto\s+\d+px/,
     '.archive-card must declare contain-intrinsic-size with the `auto` keyword so skipped cards still reserve honest scroll height and remember their real size once seen');
 });
+
+// ── 8. Full-height controls in the perf bar ──────────────────────────────
+//
+// (2026-07-23.) The perf bar itself is clickable: clicking it opens the
+// Revenue overlay. So every pixel inside a control's column that belongs to
+// the bar instead of the control is a misclick trap. Measured before the fix,
+// the bar was 31px tall but the period buttons were 14px, leaving an 8px dead
+// strip above and 9px below: aiming at "7D" and landing 2px high opened the
+// summary window. The controls now stretch to fill the bar, so a near-miss
+// hits the control the user aimed at.
+//
+// After the fix (measured in a real render): bar 31px, every period button and
+// the brand switcher 30px tall, 0px dead strip above, and the only pixel below
+// is the bar's own 1px border.
+
+test('the perf bar stretches its controls to full height', () => {
+  const bar = cssRule(STYLE_CSS, '.perf-bar');
+  assert.ok(bar, '.perf-bar rule must exist');
+  assert.match(bar, /align-items:\s*stretch/,
+    '.perf-bar must stretch its children; align-items:center leaves clickable bar above and below each control');
+  assert.match(bar, /min-height:\s*\d+px/,
+    '.perf-bar must use min-height (not a hard height) so it keeps its size but can still grow if the perf text wraps');
+  assert.doesNotMatch(bar, /padding:\s*\d*[1-9]\d*px\s+\d+px/,
+    '.perf-bar must not re-introduce VERTICAL padding: that padding is exactly the dead strip that opens the Revenue overlay on a near-miss');
+
+  const content = cssRule(STYLE_CSS, '.perf-bar-content');
+  assert.match(content, /align-items:\s*stretch/,
+    '.perf-bar-content must stretch its children too');
+});
+
+test('perf-bar controls declare full-height stretch', () => {
+  const group = cssRule(STYLE_CSS, '.perf-period-group');
+  assert.match(group, /align-self:\s*stretch/,
+    '.perf-period-group must stretch to the full bar height');
+  assert.match(group, /border-radius:\s*0/,
+    '.perf-period-group must square its corners; rounded corners in a full-height control leave bar-surface notches that open the overlay');
+
+  const brand = cssRule(STYLE_CSS, '.brand-switcher-btn');
+  assert.match(brand, /align-self:\s*stretch/,
+    '.brand-switcher-btn must stretch to the full bar height');
+  assert.match(brand, /border-radius:\s*0/,
+    '.brand-switcher-btn must square its corners for the same reason');
+});
+
+test('the perf-bar click guard still exempts every in-bar control', () => {
+  // The overlay opener must keep bailing out for clicks that belong to a
+  // control. Full-height controls shrink the trap; this guard is what stops a
+  // real hit on a control from ALSO opening the overlay via bubbling.
+  const idx = RENDERER_JS.indexOf("getElementById('perf-bar').addEventListener('click'");
+  assert.ok(idx > 0, 'the perf-bar click handler must exist');
+  const fn = RENDERER_JS.slice(idx, idx + 900);
+  for (const sel of ['.perf-period-group', '#brand-switcher-btn']) {
+    assert.ok(fn.includes(sel),
+      `the perf-bar click handler must exempt ${sel} so activating it does not also open the Revenue overlay`);
+  }
+});

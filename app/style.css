@@ -1228,17 +1228,44 @@ a:hover{text-decoration:underline}
   50%{opacity:0}
 }
 /* ── Performance Status Bar ──────────────────────────────── */
+/* Full-height controls in the perf bar (2026-07-23, Fitts's Law part 2).
+   The whole bar is clickable (it opens the Revenue overlay), so any pixel
+   inside a control's COLUMN that isn't the control itself is a misclick trap:
+   aiming for "7D" and landing 2px high used to open the summary window.
+   Measured before the fix: the bar is 31px tall but the period buttons were
+   only 14px, leaving an 8px dead strip above and 9px below - 55% of that
+   column's height opened the wrong thing.
+
+   Fix is the same one the titlebar got: the vertical padding moves off the
+   bar, the bar keeps its exact 31px height so nothing below shifts, and every
+   control stretches to fill it. Inside a control's column there is now no
+   pixel that belongs to the bar, so a near-miss activates the control the
+   user was aiming at instead of the overlay. The bar's own click target
+   survives where it should: the text region in the middle. */
 .perf-bar {
   background: linear-gradient(135deg, rgba(167,139,250,.06), rgba(52,211,153,.06));
   border-bottom: 1px solid var(--border);
-  padding: 6px 16px;
+  /* min-height, NOT height: the bar keeps its exact 31px so nothing below
+     shifts, but it can still grow if the perf text ever wraps on a narrow
+     window. A hard height would clip it. .perf-bar is the flex container
+     itself (rather than only .perf-bar-content) so the content row always
+     fills the bar's real height - with min-height alone, a shorter content
+     row would leave a strip of bare bar at the bottom, which is exactly the
+     misclick trap being removed. */
+  display: flex;
+  align-items: stretch;
+  min-height: 31px;
+  padding: 0 16px;
+  box-sizing: border-box;
   flex-shrink: 0;
   cursor: pointer;
   transition: background var(--dur-fast);
 }
 .perf-bar:hover { background: linear-gradient(135deg, rgba(167,139,250,.1), rgba(52,211,153,.1)); }
 .perf-bar.hidden { display: none; }
-.perf-bar-content { display: flex; align-items: center; gap: 6px; }
+.perf-bar-content { flex: 1; min-width: 0; display: flex; align-items: stretch; gap: 6px; }
+/* The text is the one thing that should still read as "click the bar". */
+.perf-text, .perf-updated { align-self: center; }
 .perf-text {
   font-size:var(--fs-xs);
   color: var(--text-muted);
@@ -1250,17 +1277,21 @@ a:hover{text-decoration:underline}
 }
 .perf-trend-up { color: var(--success); }
 .perf-trend-down { color: var(--danger); }
+/* Full-height segmented control. border-radius drops to 0 because a rounded
+   pill in a 31px bar leaves rounded corners of bar-surface inside the
+   control's column, and those corners open the Revenue overlay. */
 .perf-period-group {
   margin-left: auto;
+  align-self: stretch;
   display: flex;
   gap: 1px;
   background: var(--border);
-  border-radius:var(--r-xs);
+  border-radius: 0;
   overflow: hidden;
   flex-shrink: 0;
 }
 .perf-period-btn {
-  padding: 1px 6px;
+  padding: 0 9px;
   border: none;
   background: var(--surface);
   color: var(--text-dim);
@@ -1268,6 +1299,8 @@ a:hover{text-decoration:underline}
   font-weight: 600;
   letter-spacing: .03em;
   cursor: pointer;
+  display: flex;
+  align-items: center;
   transition:background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
 .perf-period-btn:hover { color: var(--text-muted); background: var(--surface-hover); }
@@ -3236,10 +3269,16 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .brand-select-perf option{background:var(--bg-deep);color:var(--text);font-size:var(--fs-xs)}
 
 /* ── Brand switcher button + full-window tile takeover ──────────── */
+/* Full-height brand switcher (see the .perf-bar note). Top/bottom borders go
+   away with the radius: at full height they would double up against the bar's
+   own top/bottom edges. The left/right borders stay, so it still reads as a
+   discrete control rather than bare text. */
 .brand-switcher-btn {
   display: inline-flex; align-items: center; gap: 5px;
-  padding: 2px 8px; border-radius:var(--r-sm);
-  border: 1px solid var(--border); background: var(--surface);
+  align-self: stretch;
+  padding: 0 10px; border-radius: 0;
+  border: 1px solid var(--border); border-top: none; border-bottom: none;
+  background: var(--surface);
   color: var(--text); font-size:var(--fs-xs); font-weight: 700;
   cursor: pointer; max-width: 160px; flex-shrink: 0;
   transition: border-color var(--dur-fast), background var(--dur-fast);
