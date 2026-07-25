@@ -4541,6 +4541,13 @@ function updateVertical(vertical) {
   }
 }
 
+// Monotonic ticket for renderer-initiated brand switches. Only the change
+// handler below bumps it, so comparing a captured ticket against the current
+// value answers exactly one question: "did the user start another switch while
+// mine was in flight?" See the superseded branch for why the main process's
+// own coalescer sequence cannot answer that.
+let _brandSwitchSeq = 0;
+
 document.getElementById('brand-select').addEventListener('change', async (e) => {
   // Handle "+ New Brand" option
   if (e.target.value === '__add__') {
@@ -4552,6 +4559,12 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
 
   const newBrand = e.target.value;
   const prevBrand = e.target.dataset.lastValue || '';
+  // Renderer-side switch ticket. The main process's coalescer bumps its own
+  // sequence on EVERY switch-brand call, including ones this handler did not
+  // start (the failure-recovery re-switch below, brand_activate, etc.), so a
+  // `superseded` reply does NOT by itself prove a newer USER click exists.
+  // This ticket lets the superseded branch tell the two apart.
+  const mySwitchSeq = ++_brandSwitchSeq;
   // Do NOT update lastValue until we know the swap succeeded. Previously we
   // wrote newBrand here eagerly — on IPC rejection or a `success: false`
   // response, the dropdown was reverted to prevBrand but lastValue had
@@ -4603,7 +4616,32 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   // A newer brand click superseded this one while it was queued in the main
   // process. The newer click's handler owns the UI (its own preseed already
   // replaced ours): touch nothing, revert nothing, no toast.
-  if (swapResult && swapResult.superseded) return;
+  //
+  // REGRESSION GUARD (2026-07-23, brand-switch-stuck-on-previous): "touch
+  // nothing" is only correct when a newer switch from THIS handler is actually
+  // pending. The main process bumps its coalescer sequence on every
+  // switch-brand call, including ones no user click produced, so a superseded
+  // reply can arrive with nothing newer behind it. Returning early there left
+  // sel.value advanced ("B") while the live session stayed on prevBrand ("A"),
+  // and since the takeover's re-click guard compares against the confirmed
+  // brand, an unreconciled value would keep the UI lying about which brand is
+  // live. Reconcile instead: put the value back on the confirmed brand and
+  // repaint that brand's thread so the chat never keeps a dead
+  // "Switching to B..." placeholder. No toast: nothing failed from the user's
+  // point of view, and their next click now works.
+  if (swapResult && swapResult.superseded) {
+    if (mySwitchSeq === _brandSwitchSeq) {
+      e.target.value = prevBrand || '';
+      updateBrandSwitcherLabel();
+      if (preseedPlaceholder && prevBrand) {
+        try {
+          const restored = await merlin.switchBrand(prevBrand);
+          if (restored && restored.success) paintBrandThread(restored.bubbles);
+        } catch {}
+      }
+    }
+    return;
+  }
 
   if (swapResult && swapResult.success) {
     e.target.dataset.lastValue = newBrand || '';
@@ -5001,7 +5039,36 @@ function chooseBrandFromTakeover(name) {
   const sel = document.getElementById('brand-select');
   if (!sel) return;
   closeBrandSwitcher();
-  if (name === getActiveBrandSelection()) return; // already active — no-op
+
+  // REGRESSION GUARD (2026-07-23, brand-switch-stuck-on-previous):
+  // Compare against the CONFIRMED brand (dataset.lastValue), never against
+  // sel.value.
+  //
+  // sel.value is OPTIMISTIC: it is advanced below, before the switch is
+  // confirmed, so the change handler can read it as the new target. Only
+  // dataset.lastValue advances on a confirmed success. Any path that ends a
+  // switch without reverting sel.value therefore leaves the two disagreeing:
+  // sel.value says "B" while the live session is still "A". The `superseded`
+  // branch was exactly such a path.
+  //
+  // Guarding on sel.value in that state made this a PERMANENT trap: the user
+  // is on A, sel.value already reads B, so every subsequent click on B hit
+  // "already active - no-op" and did nothing at all. The user's report was
+  // "I click Brand B and it stays stuck on Brand A." The only escape was to
+  // switch to some third brand first. Comparing against the confirmed value
+  // makes a click on the brand you are NOT on always dispatch.
+  const confirmedBrand = sel.dataset.lastValue || '';
+  if (name === confirmedBrand) {
+    // Genuinely already on this brand. Re-sync the optimistic value in case a
+    // previous attempt left it dangling, so the NEXT switch computes the right
+    // prevBrand from it.
+    if (sel.value !== confirmedBrand) {
+      sel.value = confirmedBrand;
+      updateBrandSwitcherLabel();
+    }
+    return;
+  }
+
   brandSwitchCrossfade(); // 150ms chat opacity dip + label scale pulse (see fn)
   sel.value = name;
   sel.dispatchEvent(new Event('change', { bubbles: true }));

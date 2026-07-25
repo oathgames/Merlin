@@ -122,12 +122,49 @@ test('the interrupt await is bounded and the unwind wait uses the extended const
 
 // ── renderer.js wiring locks ────────────────────────────────────────────
 
-test('renderer treats superseded results as a silent no-op', () => {
-  assert.ok(RENDERER_JS.includes('swapResult.superseded) return;'),
-    'superseded early-return present (no revert, no toast, no recovery)');
-  const supIdx = RENDERER_JS.indexOf('swapResult.superseded) return;');
+test('renderer handles superseded before the success/failure branches', () => {
+  // 2026-07-23: this used to assert a bare `superseded) return;` silent no-op.
+  // That was correct only when a newer USER switch was actually pending. The
+  // main process bumps its coalescer sequence on every switch-brand call
+  // (including the failure-recovery re-switch, which no click produced), so a
+  // superseded reply could arrive with nothing newer behind it, and the bare
+  // return left sel.value advanced past the confirmed brand. See the
+  // brand-switch-stuck-on-previous guard in renderer.js. The ordering
+  // invariant this test was really protecting still holds.
+  const supIdx = RENDERER_JS.indexOf('swapResult.superseded');
+  assert.ok(supIdx > 0, 'superseded branch present');
   const successIdx = RENDERER_JS.indexOf('swapResult && swapResult.success');
   assert.ok(supIdx < successIdx, 'superseded check runs before the success/failure branches');
+});
+
+test('superseded only leaves the UI untouched when a NEWER renderer switch is pending', () => {
+  // The reconcile is what stops sel.value from drifting past the confirmed
+  // brand and bricking the next click on that brand.
+  assert.match(RENDERER_JS, /let\s+_brandSwitchSeq\s*=\s*0/,
+    'renderer must keep its own switch ticket; the main-process coalescer sequence cannot tell a user click from an internal re-switch');
+  assert.match(RENDERER_JS, /const\s+mySwitchSeq\s*=\s*\+\+_brandSwitchSeq/,
+    'the change handler must capture a ticket before awaiting the swap');
+  const supIdx = RENDERER_JS.indexOf('swapResult.superseded');
+  const branch = RENDERER_JS.slice(supIdx, supIdx + 700);
+  assert.match(branch, /mySwitchSeq\s*===\s*_brandSwitchSeq/,
+    'superseded must check whether a newer renderer-initiated switch actually exists');
+  assert.match(branch, /e\.target\.value\s*=\s*prevBrand/,
+    'with nothing newer pending, superseded must put the select back on the confirmed brand');
+});
+
+test('the takeover re-click guard compares against the CONFIRMED brand', () => {
+  // REGRESSION GUARD (2026-07-23, brand-switch-stuck-on-previous): guarding on
+  // sel.value (optimistic, advanced before confirmation) made a re-click on the
+  // brand you were trying to reach a permanent silent no-op whenever a prior
+  // attempt left the value advanced. dataset.lastValue only advances on a
+  // confirmed success, so it is the only safe thing to compare against.
+  const idx = RENDERER_JS.indexOf('function chooseBrandFromTakeover');
+  assert.ok(idx > 0, 'chooseBrandFromTakeover must exist');
+  const fn = RENDERER_JS.slice(idx, idx + 1600);
+  assert.match(fn, /dataset\.lastValue/,
+    'the guard must read dataset.lastValue (the confirmed brand)');
+  assert.doesNotMatch(fn, /if\s*\(name === getActiveBrandSelection\(\)\)\s*return/,
+    'the guard must NOT compare against getActiveBrandSelection() / sel.value: that is the optimistic value and re-clicking the target brand would silently do nothing');
 });
 
 test('renderer escalates the placeholder to honest progress copy past 800ms', () => {
