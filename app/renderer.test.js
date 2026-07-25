@@ -1757,7 +1757,12 @@ test('Brand switcher — tile click is a 1-click swap that drives the hidden sel
   assert.ok(RENDERER_JS.includes('function openBrandSwitcher'), 'opener exists');
   assert.ok(RENDERER_JS.includes('function chooseBrandFromTakeover'), '1-click swap fn exists');
   const idx = RENDERER_JS.indexOf('function chooseBrandFromTakeover');
-  const fn = RENDERER_JS.slice(idx, idx + 500);
+  // Slice to the next top-level function rather than a fixed window: the
+  // 2026-07-23 brand-switch-stuck-on-previous guard added a comment block that
+  // pushed these assertions past the old 500-char slice while every behavior
+  // below stayed correct. Anchoring on the function boundary keeps this honest.
+  const next = RENDERER_JS.indexOf('\nfunction ', idx);
+  const fn = RENDERER_JS.slice(idx, next > idx ? next : idx + 3000);
   assert.ok(fn.includes("getElementById('brand-select')"), 'reuses the hidden brand-select');
   assert.ok(fn.includes("dispatchEvent(new Event('change'") , 'fires the proven swap handler');
   assert.ok(fn.includes('closeBrandSwitcher'), 'closes the takeover immediately (instant feel)');
