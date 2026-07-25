@@ -119,9 +119,14 @@ test('each takeover opener/closer actually references a motion helper', () => {
 
 test('archive loading path renders skeleton cards', () => {
   const idx = RENDERER_JS.indexOf('async function loadArchive');
-  // Wide slice: loadArchive opens with several long regression-guard comment
-  // blocks before the loading branch where the skeletons render.
-  const fn = RENDERER_JS.slice(idx, idx + 5000);
+  // Slice to the START OF THE NEXT top-level function instead of a fixed
+  // character window. loadArchive opens with several long regression-guard
+  // comment blocks before the loading branch, and on 2026-07-23 a newly-added
+  // block pushed the skeleton render past the old hard-coded 5000-char window
+  // so the test failed while the behavior was perfectly correct. Anchoring on
+  // the function boundary keeps this assertion honest as the comments grow.
+  const next = RENDERER_JS.indexOf('\nfunction ', idx);
+  const fn = RENDERER_JS.slice(idx, next > idx ? next : idx + 12000);
   assert.match(fn, /skeleton-card/, 'archive loading path renders .skeleton-card placeholders');
 });
 
@@ -208,4 +213,63 @@ test('the four legacy toast blobs route through showToast', () => {
   // The old hand-rolled per-toast cssText positioning blobs must be gone.
   assert.ok(!/_engineToast\s*=\s*document\.createElement/.test(RENDERER_JS),
     'the hand-rolled _engineToast element blob must be gone (consolidated into showToast)');
+});
+
+// ── 7. Full-height titlebar buttons + off-screen render skipping ──────────
+//
+// (2026-07-23, perf-polish session.) Two locks, both in style.css:
+//
+//   A. Fitts's Law on the titlebar. The icon buttons were 28x28 chips floating
+//      in a 40px bar with 4px margins, so the click target was a small island
+//      ringed by dead titlebar. Windows solved this decades ago: titlebar
+//      buttons run the FULL height of the bar. .win-ctrl already did; the icon
+//      buttons now match, which also removes every dead gap between them.
+//
+//   B. content-visibility on .archive-card. The archive renders 300 cards
+//      synchronously and thousands more on idle chunks; without containment
+//      the browser lays out and paints every off-screen card on every reflow.
+const STYLE_CSS = fs.readFileSync(path.join(__dirname, 'style.css'), 'utf8');
+
+// Return the body of the first rule whose selector list ENDS with `selector`
+// immediately before the `{`. Tolerates `sel{` and `sel  {`, and the trailing
+// anchor stops `.archive-card` from matching `.archive-card-delete`.
+function cssRule(css, selector) {
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = new RegExp(esc + '\\s*\\{([^}]*)\\}').exec(css);
+  return m ? m[1] : '';
+}
+
+test('titlebar icon buttons are full-height with no dead gaps (Fitts\'s Law)', () => {
+  const magic = cssRule(STYLE_CSS, '.magic-btn-inline');
+  assert.ok(magic, '.magic-btn-inline rule must exist');
+  assert.match(magic, /height:100%/,
+    '.magic-btn-inline must be full titlebar height: a short chip in a tall bar is a small target ringed by dead space');
+  assert.match(magic, /margin-right:0/,
+    '.magic-btn-inline must not re-introduce margins; gaps between full-height buttons are unclickable dead zones');
+  assert.doesNotMatch(magic, /height:28px/,
+    '.magic-btn-inline must not revert to the fixed 28px chip height');
+
+  const theme = cssRule(STYLE_CSS, '.theme-toggle');
+  assert.ok(theme, '.theme-toggle rule must exist');
+  assert.match(theme, /height:100%/,
+    '.theme-toggle must match its full-height neighbours');
+  assert.match(theme, /margin-right:0/,
+    '.theme-toggle must not re-introduce a margin gap');
+});
+
+test('titlebar icon buttons match the window controls height contract', () => {
+  // .win-ctrl (min/max/close) has been height:100% forever. The icon buttons
+  // must use the SAME contract so the titlebar reads as one coherent row
+  // rather than chips-next-to-slabs.
+  const win = cssRule(STYLE_CSS, '.win-ctrl');
+  assert.match(win, /height:100%/, '.win-ctrl is the height reference and must stay full-height');
+});
+
+test('archive cards skip layout + paint while off-screen', () => {
+  const card = cssRule(STYLE_CSS, '.archive-card');
+  assert.ok(card, '.archive-card rule must exist');
+  assert.match(card, /content-visibility:\s*auto/,
+    '.archive-card must keep content-visibility:auto; without it every off-screen card in a thousands-of-assets grid is laid out and painted on each reflow');
+  assert.match(card, /contain-intrinsic-size:\s*auto\s+\d+px/,
+    '.archive-card must declare contain-intrinsic-size with the `auto` keyword so skipped cards still reserve honest scroll height and remember their real size once seen');
 });
