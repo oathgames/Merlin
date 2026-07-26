@@ -34,7 +34,10 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   'insights', 'products', 'orders', 'analytics', 'cohorts', 'dashboard',
   'calendar', 'wisdom', 'report', 'audit', 'revenue', 'keywords',
   'rankings', 'track', 'gaps', 'status', 'performance', 'lists',
-  'campaigns', 'list', 'list-avatars', 'discover', 'adlib',
+  // 'adlib' was removed 2026-07-26 alongside the dead meta-adlib route (see
+  // mcp-meta-intent.js meta_research_competitor_ads). Ad Library research
+  // routes through 'competitor-scan', which is right below.
+  'campaigns', 'list', 'list-avatars', 'discover',
   'competitor-scan', 'landing-audit', 'dry-run', 'version',
   'blog-list', 'update-rank',
   // Reddit / LinkedIn list ad accounts (no spend, no destructive op).
@@ -158,8 +161,12 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   'mcp__merlin__meta_review_performance':       'insights',
   'mcp__merlin__meta_audit':                    'audit',
   'mcp__merlin__meta_import_account_state':     'discover',
-  'mcp__merlin__meta_research_competitor_ads':  'adlib',
+  'mcp__merlin__meta_research_competitor_ads':  'competitor-scan',
   'mcp__merlin__meta_build_lookalike':          'audit',  // costImpact 'api'; non-spend
+  // meta_rename_ads is a WRITE, but a reversible one that moves no money and
+  // changes no delivery setting (POST /{adId} name). Routed read-only for the
+  // same reason meta_pause_asset is: carding it would be pure friction.
+  'mcp__merlin__meta_rename_ads':               'audit',
   // meta_pause_asset is destructive at campaign scope, but the SDK preview
   // gate already requires confirm_token for campaignId-scope pauses
   // (mcp-meta-intent.js:271). Ad-scope pause has no spend impact — auto-approve.
@@ -185,9 +192,19 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // the ad set is even created. Activation later goes through
   // meta_activate_asset which has its own card.
   'mcp__merlin__meta_dpa_setup':                'duplicate',
+  // meta_edit_ad_link creates NO new spend — it repoints an ad that is
+  // already spending at a different URL. That is still money at stake (a
+  // wrong destination burns live budget exactly like a bad launch does), and
+  // the host cannot verify the destination is correct, so it takes the
+  // always-cards duplicate path rather than an in-cap auto-approve.
+  'mcp__merlin__meta_edit_ad_link':             'duplicate',
 
   // Setup-style — touches ad-account state, no per-call spend
   'mcp__merlin__meta_prepare_retargeting':      'setup',
+  // meta_create_custom_audience adds a custom audience to the ad account and
+  // is NOT idempotent (a retry mints a second audience with the same name),
+  // so it cards like the other ad-account-state writes.
+  'mcp__merlin__meta_create_custom_audience':   'setup',
 });
 
 // Per-tool friendly label for the approval card. main.js builds a generic
@@ -203,6 +220,8 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_adjust_budget':            'Change Meta ad set budget',
   'mcp__merlin__meta_prepare_retargeting':      'Set up Meta retargeting audience',
   'mcp__merlin__meta_dpa_setup':                'Set up Meta DPA catalog retargeting (PAUSED on create)',
+  'mcp__merlin__meta_edit_ad_link':             'Change a live Meta ad\'s destination URL',
+  'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
 });
 
 /**

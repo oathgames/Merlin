@@ -235,6 +235,53 @@ function validateBudget(ctx, args, platform) {
 // When enforcement triggers, we return a loud, explanatory error rather than
 // silently falling back to any "active brand" state — that would introduce a
 // race condition under concurrent scheduled tasks for different brands.
+// ── meta_audit action → engine action ────────────────────────────────
+//
+// REGRESSION GUARD (2026-07-26, unreachable-engine-actions incident):
+// this used to be an inline ternary chain inside the meta_audit handler,
+// which meant (a) nothing outside the handler could see which engine actions
+// the tool can reach, and (b) the fallthrough silently prefixed 'meta-' onto
+// any unmapped value. Both properties are why an engine action with no MCP
+// route stayed invisible for months. As an exported map it is testable:
+// app/mcp-meta-action-reachability.test.js walks it in both directions —
+// every value must be a real `case "<x>":` in autocmo-core/main.go, and every
+// meta engine action must be reachable from here (or explicitly exempted).
+//
+// Values are the ENGINE action verbatim, not a suffix. 'aware-audience' is
+// the one that proves why: its Go case carries no `meta-` prefix, so the old
+// prefix-everything fallthrough could never have reached it.
+const META_AUDIT_ACTION_MAP = Object.freeze({
+  'list-audiences':             'meta-audit-audiences',
+  'list-conversions':           'meta-audit-conversions',
+  'audit-audience-rule':        'meta-audit-audience-rule',
+  'audit-retargeting-cascade':  'meta-audit-retargeting-cascade',
+  'audit-pixel':                'meta-audit-pixel',
+  'audit-events':               'meta-audit-events',
+  'audit-frequency-caps':       'meta-audit-frequency-caps',
+  'audit-catalog':              'meta-audit-catalog',
+  'audit-change-history':       'meta-audit-change-history',
+  'audit-account-state':        'meta-audit-account-state',
+  'audit-delivery-breakdown':   'meta-audit-delivery-breakdown',
+  // Account inventory reads (2026-07-26).
+  'list-adsets':                'meta-list-adsets',
+  'list-ads':                   'meta-list-ads',
+  'inspect-adset':              'meta-inspect-adset',
+  'list-videos':                'meta-list-videos',
+  'list-catalog-sets':          'meta-catalog-sets',
+  'resolve-geo':                'meta-geo-resolve',
+  'aware-audience':             'aware-audience',
+});
+
+/**
+ * Resolve a meta_audit action enum value to its engine action.
+ * Unknown values fall back to the legacy `meta-` prefix so a new enum entry
+ * that forgets a map row still behaves as it did before — the reachability
+ * test is what turns that omission into a CI failure rather than a 404.
+ */
+function metaAuditEngineAction(action) {
+  return META_AUDIT_ACTION_MAP[action] || ('meta-' + action);
+}
+
 const BRAND_OPTIONAL_ACTIONS = new Set([
   // Installer / utility
   'setup', 'version', 'update', 'subscribe', 'archive', 'dry-run',
@@ -678,7 +725,16 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'meta' },
     preview: false,
     input: {
-      action: z.enum(['push', 'insights', 'kill', 'activate', 'duplicate', 'setup', 'discover', 'warmup', 'retarget', 'lookalike', 'setup-retargeting', 'adlib', 'catalog', 'budget', 'bulk-push', 'lockdown', 'import']).describe('The operation to perform'),
+      // 'adlib' was REMOVED here on 2026-07-26. It never worked: the handler
+      // built 'meta-adlib' and autocmo-core/main.go has never had that case,
+      // so every call returned "unknown action" (flagged as a known gap in
+      // app/mcp-action-go-parity.test.js on 2026-05-10 and left broken). Ad
+      // Library research now lives on meta_research_competitor_ads, which
+      // routes to the real 'competitor-scan' action. The handler below
+      // refuses 'adlib' explicitly and names the replacement, because the SDK
+      // does not enforce this enum at call time — dropping the value alone
+      // would leave the same silent 404.
+      action: z.enum(['push', 'insights', 'kill', 'activate', 'duplicate', 'setup', 'discover', 'warmup', 'retarget', 'lookalike', 'setup-retargeting', 'catalog', 'budget', 'bulk-push', 'lockdown', 'import']).describe('The operation to perform'),
       brand: brandSchema.optional().describe('Brand name'),
       adId: z.string().optional().describe('Ad ID (for kill/duplicate/lockdown)'),
       campaignId: z.string().optional().describe('Target campaign ID'),
@@ -739,6 +795,15 @@ function buildTools(tool, z, ctx) {
           `meta_ads: \`status\` is a read filter for action:"import" only. It does NOT control the status ads launch with, and passing it on "${args.action}" would be silently ignored. ` +
           'To launch ads paused, set the brand config key `metaLaunchStatus` to "PAUSED" (default is "ACTIVE"), then re-run. ' +
           'Otherwise retry without `status`.'
+        );
+      }
+
+      // See the enum comment above: 'adlib' has never been routable. Refuse it
+      // by name so the agent gets a recovery path instead of "unknown action".
+      if (args.action === 'adlib') {
+        return validationEnvelope(
+          'meta_ads action "adlib" does not exist and never has — the Meta Ad Library is not reachable from this tool. ' +
+          'Use mcp__merlin__meta_research_competitor_ads({brand, competitors: ["Name One","Name Two"]}) instead.'
         );
       }
 
@@ -836,12 +901,30 @@ function buildTools(tool, z, ctx) {
   //                              + sample of disapproved products. Pass the
   //                              catalog id via catalogId.
   //
+  // REGRESSION GUARD (2026-07-26, unreachable-engine-actions incident):
+  // the seven list-*/inspect-*/resolve-*/aware-audience actions below were
+  // shipped in the ENGINE (autocmo-core/main.go dispatcher) with no MCP tool
+  // routing to them at all — one level up from the 2026-07-25 unreachable-PARAM
+  // incident that produced app/mcp-meta-param-reachability.test.js. An action
+  // no tool names is not merely undiscoverable, it is unreachable: there is no
+  // arg spelling that gets you there. `meta-list-adsets` in particular is the
+  // read the F21 / RIPIT / Rebecca Taylor workflows need constantly ("which ad
+  // sets exist, and are the staged ones actually PAUSED?") and it had no path
+  // through the app for its entire life.
+  //
+  // meta_audit is the right home for all of them: read-only by construction,
+  // already the inspection surface, and no widening of the legacy meta_ads
+  // multiplexer. Every enum value below MUST have a matching branch in the
+  // handler's action map — an unmapped value falls through to `meta-<value>`,
+  // which is right for some and wrong for aware-audience (no meta- prefix).
+  // Locked by app/mcp-meta-action-reachability.test.js.
+  //
   // No budget validation needed (read-only, no spend impact). preview is
   // false because it's safe-by-construction — the agent can call any action
   // without a confirmation card.
   tools.push(defineTool({
     name: 'meta_audit',
-    description: 'Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the "forgot to exclude purchasers" leak, run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog\'s review status. All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says "audit my retargeting", "what\'s my pixel match quality", "audit my events setup", "are my events firing properly", "check my EMQ", "is my CAPI sending the right params", "list my custom audiences", "what custom conversions do I have", "are my ad sets capped", or "is my catalog healthy".',
+    description: 'Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the "forgot to exclude purchasers" leak, run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog\'s review status. Also the account INVENTORY surface: list-adsets returns every ad set with its parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link (pass status:"paused" to find staged drafts, status:"all" for everything) — this is how you verify a campaign really was staged PAUSED before anyone activates it; list-ads returns the ads inside one ad set with their creative format and per-placement image hashes; inspect-adset dumps one ad set\'s full settings plus a sample creative\'s toggles so a new ad set can be built to match a proven winner; list-videos lists videos already uploaded to the ad account; list-catalog-sets lists a catalog\'s product sets and feeds (this is where the productSetId for DPA setup comes from); resolve-geo checks that US state names resolve to Meta region keys before a geo-targeted build; aware-audience returns the tiered warm/addressable audience pool (the retargeting-readiness leading indicator). All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says "audit my retargeting", "what\'s my pixel match quality", "audit my events setup", "check my EMQ", "list my custom audiences", "what ad sets do I have", "are those campaigns actually paused", "show me the ads in that ad set", "what videos are uploaded", "what product sets exist", or "is my catalog healthy".',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -861,33 +944,36 @@ function buildTools(tool, z, ctx) {
         'audit-change-history',
         'audit-account-state',
         'audit-delivery-breakdown',
-      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall.'),
+        // Account inventory reads (2026-07-26). Engine actions that existed
+        // for months with no MCP route — see the REGRESSION GUARD above.
+        'list-adsets',
+        'list-ads',
+        'inspect-adset',
+        'list-videos',
+        'list-catalog-sets',
+        'resolve-geo',
+        'aware-audience',
+      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall. list-adsets is the account inventory read: every ad set with parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link — pass status:"paused" to locate staged drafts, status:"all" to see everything (default "active"). list-ads lists the ads inside ONE ad set (pass targetAdSetId) with creative format and per-placement image hashes. inspect-adset dumps one ad set\'s settings plus a sample creative\'s toggles for cloning a winner (pass the AD SET id via adId). list-videos lists videos already uploaded to the ad account. list-catalog-sets lists a catalog\'s product sets + feeds (pass catalogId) — the source of the productSetId that meta_dpa_setup takes. resolve-geo resolves US state names in geoRegions to Meta region keys so a geo build can be verified before it runs. aware-audience returns the tiered warm/addressable audience pool.'),
       brand: brandSchema.describe('Brand name for vault-scoped Meta credentials.'),
-      adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel and audit-events: optional pixel id override (defaults to brand cfg metaPixelId).'),
+      adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel and audit-events: optional pixel id override (defaults to brand cfg metaPixelId). For inspect-adset: the AD SET id to inspect.'),
+      targetAdSetId: z.string().optional().describe('For list-ads: the ad set whose ads to list. Falls back to adId when omitted.'),
+      geoRegions: z.array(z.string()).optional().describe('For resolve-geo: US state names to resolve to Meta region keys (e.g. ["Florida","New Jersey"]). Verifies the keys before a geo-targeted build rather than discovering a bad name mid-push.'),
       agentName: z.string().optional().describe('For audit-events: the Conversions API integration\'s agent name, used to scope Meta\'s Dataset Quality API EMQ query. Find it in Events Manager → Data Sources → your dataset → the integration\'s name (e.g. the Shopify/Stape/Elevar/GTM integration). Optional — if omitted Merlin still attempts the query and tells the user how to find it.'),
-      catalogId: z.string().optional().describe('For audit-catalog: the Meta product catalog id (find it via mcp__merlin__meta_ads({action:"catalog"}) or in Commerce Manager).'),
-      status: z.enum(['active', 'all']).optional().describe('For audit-retargeting-cascade and audit-frequency-caps: filter ad sets. Default "active" (paused ad sets are noise).'),
-      limit: z.number().optional().describe('Max records to return per page. Defaults: list-audiences=250, list-conversions=100, audit-catalog=200. Hard caps: 500.'),
+      catalogId: z.string().optional().describe('For audit-catalog and list-catalog-sets: the Meta product catalog id (find it via mcp__merlin__meta_ads({action:"catalog"}) or in Commerce Manager). list-catalog-sets falls back to the ad account\'s owning business when omitted.'),
+      // 'paused' was added for list-adsets (2026-07-26): locating a STAGED
+      // draft ad set is the whole point of that read, and 'active'|'all' alone
+      // cannot express it. audit-retargeting-cascade / audit-frequency-caps
+      // treat any non-"all" value as their "active" default, so widening the
+      // enum cannot change what those two actions return.
+      status: z.enum(['active', 'paused', 'all']).optional().describe('Ad-set status filter. For list-adsets: "active" (default) | "paused" (non-active only — use this to find staged drafts) | "all". For audit-retargeting-cascade and audit-frequency-caps: "active" (default) or "all".'),
+      limit: z.number().optional().describe('Max records to return per page. Defaults: list-audiences=250, list-conversions=100, audit-catalog=200, list-videos=25. Hard caps: 500 (list-videos: 200).'),
       windowDays: z.number().optional().describe('For audit-change-history and audit-delivery-breakdown: lookback window in days. Default 7. Use e.g. 30 to trace a change further back.'),
       timeIncrement: z.number().optional().describe('For audit-delivery-breakdown: insights bucket size in days. 1 = daily (default, to see WHICH day delivery moved). Pass -1 for a single aggregate window.'),
       breakdowns: z.string().optional().describe('For audit-delivery-breakdown: comma-separated dimensions to slice by (allow-listed): publisher_platform, platform_position, device_platform, impression_device, age, gender, country, region, dma. Unknown values are dropped.'),
       level: z.enum(['account', 'campaign', 'adset', 'ad']).optional().describe('For audit-delivery-breakdown: aggregation level. Default account.'),
     },
     handler: async (args) => {
-      const action = 'meta-' + (
-        args.action === 'list-audiences' ? 'audit-audiences' :
-        args.action === 'list-conversions' ? 'audit-conversions' :
-        args.action === 'audit-pixel' ? 'audit-pixel' :
-        args.action === 'audit-events' ? 'audit-events' :
-        args.action === 'audit-frequency-caps' ? 'audit-frequency-caps' :
-        args.action === 'audit-catalog' ? 'audit-catalog' :
-        args.action === 'audit-retargeting-cascade' ? 'audit-retargeting-cascade' :
-        args.action === 'audit-audience-rule' ? 'audit-audience-rule' :
-        args.action === 'audit-change-history' ? 'audit-change-history' :
-        args.action === 'audit-account-state' ? 'audit-account-state' :
-        args.action === 'audit-delivery-breakdown' ? 'audit-delivery-breakdown' :
-        args.action
-      );
+      const action = metaAuditEngineAction(args.action);
       return toEnvelope(await runBinary(ctx, action, args));
     },
   }, tool, z, ctx));
@@ -1737,6 +1823,19 @@ function buildTools(tool, z, ctx) {
       brand: brandSchema.optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data (truesight: 7/30/90 typical; defaults to 7)'),
       url: z.string().optional().describe('URL (for landing-audit and funnel-teardown — funnel-teardown grades the page against Stefan Georgi RMBC rubric)'),
+      // REGRESSION GUARD (2026-07-26, unreachable-engine-actions incident):
+      // 'competitor-scan' has been in this enum, and documented in
+      // merlin-social/SKILL.md as {"action":"competitor-scan","blogBody":
+      // "A,B,C","imageCount":5}, while NEITHER param was declared here.
+      // defineTool's strict unknown-key check refuses undeclared fields, so
+      // the documented call was rejected outright — and dropping them instead
+      // would make the engine fatal with "provide competitor brand names".
+      // The odd spellings are the engine's wire tags (Command.BlogBody /
+      // Command.ImageCount, reused historically for this action), not a typo:
+      // runBinary copies keys verbatim, so they must match main.go exactly.
+      // The friendlier surface is meta_research_competitor_ads.
+      blogBody: z.string().optional().describe('For competitor-scan: comma-separated competitor brand names (e.g. "Madhappy,Pangaia,Teddy Fresh"). Required for that action.'),
+      imageCount: z.number().optional().describe('For competitor-scan: max ads to return per competitor (default 5).'),
     },
     handler: async (args) => {
       const actionMap = { 'competitor-scan': 'competitor-scan', 'landing-audit': 'landing-audit', 'funnel-teardown': 'funnel-teardown' };
@@ -3016,6 +3115,8 @@ module.exports = {
   validateBudget,
   isBrandMissing,
   BRAND_OPTIONAL_ACTIONS,
+  META_AUDIT_ACTION_MAP,
+  metaAuditEngineAction,
   BUDGET_HARD_CEILING,
   // Revoked-grant tile signal: exported for tests (auth-failures wiring).
   platformForAuthSignal,

@@ -154,6 +154,15 @@ jobs:
         run: node --test app/mcp-jobs-tools.test.js
       - name: MCP Meta intent tools
         run: node --test app/mcp-meta-intent.test.js
+      # Meta MCP↔engine reachability — the "we shipped it and nobody
+      # could call it" canary, in both directions. The param half
+      # (2026-07-25) caught engine params no zod schema declared; the
+      # action half (2026-07-26) caught whole engine actions no tool
+      # named, including meta-list-adsets, plus meta-adlib, an action
+      # the MCP layer routed to that the engine never had. Neither
+      # failure produces a type error, a 404, or a log line on its own.
+      - name: MCP Meta reachability (params + actions)
+        run: node --test app/mcp-meta-param-reachability.test.js app/mcp-meta-action-reachability.test.js
       # Rate-limit stress — the "never get a client banned" canary. If
       # any assertion flips, a real brand is about to hit a platform's
       # rate-limit review queue.
