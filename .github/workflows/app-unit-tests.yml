@@ -31,11 +31,26 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      # No `npm install` needed — these tests are written to use only Node
-      # stdlib plus in-file stubs (see `app/relay-client.test.js` for the
-      # Module._resolveFilename trick that stubs `ws` + `electron`).
-      # If a new test genuinely needs a dependency, add `npm ci` here AND
-      # a package-lock.json commit.
+      # Most tests here use only Node stdlib plus in-file stubs (see
+      # `app/relay-client.test.js` for the Module._resolveFilename trick that
+      # stubs `ws` + `electron`), and new tests should keep doing that.
+      #
+      # REGRESSION GUARD (2026-07-25, ten-days-red incident): this step used to
+      # be absent, per a comment saying "no npm install needed, add `npm ci`
+      # here AND a package-lock.json commit if a test genuinely needs a
+      # dependency." PR #323 (2026-07-15) added `app/ga-tool-fixes.test.js`,
+      # which requires REAL zod to exercise defineTool's coerce/repair paths
+      # (a stub cannot test zod's own semantics), but the `npm ci` half of that
+      # instruction was never done. Every run of this workflow failed from
+      # 2026-07-15 onward, so the sweep below silently stopped gating anything
+      # and 8 PRs merged to main on a red canary nobody was reading.
+      #
+      # `--omit=dev` deliberately skips electron (~100MB, and every test that
+      # touches it stubs it anyway); zod arrives transitively via
+      # @anthropic-ai/claude-agent-sdk. Takes ~5s. If you add a test that needs
+      # a devDependency, drop the flag rather than deleting the step.
+      - name: Install production deps (real zod for the defineTool tests)
+        run: npm ci --omit=dev --no-audit --no-fund
       # main.js parse-gate — the v1.17.0 launch-crash canary. A module-scope
       # `const stateFile = …` next to the existing `function stateFile(name)`
       # shipped in v1.17.0 bricked the app with `SyntaxError: Identifier

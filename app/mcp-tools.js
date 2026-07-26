@@ -694,17 +694,53 @@ function buildTools(tool, z, ctx) {
       sortOrder: z.string().optional().describe('Sort order: desc (default) or asc'),
       limit: z.number().optional().describe('Max results to return (e.g. 5 for top 5)'),
       // Bulk & advanced features
-      ads: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), body: z.string().optional(), link: z.string().optional(), dailyBudget: z.number().optional(), hookStyle: z.string().optional(), postId: z.string().optional() })).optional().describe('Array of ads for bulk-push (up to 50)'),
+      //
+      // REGRESSION GUARD (2026-07-25, unreachable-engine-params incident):
+      // zod strips unknown keys, so any Command field NOT declared here is
+      // silently dropped before runBinary ever builds the --cmd JSON, so the
+      // engine capability ships but stays unreachable from the app. Live hit:
+      // a bulk-push with campaignName "OrganicBoost" failed twice with
+      // `campaign "OrganicBoost" not found ... or set createCampaignIfMissing`
+      // and there was NO way to set it, because it wasn't in this schema.
+      // Every key below must stay spelled EXACTLY as the Go `json:"..."` tag
+      // on Command (main.go) / BulkAd: runBinary copies keys through
+      // verbatim, so a rename on either side breaks the wire silently.
+      // Locked by app/mcp-meta-param-reachability.test.js.
+      ads: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), body: z.string().optional(), link: z.string().optional(), dailyBudget: z.number().optional(), hookStyle: z.string().optional(), postId: z.string().optional(), name: z.string().optional() })).optional().describe('Array of ads for bulk-push (up to 50). Each ad accepts an optional `name`, the explicit ad name shown in Ads Manager. Omit it and the ad gets an auto-generated name, which makes a batch that reuses several distinct posts impossible to tell apart in reporting.'),
+      sharedAdSet: z.boolean().optional().describe('bulk-push only: put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
+      adSetName: z.string().optional().describe('bulk-push shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
+      createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (ABO, objective from the brand config) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),
       adFormat: z.enum(['single', 'carousel', 'collection']).optional().describe('Ad format (default: single)'),
       carouselCards: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), description: z.string().optional(), link: z.string().optional() })).optional().describe('Carousel card data (2-10 cards)'),
       postId: z.string().optional().describe('Existing post ID to reuse as ad creative (preserves social proof)'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
-      status: z.string().optional().describe('Filter by status: active, paused, all (for import)'),
+      // NOT a launch-status control. The refusal lives in the handler below;
+      // the engine only reads cmd.Status on meta-import.
+      status: z.string().optional().describe('READ FILTER for action:"import" ONLY. One of active, paused, all. This does NOT set the status new ads launch with; passing status:"PAUSED" on push/bulk-push is refused rather than silently ignored. Launch status comes from the brand config key metaLaunchStatus (default ACTIVE).'),
     },
     handler: async (args) => {
       // Cents-detection guard (defense-in-depth; binary has its own cap).
       const budgetError = validateBudget(ctx, args, 'Meta');
       if (budgetError) return validationEnvelope(budgetError);
+
+      // REGRESSION GUARD (2026-07-25, status-is-not-launch-status):
+      // `status` reads as "the status to launch with" but the engine only
+      // consumes cmd.Status on meta-import (runMetaImport's effective_status
+      // read filter). On every other action it was a SILENT no-op, so a
+      // caller passing status:"PAUSED" on a bulk-push got live ads spending
+      // real money while believing they were staged. Refuse loudly instead:
+      // the failure mode of the silent version is unexpected ad spend, and
+      // there is no per-call launch-status override to fall back on
+      // (getMetaLaunchStatus reads the brand config key metaLaunchStatus).
+      // Nothing that works today breaks, because the engine ignored this field on
+      // these actions anyway.
+      if (args.status !== undefined && args.status !== null && args.status !== '' && args.action !== 'import') {
+        return validationEnvelope(
+          `meta_ads: \`status\` is a read filter for action:"import" only. It does NOT control the status ads launch with, and passing it on "${args.action}" would be silently ignored. ` +
+          'To launch ads paused, set the brand config key `metaLaunchStatus` to "PAUSED" (default is "ACTIVE"), then re-run. ' +
+          'Otherwise retry without `status`.'
+        );
+      }
 
       const action = 'meta-' + (args.action === 'setup-retargeting' ? 'setup-retargeting' : args.action);
       const result = await runBinary(ctx, action, args);

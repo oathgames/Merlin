@@ -230,6 +230,13 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         : null;
       return r;
     },
+    // REGRESSION GUARD (2026-07-25, unreachable-engine-params incident):
+    // this tool routes to the SAME 'meta-bulk-push' engine action as the
+    // legacy meta_ads multiplexer, so every Command/BulkAd field the engine
+    // reads on that path has to be declared HERE too, because zod strips unknown
+    // keys, and this is the surface new agent code is steered to. Keep the
+    // key set in sync with meta_ads in mcp-tools.js; both are locked by
+    // app/mcp-meta-param-reachability.test.js.
     input: {
       brand: brandSchema.describe('Brand name'),
       ads: z.array(z.object({
@@ -241,9 +248,13 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         dailyBudget: z.number().optional(),
         hookStyle: z.string().optional(),
         postId: z.string().optional(),
-      })).describe('Array of ads (up to 50)'),
+        name: z.string().optional(),
+      })).describe('Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
-      campaignName: z.string().optional().describe('Target campaign name. Looked up via metaFindCampaign — fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Use campaignId for stricter routing.'),
+      campaignName: z.string().optional().describe('Target campaign name, looked up via metaFindCampaign. Fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Pass createCampaignIfMissing:true to create it instead. Use campaignId for stricter routing.'),
+      createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (ABO, objective from the brand config) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),
+      sharedAdSet: z.boolean().optional().describe('Put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
+      adSetName: z.string().optional().describe('Shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
     },
     handler: async (args) => {
