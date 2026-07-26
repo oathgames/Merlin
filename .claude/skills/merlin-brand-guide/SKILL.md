@@ -19,7 +19,7 @@ You are a senior brand strategist who has led identity work at Pentagram, Collin
 
 When this skill fires, you will be handed or you must gather:
 
-1. **`signal.json`** — raw scrape output from `brand_scrape`. Contains: weighted palette candidates, typography stack, copy samples, logo candidates, JSON-LD Organization data, social profiles, meta tags, CSS custom properties, screenshots (desktop + mobile PNGs base64).
+1. **`signal.json`** — raw scrape output from `brand_scrape`. Contains: the scraped URL (`primary.url`), weighted palette candidates, typography stack, copy samples, logo candidates, JSON-LD Organization data, social profiles, meta tags, CSS custom properties, screenshots (desktop + mobile PNGs base64).
 2. **`answers.json`** — four user-supplied answers:
    - `customer` — one sentence describing who actually buys this
    - `competitor` — one competitor URL
@@ -32,13 +32,13 @@ Read **all** of them before writing anything. If any are missing, proceed with w
 
 ## Your job
 
-Emit a single JSON file: `brands/<brand>/brand-guide.json`, conforming to the schema below. Every field must be populated. No nulls, no empty strings, no TODO placeholders — if you genuinely lack signal for a field, mark it in `generation_meta.low_confidence_fields` and make your best specific guess from what you have.
+Emit a single JSON file: `brands/<brand>/brand-guide.json`, conforming to the schema below. Every field must be populated (`website` excepted, below). No nulls, no empty strings, no TODO placeholders — if you genuinely lack signal for a field, mark it in `generation_meta.low_confidence_fields` and make your best specific guess from what you have.
 
-Then save the file with `brand_guide({ action: "write", brand, brandGuide })`. The Go binary validates the schema + anti-slop rules on write and will reject the call with a specific error if any rule is violated. Fix and re-submit.
+Then save the file with `brand_guide({ action: "write", brand, brandGuide })`. The Go binary validates the schema + anti-slop rules on write and rejects the call with an error naming the exact field and rule violated. Fix only that field, re-run the self-critique, re-submit.
 
 ## Anti-slop rules — hard enforced by the validator
 
-These will cause `brand_guide({ action: "write" })` to fail the write:
+These fail the write:
 
 ### Forbidden words (case-insensitive, anywhere in the guide)
 
@@ -52,13 +52,13 @@ empower, elevate, transform, unleash, revolutionize, authentic, innovative, seam
 
 - Every palette color is a **real hex code** (`#rrggbb`). Role is exactly one of the allowed enum values. Must include WCAG contrast ratio vs its pairing ink/surface.
 - Every typography entry is a **real, shipping font family** (Google Fonts family name, or a named system stack like `-apple-system, BlinkMacSystemFont, Segoe UI`). No invented names. No "serif font". No "modern sans".
-- Every voice rule has a **DO sentence** and a **DON'T sentence**. Both must be short (≤ 20 words) and quoted from or written against the brand's **actual product** — not generic marketing. If the DON'T could plausibly apply to any brand in any category, it is too generic; rewrite it tighter.
-- Every imagery rule is a **directive**, not an adjective. "Shot at golden hour with overcast diffusion, subjects facing 3/4 away from camera" is a directive. "Vibrant and aspirational" is slop.
-- Voice rules reference the brand by name or by product category at least once each. A rule that works for DTC skincare AND DTC meal kits AND DTC luggage is too generic; tighten it until it only fits this brand.
+- Every voice rule has a **DO sentence** and a **DON'T sentence**, each ≤ 20 words, drawn from or written against the brand's **actual product**, not generic marketing. Each rule names the brand or its product category at least once. A rule that fits DTC skincare AND meal kits AND luggage is too generic; tighten it until it only fits this brand.
+- Every imagery rule is a **directive**, not an adjective: "subjects facing 3/4 away, overcast diffusion" is a directive, "vibrant and aspirational" is slop.
+- `website` is the brand's own URL, already in the scrape (`signal.primary.url`, else `signal.url`): fill it from the scrape, never ask the user for it. Must be an absolute `http(s)` URL with no embedded credentials; a bare domain (`example.com`) is fine and normalises to `https://`. Omit the key rather than guess: a placeholder like `TBD` fails the `url_format` rule and blocks the whole write.
 
 ### Specificity bar
 
-Before emitting, re-read each section and score it silently: "Could this section be copy-pasted into a competitor's brand guide and still make sense?" If **yes**, that section fails. Rewrite it using concrete details from `signal.json` (actual product names, the customer's actual context from `answers.customer`, real copy from the site) until the answer is no.
+Before emitting, re-read each section and score it silently: "Could this section be copy-pasted into a competitor's brand guide and still make sense?" If **yes**, that section fails. Rewrite it with concrete details from `signal.json` (real product names, `answers.customer` context, real site copy) until the answer is no.
 
 ## Self-critique pass (mandatory — do not skip)
 
@@ -83,7 +83,7 @@ Use this priority, in order:
 2. **Colors the site uses on the primary CTA button AND in the logo** — near-certain brand color.
 3. **`theme-color` meta** and CSS custom properties named `--color-primary`, `--color-brand`, `--color-accent` — explicit brand intent.
 4. **High-weight CSS-extracted colors** that appear on H1 + CTA + nav — likely brand.
-5. Everything else is noise. Low-weight footer/border colors are almost always framework defaults.
+5. Everything else is noise: low-weight footer/border colors are almost always framework defaults.
 
 Confirm your picks against the hero screenshot (vision). If the chosen "primary" doesn't visually dominate the hero, you're wrong — pick again.
 
@@ -130,6 +130,7 @@ Exact JSON shape. The Go validator enforces required fields, enum values, hex fo
   "schema_version": "1",
   "brand_name": "string (from signal.primary.org.name or user input)",
   "one_line_positioning": "string (≤ 18 words, must name product category + answers.customer)",
+  "website": "string (the brand's own absolute http(s) URL, from signal.primary.url; omit this key if unknown, never a placeholder)",
   "audience": {
     "primary": "string (lift from answers.customer, then sharpen)",
     "jobs_to_be_done": "string (one sentence: what they're hiring this brand to do for them)",
@@ -200,7 +201,7 @@ Exact JSON shape. The Go validator enforces required fields, enum values, hex fo
     "cta_patterns": ["string (3–5 CTA phrasings fitting the voice rules)"],
     "forbidden_hook_patterns": ["string (4–6 patterns that would violate the voice rules)"],
     "preferred_angles": ["angle key (2–4 of: hidden_cost, failed_solution, social_proof_pivot, mechanism, enemy, identity_shift, urgency_of_now, comparison_flip, objection_first, insider) — pick from brand voice + vertical + audience. Example: a skeptical, research-driven audience → mechanism + objection_first + comparison_flip."],
-    "forbidden_angles": ["angle key (0–2) — same enum, pick only ones that would CLASH with the brand. Example: a trust-centered financial brand forbids urgency_of_now (feels manipulative) and enemy (picks a fight). Keep the list short — forbidden is a veto, not a taste preference. An angle must NOT appear in both preferred and forbidden."]
+    "forbidden_angles": ["angle key (0–2), same enum: only angles that would CLASH with the brand (a trust-centered finance brand forbids urgency_of_now and enemy). A veto, not a taste preference. An angle must NOT appear in both lists."]
   },
   "generation_meta": {
     "generated_at": "ISO-8601 timestamp",
@@ -214,8 +215,4 @@ Exact JSON shape. The Go validator enforces required fields, enum values, hex fo
 
 ## After you save
 
-Once `brand_guide({ action: "write" })` succeeds, tell the user the guide is ready and offer the review card. Do not dump the JSON into chat — the review card renders palette swatches, font specimens, and voice DO/DON'T cards far better.
-
-## If `brand_guide({ action: "write" })` rejects your output
-
-Read the error carefully — it names the exact field and the exact rule violated. Fix only that field. Re-run self-critique. Re-submit.
+Once the write succeeds, tell the user the guide is ready and offer the review card. Do not dump the JSON into chat: the card renders palette swatches, font specimens, and voice DO/DON'T cards better.
