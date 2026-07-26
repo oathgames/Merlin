@@ -19,6 +19,7 @@ const assert = require('node:assert/strict');
 const {
   buildTools,
   runBinary,
+  metaAuditEngineAction,
   _resetScrapeTimeoutTrackerForTests,
 } = require('./mcp-tools');
 const envelope = require('./mcp-envelope');
@@ -1293,10 +1294,23 @@ test('klaviyo tool exposes campaign-send / campaign-schedule + their params', ()
 test('meta_audit exposes the new diagnostic read actions (change-history, account-state, delivery-breakdown)', () => {
   const i = SRC_TOOLS.indexOf("name: 'meta_audit'");
   assert.ok(i > 0, 'meta_audit tool block must exist');
-  const block = SRC_TOOLS.slice(i, i + 5200);
+  // Bound the block at the NEXT tool rather than a fixed byte count: the
+  // meta_audit description grew past the old 5200-byte window when the
+  // account-inventory reads landed (2026-07-26), which silently truncated
+  // the block and made every assertion below scan the wrong text.
+  const next = SRC_TOOLS.indexOf("name: 'google_analytics'", i);
+  const block = SRC_TOOLS.slice(i, next > i ? next : i + 5200);
   for (const a of ['audit-change-history', 'audit-account-state', 'audit-delivery-breakdown']) {
     assert.ok(block.includes(`'${a}'`), `meta_audit action enum must include ${a}`);
-    assert.ok(block.includes(`args.action === '${a}'`), `meta_audit handler mapper must route ${a}`);
+  }
+  // Routing moved out of the handler's inline ternary chain into the exported
+  // META_AUDIT_ACTION_MAP (2026-07-26) so it is inspectable by
+  // app/mcp-meta-action-reachability.test.js. Assert on the map itself — the
+  // behaviour this test cares about is "these actions reach the engine", and
+  // the map is now where that is decided.
+  for (const a of ['audit-change-history', 'audit-account-state', 'audit-delivery-breakdown']) {
+    assert.equal(metaAuditEngineAction(a), `meta-${a}`,
+      `meta_audit must route ${a} to the meta-${a} engine action`);
   }
   for (const p of ['windowDays:', 'timeIncrement:', 'breakdowns:']) {
     assert.ok(block.includes(p), `meta_audit must declare the ${p} input for the diagnostic reads`);

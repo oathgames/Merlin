@@ -71,24 +71,31 @@ const PARITY_AVAILABLE = MAIN_GO_SRC !== null;
 
 const TOOL_ROUTING = [
   { name: 'meta_ads', prefix: 'meta',
-    // BUG FOUND BY THIS TEST (2026-05-10):
-    // 'adlib' is in mcp-tools.js's meta_ads action enum (line ~574)
-    // but main.go has NO `case "meta-adlib":` — invoking it returns
-    // "unknown action". The Meta Ad Library logic in meta_adlib.go
-    // is reachable only via `competitor-scan` on the dashboard tool;
-    // the meta_ads/adlib path is dead. See test report for fix
-    // recommendation. Exempted here so the parity test still gates
-    // OTHER drift while this specific gap is documented separately.
-    exemptions: ['adlib'],
+    // BUG FOUND BY THIS TEST (2026-05-10), FIXED 2026-07-26:
+    // 'adlib' was in mcp-tools.js's meta_ads action enum but main.go has
+    // NO `case "meta-adlib":` — invoking it returned "unknown action". It
+    // was exempted here so the parity test could still gate OTHER drift,
+    // and then sat broken for two and a half months. The exemption is now
+    // GONE because the enum value is gone: Ad Library research routes
+    // through meta_research_competitor_ads → the real 'competitor-scan'
+    // action. Do not re-add an exemption to silence this test — an
+    // exemption is a documented outage, not a fix.
   },
   { name: 'meta_audit', prefix: 'meta',
-    // meta_audit's handler maps every enum value through inline
-    // ternaries; the resulting binary actions all keep the meta-
-    // prefix and the enum value verbatim except list-* which become
-    // audit-* in the binary.
+    // meta_audit's handler routes through META_AUDIT_ACTION_MAP in
+    // mcp-tools.js (an exported object as of 2026-07-26 — it used to be
+    // an inline ternary chain). Most enum values keep the meta- prefix
+    // and the value verbatim; the rows below are the ones that don't.
+    // app/mcp-meta-action-reachability.test.js asserts THIS table and the
+    // exported map agree, so a row added to one and not the other fails CI
+    // rather than drifting.
     actionMap: {
-      'list-audiences':   'meta-audit-audiences',
-      'list-conversions': 'meta-audit-conversions',
+      'list-audiences':    'meta-audit-audiences',
+      'list-conversions':  'meta-audit-conversions',
+      'list-catalog-sets': 'meta-catalog-sets',
+      'resolve-geo':       'meta-geo-resolve',
+      // The only meta_audit action whose engine case carries no meta- prefix.
+      'aware-audience':    'aware-audience',
     },
   },
   { name: 'google_analytics', prefix: 'google-analytics' },

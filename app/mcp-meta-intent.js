@@ -552,24 +552,184 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-import', args, { timeout: 120000 })),
   }, tool, z, ctx));
 
+  // ── meta_rename_ads ───────────────────────────────────────────────
+  //
+  // Batch-rename ads. A WRITE (POST /{adId} name) but a fully reversible one
+  // that moves no money: renaming back restores the prior state exactly, and
+  // no delivery setting changes. So: destructive true (it mutates account
+  // state), idempotent true (same adId + same name twice = same end state),
+  // costImpact 'none', and routed to the read-only approval tier in
+  // mcp-approval-policy.js rather than the spend card.
+  //
+  // Why it matters: a batch launched without per-ad names lands in Ads
+  // Manager as N rows sharing one auto-generated name, which makes reporting
+  // unreadable. Before this tool the only fix was renaming by hand.
+  tools.push(defineTool({
+    name: 'meta_rename_ads',
+    description: 'Rename up to 50 Meta ads in one batch call. Use to fix ads that launched with auto-generated names so a batch reusing several distinct posts is readable in Ads Manager reporting. Fully reversible — renaming changes no delivery setting and spends nothing.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      renameAds: z.array(z.object({
+        adId: z.string().describe('Ad ID to rename'),
+        name: z.string().describe('New ad name'),
+      })).describe('Up to 50 {adId, name} pairs. Meta caps a batch request at 50 sub-requests; a longer list is refused rather than silently truncated. Each rename reports its own success/failure.'),
+    },
+    handler: async (args) => {
+      if (!Array.isArray(args.renameAds) || args.renameAds.length === 0) {
+        return validationEnvelope('meta_rename_ads requires a non-empty `renameAds` array of {adId, name}.');
+      }
+      if (args.renameAds.length > 50) {
+        return validationEnvelope(`meta_rename_ads accepts at most 50 renames per call (got ${args.renameAds.length}) — Meta's /?batch cap. Split into several calls.`);
+      }
+      const bad = args.renameAds.findIndex((r) => !r || !String(r.adId || '').trim() || !String(r.name || '').trim());
+      if (bad >= 0) {
+        return validationEnvelope(`renameAds[${bad}] is missing adId or name — both are required on every entry.`);
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-rename-ads', args), {
+        nextSuggested: ['meta_audit'],
+      });
+    },
+  }, tool, z, ctx));
+
+  // ── meta_edit_ad_link ─────────────────────────────────────────────
+  //
+  // Repoint a LIVE ad at a new destination URL. Creative link fields are
+  // immutable, so the engine clones the creative with every URL rewritten and
+  // swaps the ad onto the clone (see autocmo-core/meta_edit_link.go).
+  //
+  // costImpact is 'spend' even though this creates no new spend: the ad is
+  // ALREADY spending, and this changes where those dollars land. A wrong URL
+  // here burns the same real money a bad launch does, so it takes the same
+  // always-cards path (INTENT_TOOL_TO_ACTION → 'duplicate'). Under-declaring
+  // it as 'api' would auto-approve a live-traffic redirect.
+  tools.push(defineTool({
+    name: 'meta_edit_ad_link',
+    description: 'Change a LIVE Meta ad\'s destination URL. The engine clones the ad\'s creative with every link rewritten (media, copy and enhancement settings preserved) and repoints the ad at the clone, because Meta creative link fields are immutable. Use when an ad is running to a broken, wrong, or retired landing page. Spend does not stop, it redirects — so this is confirmed like a spend action.',
+    destructive: true,
+    // Same ad + same URL applied twice converges on the same end state (the
+    // second run clones a creative whose links already match), so a retry is
+    // safe. It does leave an extra unused creative behind, which costs nothing.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      adId: z.string().describe('The ad whose destination URL to change'),
+      adLink: z.string().describe('New destination URL. Must be absolute http(s) — a bare path or domain is refused.'),
+    },
+    handler: async (args) => {
+      const link = String(args.adLink || '').trim();
+      if (!/^https?:\/\//i.test(link)) {
+        return validationEnvelope(`adLink must be an absolute http(s) URL — got ${JSON.stringify(args.adLink || '')}.`);
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-edit-link', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
+  // ── meta_create_custom_audience ───────────────────────────────────
+  //
+  // Mint one arbitrary pixel WEBSITE custom audience. meta_prepare_retargeting
+  // creates the fixed Site-Visitors / Cart / ViewContent trio; this covers the
+  // case that trio can't express — most commonly a "Purchasers 30d" audience
+  // built purely to EXCLUDE recent buyers from cold prospecting.
+  //
+  // idempotent: FALSE, honestly. The engine does a bare create, so a retry
+  // mints a SECOND audience with the same name. Declaring it idempotent would
+  // be a lie the framework's idempotency cache then trusts (see the
+  // REGRESSION GUARD in mcp-define-tool.js). Routed to the 'setup' tier so the
+  // user confirms before ad-account state is added.
+  tools.push(defineTool({
+    name: 'meta_create_custom_audience',
+    description: 'Create one pixel-based WEBSITE custom audience on the Meta ad account from an event plus a retention window — e.g. a "Purchasers 30d" audience to EXCLUDE recent buyers from cold prospecting. Requires a pixel to be connected. NOT idempotent: calling twice creates two audiences with the same name, so check the existing list (meta_audit action:"list-audiences") first.',
+    destructive: true,
+    idempotent: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      audienceName: z.string().describe('Audience name as it will appear in Ads Manager (e.g. "Purchasers 30d")'),
+      audienceEvent: z.string().optional().describe('Pixel event the audience is built from (e.g. Purchase, AddToCart, ViewContent). Default: Purchase.'),
+      audienceRetentionDays: z.number().optional().describe('Retention window in days, 1-180. Meta caps pixel/website custom audiences at 180 days, so a longer window (e.g. "Purchasers 365") is refused rather than sent. Default: 30.'),
+    },
+    handler: async (args) => {
+      const name = String(args.audienceName || '').trim();
+      if (!name) return validationEnvelope('audienceName required — the name the audience gets in Ads Manager.');
+      // Default here rather than relying on the engine: the engine treats 0 as
+      // out-of-range and fatals, and "I didn't specify a window" should mean a
+      // sane 30 days, not an error.
+      const days = args.audienceRetentionDays === undefined || args.audienceRetentionDays === null
+        ? 30
+        : Number(args.audienceRetentionDays);
+      if (!Number.isFinite(days) || days < 1 || days > 180) {
+        return validationEnvelope(`audienceRetentionDays must be 1-180 (Meta's cap for pixel/website custom audiences); got ${JSON.stringify(args.audienceRetentionDays)}.`);
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-create-audience', Object.assign({}, args, { audienceRetentionDays: days })), {
+        nextSuggested: ['meta_audit'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_research_competitor_ads ──────────────────────────────────
   //
   // Wraps the Meta Ad Library — read-only, no spend.
+  //
+  // REGRESSION GUARD (2026-07-26, dead-engine-route incident): this tool
+  // shipped routing to 'meta-adlib', an action that has NEVER existed in
+  // autocmo-core/main.go's dispatcher — every call returned "unknown action".
+  // The live action is 'competitor-scan' (meta_adlib.go:runCompetitorScan).
+  // It was flagged as a known gap in app/mcp-action-go-parity.test.js on
+  // 2026-05-10 (`exemptions: ['adlib']`) and then sat broken.
+  //
+  // The engine reads competitor names from cmd.BlogBody as a COMMA-SEPARATED
+  // string and ads-per-brand from cmd.ImageCount — historical tag reuse, not a
+  // typo. Those spellings are the wire, so the friendly params are translated
+  // here (same pattern as the seo tool's keywords → blogBody mapping, added
+  // after the 2026-07-21 APOTHEKE incident). Declaring `competitor` and
+  // forwarding it verbatim is exactly the failure that made this unreachable:
+  // the engine never reads a field by that name.
   tools.push(defineTool({
     name: 'meta_research_competitor_ads',
-    description: 'Search the Meta Ad Library for a competitor\'s active ads. Read-only, no spend. Returns creative + copy samples.',
+    description: 'Search the Meta Ad Library for competitors\' currently-running ads. Read-only, no spend. Returns creative + copy samples grouped by Page. Pass one or more competitor brand names.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
     brandRequired: true,
     concurrency: { platform: 'meta' },
     input: {
-      brand: brandSchema.describe('Brand name (context only — the query targets a competitor)'),
-      competitor: z.string().optional().describe('Competitor Page name or ID'),
-      searchTerms: z.string().optional().describe('Freeform ad-library search (e.g. "protein powder")'),
-      limit: z.number().optional().describe('Max ads to return (default: 25)'),
+      brand: brandSchema.describe('Brand name (context only — the query targets competitors)'),
+      competitors: z.array(z.string()).optional().describe('Competitor brand / Page names, e.g. ["Madhappy","Pangaia"]. Either this or searchTerms is required.'),
+      searchTerms: z.string().optional().describe('Freeform Ad Library search, comma-separated for several (e.g. "protein powder, creatine"). Used when competitors is omitted.'),
+      limit: z.number().optional().describe('Max ads per competitor (default: 5).'),
     },
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-adlib', args)),
+    handler: async (args) => {
+      const names = Array.isArray(args.competitors)
+        ? args.competitors.map((s) => String(s || '').trim()).filter(Boolean)
+        : String(args.searchTerms || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (names.length === 0) {
+        return validationEnvelope('Provide competitors (array of brand names) or searchTerms — the Ad Library query needs at least one name.');
+      }
+      // Translate to the engine's wire spelling. Only the mapped keys are
+      // forwarded: passing `competitors`/`searchTerms` through would be
+      // dropped by the binary and `limit` is not what it reads either.
+      const binArgs = {
+        brand: args.brand,
+        blogBody: names.join(','),
+      };
+      if (typeof args.limit === 'number' && args.limit > 0) binArgs.imageCount = args.limit;
+      return toEnvelope(await runBinary(ctx, 'competitor-scan', binArgs));
+    },
   }, tool, z, ctx));
 
   return tools;
