@@ -401,6 +401,44 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_edit_audiences ───────────────────────────────────────────
+  // Rewrites ONLY the custom-audience inclusion/exclusion lists on an existing
+  // ad set; every other targeting key (geo, age, placements, expansion) is
+  // preserved. The everyday use is exclusion hygiene on a tiered retargeting
+  // ladder: each cooler tier must exclude the hotter ones so the same person
+  // is not bid on twice.
+  tools.push(defineTool({
+    name: 'meta_edit_audiences',
+    description: 'Change which custom audiences an existing Meta AD SET includes or excludes, leaving the rest of its targeting untouched. REPLACE semantics: pass the full desired list. Omit a list to leave that side alone. Use for retargeting exclusion cascades (e.g. make a 90-day visitor tier exclude the 15/30-day cart tiers and past purchasers).',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: true,
+    blastRadius: (args) => {
+      // Clearing exclusions is the genuinely dangerous edit: it re-exposes
+      // purchasers and hotter tiers to an ad set that was deliberately
+      // excluding them. Adding exclusions only ever narrows delivery.
+      const clearing = Array.isArray(args.excludeAudienceIds) && args.excludeAudienceIds.length === 0;
+      return clearing
+        ? { required: true, scope: 'adset', reason: `Clearing ALL audience exclusions on ad set ${args.adId} re-exposes past purchasers and hotter retargeting tiers. Confirm first.` }
+        : { required: false, reason: null };
+    },
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      adId: z.string().describe('Target AD SET id (not an ad id)'),
+      includeAudienceIds: z.array(z.string()).optional().describe('Full desired list of custom audience IDs to INCLUDE. Omit to leave inclusions unchanged; pass [] to clear.'),
+      excludeAudienceIds: z.array(z.string()).optional().describe('Full desired list of custom audience IDs to EXCLUDE. Omit to leave exclusions unchanged; pass [] to clear.'),
+    },
+    handler: async (args) => {
+      if (!args.includeAudienceIds && !args.excludeAudienceIds) {
+        return validationEnvelope('Provide includeAudienceIds and/or excludeAudienceIds (replace semantics — give the full desired list).');
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-edit-audiences', args));
+    },
+  }, tool, z, ctx));
+
   // ── meta_prepare_retargeting ──────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_prepare_retargeting',
