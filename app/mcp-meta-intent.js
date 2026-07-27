@@ -252,7 +252,12 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       })).describe('Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
       campaignName: z.string().optional().describe('Target campaign name, looked up via metaFindCampaign. Fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Pass createCampaignIfMissing:true to create it instead. Use campaignId for stricter routing.'),
-      createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (ABO, objective from the brand config) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),
+      createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (objective from the brand config; ABO unless campaignBudgetMode says otherwise) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),
+      // Rule 23 reachability: both fields are copied through runBinary into
+      // the --cmd JSON and read by Command.CampaignBudgetMode /
+      // Command.CampaignDailyBudget (see metaCreateCampaign in meta.go).
+      campaignBudgetMode: z.string().optional().describe('Budget mode for a campaign created by createCampaignIfMissing. \'cbo\' puts the daily budget on the CAMPAIGN - Meta then DISCARDS ad-set budgets, so do NOT also pass dailyBudget (the engine hard-errors on that combination). Omitted or anything else means ABO, with the budget on the ad set.'),
+      campaignDailyBudget: z.number().optional().describe('Campaign-level daily budget in DOLLARS. Read only under campaignBudgetMode \'cbo\', where it is the real spend governor and is validated against maxDailyAdBudget - an over-cap value is refused, never silently clamped.'),
       sharedAdSet: z.boolean().optional().describe('Put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
       adSetName: z.string().optional().describe('Shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
@@ -556,7 +561,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   // ── meta_build_lookalike ──────────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_build_lookalike',
-    description: 'Build a Meta lookalike audience from an existing custom audience. Does not launch ads — the lookalike is created and left ready for meta_launch_test_ad/batch to target.',
+    description: 'Build a Meta lookalike audience. PREFERRED seed is sourceAudienceId: an existing custom audience in the ad account (an uploaded customer list, a persona segment synced by a third-party tool, any saved cohort). The legacy adId seed does NOT model that ad — it mints a fresh 30-day pixel-purchasers audience and models that instead, and it requires a pixel. Does not launch ads; the lookalike is left ready for meta_launch_test_ad/batch to target.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -564,7 +569,16 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     input: {
       brand: brandSchema.describe('Brand name'),
-      adId: z.string().optional().describe('Source ad (audience derived from its engagers)'),
+      // Rule 23 reachability: every field here must be copied through
+      // runBinary into the --cmd JSON and read by the Go Command struct.
+      // sourceAudienceId -> Command.SourceAudienceID (meta.go
+      // metaCreateLookalikeFromAudience). Declared but unrouted params are
+      // the exact defect Rule 23 exists to prevent.
+      sourceAudienceId: z.string().optional().describe('PREFERRED seed: id of an existing custom audience to model (uploaded customer list, synced persona segment, saved cohort). No pixel required.'),
+      lookalikeRatio: z.number().optional().describe('Lookalike size as a RATIO, not a percent: 0.01 = 1% (default), 0.2 = 20% (Meta maximum).'),
+      lookalikeCountry: z.string().optional().describe('Two-letter country code for the lookalike, e.g. "US". Defaults to the brand primary target country.'),
+      audienceName: z.string().optional().describe('Name for the created lookalike. Defaults to "LLA <pct>% <seed name> - <country>".'),
+      adId: z.string().optional().describe('LEGACY seed: a winner ad. Mints a fresh 30-day pixel-purchasers audience as the seed (it does NOT model the ad itself) and requires metaPixelId. Prefer sourceAudienceId.'),
       campaignId: z.string().optional().describe('Source campaign (audience derived from its engagers)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-lookalike', args)),
