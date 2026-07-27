@@ -556,7 +556,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   // ── meta_build_lookalike ──────────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_build_lookalike',
-    description: 'Build a Meta lookalike audience from an existing custom audience. Does not launch ads — the lookalike is created and left ready for meta_launch_test_ad/batch to target.',
+    description: 'Build a Meta lookalike audience. PREFERRED seed is sourceAudienceId: an existing custom audience in the ad account (an uploaded customer list, a persona segment synced by a third-party tool, any saved cohort). The legacy adId seed does NOT model that ad — it mints a fresh 30-day pixel-purchasers audience and models that instead, and it requires a pixel. Does not launch ads; the lookalike is left ready for meta_launch_test_ad/batch to target.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -564,7 +564,16 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     input: {
       brand: brandSchema.describe('Brand name'),
-      adId: z.string().optional().describe('Source ad (audience derived from its engagers)'),
+      // Rule 23 reachability: every field here must be copied through
+      // runBinary into the --cmd JSON and read by the Go Command struct.
+      // sourceAudienceId -> Command.SourceAudienceID (meta.go
+      // metaCreateLookalikeFromAudience). Declared but unrouted params are
+      // the exact defect Rule 23 exists to prevent.
+      sourceAudienceId: z.string().optional().describe('PREFERRED seed: id of an existing custom audience to model (uploaded customer list, synced persona segment, saved cohort). No pixel required.'),
+      lookalikeRatio: z.number().optional().describe('Lookalike size as a RATIO, not a percent: 0.01 = 1% (default), 0.2 = 20% (Meta maximum).'),
+      lookalikeCountry: z.string().optional().describe('Two-letter country code for the lookalike, e.g. "US". Defaults to the brand primary target country.'),
+      audienceName: z.string().optional().describe('Name for the created lookalike. Defaults to "LLA <pct>% <seed name> - <country>".'),
+      adId: z.string().optional().describe('LEGACY seed: a winner ad. Mints a fresh 30-day pixel-purchasers audience as the seed (it does NOT model the ad itself) and requires metaPixelId. Prefer sourceAudienceId.'),
       campaignId: z.string().optional().describe('Source campaign (audience derived from its engagers)'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-lookalike', args)),
