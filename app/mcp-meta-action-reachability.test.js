@@ -515,6 +515,33 @@ test('meta_create_custom_audience defaults retention to 30 and enforces Meta\'s 
   assert.equal(execFileCalls.length, 0, 'an over-cap retention window must not reach the binary');
 });
 
+// Rule 23, half (a): a param can be declared in the schema and still never
+// reach the wire. audienceSource is the whole point of this tool — an
+// engagement audience with no source is scoped to nothing — so assert it lands
+// in the --cmd JSON rather than trusting the declaration.
+test('meta_create_engagement_audience routes source + event through to --cmd', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_create_engagement_audience').handler({
+    brand: 'acme', audienceName: 'IG Engagers 365d', audienceSource: 'ig',
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-create-engagement-audience');
+  assert.equal(cmd.audienceName, 'IG Engagers 365d');
+  assert.equal(cmd.audienceSource, 'ig',
+    'audienceSource must reach the binary — without it the audience has no event source');
+  assert.equal(cmd.audienceRetentionDays, 365,
+    'an omitted window must default to the full year, the reason to prefer this over the pixel tool');
+});
+
+test('meta_create_engagement_audience enforces the 365-day engagement cap', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_create_engagement_audience').handler({
+    brand: 'acme', audienceName: 'too long', audienceSource: 'page', audienceRetentionDays: 400,
+  });
+  assert.match(JSON.stringify(res).replace(/\\+"/g, '"'), /must be 1-365/);
+  assert.equal(execFileCalls.length, 0, 'an over-cap retention window must not reach the binary');
+});
+
 test('meta_research_competitor_ads translates competitors[] into blogBody', async () => {
   execFileCalls.length = 0;
   await tool('meta_research_competitor_ads').handler({

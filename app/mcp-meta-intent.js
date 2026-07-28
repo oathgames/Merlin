@@ -733,6 +733,58 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_create_engagement_audience ───────────────────────────────
+  //
+  // The SOCIAL counterpart to meta_create_custom_audience. That one builds
+  // from the pixel (people who touched the website); this builds from the
+  // Facebook Page or Instagram business profile (people who touched the
+  // brand's social presence).
+  //
+  // Two reasons this is its own tool rather than a flag:
+  //   - Engagement audiences BACKFILL from activity that already happened, so
+  //     one call can produce a usable pool instantly with no spend and no wait.
+  //   - They allow 365 days of retention; pixel audiences are capped at 180.
+  //
+  // Reach for this when a brand's warm audience is too small to retarget and
+  // the cause is thin web traffic rather than broken tracking — a small or
+  // local brand with an organic social following is the canonical case.
+  //
+  // idempotent: FALSE, same as its pixel sibling — the engine does a bare
+  // create, so a retry mints a second audience with the same name.
+  tools.push(defineTool({
+    name: 'meta_create_engagement_audience',
+    description: 'Create a Facebook Page or Instagram engagement custom audience — people who visited the profile, engaged with a post or ad, saved, messaged, or clicked the CTA. Unlike pixel audiences these BACKFILL from activity that already happened (so a new audience is populated immediately, with no spend) and allow up to 365 days of retention versus the pixel cap of 180. Use when a brand has too little web traffic to build a usable retargeting pool but does have an organic social following. NOT idempotent: calling twice creates two audiences with the same name, so check meta_audit action:"list-audiences" first.',
+    destructive: true,
+    idempotent: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      audienceName: z.string().describe('Audience name as it will appear in Ads Manager (e.g. "IG Engagers 365d")'),
+      audienceSource: z.enum(['ig', 'page']).describe('Which social surface to build from: "ig" (Instagram business profile, needs metaInstagramUserId) or "page" (Facebook Page, needs metaPageId).'),
+      audienceEvent: z.string().optional().describe('Which interaction to include. Both sources: all (widest, default), visit, engaged, messaged, cta. Instagram also: saved. Page also: liked, saved.'),
+      audienceRetentionDays: z.number().optional().describe('Retention window in days, 1-365. Default: 365, because the widest window is almost always the point of building one of these.'),
+    },
+    handler: async (args) => {
+      const name = String(args.audienceName || '').trim();
+      if (!name) return validationEnvelope('audienceName required — the name the audience gets in Ads Manager.');
+      // Default to the full year rather than the engine's per-call value: a
+      // caller who omits the window wants the biggest pool this action can
+      // make, which is the whole reason to prefer it over the pixel tool.
+      const days = args.audienceRetentionDays === undefined || args.audienceRetentionDays === null
+        ? 365
+        : Number(args.audienceRetentionDays);
+      if (!Number.isFinite(days) || days < 1 || days > 365) {
+        return validationEnvelope(`audienceRetentionDays must be 1-365 (Meta's cap for engagement audiences); got ${JSON.stringify(args.audienceRetentionDays)}.`);
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-create-engagement-audience', Object.assign({}, args, { audienceRetentionDays: days })), {
+        nextSuggested: ['meta_audit'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_research_competitor_ads ──────────────────────────────────
   //
   // Wraps the Meta Ad Library — read-only, no spend.

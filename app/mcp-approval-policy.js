@@ -205,6 +205,9 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // is NOT idempotent (a retry mints a second audience with the same name),
   // so it cards like the other ad-account-state writes.
   'mcp__merlin__meta_create_custom_audience':   'setup',
+  // Same shape as its pixel sibling above: adds ad-account state, not
+  // idempotent, no per-call spend.
+  'mcp__merlin__meta_create_engagement_audience': 'setup',
 });
 
 // Per-tool friendly label for the approval card. main.js builds a generic
@@ -222,6 +225,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_dpa_setup':                'Set up Meta DPA catalog retargeting (PAUSED on create)',
   'mcp__merlin__meta_edit_ad_link':             'Change a live Meta ad\'s destination URL',
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
+  'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
 });
 
 /**
