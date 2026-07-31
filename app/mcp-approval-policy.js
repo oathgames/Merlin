@@ -208,6 +208,9 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // Same shape as its pixel sibling above: adds ad-account state, not
   // idempotent, no per-call spend.
   'mcp__merlin__meta_create_engagement_audience': 'setup',
+  // Uploading a customer list adds ad-account state and handles customer PII,
+  // so it cards like the other audience writes even though it costs no spend.
+  'mcp__merlin__meta_upload_customer_list': 'setup',
 });
 
 // Per-tool friendly label for the approval card. main.js builds a generic
@@ -226,6 +229,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_edit_ad_link':             'Change a live Meta ad\'s destination URL',
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
   'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
+  'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',
 });
 
 /**

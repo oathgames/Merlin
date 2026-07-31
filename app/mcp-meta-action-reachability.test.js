@@ -519,6 +519,27 @@ test('meta_create_custom_audience defaults retention to 30 and enforces Meta\'s 
 // reach the wire. audienceSource is the whole point of this tool — an
 // engagement audience with no source is scoped to nothing — so assert it lands
 // in the --cmd JSON rather than trusting the declaration.
+// Rule 23 half (a): inputPath is the whole job here. A customer-list upload with
+// no file path silently uploads nothing, so assert it lands in the --cmd JSON.
+test('meta_upload_customer_list routes inputPath + name through to --cmd', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_upload_customer_list').handler({
+    brand: 'acme', inputPath: 'C:/tmp/customers.csv', audienceName: 'Customers over $100',
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-upload-customer-list');
+  assert.equal(cmd.inputPath, 'C:/tmp/customers.csv',
+    'inputPath must reach the binary — without it nothing is uploaded');
+  assert.equal(cmd.audienceName, 'Customers over $100');
+});
+
+test('meta_upload_customer_list refuses an empty inputPath before hitting the binary', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_upload_customer_list').handler({ brand: 'acme', audienceName: 'x' });
+  assert.match(JSON.stringify(res).replace(/\+"/g, '"'), /inputPath required/);
+  assert.equal(execFileCalls.length, 0, 'a missing path must not reach the binary');
+});
+
 test('meta_create_engagement_audience routes source + event through to --cmd', async () => {
   execFileCalls.length = 0;
   await tool('meta_create_engagement_audience').handler({
