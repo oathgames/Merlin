@@ -733,6 +733,49 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_upload_customer_list ─────────────────────────────────────
+  //
+  // The OWNED-DATA counterpart to the pixel and engagement audience tools:
+  // build an audience from a CSV of known customers. This is the highest-value
+  // lookalike seed a brand has, because it is real purchase behaviour rather
+  // than an inferred signal, and until now the only way to get one in was to
+  // hand-upload in Ads Manager.
+  //
+  // PII: values are SHA-256 hashed in the engine immediately before transmission
+  // and never logged, printed, or persisted. The tool takes a file PATH, never
+  // customer data inline, so records never pass through the model context.
+  //
+  // idempotent: FALSE, like its sibling audience tools. A retry without
+  // sourceAudienceId mints a second audience with the same name.
+  tools.push(defineTool({
+    name: 'meta_upload_customer_list',
+    description: 'Upload a CSV of known customers as a Meta customer-list custom audience, which can then seed a lookalike via meta_build_lookalike. Accepts a canonical CSV (email, phone, fn, ln, ct, st, zip, country) or a raw Shopify customer export, and normalises both. Rows with neither email nor phone are dropped because they match poorly and dilute the seed. Values are SHA-256 hashed before transmission and never logged. Pass sourceAudienceId to append to an existing audience instead of creating a new one. NOT idempotent: calling twice without sourceAudienceId creates two audiences.',
+    destructive: true,
+    idempotent: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      inputPath: z.string().describe('Absolute path to the customer CSV on disk. The file is read by the engine; customer records are never passed inline.'),
+      audienceName: z.string().describe('Audience name as it will appear in Ads Manager (e.g. "Customers over $100")'),
+      audienceDescription: z.string().optional().describe('Optional description recording what the list is and where it came from. Useful when several seeds coexist.'),
+      sourceAudienceId: z.string().optional().describe('Append to this existing customer-list audience instead of creating a new one.'),
+    },
+    handler: async (args) => {
+      const path = String(args.inputPath || '').trim();
+      if (!path) return validationEnvelope('inputPath required — the customer CSV to upload.');
+      const name = String(args.audienceName || '').trim();
+      if (!name && !String(args.sourceAudienceId || '').trim()) {
+        return validationEnvelope('audienceName required when creating a new audience.');
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-upload-customer-list', args), {
+        nextSuggested: ['meta_build_lookalike', 'meta_audit'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_create_engagement_audience ───────────────────────────────
   //
   // The SOCIAL counterpart to meta_create_custom_audience. That one builds
