@@ -29,6 +29,13 @@ const BANNED_HOSTS = [
   'sellingpartnerapi-na.amazon.com',
   'sellingpartnerapi-eu.amazon.com',
   'sellingpartnerapi-fe.amazon.com',
+  // Google Tag Manager. A direct call from Claude would bypass gtmRequest,
+  // and GTM's quota is PER GOOGLE CLOUD PROJECT (0.25 QPS / 10k per day)
+  // shared across every Merlin install — so one bypassing call burns
+  // budget for all users, not just this one. It would also bypass the
+  // requireApproval gate on the write path, which is the only thing
+  // standing between an agent and publishing tags to a live website.
+  'tagmanager.googleapis.com',
   'a.klaviyo.com',
   'api.klaviyo.com',
   'adsapi.snapchat.com',

@@ -31,6 +31,10 @@
 // new read-only action upstream means adding it here too, otherwise the
 // host gate will card it unnecessarily.
 const READ_ONLY_ACTIONS = Object.freeze(new Set([
+  // Google Tag Manager reads. 'discover' and 'audit' are already here
+  // from other connectors; 'list-versions' only shows which container
+  // version is live and the change history, which mutates nothing.
+  'list-versions',
   'insights', 'products', 'orders', 'analytics', 'cohorts', 'dashboard',
   'calendar', 'wisdom', 'report', 'audit', 'revenue', 'keywords',
   'rankings', 'track', 'gaps', 'status', 'performance', 'lists',
@@ -117,6 +121,20 @@ const SPEND_ACTIONS = Object.freeze(new Set([
 //   - Idempotent setup writes a user already pre-authorized (the
 //     "click a tile to connect" flow) — those auto-approve.
 const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
+  // Google Tag Manager writes. These do not move ad dollars, so they are
+  // costImpact 'api' and would otherwise land on the catch-all
+  // auto-approve at step 4 — the same fallthrough that let Mailchimp
+  // fire real campaign sends uncarded. The blast radius here is larger
+  // than any other entry in this set: 'publish' changes what JavaScript
+  // executes on a paying customer's live website for every visitor, and
+  // a bad tag can break the store or double-count revenue in a way that
+  // silently corrupts every downstream spend decision.
+  //
+  // 'install-ga4' and 'create-version' write only into a separate Merlin
+  // workspace and cannot affect the live site on their own, but they are
+  // carded anyway: approving a staged change is the moment a human should
+  // look at what is about to be built, not after it is queued.
+  'install-ga4', 'create-version', 'publish',
   // Mailchimp / Klaviyo / future-email-platform real-send actions.
   // These deliver mail to live subscriber lists and are not recoverable.
   'campaign-send', 'campaign-schedule',

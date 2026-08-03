@@ -135,7 +135,7 @@ const PROVIDERS = {
     // correct but the fast-open side was the actual code path running.
     // oauth-provider-config.test.js source-scans both files together
     // and fails CI if Google's scope string drifts between them.
-    scopes: 'https://www.googleapis.com/auth/adwords https://www.googleapis.com/auth/webmasters.readonly https://www.googleapis.com/auth/content https://www.googleapis.com/auth/analytics.readonly',
+    scopes: 'https://www.googleapis.com/auth/adwords https://www.googleapis.com/auth/webmasters.readonly https://www.googleapis.com/auth/content https://www.googleapis.com/auth/analytics.readonly https://www.googleapis.com/auth/tagmanager.readonly https://www.googleapis.com/auth/tagmanager.edit.containers https://www.googleapis.com/auth/tagmanager.edit.containerversions https://www.googleapis.com/auth/tagmanager.publish',
     redirectUri: '', // loopback — any port
     usesPKCE: true,
     extraParams: { access_type: 'offline', prompt: 'consent' },
