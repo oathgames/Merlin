@@ -134,7 +134,7 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // workspace and cannot affect the live site on their own, but they are
   // carded anyway: approving a staged change is the moment a human should
   // look at what is about to be built, not after it is queued.
-  'install-ga4', 'create-version', 'publish',
+  'install-ga4', 'install-quiz-funnel', 'create-version', 'publish',
   // Mailchimp / Klaviyo / future-email-platform real-send actions.
   // These deliver mail to live subscriber lists and are not recoverable.
   'campaign-send', 'campaign-schedule',
