@@ -1079,6 +1079,54 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'google-analytics-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── google_tag_manager ─────────────────────────────────
+  //
+  // Reads are open; the three write actions surface an approval card. The
+  // blast radius here is larger than any other tool in this file: publishing
+  // changes what JavaScript runs on a paying customer's live website. The
+  // reasons below are written for a non-technical reader, because the card is
+  // the last thing standing between an agent and a live site.
+  tools.push(defineTool({
+    name: 'google_tag_manager',
+    description: 'Audit and instrument Google Tag Manager. READ: discover lists the GTM accounts and containers this Google login can reach (never auto-selects one — a single login often reaches several brands); audit diagnoses the container and is the highest-value action here, catching duplicate conversion tags that double-count revenue and inflate ROAS, missing GA4 configuration, tags that can never fire because they have no trigger, tracking IDs that disagree with the rest of Merlin, likely PII capture, and missing consent settings, plus a funnel-coverage report showing which of view_item / add_to_cart / begin_checkout / purchase are actually instrumented; list-versions shows what is live and the change history. WRITE (each needs approval, and nothing reaches the live site implicitly): install-ga4 stages a full GA4 ecommerce funnel into a separate "Merlin (staged)" workspace and reports the dataLayer events the site still has to push; create-version snapshots that workspace WITHOUT publishing; publish makes a named version live. Merlin never creates Custom HTML tags. Use when the user says "why are there no conversions", "my tracking is broken", "audit my tag manager", "set up conversion tracking", "instrument the funnel", "is my pixel firing", or "why is revenue double counted".',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'google_tag_manager' },
+    preview: true,
+    blastRadius: (payload) => {
+      const reasons = {
+        'install-ga4':    'Stage GA4 funnel tags in a separate Merlin workspace (NOT live until you publish)',
+        'create-version': 'Snapshot the staged workspace as a container version (NOT live until you publish)',
+        'publish':        'PUBLISH to the live website — this changes what runs on every page for real visitors',
+      };
+      const action = payload && payload.action;
+      if (Object.prototype.hasOwnProperty.call(reasons, action)) {
+        return { required: true, reason: reasons[action], action };
+      }
+      return { required: false };
+    },
+    input: {
+      action: z.enum([
+        // Read
+        'discover', 'audit', 'list-versions',
+        // Write — staged, then versioned, then published; each separately approved
+        'install-ga4', 'create-version', 'publish',
+      ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card. Nothing affects the live site until publish.'),
+      brand: brandSchema,
+      gtmAccountId: z.string().optional().describe('GTM account id from discover. Required once you have more than one.'),
+      gtmContainerId: z.string().optional().describe('GTM container id from discover. Merlin never guesses this: one Google login commonly reaches several brand containers, and writing tags to the wrong website is silent.'),
+      gtmWorkspaceId: z.string().optional().describe('Optional workspace override. Defaults to the Merlin staging workspace, then the container default.'),
+      gtmMeasurementId: z.string().optional().describe('For install-ga4: the GA4 measurement id in G-XXXXXXX form (from Admin, Data Streams). Defaults to the configured value for the brand. A numeric property id is a DIFFERENT identifier and will be rejected.'),
+      versionName: z.string().optional().describe('For create-version: a human label for the snapshot.'),
+      versionId: z.string().optional().describe('For publish: the exact version id to make live. Required — publishing "whatever is latest" is how an unreviewed change reaches a live site.'),
+      approved: z.boolean().optional().describe('Approval flag for write actions. Set by the Electron approval card; set true here only with explicit user approval to proceed.'),
+    },
+    // Handler does NOT auto-set args.approved — that bypasses the safety rail.
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'gtm-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── tiktok_ads ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'tiktok_ads',

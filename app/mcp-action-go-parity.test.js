@@ -99,6 +99,9 @@ const TOOL_ROUTING = [
     },
   },
   { name: 'google_analytics', prefix: 'google-analytics' },
+  // Every action routes as gtm-<action>: gtm-discover, gtm-audit,
+  // gtm-list-versions, gtm-install-ga4, gtm-create-version, gtm-publish.
+  { name: 'google_tag_manager', prefix: 'gtm' },
   { name: 'tiktok_ads', prefix: 'tiktok' },
   { name: 'google_ads', prefix: 'google-ads' },
   { name: 'amazon_ads', prefix: 'amazon',
