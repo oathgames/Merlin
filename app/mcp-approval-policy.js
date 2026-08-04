@@ -189,6 +189,10 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // gate already requires confirm_token for campaignId-scope pauses
   // (mcp-meta-intent.js:271). Ad-scope pause has no spend impact — auto-approve.
   'mcp__merlin__meta_pause_asset':              'audit',
+  // Bulk PAUSE is the emergency brake at scale. Carding it would add friction
+  // exactly when speed matters, and it moves no money. Its sibling
+  // meta_batch_activate DOES fire spend and is routed below.
+  'mcp__merlin__meta_batch_pause':              'audit',
 
   // Spend-firing — approval card mandatory
   // PUSH-style (in-cap auto-approve eligible): explicit `dailyBudget` on the
@@ -201,6 +205,10 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   'mcp__merlin__meta_launch_test_batch':        'duplicate',
   'mcp__merlin__meta_promote_to_retargeting':   'duplicate',
   'mcp__merlin__meta_activate_asset':           'duplicate',
+  // Bulk activate starts spend on EVERY id at once, so it cards like its
+  // single-object sibling meta_activate_asset. No dailyBudget on the input to
+  // in-cap auto-approve against, which is exactly the 'duplicate' case.
+  'mcp__merlin__meta_batch_activate':           'duplicate',
   'mcp__merlin__meta_scale_winner':             'duplicate',
   'mcp__merlin__meta_adjust_budget':            'duplicate',
   // DPA setup creates an ad set in PAUSED state, but the configured
@@ -240,6 +248,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_launch_test_batch':        'Launch this Meta ad batch',
   'mcp__merlin__meta_promote_to_retargeting':   'Promote ad into Meta retargeting',
   'mcp__merlin__meta_activate_asset':           'Re-activate paused Meta ad',
+  'mcp__merlin__meta_batch_activate':           'Activate MANY Meta objects at once (starts spend on all)',
   'mcp__merlin__meta_scale_winner':             'Scale this winning Meta ad',
   'mcp__merlin__meta_adjust_budget':            'Change Meta ad set budget',
   'mcp__merlin__meta_prepare_retargeting':      'Set up Meta retargeting audience',

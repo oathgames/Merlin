@@ -387,6 +387,50 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_batch_pause / meta_batch_activate ────────────────────────
+  // One engine action (meta-batch-status) behind TWO tools on purpose: pausing
+  // in bulk is the emergency brake and must stay frictionless, while activating
+  // in bulk fires spend and must route through the approval card (Rule 19).
+  // Both collapse N objects into ONE batched Graph call and return a per-object
+  // result, so a partial failure is visible instead of silently truncated.
+  const batchStatusInput = {
+    brand: brandSchema.describe('Brand name'),
+    // Bounds (non-empty, max 50) are enforced engine-side in
+    // runMetaBatchStatus; not declared here because the zod surface these tools
+    // are built against does not implement array .min()/.max().
+    batchStatusIds: z.array(z.string()).describe('Campaign / ad set / ad ids to flip (1-50 — Meta batch cap)'),
+  };
+  tools.push(defineTool({
+    name: 'meta_batch_pause',
+    description: 'Pause MANY Meta campaigns, ad sets, or ads at once in a single batched call. Use to stop a whole campaign\'s worth of objects quickly. Returns per-object success/failure.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    input: batchStatusInput,
+    handler: async (args) => toEnvelope(
+      await runBinary(ctx, 'meta-batch-status', { ...args, batchStatus: 'PAUSED' })),
+  }, tool, z, ctx));
+  tools.push(defineTool({
+    name: 'meta_batch_activate',
+    description: 'Activate MANY Meta campaigns, ad sets, or ads at once in a single batched call. THIS STARTS SPEND on every object listed. Returns per-object success/failure.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: true,
+    blastRadius: (args) => ({
+      required: true,
+      scope: 'batch',
+      reason: `Activating ${(args.batchStatusIds || []).length} object(s) starts spend on all of them at once. Confirm first.`,
+    }),
+    input: batchStatusInput,
+    handler: async (args) => toEnvelope(
+      await runBinary(ctx, 'meta-batch-status', { ...args, batchStatus: 'ACTIVE' })),
+  }, tool, z, ctx));
+
   // ── meta_activate_asset ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'meta_activate_asset',
