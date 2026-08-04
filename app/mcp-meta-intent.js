@@ -321,6 +321,39 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_set_advantage_audience ───────────────────────────────────
+  //
+  // REGRESSION GUARD (2026-08-03, Rule 23): the engine action
+  // meta-set-advantage-audience shipped in merlin-core #327 with NO MCP route.
+  // The capability existed, nothing could call it, and nothing failed — caught
+  // only by the reachability test during the v1.36.0 release run. Exposed here
+  // rather than exempted, because it is genuinely useful on its own.
+  //
+  // Toggles Meta's Advantage+ audience expansion on an ad set. It does not
+  // create spend, but it does change who a live ad set delivers to, so it is
+  // destructive and carded rather than auto-approved.
+  tools.push(defineTool({
+    name: 'meta_set_advantage_audience',
+    description: 'Turn Meta Advantage+ audience expansion on or off for an ad set. Expansion lets Meta deliver beyond your defined targeting when it predicts better results, so switching it changes who sees a live ad set. Use when the user says "turn on advantage audience", "enable audience expansion", "stop Meta broadening my targeting", or "lock this ad set to my audience".',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: true,
+    blastRadius: (args) => ({
+      required: true,
+      reason: `Change Advantage+ audience expansion to "${(args && args.status) || 'unset'}" on ad set ${(args && args.adId) || '(unspecified)'} — this changes who a live ad set delivers to`,
+      action: 'set-advantage-audience',
+    }),
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      adId: z.string().describe('The ad set ID to change.'),
+      status: z.enum(['on', 'off']).describe('"on" lets Meta expand beyond your targeting; "off" holds delivery to the audience you defined.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-set-advantage-audience', args)),
+  }, tool, z, ctx));
+
   // ── meta_pause_asset ──────────────────────────────────────────────
   //
   // Pause a single ad, ad set, or entire campaign. Preview-gated when the
