@@ -93,6 +93,7 @@ const TOOL_ROUTING = [
       'list-audiences':    'meta-audit-audiences',
       'list-conversions':  'meta-audit-conversions',
       'list-catalog-sets': 'meta-catalog-sets',
+      'list-boosted-posts': 'meta-boosted-posts',
       'resolve-geo':       'meta-geo-resolve',
       // The only meta_audit action whose engine case carries no meta- prefix.
       'aware-audience':    'aware-audience',
