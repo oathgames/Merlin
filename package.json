@@ -20,9 +20,12 @@
   },
   "//overrides": "REGRESSION GUARD (2026-05-13, npm-audit-protobufjs): protobufjs@7.5.5 (transitive via kokoro-js → @huggingface/transformers → onnxruntime-web) shipped four HIGH advisories (GHSA-66FF-XGX4-VCHM code injection through bytes field defaults, GHSA-75PX-5XX7-5XC7 code-gen gadget after prototype pollution, GHSA-JVWF-75H9-CWGG process-wide DoS via unsafe option paths, GHSA-685M-2W69-288Q DoS via unbounded recursion) that broke v1.22.3's build-mac/win-installer at the npm-audit gate. Latest 7.x patch is 7.5.8; latest overall is 8.2.1. Override forces every transitive copy to ^7.5.8 (safer than the 8.x major bump for onnxruntime-web compatibility — protobufjs 7→8 changed API surface). Remove this override ONLY after confirming `npm ls protobufjs --omit=dev` shows >= 7.5.8 (or 8.x consumer) without it. The earlier fast-uri override (2026-05-09, GHSA-Q3J6-QGPJ-74H6 + GHSA-V39H-62P7-JPJC, patched in 3.1.2, transitive via @anthropic-ai/claude-agent-sdk → mcp-sdk → ajv) follows the same shape and is retained until the upstream chain bumps naturally.",
   "overrides": {
-    "fast-uri": "^3.1.2",
+    "fast-uri": "^3.1.5",
     "protobufjs": "^7.6.1",
-    "hono": "^4.12.25"
+    "hono": "^4.12.25",
+    "ip-address": "^10.4.0",
+    "tar": "^7.5.22",
+    "sharp": "^0.35.3"
   },
   "build": {
     "appId": "com.merlin.desktop",
