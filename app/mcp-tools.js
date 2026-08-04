@@ -1098,6 +1098,7 @@ function buildTools(tool, z, ctx) {
     blastRadius: (payload) => {
       const reasons = {
         'install-ga4':    'Stage GA4 funnel tags in a separate Merlin workspace (NOT live until you publish)',
+        'install-quiz-funnel': 'Stage per-step questionnaire tracking in a separate Merlin workspace (NOT live until you publish)',
         'create-version': 'Snapshot the staged workspace as a container version (NOT live until you publish)',
         'publish':        'PUBLISH to the live website — this changes what runs on every page for real visitors',
       };
@@ -1112,13 +1113,15 @@ function buildTools(tool, z, ctx) {
         // Read
         'discover', 'audit', 'list-versions',
         // Write — staged, then versioned, then published; each separately approved
-        'install-ga4', 'create-version', 'publish',
+        'install-ga4', 'install-quiz-funnel', 'create-version', 'publish',
       ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card. Nothing affects the live site until publish.'),
       brand: brandSchema,
       gtmAccountId: z.string().optional().describe('GTM account id from discover. Required once you have more than one.'),
       gtmContainerId: z.string().optional().describe('GTM container id from discover. Merlin never guesses this: one Google login commonly reaches several brand containers, and writing tags to the wrong website is silent.'),
       gtmWorkspaceId: z.string().optional().describe('Optional workspace override. Defaults to the Merlin staging workspace, then the container default.'),
       gtmMeasurementId: z.string().optional().describe('For install-ga4: the GA4 measurement id in G-XXXXXXX form (from Admin, Data Streams). Defaults to the configured value for the brand. A numeric property id is a DIFFERENT identifier and will be rejected.'),
+      gtmStepSelector: z.string().optional().describe('For install-quiz-funnel: CSS selector for the element clicked to advance a step. Defaults to button[data-question-index].'),
+      gtmStepAttribute: z.string().optional().describe('For install-quiz-funnel: the attribute on that element holding the step number. Defaults to data-question-index.'),
       versionName: z.string().optional().describe('For create-version: a human label for the snapshot.'),
       versionId: z.string().optional().describe('For publish: the exact version id to make live. Required — publishing "whatever is latest" is how an unreviewed change reaches a live site.'),
       approved: z.boolean().optional().describe('Approval flag for write actions. Set by the Electron approval card; set true here only with explicit user approval to proceed.'),

@@ -710,6 +710,28 @@ function bundledNodeArchOK(filePath) {
 
 // Check if a real standalone Node binary is bundled with the app.
 // Returns the absolute path or null if not available.
+// resolveClaudeCliEntry mirrors the SDK's own CLI lookup: the platform package
+// `@anthropic-ai/claude-agent-sdk-<platform>-<arch>` ships the real `claude`
+// binary, and modern SDK versions ship no cli.js at all. Returns null when
+// nothing is found so the caller can fail fast with a real message rather than
+// spawning a nonexistent path and hanging.
+function resolveClaudeCliEntry(sdkDir) {
+  const modulesDir = path.dirname(path.dirname(sdkDir)); // .../node_modules
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const candidates = [];
+  const arch = process.arch;
+  if (process.platform === 'linux') {
+    candidates.push(path.join(modulesDir, '@anthropic-ai', `claude-agent-sdk-linux-${arch}-musl`, `claude${ext}`));
+  }
+  candidates.push(path.join(modulesDir, '@anthropic-ai', `claude-agent-sdk-${process.platform}-${arch}`, `claude${ext}`));
+  for (const p of candidates) {
+    try { fs.accessSync(p, fs.constants.X_OK); return { kind: 'binary', path: p }; } catch {}
+  }
+  const legacy = path.join(sdkDir, 'cli.js');
+  try { fs.accessSync(legacy, fs.constants.R_OK); return { kind: 'js', path: legacy }; } catch {}
+  return null;
+}
+
 function getBundledNodePath() {
   const binaryName = process.platform === 'win32' ? 'node.exe' : 'node';
   if (app.isPackaged) {
@@ -4526,7 +4548,20 @@ ipcMain.handle('trigger-claude-login', async () => {
         ? path.join(path.dirname(app.getPath('exe')), '..', 'Resources', 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk')
         : path.join(path.dirname(app.getPath('exe')), 'resources', 'app.asar.unpacked', 'node_modules', '@anthropic-ai', 'claude-agent-sdk'))
       : path.join(__dirname, '..', 'node_modules', '@anthropic-ai', 'claude-agent-sdk');
-    const cliJs = path.join(sdkDir, 'cli.js');
+    // REGRESSION GUARD (2026-08-03, sdk-cli-entry-moved): resolve the CLI the
+    // same way the SDK itself does, instead of hardcoding cli.js.
+    //
+    // @anthropic-ai/claude-agent-sdk >= ~0.2.x ships NO cli.js. sdk.mjs resolves
+    // `@anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude[.exe]` from the
+    // platform package. Hardcoding cli.js made spawn fail instantly, the child
+    // died before opening a browser, and the renderer sat on "Opening Claude
+    // sign-in" until the 5-minute timeout. It read as an auth/token problem and
+    // is actually a missing file. Found 2026-08-03 when brand-add could not
+    // sign in on a fully authenticated install.
+    //
+    // Order: platform binary (current), then cli.js (older SDKs), then fail
+    // LOUDLY. Never hang: a missing CLI must surface immediately.
+    const cliEntry = resolveClaudeCliEntry(sdkDir);
 
     console.log('[claude-login] starting — bundledNode:', !!bundledNode, 'sdkDir:', sdkDir);
 
@@ -4551,10 +4586,24 @@ ipcMain.handle('trigger-claude-login', async () => {
       if (!bundledNode) loginEnv.ELECTRON_RUN_AS_NODE = '1';
 
       const useBundled = !!bundledNode;
-      const child = spawn(nodeExe, [cliJs, 'auth', 'login'], {
+      if (!cliEntry) {
+        return finish({
+          success: false,
+          error: 'Claude sign-in could not start because the Claude CLI is missing from this installation. Reinstall Merlin, or run /update, to restore it.',
+        });
+      }
+
+      // A native binary is launched directly. Only the legacy cli.js path
+      // needs a Node interpreter in front of it.
+      const useNode = cliEntry.kind === 'js';
+      const cmd = useNode ? nodeExe : cliEntry.path;
+      const args = useNode ? [cliEntry.path, 'auth', 'login'] : ['auth', 'login'];
+      console.log('[claude-login] cli kind:', cliEntry.kind, 'cmd:', cmd);
+
+      const child = spawn(cmd, args, {
         env: loginEnv,
         stdio: ['pipe', 'pipe', 'pipe'],
-        shell: !useBundled, // false for real binary, true for wrapper script
+        shell: useNode && !useBundled, // wrapper script only
         windowsHide: true,
       });
 

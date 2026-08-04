@@ -19,7 +19,7 @@ const policy = require('./mcp-approval-policy');
 
 // The six actions the tool declares, and the engine case each must route to.
 const GTM_READ = ['discover', 'audit', 'list-versions'];
-const GTM_WRITE = ['install-ga4', 'create-version', 'publish'];
+const GTM_WRITE = ['install-ga4', 'install-quiz-funnel', 'create-version', 'publish'];
 const GTM_ACTIONS = [...GTM_READ, ...GTM_WRITE];
 
 test('every declared GTM action has a matching case in the Go dispatcher', () => {
@@ -61,6 +61,7 @@ test('every declared GTM param exists on the Go Command struct', () => {
   const params = [
     'gtmAccountId', 'gtmContainerId', 'gtmWorkspaceId',
     'gtmMeasurementId', 'versionName', 'versionId',
+    'gtmStepSelector', 'gtmStepAttribute',
   ];
   for (const p of params) {
     assert.ok(
