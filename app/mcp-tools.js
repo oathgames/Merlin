@@ -984,15 +984,20 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── google_analytics ───────────────────────────────────
-  // GA4 read + write surface. Six READ actions inspect a property
-  // (discover/traffic/conversions/attribution/landing-pages/audit-property);
-  // seven WRITE actions program the measurement plan (create/archive
-  // key events, create custom dimensions/metrics, create audiences, update
-  // property settings, attach the standard Shopify ecommerce events).
+  // GA4 read + write surface. Eight READ actions inspect a property
+  // (discover/traffic/conversions/attribution/landing-pages/audit-property/
+  // realtime/funnel); eight WRITE actions program the measurement plan
+  // (create/archive key events, create custom dimensions/metrics, create
+  // audiences, update property settings, update data-stream Enhanced
+  // Measurement, attach the standard Shopify ecommerce events).
+  //
+  // update-stream-settings is the remediation half of audit-property: the
+  // audit already reports "Enhanced Measurement off" as a finding, and
+  // before this action the only fix was manual work in the GA4 console.
   //
   // SAFETY MODEL: destructive: true because the tool ships writes. preview
-  // is gated PER-ACTION via blastRadius below — the seven write actions
-  // require the approval-card → confirm_token round-trip, the six read
+  // is gated PER-ACTION via blastRadius below: the eight write actions
+  // require the approval-card → confirm_token round-trip, the read
   // actions skip it. The Go binary's analytics.go ALSO refuses any write
   // unless cmd.Approved is true (Hard-Won Security Rule 18) — defense in
   // depth so a bypass at this layer still hits the binary's check. The
@@ -1006,7 +1011,7 @@ function buildTools(tool, z, ctx) {
   // GA4 otherwise requires.
   tools.push(defineTool({
     name: 'google_analytics',
-    description: 'Read + write Google Analytics 4. READ: discover property + measurement IDs, pull traffic (sessions/users/engagement) by date or channel, list key conversion events with revenue, compare first-touch vs last-touch attribution by channel, walk landing pages with per-URL engagement metrics (auto-populates seo-signals.json), audit a property for health (key events, data stream, enhanced measurement, industry category), pull realtime activity (last 30 min by country / page / device — no date range), or run a funnel report against ordered event steps (defaults to the standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase). WRITE (programmatic measurement-plan setup that powers funnel explorations in the GA4 UI): create-key-event marks an event as a conversion; create-custom-dimension / create-custom-metric add reportable fields scoped to event/user/item; create-audience defines a cohort for funnel comparison; update-property-settings patches industry category / time zone / currency / display name; attach-shopify-events one-click wires the standard ecommerce funnel (purchase / add_to_cart / begin_checkout / view_item / view_item_list / search / sign_up / generate_lead) idempotently. Every write requires an approval card — the renderer prompts the user before the call lands. Use when the user says "how is organic traffic", "sessions last week", "what\'s converting in GA", "who is on my site right now", "live visitors", "where is my checkout funnel leaking", "audit my GA4 property", "set up my GA4 conversions", "wire up GA4 for shopify", "mark X as a conversion", "create a GA4 audience for cart abandoners", or "fix my GA4 timezone".',
+    description: 'Read + write Google Analytics 4. READ: discover property + measurement IDs, pull traffic (sessions/users/engagement) by date or channel, list key conversion events with revenue, compare first-touch vs last-touch attribution by channel, walk landing pages with per-URL engagement metrics (auto-populates seo-signals.json), audit a property for health (key events, data stream, enhanced measurement, industry category), pull realtime activity (last 30 min by country / page / device — no date range), or run a funnel report against ordered event steps (defaults to the standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase). WRITE (programmatic measurement-plan setup that powers funnel explorations in the GA4 UI): create-key-event marks an event as a conversion; create-custom-dimension / create-custom-metric add reportable fields scoped to event/user/item; create-audience defines a cohort for funnel comparison; update-property-settings patches industry category / time zone / currency / display name; update-stream-settings turns Enhanced Measurement on or off per signal on a web data stream (master switch plus scrolls, outbound clicks, site search, video engagement, file downloads, form interactions, and page changes for single-page-app route tracking) and is the fix for the "Enhanced Measurement off" finding audit-property reports; attach-shopify-events one-click wires the standard ecommerce funnel (purchase / add_to_cart / begin_checkout / view_item / view_item_list / search / sign_up / generate_lead) idempotently. Every write requires an approval card — the renderer prompts the user before the call lands. Use when the user says "how is organic traffic", "sessions last week", "what\'s converting in GA", "who is on my site right now", "live visitors", "where is my checkout funnel leaking", "audit my GA4 property", "set up my GA4 conversions", "wire up GA4 for shopify", "mark X as a conversion", "create a GA4 audience for cart abandoners", "fix my GA4 timezone", "turn on enhanced measurement", or "GA4 is not tracking my quiz steps / SPA page views".',
     destructive: true,
     idempotent: true,
     costImpact: 'api',
@@ -1024,6 +1029,7 @@ function buildTools(tool, z, ctx) {
         'create-custom-metric',
         'create-audience',
         'update-property-settings',
+        'update-stream-settings',
         'attach-shopify-events',
       ]);
       if (writeActions.has(payload && payload.action)) {
@@ -1034,6 +1040,7 @@ function buildTools(tool, z, ctx) {
           'create-custom-metric':        'Add a GA4 custom metric',
           'create-audience':             'Create a GA4 audience',
           'update-property-settings':    'Patch GA4 property settings',
+          'update-stream-settings':      'Change which visitor interactions GA4 measures automatically on the website',
           'attach-shopify-events':       'Mark the 8 standard ecommerce events as GA4 conversions (idempotent)',
         };
         return { required: true, reason: reasons[payload.action], action: payload.action };
@@ -1050,6 +1057,7 @@ function buildTools(tool, z, ctx) {
         'create-custom-dimension', 'create-custom-metric',
         'create-audience',
         'update-property-settings',
+        'update-stream-settings',
         'attach-shopify-events',
       ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card.'),
       brand: brandSchema,
@@ -1070,6 +1078,8 @@ function buildTools(tool, z, ctx) {
       analyticsAudience: z.any().optional().describe('Full Audience resource body (filterClauses, membershipDurationDays, displayName, etc). Open-ended JSON — passed through to the GA4 Admin API verbatim.'),
       analyticsKeyEventName: z.string().optional().describe('For archive-key-event: the GA4 event name (or full keyEvents resource path).'),
       patchBody: z.record(z.any()).optional().describe('For update-property-settings: field map. Allowed: industryCategory, timeZone, currencyCode, displayName.'),
+      analyticsStreamId: z.string().optional().describe('For update-stream-settings: which GA4 data stream to patch. Bare numeric id or full "properties/{p}/dataStreams/{s}" path. Omit when the property has exactly one web stream; the engine resolves it and refuses to guess when there are several.'),
+      analyticsStreamSettings: z.record(z.boolean()).optional().describe('For update-stream-settings: sparse map of Enhanced Measurement toggles. Keys: streamEnabled (master switch), scrollsEnabled, outboundClicksEnabled, siteSearchEnabled, videoEngagementEnabled, fileDownloadsEnabled, formInteractionsEnabled, pageChangesEnabled (SPA route changes). Only the keys you pass are changed. Turning on a sub-signal while the master switch is off is refused, since it would collect nothing. Include streamEnabled:true in the same call.'),
       approved: z.boolean().optional().describe('Approval flag for write actions. Set by the Electron approval card; set true here only with explicit user approval to proceed.'),
     },
     // Handler does NOT auto-set args.approved — that bypasses the safety

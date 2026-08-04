@@ -163,6 +163,14 @@ jobs:
       # failure produces a type error, a 404, or a log line on its own.
       - name: MCP Meta reachability (params + actions)
         run: node --test app/mcp-meta-param-reachability.test.js app/mcp-meta-action-reachability.test.js
+      # Same failure class, GA4 surface. google-analytics-update-stream-settings
+      # is the write half of a read that already shipped: audit-property has
+      # long reported "Enhanced Measurement off" with no way to fix it from
+      # Merlin. Its two params (analyticsStreamId, analyticsStreamSettings)
+      # are declared-or-stripped in exactly the way Rule 23 describes, and the
+      # nested boolean map makes a silent strip especially easy to miss.
+      - name: MCP Analytics reachability (params + write gate)
+        run: node --test app/mcp-analytics-param-reachability.test.js
       # Rate-limit stress — the "never get a client banned" canary. If
       # any assertion flips, a real brand is about to hit a platform's
       # rate-limit review queue.
