@@ -408,6 +408,16 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     costImpact: 'none',
     brandRequired: true,
     concurrency: { platform: 'meta' },
+    // Deliberate opt-out of the blast-radius gate, not an oversight: this is
+    // the stop-spend direction, so the failure mode a preview token guards
+    // against (an unintended large action) does not exist here — the
+    // unintended action would be NOT pausing. It matches the "never block the
+    // brake" posture that keeps kill/activate out of the pixel and page
+    // reference gates (Rules 20/22), and the host-side routing agrees:
+    // meta_batch_pause maps to 'audit' (READ_ONLY → auto-approve) in
+    // mcp-approval-policy.js, while its spend-firing sibling
+    // meta_batch_activate takes preview: true + blastRadius per Rule 19.
+    preview: false,
     input: batchStatusInput,
     handler: async (args) => toEnvelope(
       await runBinary(ctx, 'meta-batch-status', { ...args, batchStatus: 'PAUSED' })),
