@@ -1749,6 +1749,9 @@ function buildTools(tool, z, ctx) {
       productHook: z.string().optional().describe('For image-to-video: the motion prompt (passed to the i2v model verbatim)'),
       referenceImages: z.array(z.string()).optional().describe('Explicit image file paths. With an i2v-capable falModel, the FIRST image becomes the source frame for image-to-video (the animated-statics path); the output inherits its aspect ratio. Takes precedence over the product references folder.'),
       referencesDir: z.string().optional().describe('Directory to scan for reference images (i2v source) when referenceImages is not passed.'),
+      skipCaptions: z.boolean().optional().describe('true = never burn captions. Required for animated statics/cinemagraphs: the pipeline otherwise synthesizes a default script and burns it over the scene.'),
+      skipCuts: z.boolean().optional().describe('true = no platform cuts; the master keeps its source aspect (a 1:1 source stays 1:1).'),
+      skipMusic: z.boolean().optional().describe('true = no background music bed.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'generate', args)),
   }, tool, z, ctx));
