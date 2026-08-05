@@ -1746,7 +1746,9 @@ function buildTools(tool, z, ctx) {
       mode: z.string().optional().describe('"talking-head", "product-showcase", "auto"'),
       avatarId: z.string().optional(),
       voiceId: z.string().optional(),
-      productHook: z.string().optional(),
+      productHook: z.string().optional().describe('For image-to-video: the motion prompt (passed to the i2v model verbatim)'),
+      referenceImages: z.array(z.string()).optional().describe('Explicit image file paths. With an i2v-capable falModel, the FIRST image becomes the source frame for image-to-video (the animated-statics path); the output inherits its aspect ratio. Takes precedence over the product references folder.'),
+      referencesDir: z.string().optional().describe('Directory to scan for reference images (i2v source) when referenceImages is not passed.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'generate', args)),
   }, tool, z, ctx));
