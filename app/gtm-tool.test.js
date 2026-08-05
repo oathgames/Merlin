@@ -17,12 +17,31 @@ const CORE = path.resolve(APP, '../../autocmo-core');
 const toolsSrc = fs.readFileSync(path.join(APP, 'mcp-tools.js'), 'utf8');
 const policy = require('./mcp-approval-policy');
 
+// REGRESSION GUARD (2026-08-05, sweep-red incident): the Go half of this file
+// lives in the PRIVATE sibling repo, which is not checked out by the public
+// repo's CI — `actions/checkout` there fetches oathgames/Merlin alone, so
+// `../../autocmo-core` does not exist on the runner. Reading it unguarded threw
+// ENOENT and turned the workflow's final "Sweep — run every app/*.test.js" step
+// red for every push from v1.36.0 (2026-08-04) onward. That is the same
+// ten-days-red failure class the `npm ci` guard above this workflow's sweep
+// documents: a canary nobody reads stops gating anything, and the next red
+// step (the meta_batch_pause annotation violation) then hid behind it because
+// the job dies at the first failing step and the sweep never ran at all.
+//
+// Every other cross-repo test in app/ already keys off this exact pattern
+// (mcp-meta-action-reachability.test.js, mcp-action-go-parity.test.js) so the
+// assertions stay live in a workspace checkout, where they actually catch Rule
+// 23 drift, and report as SKIP rather than FAIL in public-repo CI. Do NOT
+// "fix" a future ENOENT here by deleting the assertion — add the skip.
+const ENGINE_AVAILABLE = fs.existsSync(path.join(CORE, 'main.go'));
+const SKIP_NO_ENGINE = !ENGINE_AVAILABLE && 'autocmo-core sibling repo not present (public-repo CI)';
+
 // The six actions the tool declares, and the engine case each must route to.
 const GTM_READ = ['discover', 'audit', 'list-versions'];
 const GTM_WRITE = ['install-ga4', 'install-quiz-funnel', 'create-version', 'publish'];
 const GTM_ACTIONS = [...GTM_READ, ...GTM_WRITE];
 
-test('every declared GTM action has a matching case in the Go dispatcher', () => {
+test('every declared GTM action has a matching case in the Go dispatcher', { skip: SKIP_NO_ENGINE }, () => {
   const mainGo = fs.readFileSync(path.join(CORE, 'main.go'), 'utf8');
   for (const action of GTM_ACTIONS) {
     assert.ok(
@@ -32,7 +51,7 @@ test('every declared GTM action has a matching case in the Go dispatcher', () =>
   }
 });
 
-test('every gtm- case in the Go dispatcher is reachable from MCP', () => {
+test('every gtm- case in the Go dispatcher is reachable from MCP', { skip: SKIP_NO_ENGINE }, () => {
   const mainGo = fs.readFileSync(path.join(CORE, 'main.go'), 'utf8');
   const cases = [...mainGo.matchAll(/case "gtm-([a-z0-9-]+)":/g)].map((m) => m[1]);
   assert.ok(cases.length >= GTM_ACTIONS.length, `found only ${cases.length} gtm- cases`);
@@ -56,7 +75,7 @@ test('the tool declares every action in its zod enum', () => {
 // A param declared in zod but absent from the Go Command struct is accepted by
 // the tool and then silently dropped, which is the shape of the bulk-push bug
 // that told callers to set a flag the app had no way to set.
-test('every declared GTM param exists on the Go Command struct', () => {
+test('every declared GTM param exists on the Go Command struct', { skip: SKIP_NO_ENGINE }, () => {
   const mainGo = fs.readFileSync(path.join(CORE, 'main.go'), 'utf8');
   const params = [
     'gtmAccountId', 'gtmContainerId', 'gtmWorkspaceId',
@@ -71,7 +90,7 @@ test('every declared GTM param exists on the Go Command struct', () => {
   }
 });
 
-test('config fields the connector reads exist on the Go Config struct', () => {
+test('config fields the connector reads exist on the Go Config struct', { skip: SKIP_NO_ENGINE }, () => {
   const mainGo = fs.readFileSync(path.join(CORE, 'main.go'), 'utf8');
   for (const f of ['gtmAccountId', 'gtmContainerId', 'gtmWorkspaceId']) {
     assert.ok(
@@ -152,13 +171,19 @@ test('the GTM API host is blocked from direct access by the hook', () => {
   );
 });
 
-test('the tool routes to a dedicated rate-limit platform bucket', () => {
+// Split in two on purpose: the app-side half needs no sibling repo, so it stays
+// live in public-repo CI. Guarding the whole assertion behind SKIP_NO_ENGINE
+// would have silently stopped checking the declaration that IS in this repo.
+test('the tool declares its own rate-limit platform bucket', () => {
   const start = toolsSrc.indexOf("name: 'google_tag_manager'");
   const block = toolsSrc.slice(start, start + 3000);
   assert.ok(
     block.includes("platform: 'google_tag_manager'"),
     'tool must declare its own concurrency platform so GTM calls do not share the Ads budget'
   );
+});
+
+test('the declared bucket exists in the Go rate limiter', { skip: SKIP_NO_ENGINE }, () => {
   const rl = fs.readFileSync(path.join(CORE, 'ratelimit_preflight.go'), 'utf8');
   assert.ok(
     rl.includes('"google_tag_manager":'),
@@ -166,7 +191,7 @@ test('the tool routes to a dedicated rate-limit platform bucket', () => {
   );
 });
 
-test('the OAuth factory requests the tagmanager scopes', () => {
+test('the OAuth factory requests the tagmanager scopes', { skip: SKIP_NO_ENGINE }, () => {
   const oauth = fs.readFileSync(path.join(CORE, 'oauth.go'), 'utf8');
   for (const scope of [
     'tagmanager.readonly',
@@ -179,7 +204,7 @@ test('the OAuth factory requests the tagmanager scopes', () => {
 
 // Google silently strips scopes that are not configured in Cloud Console, which
 // is exactly how analytics.edit shipped dead. The guard has to stay findable.
-test('the scope addition carries its console-prerequisite guard', () => {
+test('the scope addition carries its console-prerequisite guard', { skip: SKIP_NO_ENGINE }, () => {
   const oauth = fs.readFileSync(path.join(CORE, 'oauth.go'), 'utf8');
   assert.ok(
     oauth.includes('gtm-scope-console-prereq'),
@@ -187,7 +212,7 @@ test('the scope addition carries its console-prerequisite guard', () => {
   );
 });
 
-test('the privacy policy discloses Tag Manager access', () => {
+test('the privacy policy discloses Tag Manager access', { skip: SKIP_NO_ENGINE }, () => {
   const worker = fs.readFileSync(path.join(CORE, 'landing/worker.js'), 'utf8');
   assert.ok(
     worker.includes('tagmanager.readonly'),
