@@ -991,12 +991,25 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── google_analytics ───────────────────────────────────
-  // GA4 read + write surface. Eight READ actions inspect a property
+  // GA4 read + write surface. Ten READ actions inspect a property
   // (discover/traffic/conversions/attribution/landing-pages/audit-property/
-  // realtime/funnel); eight WRITE actions program the measurement plan
-  // (create/archive key events, create custom dimensions/metrics, create
-  // audiences, update property settings, update data-stream Enhanced
-  // Measurement, attach the standard Shopify ecommerce events).
+  // realtime/funnel/event-breakdown/step-funnel); eight WRITE actions program
+  // the measurement plan (create/archive key events, create custom
+  // dimensions/metrics, create audiences, update property settings, update
+  // data-stream Enhanced Measurement, attach the standard Shopify ecommerce
+  // events).
+  //
+  // event-breakdown / step-funnel are the READ half of create-custom-dimension.
+  // Before they shipped, Merlin could REGISTER a custom dimension and
+  // instrument an event with it but had no action that could group or filter a
+  // report by one, so anything measured that way was write-only. Found live on
+  // brand "revive" (property 539215592): gtm-install-quiz-funnel instruments a
+  // `quiz_step` event carrying step identity as event PARAMETERS, four matching
+  // dimensions were registered, the event fired correctly, and "which quiz
+  // question do people abandon on" was unanswerable: funnel takes event NAMES
+  // and a questionnaire emits one name with a varying parameter, and traffic
+  // groups by date or channel only. See the REGRESSION GUARD in
+  // autocmo-core/analytics_event_breakdown.go.
   //
   // update-stream-settings is the remediation half of audit-property: the
   // audit already reports "Enhanced Measurement off" as a finding, and
@@ -1018,7 +1031,7 @@ function buildTools(tool, z, ctx) {
   // GA4 otherwise requires.
   tools.push(defineTool({
     name: 'google_analytics',
-    description: 'Read + write Google Analytics 4. READ: discover property + measurement IDs, pull traffic (sessions/users/engagement) by date or channel, list key conversion events with revenue, compare first-touch vs last-touch attribution by channel, walk landing pages with per-URL engagement metrics (auto-populates seo-signals.json), audit a property for health (key events, data stream, enhanced measurement, industry category), pull realtime activity (last 30 min by country / page / device — no date range), or run a funnel report against ordered event steps (defaults to the standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase). WRITE (programmatic measurement-plan setup that powers funnel explorations in the GA4 UI): create-key-event marks an event as a conversion; create-custom-dimension / create-custom-metric add reportable fields scoped to event/user/item; create-audience defines a cohort for funnel comparison; update-property-settings patches industry category / time zone / currency / display name; update-stream-settings turns Enhanced Measurement on or off per signal on a web data stream (master switch plus scrolls, outbound clicks, site search, video engagement, file downloads, form interactions, and page changes for single-page-app route tracking) and is the fix for the "Enhanced Measurement off" finding audit-property reports; attach-shopify-events one-click wires the standard ecommerce funnel (purchase / add_to_cart / begin_checkout / view_item / view_item_list / search / sign_up / generate_lead) idempotently. Every write requires an approval card — the renderer prompts the user before the call lands. Use when the user says "how is organic traffic", "sessions last week", "what\'s converting in GA", "who is on my site right now", "live visitors", "where is my checkout funnel leaking", "audit my GA4 property", "set up my GA4 conversions", "wire up GA4 for shopify", "mark X as a conversion", "create a GA4 audience for cart abandoners", "fix my GA4 timezone", "turn on enhanced measurement", or "GA4 is not tracking my quiz steps / SPA page views".',
+    description: 'Read + write Google Analytics 4. READ: discover property + measurement IDs, pull traffic (sessions/users/engagement) by date or channel, list key conversion events with revenue, compare first-touch vs last-touch attribution by channel, walk landing pages with per-URL engagement metrics (auto-populates seo-signals.json), audit a property for health (key events, data stream, enhanced measurement, industry category), pull realtime activity (last 30 min by country / page / device — no date range), or run a funnel report against ordered event steps (defaults to the standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase). event-breakdown groups ONE event by ONE dimension and is the only way to read back a custom dimension Merlin registered. Pass analyticsEventName plus analyticsDimension as the GA4 display name ("Quiz Step Number"), the parameter name ("step_index"), or a built-in dimension ("pagePath"). step-funnel is the same query ordered NUMERICALLY by step with per-step drop-off and the worst transition named, which is how you answer "which question do people abandon on" for a multi-step quiz, questionnaire, or checkout wizard. Use it instead of funnel whenever the steps are values of one event rather than separate event names, because funnel takes event NAMES and a questionnaire emits a single event with a varying step parameter. WRITE (programmatic measurement-plan setup that powers funnel explorations in the GA4 UI): create-key-event marks an event as a conversion; create-custom-dimension / create-custom-metric add reportable fields scoped to event/user/item; create-audience defines a cohort for funnel comparison; update-property-settings patches industry category / time zone / currency / display name; update-stream-settings turns Enhanced Measurement on or off per signal on a web data stream (master switch plus scrolls, outbound clicks, site search, video engagement, file downloads, form interactions, and page changes for single-page-app route tracking) and is the fix for the "Enhanced Measurement off" finding audit-property reports; attach-shopify-events one-click wires the standard ecommerce funnel (purchase / add_to_cart / begin_checkout / view_item / view_item_list / search / sign_up / generate_lead) idempotently. Every write requires an approval card — the renderer prompts the user before the call lands. Use when the user says "how is organic traffic", "sessions last week", "what\'s converting in GA", "who is on my site right now", "live visitors", "where is my checkout funnel leaking", "which quiz question do people drop off on", "where do people abandon the questionnaire", "break down quiz_step by step number", "audit my GA4 property", "set up my GA4 conversions", "wire up GA4 for shopify", "mark X as a conversion", "create a GA4 audience for cart abandoners", "fix my GA4 timezone", "turn on enhanced measurement", or "GA4 is not tracking my quiz steps / SPA page views".',
     destructive: true,
     idempotent: true,
     costImpact: 'api',
@@ -1058,7 +1071,7 @@ function buildTools(tool, z, ctx) {
       action: z.enum([
         // Read
         'discover', 'traffic', 'conversions', 'attribution', 'landing-pages', 'audit-property',
-        'realtime', 'funnel',
+        'realtime', 'funnel', 'event-breakdown', 'step-funnel',
         // Write — measurement plan setup
         'create-key-event', 'archive-key-event',
         'create-custom-dimension', 'create-custom-metric',
@@ -1072,9 +1085,10 @@ function buildTools(tool, z, ctx) {
       level: z.string().optional().describe('For traffic: "date" (default) or "channel". For realtime: "country" (default), "page", or "device".'),
       limit: z.number().optional().describe('Max rows to return (clamps to 1000).'),
       analyticsFunnelSteps: z.array(z.string()).optional().describe('For funnel: ordered list of GA4 event names (≥2). Empty → standard DTC ecommerce funnel: view_item → add_to_cart → begin_checkout → purchase.'),
+      analyticsDimension: z.string().optional().describe('REQUIRED for event-breakdown / step-funnel: the dimension to group by. Accepts a custom dimension\'s display name as shown in the GA4 UI ("Quiz Step Number"), its event parameter name ("step_index"), an explicit Data API name ("customEvent:step_index"), or any built-in GA4 dimension ("pagePath", "deviceCategory"). Merlin resolves display name → parameter name against the property\'s registered custom dimensions; run audit-property to see what is registered.'),
       analyticsPropertyId: z.string().optional().describe('Per-call override for the configured GA4 property. Useful for agencies running against multiple properties under one Google account.'),
       // ── Write fields ─────────────────────────────────────────
-      analyticsEventName: z.string().optional().describe('For create-key-event: the event name (e.g. "purchase", "sign_up").'),
+      analyticsEventName: z.string().optional().describe('The GA4 event name (e.g. "purchase", "sign_up", "quiz_step"). Required for create-key-event, and for event-breakdown / step-funnel where it is the event the breakdown is filtered to (EXACT match: an unfiltered breakdown folds every other event into one "(not set)" row that reads as "most users never answered").'),
       analyticsCountingMethod: z.enum(['ONCE_PER_EVENT', 'ONCE_PER_SESSION']).optional().describe('Default ONCE_PER_EVENT.'),
       analyticsDefaultValue: z.number().optional().describe('Default conversion value for revenue tagging on create-key-event.'),
       analyticsParameterName: z.string().optional().describe('For create-custom-dimension / create-custom-metric: the GA4 event parameter name to map.'),
