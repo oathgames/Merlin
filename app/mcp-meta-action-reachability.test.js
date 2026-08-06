@@ -540,6 +540,45 @@ test('meta_upload_customer_list refuses an empty inputPath before hitting the bi
   assert.equal(execFileCalls.length, 0, 'a missing path must not reach the binary');
 });
 
+// Rule 23 both halves for Advertising Settings -> existing customers.
+// The list IS the payload: an empty array is a meaningful CLEAR, and an absent
+// key means report-only in the engine, so the two must stay distinguishable all
+// the way into the --cmd JSON.
+test('meta_set_existing_customers routes the audience list through to --cmd', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_existing_customers').handler({
+    brand: 'acme', existingCustomerAudienceIds: ['120248777097950637', '120248501483500637'],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-existing-customers');
+  assert.deepEqual(cmd.existingCustomerAudienceIds,
+    ['120248777097950637', '120248501483500637'],
+    'the audience ids must reach the binary in order and unmodified');
+});
+
+test('meta_set_existing_customers transmits an empty list as a real clear', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_existing_customers').handler({ brand: 'acme', existingCustomerAudienceIds: [] });
+  const cmd = lastCmd();
+  assert.ok(Array.isArray(cmd.existingCustomerAudienceIds),
+    'an empty array must survive the runBinary key copy — dropping it turns a CLEAR into a report-only read that would report success for a write that never happened');
+  assert.equal(cmd.existingCustomerAudienceIds.length, 0);
+});
+
+test('meta_set_existing_customers refuses a non-array before hitting the binary', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_set_existing_customers').handler({ brand: 'acme' });
+  assert.match(JSON.stringify(res), /existingCustomerAudienceIds must be an array/);
+  assert.equal(execFileCalls.length, 0, 'a malformed write must not reach the binary');
+});
+
+test('meta_audit exposes the existing-customers READ and maps it to the engine action', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_audit').handler({ brand: 'acme', action: 'existing-customers' });
+  assert.equal(lastCmd().action, 'meta-existing-customers',
+    'the read must route to the same engine action, without the meta- prefix fallthrough');
+});
+
 test('meta_create_engagement_audience routes source + event through to --cmd', async () => {
   execFileCalls.length = 0;
   await tool('meta_create_engagement_audience').handler({

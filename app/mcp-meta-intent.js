@@ -775,6 +775,41 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_set_existing_customers ────────────────────
+  // Advertising Settings -> existing customers. ACCOUNT-LEVEL with REPLACE
+  // semantics, which is why it cards despite spending nothing: a wrong list
+  // mis-classifies new vs repeat buyers across every campaign at once, and it
+  // is what an Advantage+ Shopping existing-customer budget cap is measured
+  // against. idempotent: TRUE, honestly — the write sets the list to exactly
+  // what was passed, so a retry converges instead of duplicating (the opposite
+  // of meta_create_custom_audience below).
+  tools.push(defineTool({
+    name: 'meta_set_existing_customers',
+    description: 'Designate which custom audiences represent EXISTING CUSTOMERS (people who already bought) in the Meta ad account Advertising Settings. Meta uses this to separate new from repeat buyers in reporting and to enforce an Advantage+ Shopping existing-customer budget cap; with nothing designated it cannot make the distinction and optimises toward whoever converts cheapest, which on a repeat-purchase brand means buyers who were coming back anyway. REPLACE semantics: pass the complete desired list, not an addition. Passing an empty array CLEARS the designation. Account-level, so it affects every campaign at once. Read the current state first with meta_audit action:"existing-customers" and get ids from meta_audit action:"list-audiences". There is no API for the "engaged audience" half of Advertising Settings; that stays a manual Ads Manager task.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      existingCustomerAudienceIds: z.array(z.string()).describe('Complete list of custom audience ids to designate as existing customers. REPLACES the current list. Pass [] to clear it. Every id must belong to THIS brand ad account — an audience from another account in the same Business Manager reads back fine but Meta refuses it on the write.'),
+    },
+    handler: async (args) => {
+      // Reject a missing list rather than passing it through. The engine reads
+      // an ABSENT key as report-only mode and an EMPTY array as "clear", so a
+      // malformed write would silently become a no-op read and report success
+      // for a write that never happened.
+      if (!Array.isArray(args.existingCustomerAudienceIds)) {
+        return validationEnvelope('existingCustomerAudienceIds must be an array of custom audience ids. Pass [] to clear the designation, or call meta_audit action:"existing-customers" to read the current list without changing it.');
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-existing-customers', args), {
+        nextSuggested: ['meta_audit'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_create_custom_audience ───────────────────────────────────
   //
   // Mint one arbitrary pixel WEBSITE custom audience. meta_prepare_retargeting

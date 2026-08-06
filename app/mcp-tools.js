@@ -272,6 +272,9 @@ const META_AUDIT_ACTION_MAP = Object.freeze({
   // a boosted post is identified by source_instagram_media_id / object_story_id,
   // never by a permalink, which every IG ad has including dark posts.
   'list-boosted-posts':         'meta-boosted-posts',
+  // Advertising Settings -> existing customers. READ side only; the write is
+  // meta_set_existing_customers, which cards because it is account-level.
+  'existing-customers':         'meta-existing-customers',
   'resolve-geo':                'meta-geo-resolve',
   'aware-audience':             'aware-audience',
 });
@@ -963,6 +966,7 @@ function buildTools(tool, z, ctx) {
         'resolve-geo',
         'aware-audience',
         'list-boosted-posts',
+        'existing-customers',
       ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall. list-adsets is the account inventory read: every ad set with parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link — pass status:"paused" to locate staged drafts, status:"all" to see everything (default "active"). list-ads lists the ads inside ONE ad set (pass targetAdSetId) with creative format and per-placement image hashes. inspect-adset dumps one ad set\'s settings plus a sample creative\'s toggles for cloning a winner (pass the AD SET id via adId). list-videos lists videos already uploaded to the ad account. list-catalog-sets lists a catalog\'s product sets + feeds (pass catalogId) — the source of the productSetId that meta_dpa_setup takes. resolve-geo resolves US state names in geoRegions AND city names in geoCities (\"Dallas, TX\") to Meta keys so a geo build can be verified before it runs; city names are not unique, so it reports the resolved city with its state. aware-audience returns the tiered warm/addressable audience pool. list-boosted-posts lists every ORGANIC social post the account has run ads against, deduped, with a link to each and the ads using it (answers \"which of our posts have we put spend behind?\"); it identifies a boost by source_instagram_media_id or object_story_id, never by instagram_permalink_url, which every Instagram-placed ad carries including dark posts that were never published organically.'),
       brand: brandSchema.describe('Brand name for vault-scoped Meta credentials.'),
       adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel and audit-events: optional pixel id override (defaults to brand cfg metaPixelId). For inspect-adset: the AD SET id to inspect.'),
