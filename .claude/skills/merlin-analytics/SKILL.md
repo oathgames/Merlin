@@ -152,7 +152,28 @@ GA4 is the source of truth for site behavior, organic traffic acquisition, and m
 | `conversions` | Every key event with eventCount + revenue. |
 | `attribution` | First-touch vs last-touch by channel group — diagnose why Shopify revenue and Meta-attributed revenue diverge. |
 | `landing-pages` | Per-URL sessions/engagement; auto-merges into seo-signals.json so SEO clusters can score against real engagement. |
-| `audit-property` | Health audit — key events configured, data streams live, enhanced measurement on, industry category set. |
+| `audit-property` | Health audit — key events configured, data streams live, enhanced measurement on, industry category set. Also lists every registered custom dimension, which is what `event-breakdown` / `step-funnel` can group by. |
+| `realtime` | Last 30 minutes by country / page / device. No date range: GA4 does not accept one here. |
+| `funnel` | Ordered funnel across DISTINCT event names (`analyticsFunnelSteps`). Defaults to view_item → add_to_cart → begin_checkout → purchase. Open funnel unless `closedFunnel: true`. |
+| `items` | Item-scoped ecommerce by product name / id / category / brand. Reports `itemsPopulated: false` when the site sends no `items[]` array, instead of printing an empty table. |
+| `event-breakdown` | Group ONE event by ONE dimension. **The only way to read back a custom dimension Merlin registered.** `analyticsEventName` + `analyticsDimension`. |
+| `step-funnel` | Same query, ordered NUMERICALLY by step with per-step drop-off and the worst transition named. |
+
+#### Reading a custom dimension back (`event-breakdown` / `step-funnel`)
+
+`create-custom-dimension` registers a dimension; these two are the only actions that can report on one. Use them whenever the steps of a flow are VALUES OF ONE EVENT rather than separate event names: a quiz, a questionnaire, a multi-step checkout wizard. `funnel` takes event NAMES, so a questionnaire that emits a single `quiz_step` event with a varying step parameter collapses into one funnel row there.
+
+`analyticsDimension` accepts any of: the GA4 display name a user reads off the UI (`"Quiz Step Number"`), the event parameter name (`"step_index"`), the explicit Data API form (`"customEvent:step_index"`), or a built-in dimension (`"pagePath"`). Merlin resolves the first two against the property's registered dimensions and echoes the full registry in the result, so one call tells you what else is askable.
+
+`analyticsEventName` is required. The filter is EXACT: without it, every other event on the property folds into a single `(not set)` row that reads as "most users never answered."
+
+Three result states, all reported explicitly rather than as an empty table:
+
+- **`populated: false` with no rows**: usually means the dimension was registered AFTER the window you asked about. **GA4 never backfills a custom dimension**; it collects only from the moment it is created. Say this to the user before they conclude nobody used the feature.
+- **`populated: false` with a `notSetEventCount`**: the event fires but the tag never sends the parameter. That is a tagging fix (`google_tag_manager audit`), not a GA4 one.
+- **`populated: true` with a `notSetEventCount`**: partial coverage. The per-value split describes the tagged subset, not all traffic.
+
+`step-funnel` counts are INDEPENDENT per-value user counts, not a verified sequence. A visitor who deep-links into step 4 counts at step 4 only. Every result carries this in `caveat`. Report `biggestDrop` as a strong signal about which step sheds people (the step to fix is `fromStep`, the one they saw before leaving), not as a certified funnel. Steps that gain users are called out in `note` and usually mean mid-flow entry or a parameter missing on early steps.
 
 ### Write — measurement plan setup
 
@@ -205,6 +226,8 @@ Cross-link: deeper email strategy / flow taxonomy / RFM segmentation / deliverab
 - "first-touch vs last-touch" / "channel attribution" / "where does revenue actually come from" → `google_analytics({action: "attribution"})`
 - "what landing pages convert" / "per-url engagement" → `google_analytics({action: "landing-pages"})`
 - "is my ga4 set up" / "audit my ga4 property" / "ga4 health" → `google_analytics({action: "audit-property"})`
+- "which quiz question do people drop off on" / "where do people abandon the questionnaire" / "which step loses the most people" → `google_analytics({action: "step-funnel", analyticsEventName: "quiz_step", analyticsDimension: "Quiz Step Number"})`
+- "break down X by Y" / "split quiz_step by category" / "what values is that custom dimension seeing" → `google_analytics({action: "event-breakdown", analyticsEventName: "...", analyticsDimension: "..."})`
 - "find my ga4 property" / "discover analytics" → `google_analytics({action: "discover"})`
 - "set up my GA4 conversions" / "wire up GA4 for shopify" / "set up the standard ecommerce events" → `google_analytics({action: "attach-shopify-events"})` after `discover`
 - "mark X as a conversion" / "set up purchase tracking in ga4" → `google_analytics({action: "create-key-event", analyticsEventName: "purchase"})`

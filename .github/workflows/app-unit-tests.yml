@@ -169,8 +169,14 @@ jobs:
       # Merlin. Its two params (analyticsStreamId, analyticsStreamSettings)
       # are declared-or-stripped in exactly the way Rule 23 describes, and the
       # nested boolean map makes a silent strip especially easy to miss.
-      - name: MCP Analytics reachability (params + write gate)
-        run: node --test app/mcp-analytics-param-reachability.test.js
+      # The read half (2026-08-05) is the same class again, inverted: GA4
+      # custom dimensions could be REGISTERED (create-custom-dimension) and
+      # instrumented (gtm-install-quiz-funnel) but never READ BACK, because no
+      # action anywhere could group or filter a report by one. Live on brand
+      # "revive": four registered dimensions, an event firing correctly, and
+      # "which quiz question do people abandon on" unanswerable from Merlin.
+      - name: MCP Analytics reachability (params + write gate + dimension reads)
+        run: node --test app/mcp-analytics-param-reachability.test.js app/mcp-analytics-event-breakdown-reachability.test.js
       # Rate-limit stress — the "never get a client banned" canary. If
       # any assertion flips, a real brand is about to hit a platform's
       # rate-limit review queue.
