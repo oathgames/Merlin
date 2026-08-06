@@ -1131,7 +1131,7 @@ function buildTools(tool, z, ctx) {
   // the last thing standing between an agent and a live site.
   tools.push(defineTool({
     name: 'google_tag_manager',
-    description: 'Audit and instrument Google Tag Manager. READ: discover lists the GTM accounts and containers this Google login can reach (never auto-selects one — a single login often reaches several brands); audit diagnoses the container and is the highest-value action here, catching duplicate conversion tags that double-count revenue and inflate ROAS, missing GA4 configuration, tags that can never fire because they have no trigger, tracking IDs that disagree with the rest of Merlin, likely PII capture, and missing consent settings, plus a funnel-coverage report showing which of view_item / add_to_cart / begin_checkout / purchase are actually instrumented; list-versions shows what is live and the change history. WRITE (each needs approval, and nothing reaches the live site implicitly): install-ga4 stages a full GA4 ecommerce funnel into a separate "Merlin (staged)" workspace and reports the dataLayer events the site still has to push; create-version snapshots that workspace WITHOUT publishing; publish makes a named version live. Merlin never creates Custom HTML tags. Use when the user says "why are there no conversions", "my tracking is broken", "audit my tag manager", "set up conversion tracking", "instrument the funnel", "is my pixel firing", or "why is revenue double counted".',
+    description: 'Audit and instrument Google Tag Manager. READ: discover lists the GTM accounts and containers this Google login can reach (never auto-selects one — a single login often reaches several brands); audit diagnoses the container and is the highest-value action here, catching duplicate conversion tags that double-count revenue and inflate ROAS, missing GA4 configuration, tags that can never fire because they have no trigger, tracking IDs that disagree with the rest of Merlin, likely PII capture, and missing consent settings, plus a funnel-coverage report showing which of view_item / add_to_cart / begin_checkout / purchase are actually instrumented; list-versions shows what is live and the change history. WRITE (each needs approval, and nothing reaches the live site implicitly): install-ga4 stages a full GA4 ecommerce funnel into a separate "Merlin (staged)" workspace and reports the dataLayer events the site still has to push; tier1-cleanup stages audit remediation in that same workspace (dual-run underscore twins of hyphen-named GA4 event tags, deletion of caller-named dead tags and unused triggers with hard refusals for anything still wired, and ELEMENT-to-ATTRIBUTE Auto-Event Variable fixes); create-version snapshots that workspace WITHOUT publishing; publish makes a named version live. Merlin never creates Custom HTML tags. Use when the user says "why are there no conversions", "my tracking is broken", "audit my tag manager", "set up conversion tracking", "instrument the funnel", "is my pixel firing", or "why is revenue double counted".',
     destructive: true,
     idempotent: true,
     costImpact: 'api',
@@ -1142,6 +1142,7 @@ function buildTools(tool, z, ctx) {
       const reasons = {
         'install-ga4':    'Stage GA4 funnel tags in a separate Merlin workspace (NOT live until you publish)',
         'install-quiz-funnel': 'Stage per-step questionnaire tracking in a separate Merlin workspace (NOT live until you publish)',
+        'tier1-cleanup':  'Stage a container cleanup in a separate Merlin workspace: dual-run underscore twins of hyphen-named GA4 tags, delete the named dead tags and unused triggers, fix broken Auto-Event Variables (NOT live until you publish)',
         'create-version': 'Snapshot the staged workspace as a container version (NOT live until you publish)',
         'publish':        'PUBLISH to the live website — this changes what runs on every page for real visitors',
       };
@@ -1156,7 +1157,7 @@ function buildTools(tool, z, ctx) {
         // Read
         'discover', 'audit', 'list-versions',
         // Write — staged, then versioned, then published; each separately approved
-        'install-ga4', 'install-quiz-funnel', 'create-version', 'publish',
+        'install-ga4', 'install-quiz-funnel', 'tier1-cleanup', 'create-version', 'publish',
       ]).describe('Operation to perform. Read actions are safe; write actions surface an approval card. Nothing affects the live site until publish.'),
       brand: brandSchema,
       gtmAccountId: z.string().optional().describe('GTM account id from discover. Required once you have more than one.'),
@@ -1166,6 +1167,8 @@ function buildTools(tool, z, ctx) {
       gtmStepSelector: z.string().optional().describe('For install-quiz-funnel: CSS selector for the element clicked to advance a step. Defaults to button[data-question-index].'),
       gtmStepAttribute: z.string().optional().describe('For install-quiz-funnel: the attribute on that element holding the step number. Defaults to data-question-index.'),
       gtmStepMode: z.enum(['visibility','observer','click']).optional().describe("For install-quiz-funnel: how step changes are detected. 'click' (recommended for wizards) fires on the advance button and measures step COMPLETION with one trigger. 'visibility' (default) uses a native Element Visibility trigger. 'observer' installs a Custom HTML MutationObserver and is required for SPA wizards (Vue/React) that reuse ONE DOM node across steps: Element Visibility fires on a not-visible to visible transition, so it reports the first step and then goes silent while the id keeps changing. Only pass 'observer' when the user explicitly wants it: it writes executable script into the client's container."),
+      gtmCleanupDeleteTags: z.array(z.string()).optional().describe('For tier1-cleanup: exact names of tags to delete in the staged workspace. The engine never guesses names, and it refuses to delete any tag that still has a firing trigger (a wired tag is live behavior, not dead weight).'),
+      gtmCleanupDeleteTriggers: z.array(z.string()).optional().describe('For tier1-cleanup: exact names of triggers to delete in the staged workspace. The engine refuses to delete any trigger still referenced by a tag (firing or blocking).'),
       versionName: z.string().optional().describe('For create-version: a human label for the snapshot.'),
       versionId: z.string().optional().describe('For publish: the exact version id to make live. Required — publishing "whatever is latest" is how an unreviewed change reaches a live site.'),
       approved: z.boolean().optional().describe('Approval flag for write actions. Set by the Electron approval card; set true here only with explicit user approval to proceed.'),

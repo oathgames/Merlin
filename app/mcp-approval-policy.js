@@ -134,7 +134,10 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // workspace and cannot affect the live site on their own, but they are
   // carded anyway: approving a staged change is the moment a human should
   // look at what is about to be built, not after it is queued.
-  'install-ga4', 'install-quiz-funnel', 'create-version', 'publish',
+  // 'tier1-cleanup' stages dual-run tag twins plus caller-named deletions in
+  // the Merlin workspace. Staged-only like install-ga4, and carded for the
+  // same reason: approving a staged change is the moment a human should look.
+  'install-ga4', 'install-quiz-funnel', 'tier1-cleanup', 'create-version', 'publish',
   // Mailchimp / Klaviyo / future-email-platform real-send actions.
   // These deliver mail to live subscriber lists and are not recoverable.
   'campaign-send', 'campaign-schedule',
