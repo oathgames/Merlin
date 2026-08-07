@@ -438,6 +438,58 @@ test('meta_audit list-ads sends targetAdSetId', async () => {
   assert.equal(cmd.targetAdSetId, '120210000000000000');
 });
 
+// ── 5b. RETURN-path reachability (2026-08-07) ────────────────────────
+//
+// Rule 23 has a return path, and it fails the same silent way. meta-list-ads
+// now emits links[] / linkCount (every destination an ad points at, including
+// the placement-customized creatives whose URL lives in asset_feed_spec) and
+// urlTags (the ad's UTM string). A field the engine emits but this surface
+// never names is unreachable in practice: nothing errors, the agent simply
+// never asks for it and keeps answering destination questions from
+// inspect-adset's ONE-creative sample.
+//
+// Incident: a 404 sweep of APOTHEKE's live account read 16 of 62 active ads and
+// reported a clean bill of health, because the other 46 came back with an empty
+// link and an empty link reads as "nothing to check". The same pass found 10 of
+// 11 active ad sets with url_tags absent, which breaks Triple Whale attribution
+// and had no per-ad surface at all.
+//
+// Go half: autocmo-core/meta_ad_destination_test.go
+// (TestListAdsResponseFieldsAreDeclaredOnTheMCPSurface) asserts the mirror
+// image. Rename a field and both files change in the same PR.
+
+const LIST_ADS_RESPONSE_FIELDS = ['links', 'linkCount', 'urlTags'];
+
+test('meta_audit declares the destination + UTM fields list-ads returns', () => {
+  const auditBlock = MCP_TOOLS_SRC.slice(
+    MCP_TOOLS_SRC.indexOf("name: 'meta_audit'"),
+    MCP_TOOLS_SRC.indexOf("name: 'google_analytics'"),
+  );
+  assert.ok(auditBlock.length > 0, 'could not locate the meta_audit tool block');
+  for (const field of LIST_ADS_RESPONSE_FIELDS) {
+    assert.ok(auditBlock.includes(field),
+      `meta_audit never mentions "${field}" — meta-list-ads emits it and the agent will never know to read it. This is the return-path half of the meta-list-adsets bug class.`);
+  }
+  assert.match(auditBlock, /inspect-adset only ever samples ONE creative/,
+    'the description must steer destination/UTM audits to list-ads — routing them to inspect-adset is what produced 26% coverage that looked like 100%.');
+});
+
+test('the engine actually emits the fields meta_audit promises', { skip: SKIP_NO_ENGINE }, () => {
+  const metaGoPath = path.join(APP_DIR, '..', '..', 'autocmo-core', 'meta.go');
+  if (!fs.existsSync(metaGoPath)) return;
+  const src = fs.readFileSync(metaGoPath, 'utf8');
+  for (const tag of ['json:"links,omitempty"', 'json:"linkCount"', 'json:"urlTags"']) {
+    assert.ok(src.includes(tag),
+      `autocmo-core metaAdRow no longer carries ${tag} — meta_audit advertises a field the binary does not send.`);
+  }
+  // linkCount 0 and urlTags "" are the FINDINGS. omitempty on either one drops
+  // the key exactly when it matters, and a missing key reads as "not checked".
+  for (const tag of ['json:"linkCount,omitempty"', 'json:"urlTags,omitempty"']) {
+    assert.ok(!src.includes(tag),
+      `${tag} would hide the zero value — a linkCount of 0 ("no readable destination") and an empty urlTags ("clicks land untagged") are the two findings this surface exists to report.`);
+  }
+});
+
 test('meta_audit resolve-geo sends the geoRegions array', async () => {
   execFileCalls.length = 0;
   await tool('meta_audit').handler({ action: 'resolve-geo', brand: 'acme', geoRegions: ['Florida', 'New Jersey'] });
