@@ -5535,9 +5535,30 @@ ipcMain.handle('discover-meta-ids', async (_, brandName) => {
           if (!m) return resolve({ error: 'No ad accounts discovered. Your token may lack ads_management scope.' });
           const d = JSON.parse(m[0]);
           if (!d.adAccountId) return resolve({ error: 'No active ad accounts found. Check the token has ads_management permission and access to an active account.' });
-          const updates = { metaAdAccountId: d.adAccountId };
-          if (d.pageId) updates.metaPageId = d.pageId;
-          if (d.pixelId) updates.metaPixelId = d.pixelId;
+          // REGRESSION GUARD (2026-08-07): persist each display NAME in
+          // lockstep with its id, and write '' rather than skipping when the
+          // name is absent.
+          //
+          // Previously only the three ids were written here. writeBrandTokens
+          // merges via Object.assign over the existing file, so a name already
+          // on disk survives untouched — which means a rediscovery onto a
+          // DIFFERENT account leaves the PREVIOUS brand's names sitting beside
+          // the new brand's ids. Observed live 2026-08-07: after TruBeam's
+          // assets were shared and discovery correctly repointed the config to
+          // act_2074660803368058 / TruBeam Wellness / TruBeam, the file still
+          // read adAccountName "Revive", pageName "Revive Meds", pixelName
+          // "Revive Pixel", because that brand's config had been seeded from
+          // Revive's. Every surface rendering those labels would have called
+          // TruBeam's account "Revive".
+          //
+          // The `|| ''` is load-bearing: a conditional assign would re-open the
+          // exact hole this closes, letting a stale name outlive its id
+          // whenever discovery resolves an id but not a name. Same reasoning as
+          // the pixel/page selection rules — a wrong-asset label on a Meta
+          // account is expensive and silent.
+          const updates = { metaAdAccountId: d.adAccountId, adAccountName: d.adAccountName || '' };
+          if (d.pageId) { updates.metaPageId = d.pageId; updates.pageName = d.pageName || ''; }
+          if (d.pixelId) { updates.metaPixelId = d.pixelId; updates.pixelName = d.pixelName || ''; }
           if (brandName) {
             writeBrandTokens(brandName, updates);
           } else {
