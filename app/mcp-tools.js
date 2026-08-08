@@ -750,6 +750,14 @@ function buildTools(tool, z, ctx) {
       adVideoPath: z.string().optional().describe('Path to ad video'),
       adHeadline: z.string().optional().describe('Ad headline text'),
       adBody: z.string().optional().describe('Ad primary text'),
+      // REGRESSION GUARD (2026-08-07, dropped-description incident): Meta's
+      // link ad has THREE copy slots, and this is the third. It was read by the
+      // engine (Command.AdDescription) but declared on NO surface, so zod
+      // stripped it and any authored description was silently discarded — an
+      // approved APOTHEKE offer never reached 8 live ads. Batch-wide default;
+      // ads[].description overrides it per ad. See metaLinkDescription in
+      // autocmo-core/meta.go for the per-shape fallback rules.
+      adDescription: z.string().optional().describe('Ad DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from adHeadline: an offer, a spec, or a provenance line ("Free Garden Candle ($56 value) with $120 purchase", "10.5 oz, 60-70 hour burn", "Made in Brooklyn, NY"). Batch-wide default on bulk-push; a per-ad ads[].description wins over it. Omit and video ads reuse the headline (their historical behavior) while image ads carry no description at all.'),
       adLink: z.string().optional().describe('Destination URL'),
       dailyBudget: z.number().optional().describe('Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform\'s API. If the user says "$10 a day", pass 10. If unsure, ask the user.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
@@ -769,7 +777,7 @@ function buildTools(tool, z, ctx) {
       // on Command (main.go) / BulkAd: runBinary copies keys through
       // verbatim, so a rename on either side breaks the wire silently.
       // Locked by app/mcp-meta-param-reachability.test.js.
-      ads: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), body: z.string().optional(), link: z.string().optional(), dailyBudget: z.number().optional(), hookStyle: z.string().optional(), postId: z.string().optional(), name: z.string().optional() })).optional().describe('Array of ads for bulk-push (up to 50). Each ad accepts an optional `name`, the explicit ad name shown in Ads Manager. Omit it and the ad gets an auto-generated name, which makes a batch that reuses several distinct posts impossible to tell apart in reporting.'),
+      ads: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), body: z.string().optional(), description: z.string().optional(), link: z.string().optional(), dailyBudget: z.number().optional(), hookStyle: z.string().optional(), postId: z.string().optional(), name: z.string().optional() })).optional().describe('Array of ads for bulk-push (up to 50). Each ad accepts an optional `name`, the explicit ad name shown in Ads Manager. Omit it and the ad gets an auto-generated name, which makes a batch that reuses several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline) and is separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
       sharedAdSet: z.boolean().optional().describe('bulk-push only: put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
       adSetName: z.string().optional().describe('bulk-push shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
       createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (objective from the brand config; ABO unless campaignBudgetMode says otherwise) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),
