@@ -127,8 +127,17 @@ const byName = (n) => {
 // both sides. If you rename a tag in main.go, this test will NOT catch it.
 // Update both, and see meta_mcp_wire_contract_test.go in autocmo-core for the
 // Go half of the same pact.
-const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName'];
-const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name'];
+//
+// `adDescription` / `ads[].description` were added on 2026-08-07 after the same
+// class of bug bit a second time: Meta's link ad has THREE copy slots (message,
+// title, description) and Merlin declared two. The engine had read
+// Command.AdDescription since the placement path shipped, but no MCP surface
+// declared it, and BulkAd had no per-ad Description field at all. Eight
+// APOTHEKE ads went out with the headline duplicated into the description slot
+// and an approved offer ("Free Garden Candle ($56 value) with $120 purchase")
+// silently discarded.
+const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription'];
+const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name'];
 
 // Both surfaces reach the identical 'meta-bulk-push' engine action, so both
 // must declare the identical param set. meta_ads is the legacy multiplexer;
@@ -158,6 +167,17 @@ for (const toolName of BULK_PUSH_SURFACES) {
     }
   });
 }
+
+// meta_launch_test_ad routes to 'meta-push', which reads Command.AdDescription
+// on both the image and the video branch. It is not a bulk surface, so it needs
+// its own assertion.
+test('meta_launch_test_ad declares adDescription', () => {
+  const schema = byName('meta_launch_test_ad').schema;
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(schema, 'adDescription'),
+    'meta_launch_test_ad is missing "adDescription": zod strips it, so a single-ad push can never set the third copy slot.',
+  );
+});
 
 test('createCampaignIfMissing and sharedAdSet are declared as booleans', () => {
   // A string schema here would let "false" through as a truthy Go bool and
@@ -201,6 +221,55 @@ test('bulk-push params survive runBinary into the --cmd JSON', async () => {
   assert.equal(cmd.adSetName, 'Cold_Creative_Test', 'adSetName must reach the engine');
   assert.equal(cmd.campaignName, 'OrganicBoost');
   assert.equal(cmd.ads[0].name, 'Vinny_Video04', 'per-ad name must reach BulkAd.Name');
+});
+
+// REGRESSION GUARD (2026-08-07): the third copy slot has to survive the whole
+// boundary — batch-wide AND per-ad — or an approved offer never reaches the ad
+// and nothing in the output says so.
+test('the description copy slot reaches the engine at both levels', async () => {
+  execFileCalls.length = 0;
+  await runBinary(makeCtx(), 'meta-bulk-push', {
+    brand: 'apotheke',
+    sharedAdSet: true,
+    adDescription: 'Made in Brooklyn, NY',
+    ads: [
+      { imagePath: '/tmp/a.jpg', headline: 'APOTHEKE Charcoal', description: 'Free Garden Candle ($56 value) with $120 purchase' },
+      { imagePath: '/tmp/b.jpg', headline: 'APOTHEKE Cedar' },
+    ],
+  });
+
+  const cmd = lastCmd();
+  assert.equal(
+    cmd.adDescription, 'Made in Brooklyn, NY',
+    'batch-wide adDescription must reach Command.AdDescription — it is the default for every ad in the batch',
+  );
+  assert.equal(
+    cmd.ads[0].description, 'Free Garden Candle ($56 value) with $120 purchase',
+    'per-ad description must reach BulkAd.Description — dropping it discards an approved offer silently',
+  );
+  assert.ok(
+    !('description' in cmd.ads[1]),
+    'an ad with no description must not gain one: the engine falls back per creative shape, the boundary must not invent copy',
+  );
+  // The headline must NOT be copied into the description slot at the boundary.
+  // That substitution is exactly the bug; the engine owns the fallback.
+  assert.notEqual(cmd.ads[1].description, 'APOTHEKE Cedar');
+});
+
+test('meta_launch_test_ad carries adDescription to the single-push path', async () => {
+  execFileCalls.length = 0;
+  await runBinary(makeCtx(), 'meta-push', {
+    brand: 'apotheke',
+    adImagePath: '/tmp/a.jpg',
+    adHeadline: 'APOTHEKE Charcoal',
+    adBody: 'body copy',
+    adDescription: '10.5 oz, 60-70 hour burn',
+    adLink: 'https://apothekeco.com',
+    dailyBudget: 25,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-push');
+  assert.equal(cmd.adDescription, '10.5 oz, 60-70 hour burn', 'single-ad push must reach Command.AdDescription too');
 });
 
 test('createCampaignIfMissing:false is transmitted, not dropped', async () => {

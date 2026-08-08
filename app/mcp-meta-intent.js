@@ -183,6 +183,11 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       adVideoPath: z.string().optional().describe('Absolute path to the ad video'),
       adHeadline: z.string().describe('Ad headline text'),
       adBody: z.string().describe('Ad primary text / body'),
+      // REGRESSION GUARD (2026-08-07, dropped-description incident): the third
+      // Meta copy slot. Read by the engine, declared nowhere, so zod stripped
+      // it and authored descriptions were silently discarded. See
+      // metaLinkDescription in autocmo-core/meta.go.
+      adDescription: z.string().optional().describe('Ad DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from adHeadline: an offer, a spec, or a provenance line ("Free Garden Candle ($56 value) with $120 purchase", "10.5 oz, 60-70 hour burn", "Made in Brooklyn, NY"). Omit and a video ad reuses the headline (its historical behavior) while an image ad carries no description at all.'),
       adLink: z.string().describe('Destination URL'),
       dailyBudget: z.number().describe('Daily budget in DOLLARS (not cents). Pass 10 for $10/day.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, the ad lands in this exact campaign. Wins over campaignName.'),
@@ -244,12 +249,14 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         videoPath: z.string().optional(),
         headline: z.string().optional(),
         body: z.string().optional(),
+        // Third Meta copy slot — see the 2026-08-07 guard on adDescription below.
+        description: z.string().optional(),
         link: z.string().optional(),
         dailyBudget: z.number().optional(),
         hookStyle: z.string().optional(),
         postId: z.string().optional(),
         name: z.string().optional(),
-      })).describe('Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting.'),
+      })).describe('Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
       campaignName: z.string().optional().describe('Target campaign name, looked up via metaFindCampaign. Fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Pass createCampaignIfMissing:true to create it instead. Use campaignId for stricter routing.'),
       createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (objective from the brand config; ABO unless campaignBudgetMode says otherwise) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),
@@ -260,6 +267,10 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       campaignDailyBudget: z.number().optional().describe('Campaign-level daily budget in DOLLARS. Read only under campaignBudgetMode \'cbo\', where it is the real spend governor and is validated against maxDailyAdBudget - an over-cap value is refused, never silently clamped.'),
       sharedAdSet: z.boolean().optional().describe('Put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
       adSetName: z.string().optional().describe('Shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
+      // REGRESSION GUARD (2026-08-07, dropped-description incident): batch-wide
+      // default for the third Meta copy slot, overridden per ad by
+      // ads[].description. Read by runMetaBulkPush; declared nowhere until now.
+      adDescription: z.string().optional().describe('Batch-wide DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from the headline: an offer, a spec, or a provenance line. A per-ad ads[].description wins over it. Omit and video ads reuse the headline (their historical behavior) while image ads carry no description at all.'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
     },
     handler: async (args) => {
