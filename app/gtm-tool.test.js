@@ -36,9 +36,9 @@ const policy = require('./mcp-approval-policy');
 const ENGINE_AVAILABLE = fs.existsSync(path.join(CORE, 'main.go'));
 const SKIP_NO_ENGINE = !ENGINE_AVAILABLE && 'autocmo-core sibling repo not present (public-repo CI)';
 
-// The six actions the tool declares, and the engine case each must route to.
+// The actions the tool declares, and the engine case each must route to.
 const GTM_READ = ['discover', 'audit', 'list-versions'];
-const GTM_WRITE = ['install-ga4', 'install-quiz-funnel', 'create-version', 'publish'];
+const GTM_WRITE = ['install-ga4', 'install-quiz-funnel', 'tier1-cleanup', 'create-version', 'publish'];
 const GTM_ACTIONS = [...GTM_READ, ...GTM_WRITE];
 
 test('every declared GTM action has a matching case in the Go dispatcher', { skip: SKIP_NO_ENGINE }, () => {
@@ -81,6 +81,7 @@ test('every declared GTM param exists on the Go Command struct', { skip: SKIP_NO
     'gtmAccountId', 'gtmContainerId', 'gtmWorkspaceId',
     'gtmMeasurementId', 'versionName', 'versionId',
     'gtmStepSelector', 'gtmStepAttribute',
+    'gtmCleanupDeleteTags', 'gtmCleanupDeleteTriggers',
   ];
   for (const p of params) {
     assert.ok(
@@ -146,7 +147,7 @@ test('the publish card says it affects the live site', () => {
 test('the staged actions say they are NOT live', () => {
   const start = toolsSrc.indexOf("name: 'google_tag_manager'");
   const block = toolsSrc.slice(start, start + 6000);
-  for (const a of ['install-ga4', 'create-version']) {
+  for (const a of ['install-ga4', 'tier1-cleanup', 'create-version']) {
     const line = block.split('\n').find((l) => l.includes(`'${a}':`));
     assert.ok(line, `no reason string for ${a}`);
     assert.match(line, /NOT live/i, `${a} card should make clear nothing is live yet`);
