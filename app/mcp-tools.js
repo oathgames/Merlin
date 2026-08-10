@@ -754,7 +754,7 @@ function buildTools(tool, z, ctx) {
       // link ad has THREE copy slots, and this is the third. It was read by the
       // engine (Command.AdDescription) but declared on NO surface, so zod
       // stripped it and any authored description was silently discarded — an
-      // approved APOTHEKE offer never reached 8 live ads. Batch-wide default;
+      // approved offer never reached 8 live ads. Batch-wide default;
       // ads[].description overrides it per ad. See metaLinkDescription in
       // autocmo-core/meta.go for the per-shape fallback rules.
       adDescription: z.string().optional().describe('Ad DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from adHeadline: an offer, a spec, or a provenance line ("Free Garden Candle ($56 value) with $120 purchase", "10.5 oz, 60-70 hour burn", "Made in Brooklyn, NY"). Batch-wide default on bulk-push; a per-ad ads[].description wins over it. Omit and video ads reuse the headline (their historical behavior) while image ads carry no description at all.'),
@@ -928,7 +928,7 @@ function buildTools(tool, z, ctx) {
   // incident that produced app/mcp-meta-param-reachability.test.js. An action
   // no tool names is not merely undiscoverable, it is unreachable: there is no
   // arg spelling that gets you there. `meta-list-adsets` in particular is the
-  // read the F21 / RIPIT / Rebecca Taylor workflows need constantly ("which ad
+  // read the multi-brand audit workflows need constantly ("which ad
   // sets exist, and are the staged ones actually PAUSED?") and it had no path
   // through the app for its entire life.
   //
@@ -1015,7 +1015,7 @@ function buildTools(tool, z, ctx) {
   // Before they shipped, Merlin could REGISTER a custom dimension and
   // instrument an event with it but had no action that could group or filter a
   // report by one, so anything measured that way was write-only. Found live on
-  // brand "revive" (property 539215592): gtm-install-quiz-funnel instruments a
+  // a live healthcare property: gtm-install-quiz-funnel instruments a
   // `quiz_step` event carrying step identity as event PARAMETERS, four matching
   // dimensions were registered, the event fired correctly, and "which quiz
   // question do people abandon on" was unanswerable: funnel takes event NAMES
@@ -1681,7 +1681,7 @@ function buildTools(tool, z, ctx) {
       // The tool exposes them as `keywords` for clarity; forward them so the seeds
       // actually reach the binary. Pre-fix the seo tool had no seed field at all,
       // so `keywords`/`track` always saw an empty blogBody and fatal-erred with
-      // "blogBody required" (2026-07-21 APOTHEKE incident).
+      // "blogBody required" (2026-07-21 incident).
       const binArgs = { ...args };
       if (args.keywords && !binArgs.blogBody) binArgs.blogBody = args.keywords;
       return toEnvelope(await runBinary(ctx, action, binArgs));

@@ -43,9 +43,9 @@ test('IdempotencyStore requires a dir', () => {
 test('put/get round-trips a result', () => {
   const store = new IdempotencyStore({ dir: tmpDir() });
   const result = { ok: true, data: { id: 'ad_123' } };
-  const stored = store.put('madchill', 'meta_launch_test_ad', 'req-abc-1', result);
+  const stored = store.put('brightco', 'meta_launch_test_ad', 'req-abc-1', result);
   assert.equal(stored, true);
-  const cached = store.get('madchill', 'meta_launch_test_ad', 'req-abc-1');
+  const cached = store.get('brightco', 'meta_launch_test_ad', 'req-abc-1');
   assert.ok(cached);
   assert.deepEqual(cached.result, result);
   assert.ok(typeof cached.storedAt === 'number');

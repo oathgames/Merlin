@@ -4283,7 +4283,7 @@ async function startSession(brandOverride) {
 
           // Log spell run to activity.jsonl for the activity feed
           try {
-            // Extract brand from spell ID (e.g., "merlin-ivoryella-daily-ads" → "ivoryella")
+            // Extract brand from spell ID (e.g., "merlin-acmelabs-daily-ads" → "acmelabs")
             const spellBrand = extractBrandFromSpellId(taskId);
             const activeBrand = spellBrand || (() => {
               try {
@@ -5543,13 +5543,13 @@ ipcMain.handle('discover-meta-ids', async (_, brandName) => {
           // merges via Object.assign over the existing file, so a name already
           // on disk survives untouched — which means a rediscovery onto a
           // DIFFERENT account leaves the PREVIOUS brand's names sitting beside
-          // the new brand's ids. Observed live 2026-08-07: after TruBeam's
-          // assets were shared and discovery correctly repointed the config to
-          // act_2074660803368058 / TruBeam Wellness / TruBeam, the file still
-          // read adAccountName "Revive", pageName "Revive Meds", pixelName
-          // "Revive Pixel", because that brand's config had been seeded from
-          // Revive's. Every surface rendering those labels would have called
-          // TruBeam's account "Revive".
+          // the new brand's ids. Observed live 2026-08-07: after a second
+          // brand's assets were shared and discovery correctly repointed the
+          // config to that brand's ad-account / page / pixel ids, the file
+          // still read the FIRST brand's adAccountName, pageName and
+          // pixelName, because the second brand's config had been seeded by
+          // copying the first's. Every surface rendering those labels would
+          // have shown the wrong brand's account name.
           //
           // The `|| ''` is load-bearing: a conditional assign would re-open the
           // exact hole this closes, letting a stale name outlive its id
@@ -6836,7 +6836,7 @@ ipcMain.handle('open-agency-report', async (_, html) => {
 //      Claude Code's scheduler.
 //   2. Brand Lock section — if brandName is set, injects literal MCP call
 //      examples with the brand already filled in. The old format ("Brand:
-//      ivory-ella" as prose) left brand as a documentation note that Claude
+//      acme-labs" as prose) left brand as a documentation note that Claude
 //      sometimes failed to translate into the `brand:` argument on tool
 //      calls, producing empty-data dashboards. The new format shows Claude
 //      the exact call shape and tells it verbatim that brand is required on
@@ -6976,7 +6976,7 @@ function migrateLegacyResultsDir() {
   try {
     fs.mkdirSync(destDir, { recursive: true });
     // Walk the legacy dir recursively so any brand-scoped subfolders (e.g.
-    // `.claude/tools/results/ivory-ella/`) get preserved under _legacy/.
+    // `.claude/tools/results/acme-labs/`) get preserved under _legacy/.
     function moveEntry(src, rel) {
       let stat;
       try { stat = fs.statSync(src); } catch { return; }
@@ -7021,13 +7021,13 @@ function migrateLegacyResultsDir() {
 //
 // Legacy format (pre-migration) looked like:
 //   ---
-//   name: merlin-ivory-ella-morning-briefing
+//   name: merlin-acme-labs-morning-briefing
 //   description: Overnight results at 5 AM
 //   cronExpression: "0 5 * * 1-5"
 //   ---
 //
-//   Brand: ivory-ella
-//   Brand assets: assets/brands/ivory-ella/
+//   Brand: acme-labs
+//   Brand assets: assets/brands/acme-labs/
 //
 //   First-run check: If this is the first time running ...
 //
@@ -9690,7 +9690,7 @@ function writeSecureFile(filePath, data) {
 // brand is named, we use buildStrictBrandConfig — which strips every
 // BRAND_KEYS value out of the global base BEFORE overlaying the brand's
 // own credentials. The previous code called readBrandConfig, which
-// returned global ⊕ brand merged; if the global config had Ivory Ella's
+// returned global ⊕ brand merged; if the global config had one brand's
 // metaAccessToken (from the legacy single-brand era or a stale
 // migration), POG's readBrandConfig saw it too and the Magic panel
 // rendered POG as connected to Meta. Strict isolation prevents that.
@@ -10101,7 +10101,7 @@ ipcMain.handle('list-spells', (_, brandName) => {
 // Helper: extract brand from spell task ID (merlin-{brand}-{spell} → brand).
 // Delegates to spell-config.js which enumerates assets/brands/ for a
 // longest-prefix match — robust against custom spell slugs and brands whose
-// own names contain hyphens (e.g. "mad-chill"). See REGRESSION GUARD in
+// own names contain hyphens (e.g. "bright-co"). See REGRESSION GUARD in
 // spell-config.js — the prior regex-only version returned null for
 // `creative-refresh` and any custom spell, silently desyncing brand-scoped
 // config from global config.

@@ -210,9 +210,9 @@ test('buildAuthUrl: Google — PKCE + loopback + access_type=offline', () => {
 });
 
 test('buildAuthUrl: Shopify — requires valid slug + uses shop-specific host', () => {
-  const { authUrl, redirectUri } = buildAuthUrl('shopify', { localPort: 54321, shop: 'mad-chill' });
+  const { authUrl, redirectUri } = buildAuthUrl('shopify', { localPort: 54321, shop: 'bright-co' });
   const u = parseUrl(authUrl);
-  assert.strictEqual(u.host, 'mad-chill.myshopify.com');
+  assert.strictEqual(u.host, 'bright-co.myshopify.com');
   assert.strictEqual(u.pathname, '/admin/oauth/authorize');
   assert.strictEqual(redirectUri, 'https://merlingotme.com/auth/callback');
   assert.ok(!('code_challenge' in u.params), 'Shopify does not use PKCE');
@@ -290,7 +290,7 @@ test('Worker-relay providers: authState carries |port; state does not', () => {
   // (no suffix) is what the /callback handler's constant-time compare
   // checks against AFTER the Worker strips |port.
   for (const p of ['meta', 'tiktok', 'reddit', 'linkedin', 'stripe', 'slack', 'shopify']) {
-    const opts = p === 'shopify' ? { localPort: 54321, shop: 'mad-chill' } : { localPort: 54321 };
+    const opts = p === 'shopify' ? { localPort: 54321, shop: 'bright-co' } : { localPort: 54321 };
     const { state, authState } = buildAuthUrl(p, opts);
     assert.notStrictEqual(state, authState, `${p}: state and authState should differ for Worker-relay`);
     assert.ok(authState.endsWith('|54321'), `${p}: authState should end with |54321`);

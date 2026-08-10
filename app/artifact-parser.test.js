@@ -81,7 +81,7 @@ test('extractArtifacts strips a single image bundle and substitutes gallery HTML
   const bundle = {
     kind: 'image',
     runDir: 'results/img_20260419_120000',
-    brand: 'madchill',
+    brand: 'brightco',
     product: 'hoodie',
     model: 'banana-pro-edit',
     items: [
@@ -217,11 +217,11 @@ test('renderDashboardMarkdown wraps bundle.html in ```html fenced block', () => 
   const md = renderDashboardMarkdown({
     kind: 'dashboard',
     html,
-    summary: 'Madchill performance — last 7 days',
-    brand: 'madchill',
+    summary: 'Brightco performance — last 7 days',
+    brand: 'brightco',
   });
-  assert.match(md, /^\s*\*\*Madchill performance — last 7 days\*\*/);
-  assert.match(md, /_\(madchill\)_/);
+  assert.match(md, /^\s*\*\*Brightco performance — last 7 days\*\*/);
+  assert.match(md, /_\(brightco\)_/);
   assert.match(md, /```html\n[\s\S]*<div class="dash">ok<\/div>[\s\S]*\n```/);
 });
 
@@ -277,7 +277,7 @@ test('extractArtifacts routes kind="dashboard" to the fenced-html branch', () =>
     kind: 'dashboard',
     html: '<!doctype html><html><body><h1>Dashboard</h1></body></html>',
     summary: '7-day snapshot',
-    brand: 'madchill',
+    brand: 'brightco',
   };
   const stdout = `preamble\n${wrap(JSON.stringify(bundle))}\nepilogue`;
   const { bundles, cleanText } = extractArtifacts(stdout);

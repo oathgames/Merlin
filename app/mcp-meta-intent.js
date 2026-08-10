@@ -976,7 +976,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   // string and ads-per-brand from cmd.ImageCount — historical tag reuse, not a
   // typo. Those spellings are the wire, so the friendly params are translated
   // here (same pattern as the seo tool's keywords → blogBody mapping, added
-  // after the 2026-07-21 APOTHEKE incident). Declaring `competitor` and
+  // after the 2026-07-21 incident). Declaring `competitor` and
   // forwarding it verbatim is exactly the failure that made this unreachable:
   // the engine never reads a field by that name.
   tools.push(defineTool({

@@ -46,7 +46,7 @@ const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled']);
 // {
 //   jobId: 'job-<hex>',
 //   tool: 'shopify_sync_catalog',
-//   brand: 'forever21',
+//   brand: 'acme-labs',
 //   createdAt: 1713456789000,
 //   updatedAt: 1713456789123,
 //   state: 'queued' | 'running' | 'done' | 'failed' | 'cancelled',

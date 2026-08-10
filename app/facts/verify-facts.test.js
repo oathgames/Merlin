@@ -18,7 +18,7 @@ const {
 
 const VK = Buffer.from('0000111122223333444455556666777788889999aaaabbbbccccddddeeeeffff', 'hex');
 const SESSION = 'sess-verify-12345678';
-const BRAND = 'madchill';
+const BRAND = 'brightco';
 
 function makeEnv({
   value = '100.00', kindClass = 'spend', kind = 'money',

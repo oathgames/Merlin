@@ -100,7 +100,7 @@ async function loadKnownBrands(appRoot) {
 
 function inferBrandFromPath(relPath, knownBrands) {
   // relPath is forward-slash normalized and relative to appRoot, e.g.
-  //   "results/video/2026-04/ivory-ella/seedance_ivory_ella.mp4"
+  //   "results/video/2026-04/acme-labs/seedance_acme_labs.mp4"
   // We scan each path segment and return the first one that matches a known brand.
   const parts = relPath.split('/');
   for (const part of parts) {

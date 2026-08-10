@@ -54,15 +54,15 @@ function cleanup(root) {
 // ── deriveDisplayName ────────────────────────────────────────────
 
 test('deriveDisplayName: hyphen → space + title-case', () => {
-  assert.equal(__deriveDisplayName('ivory-ella'), 'Ivory Ella');
+  assert.equal(__deriveDisplayName('acme-labs'), 'Acme Labs');
 });
 
 test('deriveDisplayName: underscore → space + title-case', () => {
-  assert.equal(__deriveDisplayName('mad_chill'), 'Mad Chill');
+  assert.equal(__deriveDisplayName('bright_co'), 'Bright Co');
 });
 
-test('deriveDisplayName: all-caps preserved (POG, NASA, etc)', () => {
-  assert.equal(__deriveDisplayName('POG'), 'POG');
+test('deriveDisplayName: all-caps preserved (VELA, NASA, etc)', () => {
+  assert.equal(__deriveDisplayName('VELA'), 'VELA');
 });
 
 test('deriveDisplayName: empty string is empty', () => {
@@ -72,7 +72,7 @@ test('deriveDisplayName: empty string is empty', () => {
 // ── happy path: full scaffold ────────────────────────────────────
 
 test('scaffolds a manifest with products + logo for a fresh brand', () => {
-  const root = makeTmpWorkspace('ivory-ella', {
+  const root = makeTmpWorkspace('acme-labs', {
     products: {
       'elephant-tee': ['1.jpg', '2.jpg'],
       'logo-hoodie': ['front.png', 'back.png'],
@@ -80,15 +80,15 @@ test('scaffolds a manifest with products + logo for a fresh brand', () => {
     logo: 'logo.png',
   });
   try {
-    const result = scaffoldBrandManifest(root, 'ivory-ella');
+    const result = scaffoldBrandManifest(root, 'acme-labs');
     assert.equal(result.ok, true);
     assert.equal(result.action, 'created');
     assert.equal(result.products, 2);
     assert.equal(result.hadLogo, true);
 
     const manifest = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8'));
-    assert.equal(manifest.brand.id, 'ivory-ella');
-    assert.equal(manifest.brand.display_name, 'Ivory Ella');
+    assert.equal(manifest.brand.id, 'acme-labs');
+    assert.equal(manifest.brand.display_name, 'Acme Labs');
     assert.equal(manifest.products.length, 2);
     assert.equal(manifest.products[0].id, 'elephant-tee');
     assert.equal(manifest.products[0].assets.ref_1, 'products/elephant-tee/references/1.jpg');
@@ -107,17 +107,17 @@ test('scaffolds a manifest with products + logo for a fresh brand', () => {
 
 test('does NOT clobber a hand-curated existing manifest', () => {
   const handCurated = JSON.stringify({
-    brand: { id: 'ivory-ella', display_name: 'Ivory Ella' },
+    brand: { id: 'acme-labs', display_name: 'Acme Labs' },
     products: [{ id: 'special', assets: { hero: 'custom/hero.png' } }],
     visual_direction: { always: ['preserve garment color'] },  // hand-added
   }, null, 2);
-  const root = makeTmpWorkspace('ivory-ella', {
+  const root = makeTmpWorkspace('acme-labs', {
     products: { 'elephant-tee': ['1.jpg'] },
     logo: 'logo.png',
     preExistingManifest: handCurated,
   });
   try {
-    const result = scaffoldBrandManifest(root, 'ivory-ella');
+    const result = scaffoldBrandManifest(root, 'acme-labs');
     assert.equal(result.ok, true);
     assert.equal(result.action, 'skipped-exists');
     const onDisk = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8'));
@@ -132,17 +132,17 @@ test('does NOT clobber a hand-curated existing manifest', () => {
 });
 
 test('rebuild:true regenerates even when manifest exists', () => {
-  const root = makeTmpWorkspace('ivory-ella', {
+  const root = makeTmpWorkspace('acme-labs', {
     products: { 'elephant-tee': ['1.jpg'] },
     logo: 'logo.png',
     preExistingManifest: '{"brand":{"id":"old"}}',
   });
   try {
-    const result = scaffoldBrandManifest(root, 'ivory-ella', { rebuild: true });
+    const result = scaffoldBrandManifest(root, 'acme-labs', { rebuild: true });
     assert.equal(result.ok, true);
     assert.equal(result.action, 'rebuilt');
     const onDisk = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8'));
-    assert.equal(onDisk.brand.id, 'ivory-ella');
+    assert.equal(onDisk.brand.id, 'acme-labs');
     assert.equal(onDisk.products.length, 1);
   } finally {
     cleanup(root);
@@ -150,17 +150,17 @@ test('rebuild:true regenerates even when manifest exists', () => {
 });
 
 test('treats 0-byte stub file as "no manifest" and creates a real one', () => {
-  const root = makeTmpWorkspace('ivory-ella', {
+  const root = makeTmpWorkspace('acme-labs', {
     products: { 'elephant-tee': ['1.jpg'] },
     logo: 'logo.png',
     preExistingManifest: '',
   });
   try {
-    const result = scaffoldBrandManifest(root, 'ivory-ella');
+    const result = scaffoldBrandManifest(root, 'acme-labs');
     assert.equal(result.ok, true);
     assert.equal(result.action, 'created');
     const onDisk = JSON.parse(fs.readFileSync(result.manifestPath, 'utf8'));
-    assert.equal(onDisk.brand.id, 'ivory-ella');
+    assert.equal(onDisk.brand.id, 'acme-labs');
   } finally {
     cleanup(root);
   }

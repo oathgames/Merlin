@@ -41,13 +41,13 @@ test('rapid appends coalesce into a single debounced write', async () => {
   const root = tmpRoot();
   try {
     for (let i = 0; i < 10; i++) {
-      assert.equal(threads.appendBubble(root, 'madchill', 'user', `msg ${i}`), true);
+      assert.equal(threads.appendBubble(root, 'brightco', 'user', `msg ${i}`), true);
     }
     assert.equal(_testHooks.getWriteCount(root), 0, 'no write inside the debounce window');
     await sleep(120);
     assert.equal(_testHooks.getWriteCount(root), 1, '10 appends must produce exactly 1 write');
     const disk = readDisk(root);
-    assert.equal(disk.brands.madchill.bubbles.length, 10, 'the single write carries every append');
+    assert.equal(disk.brands.brightco.bubbles.length, 10, 'the single write carries every append');
   } finally {
     _testHooks.resetForTests();
     fs.rmSync(root, { recursive: true, force: true });
@@ -76,14 +76,14 @@ test('quit flush (flushSync) persists the pending window immediately', () => {
   _testHooks.setFlushDelayForTest(60_000);
   const root = tmpRoot();
   try {
-    threads.appendBubble(root, 'madchill', 'user', 'about to quit');
-    threads.setSessionId(root, 'madchill', 'sess-123');
+    threads.appendBubble(root, 'brightco', 'user', 'about to quit');
+    threads.setSessionId(root, 'brightco', 'sess-123');
     assert.equal(_testHooks.isDirty(root), true, 'mutations are pending');
     assert.equal(threads.flushSync(root), true);
     assert.equal(_testHooks.isDirty(root), false, 'flushSync drained the pending state');
     const disk = readDisk(root);
-    assert.equal(disk.brands.madchill.bubbles[0].text, 'about to quit');
-    assert.equal(disk.brands.madchill.sessionId, 'sess-123');
+    assert.equal(disk.brands.brightco.bubbles[0].text, 'about to quit');
+    assert.equal(disk.brands.brightco.sessionId, 'sess-123');
     // Idempotent when clean.
     assert.equal(threads.flushSync(root), true);
     assert.equal(_testHooks.getWriteCount(root), 1, 'a clean flushSync is a no-op');

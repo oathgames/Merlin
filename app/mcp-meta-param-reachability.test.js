@@ -6,7 +6,7 @@
 // SDK dropped them before the handler ever ran: the capability was shipped and
 // unreachable. Confirmed live on 2026-07-25: a bulk-push with campaignName
 // "OrganicBoost" failed twice with
-//   campaign "OrganicBoost" not found in ad account act_13116403 —
+//   campaign "OrganicBoost" not found in ad account act_100000000000001 —
 //   pass the existing campaignId, omit campaignName to auto-create the
 //   Testing campaign, or set createCampaignIfMissing
 // with no way whatsoever to set the flag the error told the caller to set.
@@ -133,7 +133,7 @@ const byName = (n) => {
 // title, description) and Merlin declared two. The engine had read
 // Command.AdDescription since the placement path shipped, but no MCP surface
 // declared it, and BulkAd had no per-ad Description field at all. Eight
-// APOTHEKE ads went out with the headline duplicated into the description slot
+// NORTHWIND ads went out with the headline duplicated into the description slot
 // and an approved offer ("Free Garden Candle ($56 value) with $120 purchase")
 // silently discarded.
 const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription'];
@@ -229,12 +229,12 @@ test('bulk-push params survive runBinary into the --cmd JSON', async () => {
 test('the description copy slot reaches the engine at both levels', async () => {
   execFileCalls.length = 0;
   await runBinary(makeCtx(), 'meta-bulk-push', {
-    brand: 'apotheke',
+    brand: 'northwind',
     sharedAdSet: true,
     adDescription: 'Made in Brooklyn, NY',
     ads: [
-      { imagePath: '/tmp/a.jpg', headline: 'APOTHEKE Charcoal', description: 'Free Garden Candle ($56 value) with $120 purchase' },
-      { imagePath: '/tmp/b.jpg', headline: 'APOTHEKE Cedar' },
+      { imagePath: '/tmp/a.jpg', headline: 'NORTHWIND Charcoal', description: 'Free Garden Candle ($56 value) with $120 purchase' },
+      { imagePath: '/tmp/b.jpg', headline: 'NORTHWIND Cedar' },
     ],
   });
 
@@ -253,18 +253,18 @@ test('the description copy slot reaches the engine at both levels', async () => 
   );
   // The headline must NOT be copied into the description slot at the boundary.
   // That substitution is exactly the bug; the engine owns the fallback.
-  assert.notEqual(cmd.ads[1].description, 'APOTHEKE Cedar');
+  assert.notEqual(cmd.ads[1].description, 'NORTHWIND Cedar');
 });
 
 test('meta_launch_test_ad carries adDescription to the single-push path', async () => {
   execFileCalls.length = 0;
   await runBinary(makeCtx(), 'meta-push', {
-    brand: 'apotheke',
+    brand: 'northwind',
     adImagePath: '/tmp/a.jpg',
-    adHeadline: 'APOTHEKE Charcoal',
+    adHeadline: 'NORTHWIND Charcoal',
     adBody: 'body copy',
     adDescription: '10.5 oz, 60-70 hour burn',
-    adLink: 'https://apothekeco.com',
+    adLink: 'https://example-store.com',
     dailyBudget: 25,
   });
   const cmd = lastCmd();

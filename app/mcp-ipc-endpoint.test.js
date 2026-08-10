@@ -231,13 +231,13 @@ test('dispatchRequest: tools/list returns name/description/inputSchema/annotatio
 test('dispatchRequest: tools/call routes to handler and returns result', async () => {
   const { tools, calls } = fakeTools();
   const resp = await ipc.dispatchRequest(
-    { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights', brand: 'pog' } } },
+    { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights', brand: 'vela' } } },
     { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } }
   );
   assert.strictEqual(resp.ok, true);
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0].tool, 'meta_ads');
-  assert.strictEqual(calls[0].args.brand, 'pog');
+  assert.strictEqual(calls[0].args.brand, 'vela');
   assert.strictEqual(calls[0].args.action, 'insights');
 });
 
@@ -254,14 +254,14 @@ test('dispatchRequest: tools/call on unknown tool → TOOL_NOT_FOUND', async () 
 test('dispatchRequest: tools/call auto-injects active brand when missing', async () => {
   const d = tmpDir();
   try {
-    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'pog' }));
+    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'vela' }));
     const { tools, calls } = fakeTools();
     const resp = await ipc.dispatchRequest(
       { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights' } } },
       { tools, expectedToken: 'abc', ctx: { appRoot: d } }
     );
     assert.strictEqual(resp.ok, true);
-    assert.strictEqual(calls[0].args.brand, 'pog', 'expected brand auto-injected');
+    assert.strictEqual(calls[0].args.brand, 'vela', 'expected brand auto-injected');
   } finally {
     rmTmp(d);
   }
@@ -270,14 +270,14 @@ test('dispatchRequest: tools/call auto-injects active brand when missing', async
 test('dispatchRequest: tools/call does NOT override an explicit brand', async () => {
   const d = tmpDir();
   try {
-    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'pog' }));
+    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'vela' }));
     const { tools, calls } = fakeTools();
     const resp = await ipc.dispatchRequest(
-      { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights', brand: 'mog' } } },
+      { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights', brand: 'orbi' } } },
       { tools, expectedToken: 'abc', ctx: { appRoot: d } }
     );
     assert.strictEqual(resp.ok, true);
-    assert.strictEqual(calls[0].args.brand, 'mog', 'explicit brand must win over active');
+    assert.strictEqual(calls[0].args.brand, 'orbi', 'explicit brand must win over active');
   } finally {
     rmTmp(d);
   }
@@ -308,8 +308,8 @@ test('readActiveBrand: missing file → empty string', () => {
 test('readActiveBrand: valid file → activeBrand', () => {
   const d = tmpDir();
   try {
-    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'mog' }));
-    assert.strictEqual(ipc.readActiveBrand({ appRoot: d }), 'mog');
+    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'orbi' }));
+    assert.strictEqual(ipc.readActiveBrand({ appRoot: d }), 'orbi');
   } finally {
     rmTmp(d);
   }

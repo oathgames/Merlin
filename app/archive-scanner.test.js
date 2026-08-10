@@ -50,8 +50,8 @@ function test(name, fn) {
 function makeTmpRoot() {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merlin-archive-test-'));
   fs.mkdirSync(path.join(tmpRoot, 'results'), { recursive: true });
-  fs.mkdirSync(path.join(tmpRoot, 'assets', 'brands', 'ivory-ella'), { recursive: true });
-  fs.mkdirSync(path.join(tmpRoot, 'assets', 'brands', 'madchill'), { recursive: true });
+  fs.mkdirSync(path.join(tmpRoot, 'assets', 'brands', 'acme-labs'), { recursive: true });
+  fs.mkdirSync(path.join(tmpRoot, 'assets', 'brands', 'brightco'), { recursive: true });
   return tmpRoot;
 }
 
@@ -69,11 +69,11 @@ function setupFixture(tmpRoot) {
   const R = path.join(tmpRoot, 'results');
 
   // 1. Standard run folder — ad_20260414_120000/ with video + metadata + portrait
-  const run1 = path.join(R, 'video', '2026-04', 'ivory-ella', 'ad_20260414_120000');
+  const run1 = path.join(R, 'video', '2026-04', 'acme-labs', 'ad_20260414_120000');
   writeBuf(path.join(run1, 'video.mp4'), 2_000_000);
   writeBuf(path.join(run1, 'portrait.jpg'), 50_000);
   fs.writeFileSync(path.join(run1, 'metadata.json'), JSON.stringify({
-    brand: 'ivory-ella',
+    brand: 'acme-labs',
     product: 'Summer Tee',
     model: 'fal-ai/seedance-2/text-to-video',
     qaPassed: true,
@@ -81,25 +81,25 @@ function setupFixture(tmpRoot) {
   }));
 
   // 2. Loose seedance video (the reported bug). No metadata, no thumbnail.
-  const looseDir = path.join(R, 'video', '2026-04', 'ivory-ella');
-  writeBuf(path.join(looseDir, 'seedance_ivory_ella.mp4'), 1_500_000);
+  const looseDir = path.join(R, 'video', '2026-04', 'acme-labs');
+  writeBuf(path.join(looseDir, 'seedance_acme_labs.mp4'), 1_500_000);
   writeBuf(path.join(looseDir, 'seedance_thumbnail.jpg'), 30_000);
 
   // 3. Loose image at top level
-  writeBuf(path.join(R, 'image', '2026-04', 'madchill', 'banner.png'), 100_000);
+  writeBuf(path.join(R, 'image', '2026-04', 'brightco', 'banner.png'), 100_000);
 
   // 4. Standard img_ folder with square + portrait
-  const run4 = path.join(R, 'image', '2026-04', 'madchill', 'img_20260414_130000');
+  const run4 = path.join(R, 'image', '2026-04', 'brightco', 'img_20260414_130000');
   writeBuf(path.join(run4, 'portrait.jpg'), 80_000);
   writeBuf(path.join(run4, 'square.jpg'), 75_000);
   fs.writeFileSync(path.join(run4, 'metadata.json'), JSON.stringify({
-    brand: 'madchill',
+    brand: 'brightco',
     product: 'Streetwear Hoodie',
     qaPassed: false, // failed QA — should surface ✗ badge
   }));
 
   // 5. Corrupted video — file present but <10KB
-  const run5 = path.join(R, 'video', '2026-04', 'madchill', 'ad_20260414_140000');
+  const run5 = path.join(R, 'video', '2026-04', 'brightco', 'ad_20260414_140000');
   writeBuf(path.join(run5, 'video.mp4'), 500); // way too small
 
   // 6. Orphan video elsewhere (no brand in path)
@@ -125,14 +125,14 @@ function setupFixture(tmpRoot) {
 console.log('\narchive-scanner.test.js\n');
 
 test('inferBrandFromPath matches known brand segment', async () => {
-  const brands = new Set(['ivory-ella', 'madchill']);
-  assert.strictEqual(inferBrandFromPath('results/video/2026-04/ivory-ella/seedance.mp4', brands), 'ivory-ella');
-  assert.strictEqual(inferBrandFromPath('results/image/madchill/banner.png', brands), 'madchill');
+  const brands = new Set(['acme-labs', 'brightco']);
+  assert.strictEqual(inferBrandFromPath('results/video/2026-04/acme-labs/seedance.mp4', brands), 'acme-labs');
+  assert.strictEqual(inferBrandFromPath('results/image/brightco/banner.png', brands), 'brightco');
   assert.strictEqual(inferBrandFromPath('results/random/path/file.mp4', brands), '');
 });
 
 test('prettifyTitle handles kebab/snake case', async () => {
-  assert.strictEqual(prettifyTitle('seedance_ivory_ella.mp4'), 'Seedance Ivory Ella');
+  assert.strictEqual(prettifyTitle('seedance_acme_labs.mp4'), 'Seedance Acme Labs');
   assert.strictEqual(prettifyTitle('my-cool-product.png'), 'My Cool Product');
 });
 
@@ -144,7 +144,7 @@ test('scanArchive discovers standard ad_ run folders', async () => {
     const run1 = items.find(i => i.id === 'ad_20260414_120000');
     assert.ok(run1, 'ad_20260414_120000 should be present');
     assert.strictEqual(run1.type, 'video');
-    assert.strictEqual(run1.brand, 'ivory-ella');
+    assert.strictEqual(run1.brand, 'acme-labs');
     assert.strictEqual(run1.product, 'Summer Tee');
     assert.strictEqual(run1.qaPassed, true);
     assert.strictEqual(run1.source, 'run');
@@ -156,10 +156,10 @@ test('scanArchive discovers loose seedance video (the reported bug)', async () =
   try {
     setupFixture(tmp);
     const items = await scanArchive(tmp);
-    const loose = items.find(i => i.id && i.id.endsWith('seedance_ivory_ella.mp4'));
+    const loose = items.find(i => i.id && i.id.endsWith('seedance_acme_labs.mp4'));
     assert.ok(loose, 'Loose seedance video should surface in the archive');
     assert.strictEqual(loose.type, 'video');
-    assert.strictEqual(loose.brand, 'ivory-ella', 'Brand should be inferred from folder path');
+    assert.strictEqual(loose.brand, 'acme-labs', 'Brand should be inferred from folder path');
     assert.strictEqual(loose.source, 'loose');
     assert.ok(loose.thumbnail && loose.thumbnail.endsWith('seedance_thumbnail.jpg'),
       'Sibling *_thumbnail.jpg should be picked up as the thumbnail, got: ' + loose.thumbnail);
@@ -199,7 +199,7 @@ test('scanArchive discovers loose image in brand subfolder', async () => {
     const banner = items.find(i => i.id && i.id.endsWith('banner.png'));
     assert.ok(banner, 'Loose banner.png should be present');
     assert.strictEqual(banner.type, 'image');
-    assert.strictEqual(banner.brand, 'madchill');
+    assert.strictEqual(banner.brand, 'brightco');
     assert.strictEqual(banner.source, 'loose');
   } finally { cleanup(tmp); }
 });
@@ -271,10 +271,10 @@ test('scanArchive invalidates cache when a loose file is added', async () => {
     await scanArchive(tmp); // prime cache
 
     // Add a new loose video
-    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella', 'veo3_new.mp4'), 1_100_000);
+    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'acme-labs', 'veo3_new.mp4'), 1_100_000);
     // Bump the mtime of the containing directory for good measure
     const newTime = new Date();
-    fs.utimesSync(path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella'), newTime, newTime);
+    fs.utimesSync(path.join(tmp, 'results', 'video', '2026-04', 'acme-labs'), newTime, newTime);
     // In production this happens via the results-watcher's onChange
     // callback; here we call it directly to simulate the same signal.
     invalidateScanCache();
@@ -335,7 +335,7 @@ test('invalidateScanCache forces a fresh walk on the next call', async () => {
     await scanArchive(tmp); // prime cache
 
     // Add a file the cache doesn't know about.
-    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella', 'fresh.mp4'), 1_200_000);
+    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'acme-labs', 'fresh.mp4'), 1_200_000);
 
     // Without invalidation, cache hides the new file (this is the perf win).
     const stale = await scanArchive(tmp);
@@ -367,9 +367,9 @@ test('scanArchive filters by brand', async () => {
   const tmp = makeTmpRoot();
   try {
     setupFixture(tmp);
-    const filtered = await scanArchive(tmp, { brand: 'ivory-ella' });
+    const filtered = await scanArchive(tmp, { brand: 'acme-labs' });
     assert.ok(filtered.length > 0);
-    assert.ok(filtered.every(i => i.brand === 'ivory-ella'));
+    assert.ok(filtered.every(i => i.brand === 'acme-labs'));
   } finally { cleanup(tmp); }
 });
 
@@ -402,7 +402,7 @@ test('ADVERSARIAL: .partial regex must not false-positive on mid-string matches'
     setupFixture(tmp);
     // "foo.partial.mp4" is a legitimate video name with .partial mid-string.
     // The ignore regex must be end-anchored (.partial$), not substring.
-    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella', 'foo.partial.mp4'), 1_200_000);
+    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'acme-labs', 'foo.partial.mp4'), 1_200_000);
     const items = await scanArchive(tmp);
     const hit = items.find(i => i.id && i.id.endsWith('foo.partial.mp4'));
     assert.ok(hit, 'foo.partial.mp4 must be surfaced — .partial only matches as the final extension');
@@ -413,7 +413,7 @@ test('ADVERSARIAL: foo.mp4.partial IS ignored (incomplete download)', async () =
   const tmp = makeTmpRoot();
   try {
     setupFixture(tmp);
-    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella', 'incomplete.mp4.partial'), 800_000);
+    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'acme-labs', 'incomplete.mp4.partial'), 800_000);
     const items = await scanArchive(tmp);
     assert.ok(!items.some(i => i.id.includes('incomplete.mp4.partial')), 'Final .partial extension must be ignored');
   } finally { cleanup(tmp); }
@@ -423,7 +423,7 @@ test('ADVERSARIAL: editor backup files (foo.jpg~) are ignored', async () => {
   const tmp = makeTmpRoot();
   try {
     setupFixture(tmp);
-    writeBuf(path.join(tmp, 'results', 'image', '2026-04', 'madchill', 'draft.png~'), 50_000);
+    writeBuf(path.join(tmp, 'results', 'image', '2026-04', 'brightco', 'draft.png~'), 50_000);
     const items = await scanArchive(tmp);
     assert.ok(!items.some(i => i.id.endsWith('.png~')), 'Editor backup files must be ignored');
   } finally { cleanup(tmp); }
@@ -439,7 +439,7 @@ test('ADVERSARIAL: integer overflow, two mtimes 49.7 days apart must NOT collide
     // Craft two files whose mtimes differ by exactly 2^32 ms (49.71 days).
     // With the old `mtime|0` hash, these would coerce to the same int32 and
     // collide. With Math.floor, they must hash differently.
-    const file = path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella', 'overflow_test.mp4');
+    const file = path.join(tmp, 'results', 'video', '2026-04', 'acme-labs', 'overflow_test.mp4');
     writeBuf(file, 1_000_000);
     const now = new Date();
     fs.utimesSync(file, now, now);
@@ -547,7 +547,7 @@ test('ADVERSARIAL: XSS-ish filenames (<, >, ") surface without throwing', async 
   try {
     setupFixture(tmp);
     const naughty = 'weird<script>alert(1)</script>.mp4';
-    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella', naughty), 1_200_000);
+    writeBuf(path.join(tmp, 'results', 'video', '2026-04', 'acme-labs', naughty), 1_200_000);
     const items = await scanArchive(tmp);
     const hit = items.find(i => i.id && i.id.includes('<script>'));
     assert.ok(hit, 'Scanner must not crash on weird filenames');
@@ -640,7 +640,7 @@ test('ADVERSARIAL: multiple loose videos share thumbnails gracefully', async () 
   const tmp = makeTmpRoot();
   try {
     setupFixture(tmp);
-    const dir = path.join(tmp, 'results', 'video', '2026-04', 'ivory-ella');
+    const dir = path.join(tmp, 'results', 'video', '2026-04', 'acme-labs');
     writeBuf(path.join(dir, 'hero_a.mp4'), 1_100_000);
     writeBuf(path.join(dir, 'hero_b.mp4'), 1_100_000);
     writeBuf(path.join(dir, 'hero_thumbnail.jpg'), 25_000);
@@ -727,17 +727,17 @@ test('scanArchive sorts newest first', async () => {
 //       multi-aspect runs keep using the rendering-friendly thumb.
 //
 // Live incident anchor: user generated a Banana Pro Edit ad with
-// imageFormat:'story' for the nmnl brand; the archive card thumbnail
+// imageFormat:'story' for the subco brand; the archive card thumbnail
 // showed only the product/bottle region, indistinguishable from a PDP
 // hero, breaking the visual differentiation of story ads in the archive.
 
 test('story-thumb-broken-archive: tall-only run flags tallThumb', async () => {
   const tmp = makeTmpRoot();
   try {
-    const dir = path.join(tmp, 'results', 'nmnl', 'img_20260515_090857');
+    const dir = path.join(tmp, 'results', 'subco', 'img_20260515_090857');
     writeBuf(path.join(dir, 'image_1_story.jpg'), 50_000);
     fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({
-      brand: 'nmnl', type: 'image', model: 'banana-pro-edit',
+      brand: 'subco', type: 'image', model: 'banana-pro-edit',
     }));
     const items = await scanArchive(tmp);
     const item = items.find(i => i.id === 'img_20260515_090857');
@@ -752,10 +752,10 @@ test('story-thumb-broken-archive: tall-only run flags tallThumb', async () => {
 test('story-thumb-broken-archive: _square wins over _story when both present', async () => {
   const tmp = makeTmpRoot();
   try {
-    const dir = path.join(tmp, 'results', 'nmnl', 'img_20260515_091000');
+    const dir = path.join(tmp, 'results', 'subco', 'img_20260515_091000');
     writeBuf(path.join(dir, 'image_1_square.jpg'), 50_000);
     writeBuf(path.join(dir, 'image_1_story.jpg'), 50_000);
-    fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'nmnl', type: 'image' }));
+    fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'subco', type: 'image' }));
     const items = await scanArchive(tmp);
     const item = items.find(i => i.id === 'img_20260515_091000');
     assert.ok(item.thumbnail.endsWith('image_1_square.jpg'),
@@ -768,10 +768,10 @@ test('story-thumb-broken-archive: _square wins over _story when both present', a
 test('story-thumb-broken-archive: _portrait wins over _story', async () => {
   const tmp = makeTmpRoot();
   try {
-    const dir = path.join(tmp, 'results', 'nmnl', 'img_20260515_091100');
+    const dir = path.join(tmp, 'results', 'subco', 'img_20260515_091100');
     writeBuf(path.join(dir, 'image_1_portrait.jpg'), 50_000);
     writeBuf(path.join(dir, 'image_1_story.jpg'), 50_000);
-    fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'nmnl', type: 'image' }));
+    fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'subco', type: 'image' }));
     const items = await scanArchive(tmp);
     const item = items.find(i => i.id === 'img_20260515_091100');
     assert.ok(item.thumbnail.endsWith('image_1_portrait.jpg'),
@@ -793,9 +793,9 @@ test('story-thumb-broken-archive: _vertical and _reel variants also flag tallThu
     const tmp = makeTmpRoot();
     try {
       const folderName = `img_20260515_${time}`;
-      const dir = path.join(tmp, 'results', 'nmnl', folderName);
+      const dir = path.join(tmp, 'results', 'subco', folderName);
       writeBuf(path.join(dir, `image_1_${variant}.jpg`), 50_000);
-      fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'nmnl', type: 'image' }));
+      fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'subco', type: 'image' }));
       const items = await scanArchive(tmp);
       const item = items.find(i => i.id === folderName);
       assert.ok(item, `_${variant}-only run should surface as a run item`);
@@ -810,9 +810,9 @@ test('story-thumb-broken-archive: _vertical and _reel variants also flag tallThu
 test('story-thumb-broken-archive: plain image_1.jpg (no aspect suffix) does NOT flag tallThumb', async () => {
   const tmp = makeTmpRoot();
   try {
-    const dir = path.join(tmp, 'results', 'nmnl', 'img_20260515_091400');
+    const dir = path.join(tmp, 'results', 'subco', 'img_20260515_091400');
     writeBuf(path.join(dir, 'image_1.jpg'), 50_000);
-    fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'nmnl', type: 'image' }));
+    fs.writeFileSync(path.join(dir, 'metadata.json'), JSON.stringify({ brand: 'subco', type: 'image' }));
     const items = await scanArchive(tmp);
     const item = items.find(i => i.id === 'img_20260515_091400');
     assert.ok(item.thumbnail.endsWith('image_1.jpg'));

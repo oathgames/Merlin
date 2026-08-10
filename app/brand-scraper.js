@@ -213,7 +213,7 @@ const MOBILE_VIEWPORT = { width: 390, height: 844 };
 const DEFAULT_TIMEOUT_MS = 30000;
 
 // REGRESSION GUARD (2026-04-20): every long-lived path in scrapeBrand MUST
-// be wrapped in a wall-clock timeout. A paying user on Forever21.com hit a
+// be wrapped in a wall-clock timeout. A paying user on a large retailer's site hit a
 // permanent onboarding hang because quantizeLogoColors' injected fetch had
 // no timeout — the logo CDN slow-dripped forever, executeJavaScript never
 // resolved, scrapeBrand never returned, and the MCP tool call never sent
@@ -993,7 +993,7 @@ async function quantizeLogoColors(win, candidates, baseUrl) {
 
   // REGRESSION GUARD (2026-04-20): the injected fetch MUST carry an
   // AbortController tied to setTimeout. The original version shipped a
-  // bare fetch(url, { credentials:'omit', mode:'cors' }) — Forever21.com's
+  // bare fetch(url, { credentials:'omit', mode:'cors' }) — the retailer's
   // logo CDN slow-dripped the response, the promise never resolved, the
   // surrounding executeJavaScript never returned, and the MCP tool hung
   // forever. The UI froze mid-onboarding. Keep BOTH the inner abort AND

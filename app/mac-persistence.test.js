@@ -231,15 +231,15 @@ test('functional: brand recovery copies a stranded brand to canonical without ov
   const canonicalBrandsDir = path.join(tmp, 'canonical', 'assets', 'brands');
 
   // Lay down a stranded brand at the legacy path.
-  fs.mkdirSync(path.join(legacyBrandsDir, 'pog'), { recursive: true });
-  fs.writeFileSync(path.join(legacyBrandsDir, 'pog', 'brand.md'), '# POG\n');
-  fs.writeFileSync(path.join(legacyBrandsDir, 'pog', 'memory.md'), 'recovered from legacy\n');
+  fs.mkdirSync(path.join(legacyBrandsDir, 'vela'), { recursive: true });
+  fs.writeFileSync(path.join(legacyBrandsDir, 'vela', 'brand.md'), '# VELA\n');
+  fs.writeFileSync(path.join(legacyBrandsDir, 'vela', 'memory.md'), 'recovered from legacy\n');
 
   // Replicate the recovery logic.
-  const dst = path.join(canonicalBrandsDir, 'pog');
+  const dst = path.join(canonicalBrandsDir, 'vela');
   assert.equal(fs.existsSync(dst), false, 'canonical must start empty');
   fs.mkdirSync(path.dirname(dst), { recursive: true });
-  fs.cpSync(path.join(legacyBrandsDir, 'pog'), dst,
+  fs.cpSync(path.join(legacyBrandsDir, 'vela'), dst,
     { recursive: true, errorOnExist: false, force: false });
 
   // Verify the brand is now at canonical, with the same content.
@@ -252,7 +252,7 @@ test('functional: brand recovery copies a stranded brand to canonical without ov
   // Skip-if-exists guard would short-circuit before cpSync; we replicate
   // by checking existsSync ourselves first.
   if (!fs.existsSync(dst)) {
-    fs.cpSync(path.join(legacyBrandsDir, 'pog'), dst,
+    fs.cpSync(path.join(legacyBrandsDir, 'vela'), dst,
       { recursive: true, errorOnExist: false, force: false });
   }
   assert.equal(fs.readFileSync(path.join(dst, 'memory.md'), 'utf8'), 'edited at canonical\n',

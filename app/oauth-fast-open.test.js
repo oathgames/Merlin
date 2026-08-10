@@ -155,7 +155,7 @@ test('isBlockedShopifyHost: no-dot hostnames rejected', () => {
 });
 
 test('isBlockedShopifyHost: real domains pass', () => {
-  assert.strictEqual(isBlockedShopifyHost('mad-chill.com'), false);
+  assert.strictEqual(isBlockedShopifyHost('bright-co.com'), false);
   assert.strictEqual(isBlockedShopifyHost('store.example.com'), false);
   assert.strictEqual(isBlockedShopifyHost('my-shop.myshopify.com'), false);
 });

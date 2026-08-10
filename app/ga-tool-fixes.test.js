@@ -162,9 +162,9 @@ test('the discover persist regex matches the GA4DiscoverResult JSON shape', () =
 
 {
   "googleAnalyticsPropertyId": "492039182",
-  "propertyName": "RipIt",
+  "propertyName": "Boltco",
   "googleAnalyticsMeasurementId": "G-ABC123",
-  "accountName": "RipIt LLC"
+  "accountName": "Boltco LLC"
 }`;
   const m = sample.match(/"googleAnalyticsPropertyId"\s*:\s*"(\d{1,20})"/);
   assert.ok(m, 'regex must find the property id in the emit');

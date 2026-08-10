@@ -143,7 +143,7 @@ function htmlAuthError(message) {
 // ── Shopify shop resolver (SSRF-guarded) ────────────────────────────
 //
 // Mirrors resolveShopifyStore in autocmo-core/oauth.go. When a user
-// provides a custom domain (e.g. "mad-chill.com"), we need to resolve
+// provides a custom domain (e.g. "bright-co.com"), we need to resolve
 // the canonical .myshopify.com slug before building the authorize URL
 // because Shopify's OAuth endpoint is host-specific.
 //

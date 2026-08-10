@@ -22,10 +22,10 @@ test('readFlags returns empty state when sidecar missing', async () => {
 
 test('setFlag persists and round-trips a keep flag', async () => {
   const dir = tmpDir();
-  await setFlag(dir, 'img/madchill/run_001', 'keep');
+  await setFlag(dir, 'img/brightco/run_001', 'keep');
   const state = await readFlags(dir);
-  assert.equal(state.flags['img/madchill/run_001'].flag, 'keep');
-  assert.ok(Number.isFinite(state.flags['img/madchill/run_001'].ts));
+  assert.equal(state.flags['img/brightco/run_001'].flag, 'keep');
+  assert.ok(Number.isFinite(state.flags['img/brightco/run_001'].ts));
 });
 
 test('setFlag with null removes the entry', async () => {
@@ -43,10 +43,10 @@ test('setFlag rejects an unknown flag value', async () => {
 
 test('setFlag normalizes Windows backslash paths to forward slashes', async () => {
   const dir = tmpDir();
-  await setFlag(dir, 'img\\madchill\\run_001', 'keep');
+  await setFlag(dir, 'img\\brightco\\run_001', 'keep');
   const state = await readFlags(dir);
-  assert.ok(state.flags['img/madchill/run_001']);
-  assert.equal(state.flags['img\\madchill\\run_001'], undefined);
+  assert.ok(state.flags['img/brightco/run_001']);
+  assert.equal(state.flags['img\\brightco\\run_001'], undefined);
 });
 
 test('setFlagsBulk applies many updates atomically', async () => {

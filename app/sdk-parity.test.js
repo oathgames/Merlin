@@ -112,14 +112,14 @@ test('queueBadgeReducer: depth floor (e.g. 1.7) rounds down to integer', () => {
 
 test('formatPreToolStatus: rejects missing action', () => {
   assert.equal(
-    formatPreToolStatus({ count: 12, context: 'POG cherry refs', eta: '36min' }),
+    formatPreToolStatus({ count: 12, context: 'VELA cherry refs', eta: '36min' }),
     null
   );
 });
 
 test('formatPreToolStatus: rejects missing count (or zero)', () => {
   assert.equal(
-    formatPreToolStatus({ action: 'image', count: 0, context: 'POG cherry refs', eta: '36min' }),
+    formatPreToolStatus({ action: 'image', count: 0, context: 'VELA cherry refs', eta: '36min' }),
     null
   );
 });
@@ -133,7 +133,7 @@ test('formatPreToolStatus: rejects missing context', () => {
 
 test('formatPreToolStatus: requires at least ETA or cost (rule: stop and ask if neither known)', () => {
   assert.equal(
-    formatPreToolStatus({ action: 'image', count: 12, context: 'POG cherry refs' }),
+    formatPreToolStatus({ action: 'image', count: 12, context: 'VELA cherry refs' }),
     null
   );
 });
@@ -142,21 +142,21 @@ test('formatPreToolStatus: emits canonical sentence with all fields', () => {
   const s = formatPreToolStatus({
     action: 'image',
     count: 12,
-    context: 'POG cherry refs',
+    context: 'VELA cherry refs',
     eta: '36min',
     cost: '$1.20 fal',
   });
-  assert.equal(s, 'Generating 12 images using POG cherry refs — ~36min, ~$1.20 fal.');
+  assert.equal(s, 'Generating 12 images using VELA cherry refs — ~36min, ~$1.20 fal.');
 });
 
 test('formatPreToolStatus: singular for count=1', () => {
   const s = formatPreToolStatus({
     action: 'video',
     count: 1,
-    context: 'pog-cherry references',
+    context: 'vela-cherry references',
     eta: '90s',
   });
-  assert.equal(s, 'Generating 1 video using pog-cherry references — ~90s.');
+  assert.equal(s, 'Generating 1 video using vela-cherry references — ~90s.');
 });
 
 test('formatPreToolStatus: cost-only is acceptable (real-money tools without ETA)', () => {
@@ -173,10 +173,10 @@ test('formatPreToolStatus: trims whitespace', () => {
   const s = formatPreToolStatus({
     action: '  image  ',
     count: 4,
-    context: '  POG references  ',
+    context: '  VELA references  ',
     eta: '  12min  ',
   });
-  assert.equal(s, 'Generating 4 images using POG references — ~12min.');
+  assert.equal(s, 'Generating 4 images using VELA references — ~12min.');
 });
 
 // ── isRawErrorVerbatim ──────────────────────────────────────────

@@ -55,8 +55,8 @@ const MUST_BLOCK = [
 
 // Legitimate public destinations — must NOT be false-positived.
 const MUST_ALLOW = [
-  'https://www.apotheke.com/',
-  'https://forever21.com/collections/all',
+  'https://www.northwind.com/',
+  'https://retailco.com/collections/all',
   'http://93.184.216.34/',      // example.com public IP (dotted decimal)
   'http://8.8.8.8/',            // public
   'http://1681915714/',         // 100.63.255.66 — public, just below CGNAT

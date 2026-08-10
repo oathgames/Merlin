@@ -66,8 +66,8 @@ test('extractBrandFromSpellId handles custom spell slugs (no hardcoded suffix ma
 
 test('extractBrandFromSpellId picks the longest brand-name match', () => {
   const root = tempRoot();
-  makeBrands(root, ['mad-chill', 'mad']);
-  assert.equal(extractBrandFromSpellId('merlin-mad-chill-daily-ads', root), 'mad-chill');
+  makeBrands(root, ['bright-co', 'mad']);
+  assert.equal(extractBrandFromSpellId('merlin-bright-co-daily-ads', root), 'bright-co');
   assert.equal(extractBrandFromSpellId('merlin-mad-daily-ads', root), 'mad');
 });
 
@@ -143,8 +143,8 @@ test('stripBrandPrefix returns the bare slug for merlin-{brand}-{slug}', () => {
 
 test('stripBrandPrefix handles brand names with hyphens', () => {
   const root = tempRoot();
-  makeBrands(root, ['mad-chill']);
-  assert.equal(stripBrandPrefix('merlin-mad-chill-daily-ads', root), 'daily-ads');
+  makeBrands(root, ['bright-co']);
+  assert.equal(stripBrandPrefix('merlin-bright-co-daily-ads', root), 'daily-ads');
 });
 
 test('stripBrandPrefix leaves non-merlin IDs untouched', () => {

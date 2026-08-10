@@ -118,7 +118,7 @@ test('finalizeBubble flips isStreaming to false (precondition for the fix)', () 
   assert.ok(body, 'finalizeBubble function body must exist');
   assert.ok(
     /isStreaming\s*=\s*false/.test(body),
-    'finalizeBubble must set isStreaming = false — the entire Loop 1 fix relies on this side effect to revive the input bar',
+    'finalizeBubble must set isStreaming = false — the entire Loop 1 fix relies on this side effect to wellco the input bar',
   );
 });
 

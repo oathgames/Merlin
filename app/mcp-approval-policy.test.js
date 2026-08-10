@@ -430,7 +430,7 @@ test('main.js handleToolApproval wires CARDED_DESTRUCTIVE_ACTIONS BEFORE the cat
 test('isDestructiveShell flags irreversible local data loss + system-state commands', () => {
   const destructive = [
     'rm -rf results/',
-    'rm -r assets/brands/madchill',
+    'rm -r assets/brands/brightco',
     'sudo rm -fr /',
     'rm --recursive foo',
     'del /s /q C:\\\\Merlin\\\\results',

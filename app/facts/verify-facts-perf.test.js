@@ -38,7 +38,7 @@ const { runAllPasses } = require('./verify-facts');
 
 const VK = Buffer.from('deadbeef'.repeat(8), 'hex');
 const SESSION = 'sess-perf-benchmark';
-const BRAND = 'madchill';
+const BRAND = 'brightco';
 
 function makeEnv({ value, kindClass, kind, unit, display, handler }) {
   const env = {
