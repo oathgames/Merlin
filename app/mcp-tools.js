@@ -2115,7 +2115,7 @@ function buildTools(tool, z, ctx) {
       startDate: z.string().optional().describe('Exact window start, YYYY-MM-DD (shop timezone, applied by Triple Whale server-side). Both startDate and endDate or neither: one-sided input is rejected. Takes precedence over batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.'),
       endDate: z.string().optional().describe('Exact window end, YYYY-MM-DD, inclusive. Must not be in the future, and endDate must not be before startDate. Max window 365 days.'),
       apiKey: z.string().optional().describe('Personal API key to validate (required for verify). Minted at app.triplewhale.com/api-keys with the "Summary Page: Read" + "Pixel Attribution: Read" scopes.'),
-      shopDomain: z.string().optional().describe('The store\'s .myshopify.com domain (e.g. "apotheke.myshopify.com"). Pass this when the brand has NO Shopify connected so Triple Whale knows which shop to report on. On "verify" it is saved so every future pull (including scheduled ones) stays scoped automatically; on "summary" it scopes that one pull. If Shopify IS connected, omit it (the connected store is used automatically).'),
+      shopDomain: z.string().optional().describe('The store\'s .myshopify.com domain (e.g. "your-store.myshopify.com"). Pass this when the brand has NO Shopify connected so Triple Whale knows which shop to report on. On "verify" it is saved so every future pull (including scheduled ones) stays scoped automatically; on "summary" it scopes that one pull. If Shopify IS connected, omit it (the connected store is used automatically).'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
@@ -2621,7 +2621,7 @@ function buildTools(tool, z, ctx) {
     costImpact: 'none',
     brandRequired: false,
     input: {
-      url: z.string().describe('Brand homepage URL (e.g. https://madchill.com)'),
+      url: z.string().describe('Brand homepage URL (e.g. https://yourbrand.com)'),
       includeScreenshots: z.boolean().optional().describe('Include base64 desktop+mobile PNGs (large — only set true when vision analysis is needed)'),
       includeHtml: z.boolean().optional().describe('Include raw HTML of homepage + about page (very large — usually unnecessary)'),
     },
@@ -2793,7 +2793,7 @@ function buildTools(tool, z, ctx) {
                       {
                         key: 'brandName',
                         label: 'Brand name',
-                        placeholder: 'e.g. Madchill',
+                        placeholder: 'e.g. Acme Goods',
                         required: true,
                       },
                       {
