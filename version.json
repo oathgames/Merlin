@@ -1,5 +1,5 @@
 {
-  "version": "1.36.0",
+  "version": "1.37.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -123,10 +123,10 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults — a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Google Tag Manager comes to Merlin, plus a fix for a sign-in bug that blocked adding brands.",
+  "notes": "Deeper Meta reporting, GA4 funnel breakdowns, and a Google Tag Manager cleanup that fixes tracking most containers get wrong.",
   "whatsNew": [
-    "Google Tag Manager: audit any container for broken conversion tracking (duplicate tags, dead triggers, invalid event names) and install step-by-step funnel tracking without touching your site code.",
-    "Fixed: adding a brand could get stuck on \"Opening Claude sign-in\" forever. Merlin was looking for a file the Claude toolkit no longer ships.",
-    "Meta: upload a customer list as a lookalike seed, build Page and Instagram engagement audiences, and see why an ad was rejected."
+    "Meta: see every ad's real destination link and UTM tags at a glance, list the organic posts you're boosting, target individual cities, and pause or activate a whole batch of ads in one step.",
+    "Google Analytics: break a funnel down by the details you already collect (quiz step, plan, category) instead of just event totals, so you can finally see where people drop off.",
+    "Google Tag Manager: one command finds the tags sending event names Google can't report on, retires triggers wired to nothing, and stages every fix for your review before anything goes live."
   ]
 }
