@@ -110,7 +110,7 @@ function legacyFallback(taskId) {
  * Extract the brand name from a spell task ID of the form:
  *   merlin-{brand}-{slug}
  * where {slug} can itself contain hyphens (e.g. "creative-refresh") and
- * {brand} is itself a slug that may contain hyphens (e.g. "mad-chill").
+ * {brand} is itself a slug that may contain hyphens (e.g. "bright-co").
  *
  * The primary strategy enumerates real brand directories under
  * `{appRoot}/assets/brands/` and longest-prefix-matches against the task
@@ -147,7 +147,7 @@ function extractBrandFromSpellId(taskId, appRoot) {
               /^[a-z0-9_-]+$/i.test(d.name),
           )
           .map((d) => d.name)
-          // Longest first so "mad-chill" wins over "mad" when both exist.
+          // Longest first so "bright-co" wins over "bright" when both exist.
           .sort((a, b) => b.length - a.length);
         for (const b of brands) {
           if (rest === b) return b;

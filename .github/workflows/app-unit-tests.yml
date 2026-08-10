@@ -173,7 +173,7 @@ jobs:
       # custom dimensions could be REGISTERED (create-custom-dimension) and
       # instrumented (gtm-install-quiz-funnel) but never READ BACK, because no
       # action anywhere could group or filter a report by one. Live on brand
-      # "revive": four registered dimensions, an event firing correctly, and
+      # a live property: four registered dimensions, an event firing correctly, and
       # "which quiz question do people abandon on" unanswerable from Merlin.
       - name: MCP Analytics reachability (params + write gate + dimension reads)
         run: node --test app/mcp-analytics-param-reachability.test.js app/mcp-analytics-event-breakdown-reachability.test.js

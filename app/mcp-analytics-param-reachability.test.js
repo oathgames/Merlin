@@ -2,7 +2,7 @@
 //
 // Context: analytics.go has read a data stream's enhancedMeasurementSettings
 // since the audit-property action shipped, and raises an "Enhanced Measurement
-// off" finding from it. Found live on brand "revive" (property 539215592):
+// off" finding from it. Found live on brand "wellco" (property 100000001):
 // the audit correctly reported the signal as off, and there was no way to fix
 // it from Merlin, because Enhanced Measurement is a data-stream sub-resource
 // and update-property-settings only patches property-level fields.
@@ -178,7 +178,7 @@ test('update-stream-settings refuses to run without a confirmation round-trip', 
   execFileCalls.length = 0;
   const parsed = envelopes.parse(await GA.handler({
     action: 'update-stream-settings',
-    brand: 'revive',
+    brand: 'wellco',
     analyticsStreamSettings: { streamEnabled: true },
   }));
 
@@ -197,7 +197,7 @@ test('update-stream-settings preview mints a confirm_token', async () => {
   execFileCalls.length = 0;
   const parsed = envelopes.parse(await GA.handler({
     action: 'update-stream-settings',
-    brand: 'revive',
+    brand: 'wellco',
     analyticsStreamSettings: { streamEnabled: true },
     preview: true,
   }));
@@ -219,7 +219,7 @@ test('read actions still skip the confirmation gate', async () => {
   // pure diagnostic.
   for (const action of ['audit-property', 'traffic', 'discover']) {
     execFileCalls.length = 0;
-    const parsed = envelopes.parse(await GA.handler({ action, brand: 'revive' }));
+    const parsed = envelopes.parse(await GA.handler({ action, brand: 'wellco' }));
     assert.notEqual(
       parsed && parsed.error && parsed.error.code, 'CONFIRM_REQUIRED',
       `${action} is a read and must not require confirmation.`,
@@ -241,8 +241,8 @@ function lastCmd() {
 test('update-stream-settings params survive runBinary into the --cmd JSON', async () => {
   execFileCalls.length = 0;
   await runBinary(makeCtx(), 'google-analytics-update-stream-settings', {
-    brand: 'revive',
-    analyticsPropertyId: '539215592',
+    brand: 'wellco',
+    analyticsPropertyId: '100000001',
     analyticsStreamId: '7654321',
     analyticsStreamSettings: { streamEnabled: true, pageChangesEnabled: true },
     approved: true,
@@ -265,7 +265,7 @@ test('a false-valued toggle is not dropped on the way to the engine', async () =
   // see an empty settings map and refuse.
   execFileCalls.length = 0;
   await runBinary(makeCtx(), 'google-analytics-update-stream-settings', {
-    brand: 'revive',
+    brand: 'wellco',
     analyticsStreamId: '7654321',
     analyticsStreamSettings: { streamEnabled: false },
     approved: true,

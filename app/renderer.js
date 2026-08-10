@@ -1955,7 +1955,7 @@ function merlinUrl(relPath) {
 // appRoot-relative against an assets/ results/ pwa/ allowlist, so the bare
 // value resolved to appRoot/.creative-cache\… → 403 → every live-ad card
 // painted a blank thumb even though all 149 images sat cached on disk
-// (Forever21, live incident). Normalize slashes and qualify with the brand
+// (live incident). Normalize slashes and qualify with the brand
 // assets prefix; every consumer of creativePath (card thumb, click preview,
 // context-menu details) MUST route through this helper — piping the raw
 // creativePath field straight into merlinUrl is the regression.
@@ -4571,7 +4571,7 @@ document.getElementById('brand-select').addEventListener('change', async (e) => 
   // already advanced, so the NEXT change event computed the wrong prevBrand
   // and the rollback-on-failure logic revert-to-prevBrand reverted to a
   // brand the user was never actually working in. Symptom: "— now working
-  // in MadChill —" divider sticks around after a failed switch to IvoryElla.
+  // in BrightCo —" divider sticks around after a failed switch to AcmeLabs.
 
   // Brand context swap — the main process aborts the current SDK turn,
   // resumes the target brand's SDK session by ID, and returns that brand's
@@ -11335,7 +11335,7 @@ function renderActivityItem(item) {
   // `spellName = action.replace('spell-','')` which for auto-created
   // spells (taskId is a 16-char hex hash) produces the hash itself,
   // not a name. The `detail` field ALREADY contains a human sentence
-  // ("Check mad-chill product completeness") — we just weren't
+  // ("Check bright-co product completeness") — we just weren't
   // reading it. Always prefer `detail` over action-derived labels.
   // If you add a new action, either extend this switch with a short
   // label OR make sure the binary writes a readable `detail` string

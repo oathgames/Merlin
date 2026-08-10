@@ -448,7 +448,7 @@ test('meta_audit list-ads sends targetAdSetId', async () => {
 // never asks for it and keeps answering destination questions from
 // inspect-adset's ONE-creative sample.
 //
-// Incident: a 404 sweep of APOTHEKE's live account read 16 of 62 active ads and
+// Incident: a 404 sweep of NORTHWIND's live account read 16 of 62 active ads and
 // reported a clean bill of health, because the other 46 came back with an empty
 // link and an empty link reads as "nothing to check". The same pass found 10 of
 // 11 active ad sets with url_tags absent, which breaks Triple Whale attribution

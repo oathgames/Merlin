@@ -21,7 +21,7 @@
 //   }
 //
 // The relative path is the SAME identifier the Archive uses for an item:
-// for run folders it's the folder path (e.g. "img/madchill/img_20260419..."),
+// for run folders it's the folder path (e.g. "img/brightco/img_20260419..."),
 // for loose files it's the file path. Removing a flag deletes the entry.
 //
 // Concurrency: every write goes through an in-process serial queue so two

@@ -124,7 +124,7 @@ test('SSRF guard rejects IPv6 link-local fe80::', () => {
 });
 
 test('SSRF guard accepts a legitimate public https URL', () => {
-  const r = validateScrapeURL('https://madchill.com/');
+  const r = validateScrapeURL('https://brightco.com/');
   assert.equal(r.ok, true);
 });
 
@@ -248,7 +248,7 @@ test('realistic fixture yields non-empty palette, fonts, and logo', () => {
 // ─────────────────────────────────────────────────────────────────────
 
 test('normalizeUrl prepends https:// when scheme is missing', () => {
-  assert.equal(normalizeUrl('madchill.com'), 'https://madchill.com');
+  assert.equal(normalizeUrl('brightco.com'), 'https://brightco.com');
 });
 
 test('normalizeUrl rejects unparseable input', () => {
@@ -267,7 +267,7 @@ test('parseColor handles 3-digit hex, 6-digit hex, rgb, and rgba', () => {
 // ─────────────────────────────────────────────────────────────────────
 // REGRESSION GUARD (2026-04-20): timeout wrappers.
 //
-// A paying user on Forever21.com hit a permanent onboarding hang because
+// A paying user on Retailco.com hit a permanent onboarding hang because
 // quantizeLogoColors' injected fetch had no timeout. These tests pin each
 // defence-in-depth layer so a future "simplification" can't silently
 // regress back to an infinite await.

@@ -36,13 +36,13 @@ test('scaffoldBrandStub creates folder + stub brand.md + memory.md when absent',
 // must be a no-op so it can't wipe a user's brand profile.
 test('scaffoldBrandStub never clobbers an existing brand (idempotent no-op)', () => {
   const brandsDir = tmpBrandsDir();
-  const brandDir = path.join(brandsDir, 'madchill');
+  const brandDir = path.join(brandsDir, 'brightco');
   fs.mkdirSync(brandDir, { recursive: true });
-  const realBrand = '# Mad Chill\n\nFull enriched brand profile with palette + voice.\n';
+  const realBrand = '# Bright Co\n\nFull enriched brand profile with palette + voice.\n';
   fs.writeFileSync(path.join(brandDir, 'brand.md'), realBrand, 'utf8');
-  fs.writeFileSync(path.join(brandDir, 'memory.md'), '# Mad Chill — Memory\n\n## Run Log\n- ran a campaign\n', 'utf8');
+  fs.writeFileSync(path.join(brandDir, 'memory.md'), '# Bright Co — Memory\n\n## Run Log\n- ran a campaign\n', 'utf8');
 
-  const r = scaffoldBrandStub(brandsDir, 'madchill', { displayName: 'Mad Chill', url: 'https://madchill.com' });
+  const r = scaffoldBrandStub(brandsDir, 'brightco', { displayName: 'Bright Co', url: 'https://brightco.com' });
   assert.equal(r.created, false, 'existing brand → no-op');
   assert.equal(fs.readFileSync(path.join(brandDir, 'brand.md'), 'utf8'), realBrand, 'existing brand.md untouched');
   assert.ok(fs.readFileSync(path.join(brandDir, 'memory.md'), 'utf8').includes('ran a campaign'), 'existing memory.md untouched');
@@ -81,7 +81,7 @@ test('BRAND_SLUG_RE matches the host activateBrand guard pattern', () => {
   const HOST_PATTERN = '^[a-z0-9][a-z0-9_-]{0,63}$';
   assert.equal(BRAND_SLUG_RE.source, HOST_PATTERN, 'brand-scaffold slug regex must equal the main.js activateBrand guard');
   assert.ok(BRAND_SLUG_RE.test('gymshark'));
-  assert.ok(BRAND_SLUG_RE.test('mad-chill'));
+  assert.ok(BRAND_SLUG_RE.test('bright-co'));
   assert.ok(!BRAND_SLUG_RE.test('-leading-dash'));
   assert.ok(!BRAND_SLUG_RE.test('has space'));
 });

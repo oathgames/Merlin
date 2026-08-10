@@ -15,7 +15,7 @@
 // Onboarding (`merlin-setup`), product import, and brand activation all
 // SHIPPED without a producer step that creates the manifest. The
 // consumer-side check shipped, the producer-side scaffolder didn't —
-// every brand on Merlin (POG, MadChill, Merlin, example, ivory-ella,
+// every brand on Merlin (every existing brand, the example brand,
 // every future brand) sits in the same broken state.
 //
 // THE FIX:
@@ -61,7 +61,7 @@ const os = require('os');
 const REF_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.heic']);
 const LOGO_BASENAMES = ['logo.png', 'logo.svg', 'logo.webp', 'logo.jpg', 'logo.jpeg'];
 
-// Build a display name from a slug — "ivory-ella" → "Ivory Ella",
+// Build a display name from a slug — "acme-labs" → "Acme Labs",
 // "pog_v2" → "Pog V2", "POG" → "POG" (preserves all-caps).
 function deriveDisplayName(slug) {
   if (!slug) return '';

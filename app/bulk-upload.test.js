@@ -44,9 +44,9 @@ function test(name, fn) {
 (async () => {
   // ── isValidBrandName ────────────────────────────────────────
   test('valid brand names accepted', () => {
-    assert.equal(isValidBrandName('madchill'), true);
-    assert.equal(isValidBrandName('mad-chill'), true);
-    assert.equal(isValidBrandName('mad_chill'), true);
+    assert.equal(isValidBrandName('brightco'), true);
+    assert.equal(isValidBrandName('bright-co'), true);
+    assert.equal(isValidBrandName('bright_co'), true);
     assert.equal(isValidBrandName('Brand1'), true);
   });
   test('invalid brand names rejected', () => {
@@ -166,7 +166,7 @@ function test(name, fn) {
   // outside the intended sandbox. Layered fix: char-class regex +
   // explicit `.`/`..` rejection + reject all-dots strings.
   test('isValidProductSlug accepts well-formed product slugs', () => {
-    assert.equal(isValidProductSlug('pog-jar'), true);
+    assert.equal(isValidProductSlug('vela-jar'), true);
     assert.equal(isValidProductSlug('cloud-zip-up-hoodie'), true);
     assert.equal(isValidProductSlug('product_001'), true);
     assert.equal(isValidProductSlug('Product1.0'), true);
@@ -198,15 +198,15 @@ function test(name, fn) {
     assert.equal(isValidProductSlug(undefined), false);
     assert.equal(isValidProductSlug(null), false);
     assert.equal(isValidProductSlug(42), false);
-    assert.equal(isValidProductSlug({ toString: () => 'pog-jar' }), false);
+    assert.equal(isValidProductSlug({ toString: () => 'vela-jar' }), false);
   });
 
   // ── resolveBrandPaths ───────────────────────────────────────
   test('brand paths land under assets/brands/<brand>', () => {
-    const p = resolveBrandPaths('/app', 'madchill');
-    assert.equal(p.brandDir, path.join('/app', 'assets', 'brands', 'madchill'));
-    assert.equal(p.inboxDir, path.join('/app', 'assets', 'brands', 'madchill', 'inbox'));
-    assert.equal(p.productsDir, path.join('/app', 'assets', 'brands', 'madchill', 'products'));
+    const p = resolveBrandPaths('/app', 'brightco');
+    assert.equal(p.brandDir, path.join('/app', 'assets', 'brands', 'brightco'));
+    assert.equal(p.inboxDir, path.join('/app', 'assets', 'brands', 'brightco', 'inbox'));
+    assert.equal(p.productsDir, path.join('/app', 'assets', 'brands', 'brightco', 'products'));
   });
 
   // ── sha256File ──────────────────────────────────────────────

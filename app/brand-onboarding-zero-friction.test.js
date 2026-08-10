@@ -3,10 +3,10 @@
 // Three contracts, one file:
 //
 //   1. The brand-name displayName parser in main.js's get-brands handler
-//      MUST strip both prefix bloat ("Brand Profile — POG") AND suffix bloat
-//      ("POG — Brand Guide", "POG — Memory") so the dropdown shows "POG".
+//      MUST strip both prefix bloat ("Brand Profile — VELA") AND suffix bloat
+//      ("VELA — Brand Guide", "VELA — Memory") so the dropdown shows "VELA".
 //      Historical incident: brand.md heading drifted between Claude turns
-//      and skill writers; the dropdown showed "POG — Brand Guide" because
+//      and skill writers; the dropdown showed "VELA — Brand Guide" because
 //      only the prefix-strip path existed. Fixing this is invisible from the
 //      outside — the only place to anchor the contract is a source-scan +
 //      a functional re-implementation of the same regex chain.
@@ -64,32 +64,32 @@ function extractDisplayName(brandMd, folderName) {
 }
 
 test('displayName: bare H1 passes through', () => {
-  assert.equal(extractDisplayName('# POG\n', 'pog'), 'POG');
+  assert.equal(extractDisplayName('# VELA\n', 'vela'), 'VELA');
 });
 
 test('displayName: " — Brand Guide" suffix gets stripped (the user-reported bloat)', () => {
-  assert.equal(extractDisplayName('# POG — Brand Guide\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# Madchill — Brand Guide\n', 'madchill'), 'Madchill');
+  assert.equal(extractDisplayName('# VELA — Brand Guide\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# Brightco — Brand Guide\n', 'brightco'), 'Brightco');
 });
 
 test('displayName: "Brand Profile —" prefix gets stripped', () => {
-  assert.equal(extractDisplayName('# Brand Profile — POG\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# Brand Profile - Madchill\n', 'madchill'), 'Madchill');
+  assert.equal(extractDisplayName('# Brand Profile — VELA\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# Brand Profile - Brightco\n', 'brightco'), 'Brightco');
 });
 
 test('displayName: " — Memory" / " — Brand Profile" / " — Voice Guide" suffixes', () => {
-  assert.equal(extractDisplayName('# POG — Memory\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# POG — Brand Profile\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# POG — Voice Guide\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# POG — Style Guide\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# POG — Identity Guide\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# POG — Playbook Guide\n', 'pog'), 'POG');
+  assert.equal(extractDisplayName('# VELA — Memory\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# VELA — Brand Profile\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# VELA — Voice Guide\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# VELA — Style Guide\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# VELA — Identity Guide\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# VELA — Playbook Guide\n', 'vela'), 'VELA');
 });
 
 test('displayName: en-dash and hyphen separators handled like em-dash', () => {
-  assert.equal(extractDisplayName('# POG – Brand Guide\n', 'pog'), 'POG');  // en-dash U+2013
-  assert.equal(extractDisplayName('# POG - Brand Guide\n', 'pog'), 'POG');
-  assert.equal(extractDisplayName('# POG: Brand Guide\n', 'pog'), 'POG');
+  assert.equal(extractDisplayName('# VELA – Brand Guide\n', 'vela'), 'VELA');  // en-dash U+2013
+  assert.equal(extractDisplayName('# VELA - Brand Guide\n', 'vela'), 'VELA');
+  assert.equal(extractDisplayName('# VELA: Brand Guide\n', 'vela'), 'VELA');
 });
 
 test('displayName: H1 with em-dash inside the brand name itself is preserved', () => {
@@ -99,18 +99,18 @@ test('displayName: H1 with em-dash inside the brand name itself is preserved', (
 });
 
 test('displayName: falls back to title-cased folder name when H1 missing', () => {
-  assert.equal(extractDisplayName('No heading here.\n', 'mad-chill'), 'Mad Chill');
-  assert.equal(extractDisplayName('', 'pog'), 'Pog');
+  assert.equal(extractDisplayName('No heading here.\n', 'bright-co'), 'Bright Co');
+  assert.equal(extractDisplayName('', 'vela'), 'Vela');
 });
 
 test('displayName: Brand: <name> field used when H1 missing', () => {
-  assert.equal(extractDisplayName('Brand: POG\nVertical: ecommerce\n', 'pog'), 'POG');
+  assert.equal(extractDisplayName('Brand: VELA\nVertical: ecommerce\n', 'vela'), 'VELA');
 });
 
 test('displayName: pathological "# — Brand Guide" falls through to folder', () => {
   // The H1 has only a separator + suffix → after strip it's empty, so we
   // should fall back to the folder-name title-case path.
-  assert.equal(extractDisplayName('# — Brand Guide\n', 'pog'), 'Pog');
+  assert.equal(extractDisplayName('# — Brand Guide\n', 'vela'), 'Vela');
 });
 
 // ─────────────────────────────────────────────────────────────────

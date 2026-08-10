@@ -36,12 +36,12 @@ function makeMemoryState(initial = {}) {
 test('mark persists a per-platform-per-brand flag and the overlay reports expired', () => {
   const mem = makeMemoryState();
   const store = createAuthFailureStore({ ...mem });
-  assert.equal(store.mark('meta', 'madchill'), true);
+  assert.equal(store.mark('meta', 'brightco'), true);
   const connected = [
     { platform: 'meta', status: 'connected' },
     { platform: 'tiktok', status: 'connected' },
   ];
-  store.applyToConnections(connected, 'madchill');
+  store.applyToConnections(connected, 'brightco');
   assert.equal(connected[0].status, 'expired', 'flagged platform must show expired');
   assert.equal(connected[1].status, 'connected', 'unflagged platform stays green');
 });
@@ -49,9 +49,9 @@ test('mark persists a per-platform-per-brand flag and the overlay reports expire
 test('flags are brand-scoped: another brand and the global scope stay green', () => {
   const mem = makeMemoryState();
   const store = createAuthFailureStore({ ...mem });
-  store.mark('meta', 'madchill');
+  store.mark('meta', 'brightco');
   const otherBrand = [{ platform: 'meta', status: 'connected' }];
-  store.applyToConnections(otherBrand, 'ivoryella');
+  store.applyToConnections(otherBrand, 'acmelabs');
   assert.equal(otherBrand[0].status, 'connected');
   const globalScope = [{ platform: 'meta', status: 'connected' }];
   store.applyToConnections(globalScope, '');
@@ -71,10 +71,10 @@ test('empty brand maps to the _global scope on both sides', () => {
 test('successful reconnect clears the flag and the tile goes back to connected', () => {
   const mem = makeMemoryState();
   const store = createAuthFailureStore({ ...mem });
-  store.mark('google', 'madchill');
-  assert.equal(store.clear('google', 'madchill'), true);
+  store.mark('google', 'brightco');
+  assert.equal(store.clear('google', 'brightco'), true);
   const conns = [{ platform: 'google', status: 'connected' }];
-  store.applyToConnections(conns, 'madchill');
+  store.applyToConnections(conns, 'brightco');
   assert.equal(conns[0].status, 'connected');
 });
 
@@ -129,16 +129,16 @@ test('platformForAuthSignal maps action prefixes to connection-panel platforms',
 test('TOKEN_EXPIRED classification reports token_expired through the ctx hook', () => {
   const calls = [];
   const ctx = { notePlatformAuthResult: (p, b, o) => calls.push([p, b, o]) };
-  noteAuthSignalFromResult(ctx, 'meta-insights', { brand: 'madchill' }, true,
+  noteAuthSignalFromResult(ctx, 'meta-insights', { brand: 'brightco' }, true,
     'Meta API error: OAuth token has expired, please re-authenticate');
-  assert.deepStrictEqual(calls, [['meta', 'madchill', 'token_expired']]);
+  assert.deepStrictEqual(calls, [['meta', 'brightco', 'token_expired']]);
 });
 
 test('a successful action reports success (clears the flag downstream)', () => {
   const calls = [];
   const ctx = { notePlatformAuthResult: (p, b, o) => calls.push([p, b, o]) };
-  noteAuthSignalFromResult(ctx, 'meta-insights', { brand: 'madchill' }, false, 'ROAS 3.2 ...');
-  assert.deepStrictEqual(calls, [['meta', 'madchill', 'success']]);
+  noteAuthSignalFromResult(ctx, 'meta-insights', { brand: 'brightco' }, false, 'ROAS 3.2 ...');
+  assert.deepStrictEqual(calls, [['meta', 'brightco', 'success']]);
 });
 
 test('non-auth errors (rate limit, timeout) do not touch the flag', () => {

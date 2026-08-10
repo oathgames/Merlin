@@ -273,7 +273,7 @@ test('runBinary execFile options include a 32MB maxBuffer', () => {
 // seo tool: keyword-research seeds must reach the engine.
 // Pre-fix the seo tool exposed no seed field, so { action: 'keywords' } always
 // sent an empty blogBody and the engine fatal-erred "blogBody required"
-// (2026-07-21 APOTHEKE incident). Lock the seed field + the blogBody forward.
+// (2026-07-21 NORTHWIND incident). Lock the seed field + the blogBody forward.
 // ─────────────────────────────────────────────────────────────────────
 test('seo tool exposes a keyword seed field and forwards it to the engine blogBody', () => {
   const fs = require('node:fs');
@@ -300,7 +300,7 @@ test('connection_status handler returns JSON of platform statuses', async () => 
   });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'connection_status');
-  const out = await entry.handler({ brand: 'madchill' });
+  const out = await entry.handler({ brand: 'brightco' });
   assert.ok(Array.isArray(out.content));
   const env = envelope.parse(out);
   assert.ok(env, 'response must carry an envelope');
@@ -330,7 +330,7 @@ test('brand_scrape rejects non-URL input before loading the scraper module', asy
   assert.match(out.content[0].text, /http\(s\) URL/);
 });
 
-// REGRESSION GUARD (2026-04-20): paying user on Forever21.com hit a
+// REGRESSION GUARD (2026-04-20): paying user on Retailco.com hit a
 // permanent onboarding hang when the scraper's logo fetch stalled forever.
 // The handler must now classify any ScrapeTimeoutError into a TIMEOUT
 // envelope so the skill can tell the user "scrape took too long, retry"
@@ -367,7 +367,7 @@ test('brand_scrape classifies ScrapeTimeoutError into a TIMEOUT envelope', async
       throw err;
     },
   };
-  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://forever21.com/' }));
+  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://retailco.com/' }));
   const env = envelope.parse(out);
   assert.ok(env, 'response must carry an envelope');
   assert.equal(env.ok, false);
@@ -375,7 +375,7 @@ test('brand_scrape classifies ScrapeTimeoutError into a TIMEOUT envelope', async
   // User-facing message must name the URL and suggest retry — not a raw
   // stack trace. Friendly-error rule applies to every error-surfacing path.
   assert.match(env.error.message, /took too long/i);
-  assert.match(env.error.message, /forever21\.com/);
+  assert.match(env.error.message, /retailco\.com/);
   assert.match(env.error.message, /retry|try/i);
   // next_action must be retry_or_split so Claude knows this is transient.
   assert.equal(env.error.next_action, 'retry_or_split');
@@ -409,7 +409,7 @@ test('brand_guide write requires both brand and brandGuide', async () => {
   const { tool, registry } = makeFakeTool();
   buildTools(tool, makeFakeZ(), makeCtx());
   const entry = registry.find(t => t.name === 'brand_guide');
-  const out = await entry.handler({ action: 'write', brand: 'madchill' });
+  const out = await entry.handler({ action: 'write', brand: 'brightco' });
   assert.equal(out.isError, true);
   assert.match(out.content[0].text, /required/);
 });
@@ -436,7 +436,7 @@ test('platform_login dispatches meta through real OAuth (App Review passed)', as
   });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'platform_login');
-  const out = await entry.handler({ platform: 'meta', brand: 'madchill' });
+  const out = await entry.handler({ platform: 'meta', brand: 'brightco' });
   assert.deepStrictEqual(seen, ['meta'], 'meta must invoke the real OAuth flow');
   const env = envelope.parse(out);
   assert.ok(env && env.ok, 'meta should produce an OK envelope');
@@ -457,7 +457,7 @@ test('platform_login routes threads to inherit-from-Meta guidance without OAuth'
   });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'platform_login');
-  const out = await entry.handler({ platform: 'threads', brand: 'madchill' });
+  const out = await entry.handler({ platform: 'threads', brand: 'brightco' });
   assert.equal(oauthInvoked, false, 'threads must not spawn its own OAuth flow');
   assert.match(out.content[0].text, /Meta/, 'guidance must point at the Meta connection');
   assert.match(out.content[0].text, /no separate Threads OAuth/i,
@@ -472,7 +472,7 @@ test('platform_login routes klaviyo to its API-key tile (not OAuth, not "coming 
   const { tool, registry } = makeFakeTool();
   buildTools(tool, makeFakeZ(), makeCtx());
   const entry = registry.find(t => t.name === 'platform_login');
-  const out = await entry.handler({ platform: 'klaviyo', brand: 'madchill' });
+  const out = await entry.handler({ platform: 'klaviyo', brand: 'brightco' });
   assert.match(out.content[0].text, /API key/i,
     'klaviyo platform_login must route to the API-key tile, not the coming-soon branch');
   assert.doesNotMatch(out.content[0].text, /coming soon/i,
@@ -495,7 +495,7 @@ test('platform_login routes pinterest / snapchat / twitter to coming-soon (no bi
   const entry = registry.find(t => t.name === 'platform_login');
   for (const platform of ['pinterest', 'snapchat', 'twitter']) {
     oauthInvoked = false;
-    const out = await entry.handler({ platform, brand: 'madchill' });
+    const out = await entry.handler({ platform, brand: 'brightco' });
     assert.match(out.content[0].text, /coming soon/, `${platform} should be gated`);
     assert.equal(oauthInvoked, false, `${platform} must not invoke OAuth while still TODO`);
   }
@@ -513,7 +513,7 @@ test('platform_login dispatches stripe + linkedin through runOAuthFlow', async (
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'platform_login');
   for (const platform of ['stripe', 'linkedin']) {
-    const out = await entry.handler({ platform, brand: 'madchill' });
+    const out = await entry.handler({ platform, brand: 'brightco' });
     const env = envelope.parse(out);
     assert.ok(env && env.ok, `${platform} should produce an OK envelope`);
     assert.equal(env.data.platform, platform);
@@ -534,7 +534,7 @@ test('platform_login returns success without leaking tokens', async () => {
   });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'platform_login');
-  const out = await entry.handler({ platform: 'shopify', brand: 'madchill' });
+  const out = await entry.handler({ platform: 'shopify', brand: 'brightco' });
   assert.ok(!out.content[0].text.includes('EAABshouldneverleakthis1234567890'));
   const env = envelope.parse(out);
   assert.ok(env, 'response must carry an envelope');
@@ -572,16 +572,16 @@ test('brand_scrape emits start + done progress events on happy path', async () =
   const entry = registry.find(t => t.name === 'brand_scrape');
   const stub = {
     scrapeBrand: async () => ({
-      url: 'https://madchill.com',
+      url: 'https://brightco.com',
       primary: {
         copy: { productTitles: ['Classic Hoodie', 'Joggers', 'Tee'] },
         logoCandidates: [{ src: 'https://cdn/logo.png', source: 'json-ld', weight: 100 }],
       },
       logoColors: [{ hex: '#000000', freq: 0.5 }, { hex: '#ffffff', freq: 0.3 }],
-      secondaryPages: [{ url: 'https://madchill.com/about', signal: {} }],
+      secondaryPages: [{ url: 'https://brightco.com/about', signal: {} }],
     }),
   };
-  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://madchill.com' }));
+  const out = await withStubbedScraper(stub, () => entry.handler({ url: 'https://brightco.com' }));
   const env = envelope.parse(out);
   assert.ok(env);
   assert.equal(env.ok, true);
@@ -596,7 +596,7 @@ test('brand_scrape emits start + done progress events on happy path', async () =
   assert.equal(start.tool, 'brand_scrape');
   assert.equal(start.stage, 'start');
   assert.equal(start.label, 'Reading homepage');
-  assert.equal(start.url, 'https://madchill.com');
+  assert.equal(start.url, 'https://brightco.com');
   assert.ok(typeof start.scrapeId === 'string' && start.scrapeId.length >= 16);
   assert.ok(typeof start.ts === 'number' && start.ts > 0);
 
@@ -604,7 +604,7 @@ test('brand_scrape emits start + done progress events on happy path', async () =
   assert.equal(done.channel, 'mcp-progress');
   assert.equal(done.stage, 'done');
   assert.match(done.label, /Found 3 products/);
-  assert.equal(done.url, 'https://madchill.com');
+  assert.equal(done.url, 'https://brightco.com');
   assert.equal(done.scrapeId, start.scrapeId, 'scrapeId must be stable across events for one invocation');
   assert.ok(done.detail);
   assert.equal(done.detail.products, 3);
@@ -834,14 +834,14 @@ test('postscript tool prefixes the action and dispatches to postscript-<action>'
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'postscript');
 
-  const out = await entry.handler({ action: 'automation-create', brand: 'pog' });
+  const out = await entry.handler({ action: 'automation-create', brand: 'vela' });
   const text = out.content && out.content[0] ? out.content[0].text : '';
   // Engine-not-found path; can't introspect the action from the user-
   // facing text, but the handler must not crash AND must reach the
   // engine path (i.e., not refuse on schema validation).
   assert.ok(text.length > 0, 'postscript handler returned empty text');
   assert.ok(!text.includes('BRAND_MISSING') && !text.includes('Refusing postscript'),
-    `passing brand=pog should not refuse on missing-brand. Got: ${text}`);
+    `passing brand=vela should not refuse on missing-brand. Got: ${text}`);
 });
 
 test('postscript tool description mentions bulk-import-flow (the morning-setup verb)', () => {
@@ -855,10 +855,10 @@ test('postscript tool description mentions bulk-import-flow (the morning-setup v
 // ─────────────────────────────────────────────────────────────────────
 // Klaviyo template actions — registration + dispatch.
 //
-// Live incident anchor (2026-04-29, POG): Ryan tried to bulk-import 51
+// Live incident anchor (2026-04-29, VELA): Ryan tried to bulk-import 51
 // Klaviyo email templates and the existing `klaviyo` tool only exposed
 // performance / lists / campaigns. Falling back to a Python script that
-// read klaviyoApiKey from .merlin-config-pog.json got 401 because the
+// read klaviyoApiKey from .merlin-config-vela.json got 401 because the
 // raw key only lives in the AES-256-GCM-encrypted vault. The fix is to
 // expose template CRUD + bulk-upload through the binary, where the
 // vault is already decrypted. These tests pin the action enum so a

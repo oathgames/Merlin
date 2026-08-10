@@ -12,8 +12,8 @@
 // existed at split-migration time was moved to a directory no code path ever
 // reads again, frozen with whatever it held. On installs that predate the
 // vault, that meant PLAINTEXT Meta access tokens and API keys sitting
-// unencrypted on disk indefinitely (live incident 2026-07-13: ivory-ella +
-// mad-chill EAA tokens in %APPDATA%\Merlin, untouched for ~3 months).
+// unencrypted on disk indefinitely (live incident 2026-07-13: two brands'
+// EAA tokens in %APPDATA%\Merlin, untouched for ~3 months).
 // migrateTokensToVault could never catch them: it scans only the tools dir
 // AND is one-shot gated on _migrationVersion >= 3, which was already set.
 //

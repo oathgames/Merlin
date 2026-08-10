@@ -217,14 +217,14 @@ test('redactText scrubs all secrets in a multi-token payload', () => {
 
 test('redactJsonObj redacts nested sensitive field names', () => {
   const obj = {
-    brand: 'madchill',
+    brand: 'brightco',
     meta: { metaAccessToken: fake('EAA', 'Breallylongtoken1234567890abcde') },
     safe: 'hello world',
   };
   const out = redactJsonObj(obj);
   assert.equal(out.meta.metaAccessToken, '[REDACTED]');
   assert.equal(out.safe, 'hello world');
-  assert.equal(out.brand, 'madchill');
+  assert.equal(out.brand, 'brightco');
 });
 
 test('redactJsonObj redacts arrays of objects with secrets', () => {

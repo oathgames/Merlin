@@ -22,14 +22,14 @@ test('slugifyBrandName — common cases', () => {
     ['Naïve Skincare', 'naive-skincare'],
     ['Kraków Goods', 'krakow-goods'],
     ['Český Krumlov', 'cesky-krumlov'],
-    ['Madchill', 'madchill'],
-    ['MADCHILL', 'madchill'],
-    ['MadChill', 'madchill'],
+    ['Brightco', 'brightco'],
+    ['BRIGHTCO', 'brightco'],
+    ['BrightCo', 'brightco'],
     ['  spaced  out  ', 'spaced-out'],
     ['B&H Photo', 'b-h-photo'],
     ['AT&T', 'at-t'],
-    ['madchill', 'madchill'],
-    ['madchill-cosmetics', 'madchill-cosmetics'],
+    ['brightco', 'brightco'],
+    ['brightco-cosmetics', 'brightco-cosmetics'],
     ['', ''],
     ['---', ''],
     ['💯💯💯', ''],
@@ -46,7 +46,7 @@ test('slugifyBrandName — truncates to 100 chars', () => {
 });
 
 test('slugifyBrandName output passes isValidBrandSlug for common DTC names', () => {
-  const inputs = ['Lalí Cosmetics', 'Café Reino', 'B&H Photo', 'MADCHILL', 'Crème de la Crème'];
+  const inputs = ['Lalí Cosmetics', 'Café Reino', 'B&H Photo', 'BRIGHTCO', 'Crème de la Crème'];
   for (const input of inputs) {
     const slug = slugifyBrandName(input);
     if (slug !== '') {
@@ -56,10 +56,10 @@ test('slugifyBrandName output passes isValidBrandSlug for common DTC names', () 
 });
 
 test('isValidBrandSlug — accepts the strict contract', () => {
-  for (const good of ['madchill', 'lali-cosmetics', 'brand_2025', 'a', 'a1', '123']) {
+  for (const good of ['brightco', 'lali-cosmetics', 'brand_2025', 'a', 'a1', '123']) {
     assert.ok(isValidBrandSlug(good), `${JSON.stringify(good)} must be valid`);
   }
-  for (const bad of ['', 'Madchill', 'lalí', 'brand name', 'brand!', 'a'.repeat(101)]) {
+  for (const bad of ['', 'Brightco', 'lalí', 'brand name', 'brand!', 'a'.repeat(101)]) {
     assert.ok(!isValidBrandSlug(bad), `${JSON.stringify(bad)} must be invalid`);
   }
 });

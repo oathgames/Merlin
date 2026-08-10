@@ -4,7 +4,7 @@
 // Context: analytics_writes.go has been able to REGISTER a GA4 custom dimension
 // (google-analytics-create-custom-dimension) since the write surface shipped,
 // and gtm_quiz.go instruments a `quiz_step` event that carries step identity as
-// event PARAMETERS. Found live on brand "revive" (property 539215592): four
+// event PARAMETERS. Found live on brand "wellco" (property 100000001): four
 // dimensions registered ("Quiz Category", "Quiz Sub Step", "Quiz Step Number",
 // "Quiz Step ID"), the event firing correctly (31 active users over 2 days,
 // confirmed via google-analytics-funnel), and NO action anywhere that could
@@ -195,7 +195,7 @@ test('event-breakdown and step-funnel skip the confirmation gate', async () => {
     execFileCalls.length = 0;
     const parsed = envelopes.parse(await GA.handler({
       action,
-      brand: 'revive',
+      brand: 'wellco',
       analyticsEventName: 'quiz_step',
       analyticsDimension: 'Quiz Step Number',
     }));
@@ -220,8 +220,8 @@ function lastCmd() {
 test('event-breakdown params survive runBinary into the --cmd JSON', async () => {
   execFileCalls.length = 0;
   await runBinary(makeCtx(), 'google-analytics-event-breakdown', {
-    brand: 'revive',
-    analyticsPropertyId: '539215592',
+    brand: 'wellco',
+    analyticsPropertyId: '100000001',
     analyticsEventName: 'quiz_step',
     analyticsDimension: 'Quiz Step Number',
     batchCount: 30,
@@ -234,7 +234,7 @@ test('event-breakdown params survive runBinary into the --cmd JSON', async () =>
     cmd.analyticsDimension, 'Quiz Step Number',
     'analyticsDimension must reach the engine VERBATIM. The engine resolves the display name against the property registry, so trimming or normalizing it here would break the lookup.',
   );
-  assert.equal(cmd.analyticsPropertyId, '539215592');
+  assert.equal(cmd.analyticsPropertyId, '100000001');
 });
 
 test('step-funnel routes to the step-funnel engine action, not the funnel one', async () => {
@@ -245,7 +245,7 @@ test('step-funnel routes to the step-funnel engine action, not the funnel one', 
   execFileCalls.length = 0;
   const parsed = envelopes.parse(await GA.handler({
     action: 'step-funnel',
-    brand: 'revive',
+    brand: 'wellco',
     analyticsEventName: 'quiz_step',
     analyticsDimension: 'step_index',
   }));

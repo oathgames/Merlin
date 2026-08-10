@@ -53,7 +53,7 @@ test('isVaultRedactionMarker detects marker regardless of case/whitespace', () =
 test('non-sensitive fields flow to publicFields', () => {
   const spy = makeVaultSpy();
   const { publicFields, placeholders } = splitOAuthPersistFields(
-    'madchill',
+    'brightco',
     { googleAdsCustomerId: '1234567890', metaPageId: '998877' },
     spy.fn,
   );
@@ -68,7 +68,7 @@ test('non-sensitive fields flow to publicFields', () => {
 test('sensitive fields with real tokens are vaulted and emit placeholder', () => {
   const spy = makeVaultSpy();
   const { publicFields, placeholders } = splitOAuthPersistFields(
-    'madchill',
+    'brightco',
     { googleAccessToken: 'ya29.real-token-xyz', googleRefreshToken: '1//real-refresh' },
     spy.fn,
   );
@@ -79,10 +79,10 @@ test('sensitive fields with real tokens are vaulted and emit placeholder', () =>
   });
   assert.strictEqual(spy.calls.length, 2);
   assert.deepStrictEqual(spy.calls[0], {
-    brand: 'madchill', key: 'googleAccessToken', value: 'ya29.real-token-xyz',
+    brand: 'brightco', key: 'googleAccessToken', value: 'ya29.real-token-xyz',
   });
   assert.deepStrictEqual(spy.calls[1], {
-    brand: 'madchill', key: 'googleRefreshToken', value: '1//real-refresh',
+    brand: 'brightco', key: 'googleRefreshToken', value: '1//real-refresh',
   });
 });
 
@@ -93,7 +93,7 @@ test('redacted sensitive fields skip vaultPut but STILL emit placeholder', () =>
   // the full comment.
   const spy = makeVaultSpy();
   const { publicFields, placeholders } = splitOAuthPersistFields(
-    'madchill',
+    'brightco',
     {
       googleAccessToken: '[stored securely]',
       googleRefreshToken: '[stored securely]',
@@ -113,7 +113,7 @@ test('redacted sensitive fields skip vaultPut but STILL emit placeholder', () =>
 test('mixed result (public + real + redacted) splits cleanly', () => {
   const spy = makeVaultSpy();
   const { publicFields, placeholders } = splitOAuthPersistFields(
-    'madchill',
+    'brightco',
     {
       metaAccessToken: 'EAAreal',            // real sensitive
       metaAdAccountId: 'act_123',            // public
@@ -132,17 +132,17 @@ test('mixed result (public + real + redacted) splits cleanly', () => {
   });
   assert.strictEqual(spy.calls.length, 1, 'only the real token gets vaulted');
   assert.deepStrictEqual(spy.calls[0], {
-    brand: 'madchill', key: 'metaAccessToken', value: 'EAAreal',
+    brand: 'brightco', key: 'metaAccessToken', value: 'EAAreal',
   });
 });
 
 test('empty and null input returns empty shape', () => {
   const spy = makeVaultSpy();
-  assert.deepStrictEqual(splitOAuthPersistFields('madchill', {}, spy.fn),
+  assert.deepStrictEqual(splitOAuthPersistFields('brightco', {}, spy.fn),
     { publicFields: {}, placeholders: {} });
-  assert.deepStrictEqual(splitOAuthPersistFields('madchill', null, spy.fn),
+  assert.deepStrictEqual(splitOAuthPersistFields('brightco', null, spy.fn),
     { publicFields: {}, placeholders: {} });
-  assert.deepStrictEqual(splitOAuthPersistFields('madchill', undefined, spy.fn),
+  assert.deepStrictEqual(splitOAuthPersistFields('brightco', undefined, spy.fn),
     { publicFields: {}, placeholders: {} });
   assert.strictEqual(spy.calls.length, 0);
 });

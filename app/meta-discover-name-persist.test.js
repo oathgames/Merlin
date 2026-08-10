@@ -13,12 +13,12 @@
 // were never written to disk. writeBrandTokens merges with Object.assign over
 // the existing file, so any name already on disk survived untouched.
 //
-// Observed live on 2026-08-07: brand `trubeam` had been seeded from Revive's
-// config. Once TruBeam's assets were shared, discovery correctly repointed the
-// ids to act_2074660803368058 / 730785720115365 / 1517993496082473, but the
-// file still read adAccountName "Revive", pageName "Revive Meds", pixelName
-// "Revive Pixel". Every surface rendering those labels called TruBeam's ad
-// account "Revive" while it was configured to spend on TruBeam.
+// Observed live on 2026-08-07: brand `clientco` had been seeded from Wellco's
+// config. Once ClientCo's assets were shared, discovery correctly repointed the
+// ids to act_100000000000002 / 200000004 / 200000003, but the
+// file still read adAccountName "Wellco", pageName "Wellco Health", pixelName
+// "Wellco Pixel". Every surface rendering those labels called ClientCo's ad
+// account "Wellco" while it was configured to spend on ClientCo.
 //
 // These are source-scan tests rather than handler invocations because the block
 // lives inside an execFile callback inside an ipcMain.handle registration in a

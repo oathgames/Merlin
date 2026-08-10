@@ -351,7 +351,7 @@ test('isValidTaskId rejects path traversal + shell-meta chars', () => {
     const v = mod._internal.isValidTaskId;
     // Valid
     assert.equal(v('merlin-acme-daily-ads'), true);
-    assert.equal(v('merlin-mad-chill-creative-refresh'), true);
+    assert.equal(v('merlin-bright-co-creative-refresh'), true);
     // Invalid
     assert.equal(v('foo'), false);                    // no merlin- prefix
     assert.equal(v('merlin-'), false);                 // empty rest

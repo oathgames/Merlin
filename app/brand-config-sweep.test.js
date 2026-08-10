@@ -3,7 +3,7 @@
 // .merlin-config-<brand>.json files flat into StateDir, but the config I/O
 // layer only ever reads <ContentDir>/.claude/tools, so pre-vault brand
 // configs sat in %APPDATA%\Merlin with PLAINTEXT Meta access tokens for
-// months (ivory-ella + mad-chill, discovered 2026-07-13). migrateTokensToVault
+// months (acme-labs + bright-co, discovered 2026-07-13). migrateTokensToVault
 // could never catch them: tools-dir-only scan, one-shot _migrationVersion
 // gate already set.
 //
@@ -81,8 +81,8 @@ const FAKE_FAL_KEY = '00000000-1111-2222-3333-444444444444:deadbeef';
 
 test('live brand stray: plaintext secrets vaulted, file deleted', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'ivory-ella');
-  const p = writeStray(fx, 'ivory-ella', {
+  addLiveBrand(fx, 'acme-labs');
+  const p = writeStray(fx, 'acme-labs', {
     metaAccessToken: FAKE_META_TOKEN,
     falApiKey: FAKE_FAL_KEY,
     metaAdAccountId: 'act_123456789',
@@ -92,9 +92,9 @@ test('live brand stray: plaintext secrets vaulted, file deleted', () => {
   const { result, logs } = runSweep(fx, vault);
 
   assert.equal(fs.existsSync(p), false, 'stray file must be deleted');
-  assert.equal(vault.vaultGet('ivory-ella', 'metaAccessToken'), FAKE_META_TOKEN);
-  assert.equal(vault.vaultGet('ivory-ella', 'falApiKey'), FAKE_FAL_KEY);
-  assert.deepEqual(result.deleted, ['.merlin-config-ivory-ella.json']);
+  assert.equal(vault.vaultGet('acme-labs', 'metaAccessToken'), FAKE_META_TOKEN);
+  assert.equal(vault.vaultGet('acme-labs', 'falApiKey'), FAKE_FAL_KEY);
+  assert.deepEqual(result.deleted, ['.merlin-config-acme-labs.json']);
   assert.equal(result.preservedKeys, 2);
   assert.equal(result.errors.length, 0);
   assert.equal(logs.length, 1);
@@ -104,8 +104,8 @@ test('live brand stray: plaintext secrets vaulted, file deleted', () => {
 
 test('non-sensitive keys (account/page/pixel ids, budgets) are never vaulted', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'mad-chill');
-  writeStray(fx, 'mad-chill', {
+  addLiveBrand(fx, 'bright-co');
+  writeStray(fx, 'bright-co', {
     dailyAdBudget: 25,
     metaAdAccountId: 'act_123456789',
     metaPageId: '111',
@@ -120,12 +120,12 @@ test('non-sensitive keys (account/page/pixel ids, budgets) are never vaulted', (
 
 test('live brand stray: existing vault entry is NEVER clobbered by a stale value', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'ivory-ella');
-  writeStray(fx, 'ivory-ella', { metaAccessToken: 'EAAstaleAprilTokenFAKE000000' });
-  const vault = makeVault({ 'ivory-ella/metaAccessToken': 'EAAfreshCurrentTokenFAKE111111' });
+  addLiveBrand(fx, 'acme-labs');
+  writeStray(fx, 'acme-labs', { metaAccessToken: 'EAAstaleAprilTokenFAKE000000' });
+  const vault = makeVault({ 'acme-labs/metaAccessToken': 'EAAfreshCurrentTokenFAKE111111' });
   const { result, logs } = runSweep(fx, vault);
 
-  assert.equal(vault.vaultGet('ivory-ella', 'metaAccessToken'), 'EAAfreshCurrentTokenFAKE111111',
+  assert.equal(vault.vaultGet('acme-labs', 'metaAccessToken'), 'EAAfreshCurrentTokenFAKE111111',
     'fresher live vault entry must survive');
   assert.equal(vault.puts.length, 0, 'no vaultPut when the slot is occupied');
   assert.equal(result.deleted.length, 1, 'superseded stray still deleted');
@@ -160,8 +160,8 @@ test('the example scaffold brand is treated as retired', () => {
 
 test('vault write failure keeps the file on disk for a next-boot retry', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'ivory-ella');
-  const p = writeStray(fx, 'ivory-ella', { metaAccessToken: FAKE_META_TOKEN });
+  addLiveBrand(fx, 'acme-labs');
+  const p = writeStray(fx, 'acme-labs', { metaAccessToken: FAKE_META_TOKEN });
   const logs = [];
   const result = sweepStaleBrandConfigs({
     toolsDir: fx.toolsDir,
@@ -185,8 +185,8 @@ test('vault write failure keeps the file on disk for a next-boot retry', () => {
 
 test('canonical tools dir is never touched, even when listed as a stray dir', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'ripit');
-  const p = path.join(fx.toolsDir, '.merlin-config-ripit.json');
+  addLiveBrand(fx, 'boltco');
+  const p = path.join(fx.toolsDir, '.merlin-config-boltco.json');
   fs.writeFileSync(p, JSON.stringify({ metaAccessToken: FAKE_META_TOKEN }));
   const vault = makeVault();
   // Deliberately pass toolsDir (and a case-mangled variant) as stray dirs.
@@ -202,7 +202,7 @@ test('tmp atomic-write siblings and non-matching files are skipped', () => {
   const fx = makeFixture();
   const tmp = path.join(fx.strayDir, '.merlin-config-tmp-abc123.json');
   const global = path.join(fx.strayDir, 'merlin-config.json');
-  const other = path.join(fx.strayDir, '.merlin-tokens-ripit');
+  const other = path.join(fx.strayDir, '.merlin-tokens-boltco');
   fs.writeFileSync(tmp, '{}');
   fs.writeFileSync(global, JSON.stringify({ metaAccessToken: FAKE_META_TOKEN }));
   fs.writeFileSync(other, 'x');
@@ -215,13 +215,13 @@ test('tmp atomic-write siblings and non-matching files are skipped', () => {
   assert.equal(result.deleted.length, 0);
   assert.equal(parseBrandConfigName('.merlin-config-tmp-abc123.json'), null);
   assert.equal(parseBrandConfigName('merlin-config.json'), null);
-  assert.equal(parseBrandConfigName('.merlin-config-ivory-ella.json'), 'ivory-ella');
+  assert.equal(parseBrandConfigName('.merlin-config-acme-labs.json'), 'acme-labs');
 });
 
 test('vault placeholders and redaction markers are not treated as plaintext', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'ripit');
-  writeStray(fx, 'ripit', {
+  addLiveBrand(fx, 'boltco');
+  writeStray(fx, 'boltco', {
     metaAccessToken: '@@VAULT:metaAccessToken@@',
     klaviyoApiKey: '[stored securely]',
   });
@@ -260,8 +260,8 @@ test('missing stray dir and empty stray list are safe no-ops', () => {
 
 test('sweep is idempotent: second run is a zero-action no-op', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'ivory-ella');
-  writeStray(fx, 'ivory-ella', { metaAccessToken: FAKE_META_TOKEN });
+  addLiveBrand(fx, 'acme-labs');
+  writeStray(fx, 'acme-labs', { metaAccessToken: FAKE_META_TOKEN });
   const vault = makeVault();
   runSweep(fx, vault);
   const second = runSweep(fx, vault);
@@ -273,8 +273,8 @@ test('sweep is idempotent: second run is a zero-action no-op', () => {
 
 test('log lines carry key names only, never secret values', () => {
   const fx = makeFixture();
-  addLiveBrand(fx, 'ivory-ella');
-  writeStray(fx, 'ivory-ella', { metaAccessToken: FAKE_META_TOKEN, falApiKey: FAKE_FAL_KEY });
+  addLiveBrand(fx, 'acme-labs');
+  writeStray(fx, 'acme-labs', { metaAccessToken: FAKE_META_TOKEN, falApiKey: FAKE_FAL_KEY });
   const vault = makeVault();
   const { logs } = runSweep(fx, vault);
 

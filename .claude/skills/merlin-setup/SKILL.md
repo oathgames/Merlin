@@ -639,7 +639,7 @@ Check if `assets/brands/brands-index.json` exists. If not, regenerate by scannin
 
 ```
 assets/brands/
-└── <brand>/                    ← brand folder (e.g., "madchill")
+└── <brand>/                    ← brand folder (e.g., "acme-goods")
     ├── brand.md                ← voice, audience, CTA style, brand colors
     ├── memory.md               ← what works/fails, run log, MER trend
     ├── briefing.json           ← latest ROAS, best hook/format, active ads
@@ -660,7 +660,7 @@ assets/brands/
 2. **List products** — scan `assets/brands/<brand>/products/` for subdirs with `references/`.
 3. **Route from user input:**
    - `/merlin cream-set video` → find which brand contains `cream-set`, use it.
-   - `/merlin madchill pink-set images` → explicit brand + product.
+   - `/merlin acme-goods pink-set images` → explicit brand + product.
    - `/merlin make a video` → if only one brand+product, use it. Ambiguous → ask.
 4. **No brand exists** → run Setup Flow above.
 

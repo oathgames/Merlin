@@ -160,26 +160,26 @@ test('readActiveBrand: missing file → empty string', () => {
 test('readActiveBrand: valid file → activeBrand', () => {
   const d = tmpDir();
   try {
-    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'pog', other: 'x' }));
-    assert.strictEqual(shim.readActiveBrand(d), 'pog');
+    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'vela', other: 'x' }));
+    assert.strictEqual(shim.readActiveBrand(d), 'vela');
   } finally { rmTmp(d); }
 });
 
 test('injectActiveBrand: missing brand + active set → injects', () => {
   const d = tmpDir();
   try {
-    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'pog' }));
+    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'vela' }));
     const out = shim.injectActiveBrand({ action: 'insights' }, d);
-    assert.deepStrictEqual(out, { action: 'insights', brand: 'pog' });
+    assert.deepStrictEqual(out, { action: 'insights', brand: 'vela' });
   } finally { rmTmp(d); }
 });
 
 test('injectActiveBrand: explicit brand → preserved', () => {
   const d = tmpDir();
   try {
-    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'pog' }));
-    const out = shim.injectActiveBrand({ action: 'insights', brand: 'mog' }, d);
-    assert.strictEqual(out.brand, 'mog', 'explicit brand must win');
+    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'vela' }));
+    const out = shim.injectActiveBrand({ action: 'insights', brand: 'orbi' }, d);
+    assert.strictEqual(out.brand, 'orbi', 'explicit brand must win');
   } finally { rmTmp(d); }
 });
 
@@ -297,7 +297,7 @@ test('dispatch: tools/call forwards args to IPC and returns result unchanged', a
   };
   const d = tmpDir();
   try {
-    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'pog' }));
+    fs.writeFileSync(path.join(d, '.merlin-state.json'), JSON.stringify({ activeBrand: 'vela' }));
     const r = await shim.dispatch({
       jsonrpc: '2.0', id: 7,
       method: 'tools/call',
@@ -307,7 +307,7 @@ test('dispatch: tools/call forwards args to IPC and returns result unchanged', a
     assert.strictEqual(captured.method, 'tools/call');
     assert.strictEqual(captured.params.name, 'meta_ads');
     // Brand was injected by the shim before forwarding.
-    assert.strictEqual(captured.params.arguments.brand, 'pog');
+    assert.strictEqual(captured.params.arguments.brand, 'vela');
   } finally { rmTmp(d); }
 });
 
@@ -401,7 +401,7 @@ test('createIpcClient: socket close does NOT throw / does NOT exit process', asy
   // which cleared all pending requests + nulled the socket. With no
   // in-flight work AND nothing else holding the event loop, Node would
   // exit 0. Production effect: Claude Desktop saw "Server disconnected"
-  // with no stderr at 17:17:30 during Ryan's POG /update flow.
+  // with no stderr at 17:17:30 during Ryan's VELA /update flow.
   //
   // We can't easily test "does not exit process" here without spawning a
   // child process (which would slow tests). Instead, we test the

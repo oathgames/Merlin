@@ -80,7 +80,7 @@ test('self-write patterns ignore .flags.json + atomic siblings', () => {
 
 test('self-write patterns do NOT match generated files', () => {
   const cases = [
-    'results/img/madchill/img_20260419/portrait.png',
+    'results/img/brightco/img_20260419/portrait.png',
     'results/ad_20260419_120000/metadata.json',
     'results/myflags.json', // user file with similar name
     'results/.flagsbar.json',
