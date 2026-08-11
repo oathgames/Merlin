@@ -635,6 +635,27 @@ test('meta_audit exposes the existing-customers READ and maps it to the engine a
 // feature is that the ad publishes from someone else, so if these params are
 // stripped between the tool and the binary the push silently runs under the
 // BRAND identity and nobody finds out until they read the live creative.
+// Rule 23 for meta-attribution-compare. The engine action shipped with no MCP
+// route and sat unreachable until 2026-08-11; the suite caught it, which is
+// exactly what the both-directions check is for.
+test('meta_audit exposes attribution-compare and maps it to the engine action', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_audit').handler({ brand: 'acme', action: 'attribution-compare' });
+  assert.equal(lastCmd().action, 'meta-attribution-compare',
+    'must map explicitly, not lean on the meta- prefix fallthrough');
+});
+
+// batchCount is the ONLY param runMetaAttributionCompare reads. Declaring the
+// action without it would make the day-window form silently return lifetime.
+test('meta_audit routes batchCount through to --cmd for attribution-compare', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_audit').handler({ brand: 'acme', action: 'attribution-compare', batchCount: 30 });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-attribution-compare');
+  assert.equal(cmd.batchCount, 30,
+    'batchCount must reach the binary — without it every call silently reports lifetime');
+});
+
 test('meta_ads bulk-push carries the partner identity through to --cmd', async () => {
   execFileCalls.length = 0;
   await tool('meta_ads').handler({
