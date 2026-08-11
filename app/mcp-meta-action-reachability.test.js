@@ -631,6 +631,33 @@ test('meta_audit exposes the existing-customers READ and maps it to the engine a
     'the read must route to the same engine action, without the meta- prefix fallthrough');
 });
 
+// Rule 23 for the partnership identity override. The whole point of the
+// feature is that the ad publishes from someone else, so if these params are
+// stripped between the tool and the binary the push silently runs under the
+// BRAND identity and nobody finds out until they read the live creative.
+test('meta_ads bulk-push carries the partner identity through to --cmd', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_ads').handler({
+    brand: 'acme', action: 'bulk-push', campaignName: 'C', adSetName: 'S',
+    partnerPageId: '117203078065824', partnerInstagramUserId: '17841401740810477',
+    ads: [{ imagePath: 'C:/tmp/a.png', name: 'a', headline: 'h', body: 'b', link: 'https://x.com' }],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.partnerPageId, '117203078065824',
+    'partnerPageId must reach the binary — without it the ad publishes from the brand identity');
+  assert.equal(cmd.partnerInstagramUserId, '17841401740810477');
+});
+
+test('meta_ads bulk-push omits partner identity when not requested', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_ads').handler({
+    brand: 'acme', action: 'bulk-push', campaignName: 'C', adSetName: 'S',
+    ads: [{ imagePath: 'C:/tmp/a.png', name: 'a', headline: 'h', body: 'b', link: 'https://x.com' }],
+  });
+  const cmd = lastCmd();
+  assert.ok(!('partnerPageId' in cmd), 'no partner identity must mean no key at all, not an empty string');
+});
+
 test('meta_create_engagement_audience routes source + event through to --cmd', async () => {
   execFileCalls.length = 0;
   await tool('meta_create_engagement_audience').handler({
