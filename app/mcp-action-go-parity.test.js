@@ -95,8 +95,9 @@ const TOOL_ROUTING = [
       'list-catalog-sets': 'meta-catalog-sets',
       'list-boosted-posts': 'meta-boosted-posts',
       'resolve-geo':       'meta-geo-resolve',
-      // The only meta_audit action whose engine case carries no meta- prefix.
+      // meta_audit actions whose engine case carries no meta- prefix.
       'aware-audience':    'aware-audience',
+      'angle-performance': 'angle-performance',
     },
   },
   { name: 'google_analytics', prefix: 'google-analytics' },
