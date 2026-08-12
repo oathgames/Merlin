@@ -408,3 +408,162 @@ test('redactOutput falls back to text redaction on unparseable stdout', () => {
   const out = redactOutput(stdout, '');
   assert.ok(!out.includes(token));
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Audience rule — STRUCTURAL_FIELD_NAMES exemption.
+//
+// REGRESSION GUARD (2026-08-11): `meta_audit action=audit-audience-rule`
+// returned "rule": "[REDACTED]" for every custom audience, making the action
+// useless for the one question it exists to answer. Meta ships the rule as a
+// long JSON string, which tripped isLikelyToken and was nuked wholesale; even
+// parsed into an object, the long-run sweep shredded URL conditions at every
+// dot. Live case (benebone): 17 pixel audiences under Meta's 1,000-person
+// floor, pixel healthy, pixel shared across 49 domains — the URL filter was
+// the remaining suspect and the one unreadable field.
+//
+// The exemption drops the opaque-token HEURISTIC only. Every deterministic
+// credential rule still applies inside a rule blob, which the token tests
+// below pin.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Representative Meta website-custom-audience rule: url/i_contains conditions,
+// event names, pixel id, retention window.
+const AUDIENCE_RULE = {
+  inclusions: {
+    operator: 'or',
+    rules: [{
+      event_sources: [{ type: 'pixel', id: '1463260117266408' }],
+      retention_seconds: 2592000,
+      filter: {
+        operator: 'and',
+        filters: [
+          { field: 'url', operator: 'i_contains', value: 'https://www.benebone.com/collections/durable-dog-chews' },
+          { field: 'event', operator: 'eq', value: 'AddToCart' },
+        ],
+      },
+    }],
+  },
+};
+
+const auditStdout = (rule) => [
+  '============================================================',
+  '  Meta — Audience Rule',
+  '============================================================',
+  '',
+  JSON.stringify({ id: '23851234567890123', name: 'Benebone ATC 30d', rule, retentionDays: 30 }, null, 2),
+].join('\n');
+
+test('audience rule survives redaction intact when Meta returns it as a JSON string', () => {
+  const out = redactOutput(auditStdout(JSON.stringify(AUDIENCE_RULE)), '');
+  assert.ok(!out.includes('[REDACTED]'), `rule was redacted:\n${out}`);
+  assert.match(out, /i_contains/);
+  assert.match(out, /AddToCart/);
+  assert.match(out, /1463260117266408/);
+  assert.match(out, /2592000/);
+  // The URL condition survives whole — host AND path. Truncating the path is
+  // the failure mode that hid which of the pixel's 49 domains was filtered.
+  assert.ok(out.includes('https://www.benebone.com/collections/durable-dog-chews'));
+});
+
+test('audience rule survives redaction intact when Meta returns it as an object', () => {
+  const out = redactOutput(auditStdout(AUDIENCE_RULE), '');
+  assert.ok(!out.includes('[REDACTED]'), `rule was redacted:\n${out}`);
+  assert.match(out, /"i_contains"/);
+  assert.match(out, /"AddToCart"/);
+  assert.ok(out.includes('https://www.benebone.com/collections/durable-dog-chews'));
+});
+
+test('audience rule redacts an embedded sk- token but keeps the rest of the rule', () => {
+  const token = fake('sk', '-', BODY_32);
+  const rule = JSON.parse(JSON.stringify(AUDIENCE_RULE));
+  rule.inclusions.rules[0].filter.filters.push({ field: 'url', operator: 'i_contains', value: `utm_key=${token}` });
+  const out = redactOutput(auditStdout(JSON.stringify(rule)), '');
+  assert.ok(!out.includes(token), 'sk- token leaked out of the audience rule');
+  assert.match(out, /i_contains/);
+  assert.match(out, /AddToCart/);
+});
+
+test('audience rule redacts an embedded EAA token but keeps the rest of the rule', () => {
+  const token = fake('EAA', 'B', BODY_32);
+  const rule = JSON.parse(JSON.stringify(AUDIENCE_RULE));
+  rule.inclusions.rules[0].filter.filters.push({ field: 'url', operator: 'i_contains', value: `access=${token}` });
+  const out = redactOutput(auditStdout(rule), '');
+  assert.ok(!out.includes(token), 'EAA token leaked out of the audience rule');
+  assert.match(out, /"i_contains"/);
+  assert.match(out, /"AddToCart"/);
+});
+
+test('audience rule still strips Bearer headers and token= URL params', () => {
+  const token = fake(BODY_32, 'zzzz');
+  const out = redactJsonObj({ rule: { note: `Bearer ${token}`, cb: `https://x.example/cb?access_token=${token}` } });
+  assert.ok(!out.rule.note.includes(token));
+  assert.ok(!out.rule.cb.includes(token));
+});
+
+test('sensitive field names still win inside a rule subtree', () => {
+  const token = fake('shpat_', BODY_32);
+  const out = redactJsonObj({ rule: { filters: [{ access_token: token, field: 'url' }] } });
+  assert.equal(out.rule.filters[0].access_token, '[REDACTED]');
+  assert.equal(out.rule.filters[0].field, 'url');
+});
+
+test('the structural exemption does not leak to sibling or unrelated fields', () => {
+  const opaque = fake(BODY_32, 'abcdefgh');
+  const out = redactJsonObj({ rule: { keep: opaque }, description: opaque, nested: { other: opaque } });
+  assert.equal(out.rule.keep, opaque, 'rule subtree should be exempt');
+  assert.equal(out.description, '[REDACTED]', 'non-structural sibling must still be swept');
+  assert.equal(out.nested.other, '[REDACTED]', 'unrelated subtree must still be swept');
+});
+
+test('embedded opaque tokens in non-structural leaves are still swept (belt-and-braces moved into the walker)', () => {
+  const opaque = fake(BODY_32, 'abcdefgh');
+  const out = redactOutput(['{', `  "note": "the value is ${opaque} ok"`, '}'].join('\n'), '');
+  assert.ok(!out.includes(opaque), 'embedded opaque token leaked from a non-structural leaf');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JSON block detection — arrays of objects.
+//
+// REGRESSION GUARD (2026-08-11): the block scan ran backwards for both ends,
+// so an array element's bare `{` line (JSON.stringify puts it alone; nested
+// objects keep theirs on the key's line) became jsonStart. The slice was
+// unparseable, redactOutput fell through to the text-only path, and the
+// field-level walker never ran — SENSITIVE_FIELD_NAMES never applied.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('redactOutput applies field-level redaction inside an array of objects', () => {
+  // Deliberately SHORT: under the 32-char floor, so it matches no prefix and
+  // no long-run pattern. Only the field-name walker can catch it — which is
+  // exactly what the broken block scan skipped.
+  const shortToken = 'abc123def456ghi789';
+  const stdout = [
+    'Fetching audiences...',
+    JSON.stringify({ total: 1, audiences: [{ id: '23851', access_token: shortToken }] }, null, 2),
+  ].join('\n');
+  const out = redactOutput(stdout, '');
+  assert.ok(!out.includes(shortToken), 'short token under access_token leaked from an array of objects');
+  assert.match(out, /"access_token":\s*"\[REDACTED\]"/);
+  assert.match(out, /"id":\s*"23851"/, 'non-sensitive sibling fields must survive');
+});
+
+test('redactOutput anchors the JSON block on the top-level brace, not an array element', () => {
+  const stdout = JSON.stringify({ total: 1, rows: [{ a: 1 }, { b: 2 }] }, null, 2);
+  const out = redactOutput(stdout, '');
+  assert.match(out, /"total":\s*1/, 'top-level keys before the array must survive');
+  assert.match(out, /"rows"/);
+});
+
+test('redactOutput keeps trailing lines after the JSON block', () => {
+  const stdout = [
+    JSON.stringify({ ok: true, rows: [{ a: 1 }] }, null, 2),
+    'Done in 1.2s',
+  ].join('\n');
+  const out = redactOutput(stdout, '');
+  assert.match(out, /Done in 1\.2s/, 'trailing output must not be dropped');
+});
+
+test('redactOutput still falls back to text redaction when the block is unparseable', () => {
+  const token = fake('EAA', 'B', BODY_32);
+  const out = redactOutput(`{ broken ${token}\n}`, '');
+  assert.ok(!out.includes(token));
+});
