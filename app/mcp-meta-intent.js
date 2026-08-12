@@ -814,6 +814,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     input: {
       brand: brandSchema.describe('Brand name'),
       adId: z.string().describe('The ad whose creative enhancement spec to rebuild'),
+      force: z.boolean().optional().describe('Rebuild even when the ad already looks correct. By default the engine skips ads whose store locator is already off, because swapping a creative resets that ad\'s learning. Set true after changing OTHER enhancement settings in the brand config (text, CTA, media) — without it those ads are all skipped.'),
     },
     handler: async (args) => toEnvelope(
       await runBinary(ctx, 'meta-refresh-creative-spec', args),
