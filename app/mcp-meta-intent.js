@@ -788,6 +788,39 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_refresh_creative_spec ─────────────────────────────────────
+  //
+  // Rebuild a LIVE ad's creative with the brand's configured Advantage+
+  // toggles plus the forced store locator opt-out, leaving media, copy,
+  // destination links and UTM tags byte-identical (see
+  // autocmo-core/meta_refresh_creative.go). Remediation tool for creatives
+  // that were published carrying enhancement settings nobody intended — the
+  // 2026-08-12 Forever 21 store locator incident is the reference case.
+  //
+  // costImpact mirrors meta_edit_ad_link's reasoning: no NEW spend, but the
+  // ad is already spending and this changes what gets served against those
+  // dollars, so it takes the always-cards path.
+  tools.push(defineTool({
+    name: 'meta_refresh_creative_spec',
+    description: 'Rebuild a LIVE Meta ad\'s creative so it carries the brand\'s configured Advantage+ enhancement toggles, and force the store locator extension OFF. Media, copy, destination URL and UTM tags are preserved exactly — only the enhancement settings change. Use when a live ad is serving an unwanted Meta creative enhancement (store locator buttons, text rewrites) that cannot be edited because Meta creatives are immutable.',
+    destructive: true,
+    // Same ad refreshed twice converges on the same end state; the repeat run
+    // just leaves an extra unused creative behind, which costs nothing.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      adId: z.string().describe('The ad whose creative enhancement spec to rebuild'),
+    },
+    handler: async (args) => toEnvelope(
+      await runBinary(ctx, 'meta-refresh-creative-spec', args),
+      { nextSuggested: ['meta_review_performance'] },
+    ),
+  }, tool, z, ctx));
+
   // ── meta_set_existing_customers ────────────────────
   // Advertising Settings -> existing customers. ACCOUNT-LEVEL with REPLACE
   // semantics, which is why it cards despite spending nothing: a wrong list

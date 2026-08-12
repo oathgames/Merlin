@@ -227,6 +227,11 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // the host cannot verify the destination is correct, so it takes the
   // always-cards duplicate path rather than an in-cap auto-approve.
   'mcp__merlin__meta_edit_ad_link':             'duplicate',
+  // meta_refresh_creative_spec swaps a LIVE ad onto a rebuilt creative. Same
+  // shape as edit_ad_link: no new spend, but it changes what gets served
+  // against budget that is already flowing, and the host cannot verify the
+  // resulting creative renders correctly. Always cards.
+  'mcp__merlin__meta_refresh_creative_spec':    'duplicate',
 
   // Setup-style — touches ad-account state, no per-call spend
   'mcp__merlin__meta_prepare_retargeting':      'setup',
@@ -257,6 +262,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_prepare_retargeting':      'Set up Meta retargeting audience',
   'mcp__merlin__meta_dpa_setup':                'Set up Meta DPA catalog retargeting (PAUSED on create)',
   'mcp__merlin__meta_edit_ad_link':             'Change a live Meta ad\'s destination URL',
+  'mcp__merlin__meta_refresh_creative_spec':    'Rebuild a live Meta ad\'s creative enhancement settings',
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
   'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
   'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',
