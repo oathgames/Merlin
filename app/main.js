@@ -8885,6 +8885,18 @@ function splitOAuthPersistFields(vaultBrand, result) {
 // vault fallback policy — see UNIVERSAL_KEYS below).
 const BRAND_KEYS = [
   'metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaConfigId',
+  // REGRESSION GUARD (2026-08-13): the DISPLAY NAMES must be brand-scoped
+  // alongside the ids they describe. They were absent from this list while
+  // metaAdAccountId / metaPageId / metaPixelId were present, so the ids were
+  // stored per brand while the names were treated as global and overwritten by
+  // whichever brand connected last. Live result on 2026-08-13: RIPIT carried
+  // adAccountName "Revive" and pageName "Revive Meds" against correct Ripit
+  // ids, and Apotheke carried adAccountName "Forever 21 US (ACTIVE)". A wrong
+  // label on a correct id is not cosmetic here, because operators read these
+  // names to confirm they are pointed at the right account before a launch.
+  // Never split a name from its id again: if you add a new id key below, add
+  // its name key too.
+  'adAccountName', 'pageName', 'pixelName',
   'tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId',
   'shopifyStore', 'shopifyAccessToken',
   // googleTokenScope rides with googleAccessToken (same oauthVaultScope()

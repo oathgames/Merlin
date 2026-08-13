@@ -194,3 +194,36 @@ test('all five layered fixes carry dated REGRESSION GUARD comments', () => {
   assert.ok(/REGRESSION GUARD \(2026-04-27/.test(renderer),
     'renderer.js must carry the dated guard for the loadConnections race');
 });
+
+// ── Layer 5: display names travel with their ids ──────────────────
+//
+// REGRESSION GUARD (2026-08-13): metaAdAccountId / metaPageId / metaPixelId
+// were brand-scoped while adAccountName / pageName / pixelName were not, so
+// every brand config inherited whichever brand connected last. RIPIT showed
+// "Revive" / "Revive Meds" against correct Ripit ids; Apotheke showed
+// "Forever 21 US (ACTIVE)". Operators read these labels to confirm the target
+// account before a launch, so a wrong name on a right id is a real hazard.
+test('display-name keys are brand-scoped alongside the ids they describe', () => {
+  const brandKeysMatch = MAIN_JS.match(/const BRAND_KEYS\s*=\s*\[([\s\S]*?)\];/);
+  const universalKeysMatch = MAIN_JS.match(/const UNIVERSAL_KEYS\s*=\s*new\s+Set\(\[([\s\S]*?)\]\);/);
+  assert.ok(brandKeysMatch && universalKeysMatch, 'both key lists must be present');
+  const BRAND_KEYS = (brandKeysMatch[1].match(/'([^']+)'/g) || []).map(s => s.slice(1, -1));
+  const UNIVERSAL_KEYS = new Set((universalKeysMatch[1].match(/'([^']+)'/g) || []).map(s => s.slice(1, -1)));
+  const pairs = [
+    ['metaAdAccountId', 'adAccountName'],
+    ['metaPageId', 'pageName'],
+    ['metaPixelId', 'pixelName'],
+  ];
+  for (const [idKey, nameKey] of pairs) {
+    assert.ok(BRAND_KEYS.includes(idKey), `${idKey} must stay brand-scoped`);
+    assert.ok(
+      BRAND_KEYS.includes(nameKey),
+      `${nameKey} must be brand-scoped alongside ${idKey} — otherwise the id is `
+      + `per-brand while its label leaks from whichever brand connected last`,
+    );
+    assert.ok(
+      !UNIVERSAL_KEYS.has(nameKey),
+      `${nameKey} must not be universal; that is what caused the leak`,
+    );
+  }
+});
