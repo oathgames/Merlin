@@ -299,9 +299,13 @@ const anchorMcp = SRC_MAIN.indexOf('approvalPolicy.SPEND_ACTIONS.has(action)');
   const branchEnd = SRC_MAIN.indexOf("if (toolName === 'AskUserQuestion'", anchorMcp);
   assert.ok(branchEnd > anchorMcp, 'AskUserQuestion branch (next handler block) not found');
   const sliceMcp = SRC_MAIN.slice(anchorMcp, branchEnd);
-  // Cents-detector lives first.
-  const centsIdx = sliceMcp.indexOf('looks like cents, not dollars');
-  assert.ok(centsIdx > 0, 'cents-detector message missing from MCP spend branch');
+  // Cents-detector lives first. Anchored on the shared-module call rather
+  // than the message text: the 2026-08-13 budget-ceiling fix moved all four
+  // hand-copied ceiling constants (and their wording) into
+  // app/budget-ceiling.js. The ORDERING this test guards is unchanged, so
+  // only the anchor moved.
+  const centsIdx = sliceMcp.indexOf('budgetCeiling.denyReasonForBudget(');
+  assert.ok(centsIdx > 0, 'cents-detector (budgetCeiling.denyReasonForBudget) missing from MCP spend branch');
   // In-cap auto-approve next.
   const inCapIdx = sliceMcp.indexOf('IN-CAP AUTO-APPROVE');
   assert.ok(inCapIdx > centsIdx, 'IN-CAP AUTO-APPROVE block must appear AFTER the cents-detector');
@@ -373,7 +377,9 @@ test('handleToolApproval auto-approves in-cap Bash Merlin push (mirrors MCP path
   const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
   assert.ok(anchorBash > 0, 'Bash BASH_SPEND set not found');
   const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
-  const centsIdx = sliceBash.indexOf('looks like cents, not dollars');
+  // Anchored on the shared-module call — see the MCP-path note above for why
+  // the message text is no longer in main.js (2026-08-13, budget-ceiling).
+  const centsIdx = sliceBash.indexOf('budgetCeiling.denyReasonForBudget(');
   const inCapIdx = sliceBash.indexOf('IN-CAP AUTO-APPROVE for Bash spend path');
   const cardIdx = sliceBash.indexOf("'approval-request'");
   assert.ok(centsIdx > 0 && inCapIdx > centsIdx && cardIdx > inCapIdx,
