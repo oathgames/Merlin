@@ -16,6 +16,7 @@ const { clampWindowBounds, createBoundsSaver } = require('./window-state');
 const { createSwitchCoalescer } = require('./switch-coalescer');
 const { scaffoldBrandManifest } = require('./brand-manifest-scaffolder');
 const { scaffoldBrandStub } = require('./brand-scaffold');
+const budgetCeiling = require('./budget-ceiling');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -2891,25 +2892,21 @@ async function handleToolApproval(toolName, input) {
       const adBudget = input.dailyBudget || 5;
 
       // HARD DENY: catch Claude-passed-cents BEFORE showing the approval card.
-      // Sanity check: values ≥ $5000/day or >10x the configured cap are almost
-      // certainly cents. Refuse the tool call with an explanatory message so
-      // Claude retries with the correct dollar value. The user never sees a
-      // shocking "$1000/day" card. These hard-denies stay in force even when
-      // in-cap auto-approve is on — they're the floor that protects users
-      // from a fat-fingered budget regardless of any UI affordance.
-      const HARD_CEILING = 5000;
+      // Refuse the tool call with an explanatory message so Claude retries
+      // with the correct dollar value. The user never sees a shocking
+      // "$1000/day" card. These hard-denies stay in force even when in-cap
+      // auto-approve is on — they're the floor that protects users from a
+      // fat-fingered budget regardless of any UI affordance.
+      //
+      // The thresholds live in budget-ceiling.js, shared with the Bash spend
+      // path below and mcp-tools.js validateBudget. A declared
+      // maxDailyAdBudget authorizes everything up to itself, so a deliberate
+      // $5,000/day flash sale is expressible; see that module's REGRESSION
+      // GUARD (2026-08-13) for why the flat ceiling must not outrank the cap.
       const capForComparison = budgetCtx && budgetCtx.dailyCap > 0 ? budgetCtx.dailyCap : 0;
-      if (adBudget >= HARD_CEILING) {
-        return {
-          behavior: 'deny',
-          message: `dailyBudget=${adBudget} looks like cents, not dollars. Pass dollars (e.g. 10 for $10/day). NEVER pre-convert — Merlin converts to cents internally.`,
-        };
-      }
-      if (capForComparison > 0 && adBudget > capForComparison * 10) {
-        return {
-          behavior: 'deny',
-          message: `dailyBudget=${adBudget} is more than 10x the user's $${capForComparison}/day cap. This looks like cents — pass ${Math.round(adBudget / 100)} for $${Math.round(adBudget / 100)}/day.`,
-        };
+      const budgetDenial = budgetCeiling.denyReasonForBudget(adBudget, capForComparison);
+      if (budgetDenial) {
+        return { behavior: 'deny', message: budgetDenial };
       }
 
       // IN-CAP AUTO-APPROVE (2026-04-27, brand-onboarding-zero-friction;
@@ -2951,7 +2948,14 @@ async function handleToolApproval(toolName, input) {
       } catch (e) {
         console.warn('[spend-approval] config read failed, defaulting to require approval:', e && e.message);
       }
-      if (!requireSpendApproval && capForComparison > 0 && action === 'push') {
+      //
+      // HIGH-MAGNITUDE SPEND ALWAYS CARDS (2026-08-13, budget-ceiling). A
+      // declared cap authorizes the AMOUNT; it does not waive the human look
+      // at this magnitude. Without this clause, an operator who raised
+      // maxDailyAdBudget to 5000 for a single flash sale would have every
+      // subsequent $5,000/day push fire silently.
+      if (!requireSpendApproval && capForComparison > 0 && action === 'push' &&
+          !budgetCeiling.alwaysRequiresCard(adBudget)) {
         const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
         if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
           return { behavior: 'allow', updatedInput: input };
@@ -3157,19 +3161,11 @@ async function handleToolApproval(toolName, input) {
       const adBudget = budgetMatch ? parseInt(budgetMatch[1]) : 5;
 
       // Same hard deny as MCP spend path — catch cents-by-mistake early.
-      const HARD_CEILING = 5000;
+      // Shared thresholds in budget-ceiling.js so the two paths cannot drift.
       const capForComparison = budgetCtx && budgetCtx.dailyCap > 0 ? budgetCtx.dailyCap : 0;
-      if (adBudget >= HARD_CEILING) {
-        return {
-          behavior: 'deny',
-          message: `dailyBudget=${adBudget} looks like cents, not dollars. Pass dollars (e.g. 10 for $10/day). NEVER pre-convert.`,
-        };
-      }
-      if (capForComparison > 0 && adBudget > capForComparison * 10) {
-        return {
-          behavior: 'deny',
-          message: `dailyBudget=${adBudget} is more than 10x the user's $${capForComparison}/day cap. Likely cents — pass ${Math.round(adBudget / 100)}.`,
-        };
+      const bashBudgetDenial = budgetCeiling.denyReasonForBudget(adBudget, capForComparison);
+      if (bashBudgetDenial) {
+        return { behavior: 'deny', message: bashBudgetDenial };
       }
 
       // IN-CAP AUTO-APPROVE for Bash spend path (mirror of MCP path above;
@@ -3194,7 +3190,10 @@ async function handleToolApproval(toolName, input) {
       } catch (e) {
         console.warn('[spend-approval] bash config read failed, defaulting to require approval:', e && e.message);
       }
-      if (!bashRequireSpendApproval && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction)) {
+      // 4. High-magnitude spend always cards (mirror of the MCP path above):
+      //    a raised cap authorizes the amount, not the silence.
+      if (!bashRequireSpendApproval && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction) &&
+          !budgetCeiling.alwaysRequiresCard(adBudget)) {
         const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
         if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
           return { behavior: 'allow', updatedInput: input };

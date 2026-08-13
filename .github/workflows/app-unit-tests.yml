@@ -121,6 +121,15 @@ jobs:
       # gate, confirm-vault-write-before-delete).
       - name: stale brand-config sweep (plaintext-in-StateDir lockdown)
         run: node --test app/brand-config-sweep.test.js
+      # Daily-budget ceilings: the 2026-08-13 "$5,000/day flash sale was
+      # impossible to express" incident canary. Four sites each hard-coded
+      # the same $5,000 constant ahead of the operator's declared cap, and
+      # all four told the user to raise a cap that was never consulted.
+      # Locks the contract that fixed it: a declared cap authorizes up to
+      # itself, the escape hatch is bounded, high-magnitude spend always
+      # cards, and every JS call site routes through the shared module.
+      - name: daily-budget ceilings (declared-cap authority + cents guards)
+        run: node --test app/budget-ceiling.test.js
       - name: sentence splitter
         run: node app/sentence-splitter.test.js
       - name: update-runner terminal-visibility lockdown
