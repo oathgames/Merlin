@@ -30,7 +30,16 @@
 // without parsing JSON. Keep terse. The JSON envelope follows after a blank line.
 function summarize(envelope) {
   if (envelope.error) {
-    return envelope.error.message || `Error: ${envelope.error.code}`;
+    const msg = envelope.error.message || `Error: ${envelope.error.code}`;
+    // REGRESSION GUARD (2026-08-22): surface the FIRST line of `detail` on the
+    // summary line, not only inside the JSON body. The summary is what a
+    // reader scans first, and a friendly-but-contentless one ("Access denied")
+    // reads as a settled diagnosis rather than a category guess. One line is
+    // enough to name the real failure; the full text stays in error.detail.
+    const detail = typeof envelope.error.detail === 'string' ? envelope.error.detail.trim() : '';
+    if (!detail) return msg;
+    const firstLine = detail.split('\n')[0].trim().slice(0, 300);
+    return firstLine && !msg.includes(firstLine) ? `${msg} (${firstLine})` : msg;
   }
   if (envelope.progress && envelope.progress.jobId) {
     const stage = envelope.progress.stage || 'running';
@@ -91,6 +100,14 @@ function fail(err, opts = {}) {
       message: err.message || err.code,
       next_action: err.next_action || null,
       retry_after_sec: typeof err.retry_after_sec === 'number' ? err.retry_after_sec : null,
+      // REGRESSION GUARD (2026-08-22): `detail` is the raw, already-redacted
+      // platform/engine text behind the classification (see the header of
+      // mcp-errors.js). It MUST be copied onto the envelope: a code plus a
+      // canned message tells the agent a category and nothing it can act on,
+      // which is how a Meta "no access to this Instagram account" failure
+      // reached a caller as a bare "Access denied". Dropping this field puts
+      // the next debugging session back outside the app on a raw CLI call.
+      detail: typeof err.detail === 'string' && err.detail ? err.detail : null,
     },
     meta: opts.meta || null,
   };
