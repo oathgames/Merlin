@@ -334,6 +334,11 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   // which is brand-agnostic by design (one research library across brands).
   'foreplay-brands-by-domain', 'foreplay-ads-by-brand', 'foreplay-ads-by-page',
   'foreplay-ad-duplicates', 'foreplay-download-ad', 'foreplay-usage',
+  // TrendTrack competitor ad library — one workspace-wide API key, keyed on
+  // the competitor's domain/brand, never on the user's own brand. Media lands
+  // in <outputDir>/competitor-ads/ alongside Foreplay's, one research library.
+  'trendtrack-status', 'trendtrack-verify-key',
+  'trendtrack-discover-ads', 'trendtrack-download-ad',
   // Brand-guide validate is a pure JSON dry-run; write/read are brand-scoped.
   'validate-brand-guide',
 ]);
@@ -2308,11 +2313,16 @@ function buildTools(tool, z, ctx) {
 
   // ── trendtrack ────────────────────────────────────────────
   // TrendTrack ecommerce intelligence — Shopify store discovery,
-  // ad library, email library, trend signals. Currently exposes only
-  // the unmetered system endpoints (status, verify-key) — the broader
-  // query surface is documented in trendtrack.go but not yet wired
-  // through the MCP layer. This tool establishes the MCP entry point
-  // so the broader query actions can be added without renaming.
+  // ad library, email library, trend signals.
+  //
+  // REGRESSION GUARD (2026-08-22, Rule 23 reachability): the ad library
+  // (trendtrackDiscoverAds, trendtrack.go) shipped and was called only by
+  // palantir-ideas and competitor-breakdown — and palantir-ideas has no MCP
+  // route of its own, so no agent could ever ask for a competitor's ads and
+  // get creative back. Nothing failed: no type error, no 404, just a product
+  // that silently could not do the thing. discover-ads / download-ad are that
+  // door. Store discovery, email library, and trend signals are still
+  // engine-side only; if you wire one, add it to this enum in the SAME PR.
   //
   // REGRESSION GUARD (2026-05-06, codex API audit P1 #3): binary CLI
   // actions (trendtrack-status, trendtrack-verify-key) shipped without
@@ -2320,15 +2330,28 @@ function buildTools(tool, z, ctx) {
   // key is invalid" in chat.
   tools.push(defineTool({
     name: 'trendtrack',
-    description: 'TrendTrack ecommerce intelligence — system / verification endpoints only (status, verify-key). The broader TrendTrack query surface (Shopify store discovery, ad library, email library, trend signals) is implemented in the binary and will be exposed here as the corresponding MCP actions ship.',
+    description: 'TrendTrack competitor ad intelligence. discover-ads searches the 250M-ad library by competitor domain, brand name, or ad copy and returns creative metadata plus media URLs; download-ad saves the image or video of one discovered ad to <outputDir>/competitor-ads/ so it can be viewed and analysed. status / verify-key are connection checks. discover-ads costs 1 TrendTrack credit per returned ad, so keep limit small (default 10, max 30); download-ad is free because it reads the local index discover-ads wrote. Store discovery, email library, and trend signals are not yet exposed.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
     brandRequired: false,
     concurrency: { platform: 'trendtrack' },
     input: {
-      action: z.enum(['status', 'verify-key']).describe('Operation'),
+      action: z.enum(['status', 'verify-key', 'discover-ads', 'download-ad']).describe('Operation'),
       brand: brandSchema.optional(),
+      apiKey: z.string().optional().describe('TrendTrack API key — verify-key only. Never required for the other actions, which read the stored key.'),
+      trendtrackSearch: z.array(z.string()).optional().describe('discover-ads: search terms. Domains (courtyard.io), brand names (Arena Club), or ad-copy keywords, depending on trendtrackSearchType.'),
+      trendtrackSearchType: z.enum(['domain', 'brand', 'website', 'adCopy', 'urlContains']).optional().describe('discover-ads: how to interpret trendtrackSearch. Default domain.'),
+      trendtrackKeywordMode: z.enum(['any', 'all']).optional().describe('discover-ads: combine multiple search terms with any (OR) or all (AND).'),
+      trendtrackSortBy: z.enum(['reach', 'reachDelta7d', 'longestRunning', 'newest', 'relevance']).optional().describe('discover-ads: ranking. Default reach. longestRunning surfaces proven evergreen winners.'),
+      trendtrackOrder: z.enum(['asc', 'desc']).optional().describe('discover-ads: sort direction.'),
+      trendtrackMediaType: z.enum(['image', 'video']).optional().describe('discover-ads: restrict to image or video creatives. Omit for both.'),
+      trendtrackStatus: z.enum(['active', 'inactive']).optional().describe('discover-ads: restrict to currently-running or retired ads. Omit for both.'),
+      trendtrackMinReach: z.coerce.number().int().optional().describe('discover-ads: minimum estimated reach.'),
+      trendtrackMinSpend: z.coerce.number().optional().describe('discover-ads: minimum estimated spend in dollars.'),
+      trendtrackPage: z.coerce.number().int().optional().describe('discover-ads: 1-based page for pagination. Each page costs credits again.'),
+      limit: z.coerce.number().int().optional().describe('discover-ads: max ads to return, 1 credit each. Default 10, capped at 30.'),
+      adId: z.string().optional().describe('download-ad: the adId from a prior discover-ads result.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'trendtrack-' + args.action, args)),
   }, tool, z, ctx));
