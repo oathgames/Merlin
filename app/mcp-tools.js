@@ -1008,7 +1008,18 @@ function buildTools(tool, z, ctx) {
       timeIncrement: z.number().optional().describe('For audit-delivery-breakdown: insights bucket size in days. 1 = daily (default, to see WHICH day delivery moved). Pass -1 for a single aggregate window.'),
       breakdowns: z.string().optional().describe('For audit-delivery-breakdown: comma-separated dimensions to slice by (allow-listed): publisher_platform, platform_position, device_platform, impression_device, age, gender, country, region, dma. Unknown values are dropped.'),
       level: z.enum(['account', 'campaign', 'adset', 'ad']).optional().describe('For audit-delivery-breakdown: aggregation level. Default account.'),
-      batchCount: z.coerce.number().int().optional().describe("For attribution-compare: lookback window in DAYS. Omit or pass 0 or less for lifetime (Meta date_preset=maximum, its longest retained window at 37 months). This is the only param that action reads."),
+      batchCount: z.coerce.number().int().optional().describe("For attribution-compare: lookback window in DAYS, ending YESTERDAY (today's insights are partial and keep moving for hours). Omit or pass 0 or less for lifetime (Meta date_preset=maximum, its longest retained window at 37 months). Ignored when startDate + endDate are set."),
+      // REGRESSION GUARD (2026-08-24, Hard-Won Rule 23): attribution-compare
+      // gained explicit startDate/endDate in the engine on 2026-08-16 and these
+      // two lines were NOT added, so the capability shipped unreachable. zod
+      // strips undeclared keys and defineTool's strict check refuses them
+      // outright, so a reporting pull asking for an exact Sun-Sat week came
+      // back as INVALID_INPUT naming params the engine already supported.
+      // A weekly deck cannot use a trailing-day window: attribution has to be
+      // scored over exactly the days the rest of the deck covers, or the slide
+      // sits beside a week it does not describe.
+      startDate: z.string().optional().describe('For attribution-compare: exact window start, YYYY-MM-DD. Both startDate and endDate or neither. Takes precedence over batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week a deck covers.'),
+      endDate: z.string().optional().describe('For attribution-compare: exact window end, YYYY-MM-DD, INCLUSIVE. Must not be in the future.'),
     },
     handler: async (args) => {
       const action = metaAuditEngineAction(args.action);
