@@ -177,3 +177,24 @@ test('PostHog has a working connect path (custom 3-field modal + CONFIG_FIELD_AL
   assert.ok(sensitiveBlock.includes("'posthogApiKey'"), 'posthogApiKey not in VAULT_SENSITIVE_KEYS; the secret would be written to config in plaintext');
   assert.ok(!sensitiveBlock.includes("'posthogProjectId'"), 'posthogProjectId should NOT be in VAULT_SENSITIVE_KEYS (non-secret identifier)');
 });
+
+test('Alia brand tile exists, is brand-scoped, and is visible on every vertical', () => {
+  const t = tiles.find((x) => x.platform === 'alia');
+  assert.ok(t, 'alia brand tile missing from index.html');
+  assert.equal(t.scope, 'brand', 'alia must be data-scope="brand" (each brand connects its own Alia merchant)');
+  assert.ok(!t.stubbed, 'alia tile must not be stubbed; the connector ships (alia.go)');
+  for (const v of verticals) {
+    assert.ok(v.includes('alia'), 'a vertical is missing alia (popup analytics applies to every web brand)');
+  }
+});
+
+test('Alia tile has a complete masked-key connection path', () => {
+  assert.match(renderer, /alia:\s*\{\s*key:\s*'aliaApiKey'/, 'alia missing from API_KEY_PLATFORMS; clicking the tile would do nothing');
+  assert.match(renderer, /alia:\s*'Alia Popups'/, 'alia missing from PLATFORM_DISPLAY_NAMES');
+  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
+  assert.ok(allowlistStart >= 0, 'CONFIG_FIELD_ALLOWLIST definition not found');
+  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
+  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
+  assert.ok(allowlistBlock.includes("'aliaApiKey'"), 'aliaApiKey not in CONFIG_FIELD_ALLOWLIST; save-config-field would reject the key');
+  assert.ok(sensitiveBlock.includes("'aliaApiKey'"), 'aliaApiKey not in VAULT_SENSITIVE_KEYS; key would be written in plaintext');
+});
