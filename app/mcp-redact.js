@@ -26,6 +26,23 @@ const TOKEN_PREFIXES = [
   /\bgsk_[A-Za-z0-9]{20,}/g,        // Groq API keys
   /\bwhsec_[A-Za-z0-9]{20,}/g,      // Webhook signing secrets
   /\b[A-Za-z0-9]{24}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,}/g, // Discord bot tokens (base64.timestamp.hmac)
+  // PARITY WITH THE GO SIDE (2026-08-23). These shapes existed in
+  // autocmo-core/main.go's secretPrefixPattern but not here. That asymmetry was
+  // survivable while the 32-char catch-all swept everything, but the label-field
+  // exemption below relies on the PREFIX list being complete, so any gap here is
+  // now a real leak path. Keep the two lists in sync.
+  /\bAKIA[0-9A-Z]{12,}/g,  // AWS access key ids
+  /\bASIA[0-9A-Z]{12,}/g,  // AWS temporary access key ids
+  /\bghp_[A-Za-z0-9]{20,}/g,  // GitHub personal access tokens
+  /\bgho_[A-Za-z0-9]{20,}/g,  // GitHub OAuth tokens
+  /\bghs_[A-Za-z0-9]{20,}/g,  // GitHub server tokens
+  /\bghu_[A-Za-z0-9]{20,}/g,  // GitHub user tokens
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/g,  // GitHub fine-grained PATs
+  /\bxoxa-[A-Za-z0-9\-]{20,}/g,  // Slack app tokens
+  /\bxoxs-[A-Za-z0-9\-]{20,}/g,  // Slack session tokens
+  /\bxoxr-[A-Za-z0-9\-]{20,}/g,  // Slack refresh tokens
+  /\bca_live_[A-Za-z0-9]{16,}/g,  // Stripe Connect live
+  /\bca_test_[A-Za-z0-9]{16,}/g,  // Stripe Connect test
 ];
 
 // REGRESSION GUARD (2026-08-11, audit-audience-rule returned "[REDACTED]"):
@@ -65,6 +82,32 @@ const TOKEN_PREFIXES = [
 // are still redacted, and sensitive field names still win inside a rule.
 const STRUCTURAL_FIELD_NAMES = new Set(['rule', 'ruleAggregation']);
 
+// LABEL FIELDS (2026-08-23, ad names arrived on a client deck as "[REDACTED]").
+// Human-authored names, never credentials. isLikelyToken() calls ANY string of
+// 32+ characters a token unless it looks like a path, a UUID or a hex hash, and
+// Merlin's own Meta naming convention (MMDDYYYY_Batch_Descriptor, see
+// META-ADS.md) routinely exceeds that: "08102026_Breeds_SmallCompanions_Schnauzer_Static"
+// is 48 characters. Live case 2026-08-23 (Forever 21 weekly deck): four ad set
+// names and two creative-tile labels rendered as "[REDACTED]" on slides that
+// went to a client, and the same wipe hit adset_name in the source pull, so the
+// damage was invisible until the deck was audited. The Go engine returns these
+// intact; this layer destroyed them.
+//
+// Exemption is from the length GUESS only. Label values still run every
+// deterministic credential rule (login block, TOKEN_PREFIXES, Bearer,
+// access_token=/token=), so a real key typed into an ad name is still redacted,
+// and SENSITIVE_FIELD_NAMES still wins outright at any depth. Label-ness is
+// deliberately NOT propagated to child subtrees the way structural is: a label
+// is a leaf string, and inheriting the exemption downward would silently exempt
+// whatever a future schema nests under a key called "name".
+const LABEL_FIELD_NAMES = new Set([
+  'ad_name', 'adName', 'campaign_name', 'campaignName', 'adset_name', 'adsetName',
+  'name', 'title', 'headline', 'label', 'audience_name', 'audienceName',
+  'pageName', 'page_name', 'pixelName', 'pixel_name', 'adAccountName',
+  'product_name', 'productName', 'creative_name', 'creativeName',
+  'window',
+]);
+
 // Fields whose values should ALWAYS be redacted from JSON output,
 // regardless of what they contain.
 const SENSITIVE_FIELD_NAMES = new Set([
@@ -91,6 +134,22 @@ const LOGIN_RESULT_BLOCK = /={50,}\s*\n\s*Connected!.*?\n\s*={50,}\s*\n\s*\{[\s\
 // like file paths (contain / and .) or UUIDs (contain exactly 4 hyphens).
 function isLikelyToken(str) {
   if (!str || str.length < 32) return false;
+  // REGRESSION GUARD (2026-08-24): whitespace disqualifies. A credential is a
+  // single opaque run by construction, so any string containing a space, tab
+  // or newline is prose, not a secret. Without this the length test alone made
+  // EVERY sentence of 32+ characters a token: the WHOLE value was replaced with
+  // '[REDACTED]', not a substring of it. Live case 2026-08-23 (RIPIT weekly
+  // deck): meta-attribution-compare's explanatory 'note' came back as
+  // '[REDACTED]' in full, so the one field telling a reader what the
+  // view-through gap MEANS was the one field destroyed.
+  //
+  // This does not weaken anything. A credential embedded IN prose is still
+  // caught: applyCredentialPatterns runs its deterministic rules (login block,
+  // TOKEN_PREFIXES, Bearer, access_token=/token=) on every string regardless,
+  // and redactOpaqueRuns' LONG_TOKEN_RE charset already excludes whitespace, so
+  // it sweeps the individual runs inside the sentence anyway. The only thing
+  // that changes is that the SENTENCE stops being mistaken for the secret.
+  if (/\s/.test(str)) return false;
   // File paths
   if (str.includes('/') && str.includes('.')) return false;
   if (str.includes('\\') && str.includes('.')) return false;
@@ -168,7 +227,7 @@ function redactJsonObj(obj, structural = false) {
       if (SENSITIVE_FIELD_NAMES.has(key)) {
         obj[key] = '[REDACTED]';
       } else {
-        obj[key] = redactStringValue(value, childStructural);
+        obj[key] = redactStringValue(value, childStructural || LABEL_FIELD_NAMES.has(key));
       }
     } else if (typeof value === 'object' && value !== null) {
       // Reassign: Array.prototype.map returns a NEW array, so in-place

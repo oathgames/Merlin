@@ -254,6 +254,37 @@ test('bulk-push params survive runBinary into the --cmd JSON', async () => {
   assert.equal(cmd.ads[0].name, 'Vinny_Video04', 'per-ad name must reach BulkAd.Name');
 });
 
+// REGRESSION GUARD (2026-08-24, Hard-Won Rule 23): meta-attribution-compare
+// gained explicit startDate/endDate in the engine on 2026-08-16, and the
+// meta_audit zod schema was not updated in the same change, so the capability
+// shipped unreachable. defineTool's strict check refuses undeclared keys, so a
+// weekly-deck pull asking for an exact Sun-Sat window came back INVALID_INPUT
+// naming two params the engine already supported. Declaring them is only half
+// the fix: assert they land in the --cmd JSON, not merely that a key exists.
+test('attribution-compare start/end dates survive runBinary into the --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  await runBinary(makeCtx(), 'meta-attribution-compare', {
+    brand: 'ripit',
+    startDate: '2026-08-16',
+    endDate: '2026-08-22',
+  });
+
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-attribution-compare');
+  assert.equal(cmd.startDate, '2026-08-16', 'startDate must reach the engine');
+  assert.equal(cmd.endDate, '2026-08-22', 'endDate must reach the engine');
+});
+
+test('meta_audit declares startDate and endDate for attribution-compare', () => {
+  const schema = byName('meta_audit').schema;
+  for (const key of ['startDate', 'endDate']) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(schema, key),
+      `meta_audit.${key} must be declared: the engine reads it and zod strips what is not declared.`,
+    );
+  }
+});
+
 // REGRESSION GUARD (2026-08-07): the third copy slot has to survive the whole
 // boundary — batch-wide AND per-ad — or an approved offer never reaches the ad
 // and nothing in the output says so.
