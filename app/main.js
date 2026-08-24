@@ -8933,6 +8933,8 @@ const BRAND_KEYS = [
   // PostHog — three brand-scoped fields (each brand connects its own
   // PostHog project). Mirror of brandScopedKeys in autocmo-core/vault.go.
   'posthogApiKey', 'posthogProjectId', 'posthogHost',
+  // Alia Popups public API key — one merchant connection per brand.
+  'aliaApiKey',
   'linkedinAccessToken', 'linkedinRefreshToken', 'linkedinAdAccountId',
   // Triple Whale — brand-specific analytics (each brand connects its own TW
   // account). Mirror of brandScopedKeys in autocmo-core/vault.go.
@@ -9758,6 +9760,8 @@ function getConnections(brandName) {
     // JWT with no refresh cycle, so it never carries a _tokenTimestamps
     // entry and checkBrand never false-flags it 'expired'.
     checkBrand('clarityApiToken', 'clarity');
+    // Alia Popups public API key — brand-scoped, long-lived, read-only.
+    checkBrand('aliaApiKey', 'alia');
     // PostHog — brand-scoped; connected only when BOTH the API key and the
     // project id are present (the project id is what scopes every query).
     const phKey = brandName ? brandCfg.posthogApiKey : globalCfg.posthogApiKey;
@@ -9923,6 +9927,8 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       clarity: ['clarityApiToken'],
       // PostHog — three brand-scoped fields (key + project id + host).
       posthog: ['posthogApiKey', 'posthogProjectId', 'posthogHost'],
+      // Alia Popups — one brand-scoped read-only public API key.
+      alia: ['aliaApiKey'],
       // Triple Whale — OAuth tokens + the personal API-key fallback + the
       // shop override. Clear every credential path so a reconnect (OAuth or
       // a fresh key) starts clean. Mirror of platformVaultKeys["triplewhale"]

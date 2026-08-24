@@ -94,6 +94,8 @@ const VAULT_SENSITIVE_KEYS = [
   // posthogProjectId / posthogHost fields are non-secret identifiers and
   // are NOT listed here (same treatment as shopifyStore).
   'posthogApiKey',
+  // Alia public API key (brand-scoped, aggregate read-only analytics).
+  'aliaApiKey',
   // Triple Whale — both credential paths are live Bearer tokens. The Go
   // binary persists them via VaultPut on triplewhale-login / -verify-key, but
   // they are listed here so isSensitiveConfigKey treats them as never-plaintext
@@ -156,6 +158,7 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // All three must be HERE or save-config-field rejects the paste with "Unknown
   // config field" (the postscript-save-broken incident class above).
   'posthogApiKey', 'posthogProjectId', 'posthogHost',
+  'aliaApiKey',
   // Rokt BYOK reporting credentials (App ID / App Secret / Account ID), saved
   // by the 3-step Rokt connect modal. All three mirrored in VAULT_SENSITIVE_KEYS.
   'roktAppId', 'roktAppSecret', 'roktAccountId',
