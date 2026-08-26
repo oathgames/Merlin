@@ -29,11 +29,9 @@
 
 const RELAY_BASE = 'https://relay.merlingotme.com';
 const RELAY_WS_BASE = 'wss://relay.merlingotme.com';
-// CREDS_KEY v1 used to store the plaintext pwaToken. v2 stores ONLY
-// sessionId + deviceId (non-secrets). On load we migrate v1 → v2 and drop
-// the token field; the cookie from the most recent fetch keeps auth live.
-const CREDS_KEY       = 'merlin.relay.creds.v2';
-const LEGACY_CREDS_KEY = 'merlin.relay.creds.v1';
+// v2 stores sessionId + deviceId (non-secrets). Auth is the httpOnly cookie
+// set by the relay on /pair/claim + rotated on /session/refresh.
+const CREDS_KEY = 'merlin.relay.creds.v2';
 const MAX_RECONNECT_MS = 60_000;
 const MIN_RECONNECT_MS = 1_500;
 
@@ -85,41 +83,25 @@ function setStatus(connected, text) {
 
 // ── Credential storage ──────────────────────────────────────
 // v2 shape: { sessionId, deviceId }. NO secrets — auth is httpOnly cookie.
-// v1 shape: { sessionId, deviceId, pwaToken }. On read, we strip pwaToken
-// and re-save as v2 so the plaintext doesn't persist in localStorage one
-// moment longer than necessary.
 function loadCreds() {
   try {
-    const rawV2 = localStorage.getItem(CREDS_KEY);
-    if (rawV2) {
-      const c = JSON.parse(rawV2);
-      if (typeof c?.sessionId === 'string' && typeof c?.deviceId === 'string') {
-        return { sessionId: c.sessionId, deviceId: c.deviceId };
-      }
-    }
-    const rawV1 = localStorage.getItem(LEGACY_CREDS_KEY);
-    if (rawV1) {
-      const c = JSON.parse(rawV1);
-      if (typeof c?.sessionId === 'string' && typeof c?.deviceId === 'string') {
-        const migrated = { sessionId: c.sessionId, deviceId: c.deviceId };
-        saveCreds(migrated);
-        try { localStorage.removeItem(LEGACY_CREDS_KEY); } catch {}
-        return migrated;
-      }
+    const raw = localStorage.getItem(CREDS_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (typeof c?.sessionId === 'string' && typeof c?.deviceId === 'string') {
+      return { sessionId: c.sessionId, deviceId: c.deviceId };
     }
   } catch {}
   return null;
 }
 
 function saveCreds(c) {
-  // Defensive: strip any token field callers may still pass in.
   const clean = { sessionId: String(c?.sessionId || ''), deviceId: String(c?.deviceId || '') };
   try { localStorage.setItem(CREDS_KEY, JSON.stringify(clean)); } catch {}
 }
 
 function clearCreds() {
   try { localStorage.removeItem(CREDS_KEY); } catch {}
-  try { localStorage.removeItem(LEGACY_CREDS_KEY); } catch {}
   relayCreds = null;
 }
 
@@ -161,8 +143,6 @@ async function claimPairCode(sessionId, pairCode) {
   }
   const data = await resp.json();
   if (!data.sessionId || !data.deviceId) throw new Error('bad_response');
-  // Deliberately IGNORE data.pwaToken (legacy back-compat field). Auth now
-  // flows through the httpOnly cookie that was just set by this response.
   return { sessionId: data.sessionId, deviceId: data.deviceId };
 }
 
@@ -241,11 +221,6 @@ async function subscribePush() {
     }
 
     const json = sub.toJSON();
-    // /push/subscribe still takes the legacy { pwaToken } shape today for
-    // the query-string-auth path. Sending the body fields preserves that
-    // compatibility; the NEW (cookie-aware) /push/subscribe handler ignores
-    // body tokens in favor of the access cookie. See pair/claim legacy
-    // REGRESSION GUARD for the deprecation plan.
     await relayFetch('/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
