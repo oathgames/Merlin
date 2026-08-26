@@ -159,25 +159,29 @@ function _resetScrapeTimeoutTrackerForTests() {
 // daily ad budgets and REJECT the tool call with an explanatory error so Claude
 // can correct and retry. The binary also has a hard cap (see main.go validate).
 //
-// We use TWO signals:
-//   1. Absolute ceiling — reject anything ≥ BUDGET_HARD_CEILING (no sane user
-//      runs a $5000/day solo DTC ad budget; we assume 5000+ means cents).
-//   2. Relative to maxDailyAdBudget — if the user configured a cap and the
-//      requested budget exceeds it by more than 10x, treat as cents.
+// We use THREE signals, all implemented once in `app/budget-ceiling.js` and
+// shared with the two approval paths in main.js (they used to be three
+// hand-copied constants that drifted — see that file's REGRESSION GUARD):
+//   1. Absolute ceiling — reject anything ≥ BUDGET_ABSOLUTE_CEILING. No
+//      config key lifts it.
+//   2. The operator's declared maxDailyAdBudget, which AUTHORIZES everything
+//      up to itself. This is how a deliberate high-budget launch (a BFCM or
+//      flash-sale day at $5,000/day) is expressed at all.
+//   3. Otherwise the $5,000/day default backstop and the >10x-cap relative
+//      detector, both of which read as cents-for-dollars.
 //
-// Normal ad budgets for solo DTC founders: $5-$500/day. We reject anything
-// above $1000/day unless the user's configured cap is at least 1/10 of that.
-const BUDGET_HARD_CEILING = 5000; // dollars — above this is almost certainly cents
+// Normal ad budgets for solo DTC founders: $5-$500/day, which is why the
+// backstop sits where it does when nobody has said otherwise.
+// BUDGET_HARD_CEILING stays re-exported below for existing consumers; it is
+// now defined once in budget-ceiling.js rather than here.
+const { denyReasonForBudget, BUDGET_HARD_CEILING } = require('./budget-ceiling');
 
 function validateBudget(ctx, args, platform) {
 	const budget = args.dailyBudget;
 	if (budget === undefined || budget === null) return null;
-	if (typeof budget !== 'number' || !Number.isFinite(budget) || budget < 0) {
-		return `dailyBudget must be a positive number in dollars (e.g. 10 for $10/day). Got: ${budget}`;
-	}
-	if (budget === 0) return null;
 
-	// Read user's configured cap to check for "relative cents" (budget > 10x cap).
+	// Read the user's declared cap. It both authorizes (up to itself) and
+	// triggers the relative cents detector (beyond 10x).
 	let maxCap = 0;
 	try {
 		const brand = args.brand || '';
@@ -185,15 +189,10 @@ function validateBudget(ctx, args, platform) {
 		maxCap = Number(cfg.maxDailyAdBudget || cfg.dailyAdBudget || 0);
 	} catch {}
 
-	// Absolute ceiling — anything this high is almost certainly Claude pre-converting.
-	if (budget >= BUDGET_HARD_CEILING) {
-		return `dailyBudget=${budget} looks like cents, not dollars. ${platform} ads: pass dollars (e.g. 10 for $10/day). If you really need $${budget}/day, ask the user to confirm and raise maxDailyAdBudget in config. NEVER pre-convert dollars to cents — Merlin handles that internally.`;
-	}
-
-	// Relative ceiling — budget more than 10x the user's configured cap is very likely cents.
-	if (maxCap > 0 && budget > maxCap * 10) {
-		return `dailyBudget=${budget} is more than 10x your configured max of $${maxCap}/day. This looks like cents, not dollars — Claude should pass ${Math.round(budget / 100)} for $${Math.round(budget / 100)}/day. NEVER pre-convert to cents.`;
-	}
+	const reason = denyReasonForBudget(budget, maxCap);
+	// Name the platform on the top-level budget so the agent's retry targets
+	// the right tool call when several are in flight.
+	if (reason) return `${platform} ads: ${reason}`;
 
 	// Also validate nested ads[] entries (bulk-push / carousel paths)
 	if (Array.isArray(args.ads)) {
@@ -202,15 +201,8 @@ function validateBudget(ctx, args, platform) {
 			if (!nested || typeof nested !== 'object') continue;
 			const nb = nested.dailyBudget;
 			if (nb === undefined || nb === null || nb === 0) continue;
-			if (typeof nb !== 'number' || !Number.isFinite(nb) || nb < 0) {
-				return `ads[${i}].dailyBudget must be a positive number in dollars. Got: ${nb}`;
-			}
-			if (nb >= BUDGET_HARD_CEILING) {
-				return `ads[${i}].dailyBudget=${nb} looks like cents. Pass dollars (e.g. 10 for $10/day).`;
-			}
-			if (maxCap > 0 && nb > maxCap * 10) {
-				return `ads[${i}].dailyBudget=${nb} is more than 10x your $${maxCap}/day cap. Likely cents — pass ${Math.round(nb / 100)}.`;
-			}
+			const nestedReason = denyReasonForBudget(nb, maxCap, { field: `ads[${i}].dailyBudget` });
+			if (nestedReason) return nestedReason;
 		}
 	}
 
