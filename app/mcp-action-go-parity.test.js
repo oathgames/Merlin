@@ -100,6 +100,10 @@ const TOOL_ROUTING = [
       'angle-performance': 'angle-performance',
     },
   },
+  // Alia Popups analytics. Every action routes as alia-<action>:
+  // alia-connect, alia-verify, alia-status, alia-merchant, alia-campaigns,
+  // alia-stats, alia-distributions, alia-poll-distributions, alia-report.
+  { name: 'alia', prefix: 'alia' },
   { name: 'google_analytics', prefix: 'google-analytics' },
   // Every action routes as gtm-<action>: gtm-discover, gtm-audit,
   // gtm-list-versions, gtm-install-ga4, gtm-create-version, gtm-publish.
