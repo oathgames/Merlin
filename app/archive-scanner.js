@@ -23,6 +23,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { isBrandDir } = require('./brand-dirs');
 const crypto = require('crypto');
 
 const ARCHIVE_VIDEO_EXT = /\.(mp4|mov|webm|m4v)$/i;
@@ -91,8 +92,11 @@ async function loadKnownBrands(appRoot) {
   if (!appRoot || typeof appRoot !== 'string') return set;
   const brandsDir = path.join(appRoot, 'assets', 'brands');
   try {
+    // REGRESSION GUARD (2026-08-29, ghost-brand-directory incident): a
+    // ghost or backup directory here would claim archive files by name
+    // inference. isBrandDir is the shared rule (brand-dirs.js).
     for (const d of await fs.promises.readdir(brandsDir, { withFileTypes: true })) {
-      if (d.isDirectory() && d.name !== 'example') set.add(d.name.toLowerCase());
+      if (d.isDirectory() && isBrandDir(brandsDir, d.name)) set.add(d.name.toLowerCase());
     }
   } catch {}
   return set;

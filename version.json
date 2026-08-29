@@ -36,6 +36,7 @@
     "app/auth-failures.js",
     "app/binary-paths.js",
     "app/brand-config-sweep.js",
+    "app/brand-dirs.js",
     "app/brand-manifest-scaffolder.js",
     "app/brand-scaffold.js",
     "app/brand-scraper.js",

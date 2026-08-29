@@ -8,6 +8,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { listBrandDirs } = require('./brand-dirs');
 
 // Legacy hardcoded suffix allowlist. Used as a fallback when no real brand
 // directory exists (fresh install, brand folder moved). `creative` and
@@ -138,15 +139,12 @@ function extractBrandFromSpellId(taskId, appRoot) {
     try {
       const brandsDir = path.join(appRoot, 'assets', 'brands');
       if (fs.existsSync(brandsDir)) {
-        const brands = fs
-          .readdirSync(brandsDir, { withFileTypes: true })
-          .filter(
-            (d) =>
-              d.isDirectory() &&
-              d.name !== 'example' &&
-              /^[a-z0-9_-]+$/i.test(d.name),
-          )
-          .map((d) => d.name)
+        // REGRESSION GUARD (2026-08-29, ghost-brand-directory incident):
+        // the brand extracted here becomes the activity.jsonl path in
+        // main.js's spell-completion logger. Matching a ghost directory
+        // would route a real spell's log into it and keep it alive.
+        // listBrandDirs is the single shared rule (brand-dirs.js).
+        const brands = listBrandDirs(brandsDir)
           // Longest first so "bright-co" wins over "bright" when both exist.
           .sort((a, b) => b.length - a.length);
         for (const b of brands) {
