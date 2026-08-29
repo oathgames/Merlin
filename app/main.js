@@ -16,6 +16,7 @@ const { clampWindowBounds, createBoundsSaver } = require('./window-state');
 const { createSwitchCoalescer } = require('./switch-coalescer');
 const { scaffoldBrandManifest } = require('./brand-manifest-scaffolder');
 const { scaffoldBrandStub } = require('./brand-scaffold');
+const { listBrandDirs, isBrandDir, isBrandDirName } = require('./brand-dirs');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -2813,14 +2814,14 @@ function getBudgetContext() {
       // telemetry shows real impact, refactor getBudgetContext() into an
       // async path with the approval-card flow awaiting it explicitly.
       const _h002Start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
-      const dirs = fs.readdirSync(brandsDir, { withFileTypes: true }).filter(d => d.isDirectory() && d.name !== 'example');
+      const dirs = listBrandDirs(brandsDir);
       const _h002Elapsed = ((typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now()) - _h002Start;
       if (_h002Elapsed > 50) {
         console.warn(`[perf] getBudgetContext readdirSync took ${_h002Elapsed.toFixed(1)}ms for ${dirs.length} brand dirs (BUG-H002 threshold)`);
         try { appendErrorLog(`[perf-h002] readdirSync ${_h002Elapsed.toFixed(1)}ms brands=${dirs.length}`); } catch {}
       }
       for (const d of dirs) {
-        const adsPath = path.join(brandsDir, d.name, 'ads-live.json');
+        const adsPath = path.join(brandsDir, d, 'ads-live.json');
         try {
           const ads = JSON.parse(fs.readFileSync(adsPath, 'utf8'));
           dailySpent += ads.filter(a => a.status === 'live').reduce((sum, a) => sum + (a.budget || 0), 0);
@@ -4050,8 +4051,7 @@ async function startSession(brandOverride) {
           const brandsDir = path.join(appRoot, 'assets', 'brands');
           let hasBrands = false;
           try {
-            hasBrands = fs.readdirSync(brandsDir, { withFileTypes: true })
-              .some(d => d.isDirectory() && d.name !== 'example');
+            hasBrands = listBrandDirs(brandsDir).length > 0;
           } catch {}
           if (!hasBrands && resolveNextMessage) {
             settleNextMessage({ type: 'user', message: { role: 'user', content:
@@ -8180,11 +8180,10 @@ ipcMain.handle('get-activity-feed', (_, brandName, limit = 30) => {
     // Try to find the first brand with an activity log
     const brandsDir = path.join(appRoot, 'assets', 'brands');
     try {
-      const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory() && d.name !== 'example');
+      const dirs = listBrandDirs(brandsDir);
       for (const d of dirs) {
-        const logPath = path.join(brandsDir, d.name, 'activity.jsonl');
-        if (fs.existsSync(logPath)) { brandName = d.name; break; }
+        const logPath = path.join(brandsDir, d, 'activity.jsonl');
+        if (fs.existsSync(logPath)) { brandName = d; break; }
       }
     } catch {}
   }
@@ -8437,7 +8436,12 @@ const BRAND_SEARCH_PATHS = (() => {
 function _listBrandsAt(brandsDir) {
   try {
     return fs.readdirSync(brandsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && d.name !== 'example' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(d.name))
+      // Name rules come from brand-dirs.js so a '_'-prefixed or 'backup-'
+      // prefixed tree is never 'recovered' as a brand (2026-08-29 ghost
+      // incident). The marker set below stays wider than isBrandDir's on
+      // purpose: this is the legacy-path recovery scan, and a stranded
+      // brand may only have products/ or memory.md left.
+      .filter(d => d.isDirectory() && isBrandDirName(d.name))
       .filter(d => {
         // A directory is a "real brand" if it has brand.md OR a products/
         // subdirectory. Empty stub directories (created by failed setup
@@ -9395,9 +9399,7 @@ function migratePerBrand() {
   const brandsDir = path.join(appRoot, 'assets', 'brands');
   let brands = [];
   try {
-    brands = fs.readdirSync(brandsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && d.name !== 'example')
-      .map(d => d.name);
+    brands = listBrandDirs(brandsDir);
   } catch {}
 
   if (brands.length === 1) {
@@ -10371,7 +10373,7 @@ ipcMain.handle('get-live-ads', async (_, brandName) => {
   let dirents;
   try { dirents = await fs.promises.readdir(brandsDir, { withFileTypes: true }); } catch { return []; }
   const brands = dirents
-    .filter(d => d.isDirectory() && d.name !== 'example')
+    .filter(d => d.isDirectory() && isBrandDir(brandsDir, d.name))
     .map(d => d.name);
   const perBrand = await Promise.all(brands.map(b => _readBrandAdsCached(brandsDir, b)));
   const all = perBrand.flat();
@@ -10739,9 +10741,15 @@ ipcMain.handle('get-brands', () => {
     return _brandsMemo;
   }
   try {
-    const dirs = fs.readdirSync(brandsDir, { withFileTypes: true })
-      .filter(d => d.isDirectory() && d.name !== 'example')
-      .map(d => {
+    // REGRESSION GUARD (2026-08-29, ghost-brand-directory incident): this
+    // feeds BOTH the brand dropdown and brands-index.json, which commands
+    // and scheduled tasks read. The old filter accepted any directory, so
+    // a ghost brand folder (one activity.jsonl, no manifest) was indexed
+    // as status:"active" next to the real brand, and an index reader saw
+    // two clients for one brand. listBrandDirs is the shared rule.
+    const dirs = listBrandDirs(brandsDir)
+      .map((_brandDirName) => {
+        const d = { name: _brandDirName };
         const brandPath = path.join(brandsDir, d.name);
         const brandMd = path.join(brandPath, 'brand.md');
 
@@ -14344,9 +14352,12 @@ app.whenReady().then(async () => {
     const brandsDir = path.join(appRoot, 'assets', 'brands');
     let brands = [];
     try {
-      brands = fs.readdirSync(brandsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory() && d.name !== 'example')
-        .map(d => d.name);
+      // REGRESSION GUARD (2026-08-29, ghost-brand-directory incident): the
+      // watchdog used to sweep EVERY directory here, so it fired
+      // watchdog-check against a ghost brand every 4 hours and the
+      // resulting activity.jsonl heartbeat kept the ghost's mtime as fresh
+      // as the real brand's for nine days. Only real brands get swept.
+      brands = listBrandDirs(brandsDir);
     } catch {}
 
     const scopes = [null, ...brands]; // null = global config sweep

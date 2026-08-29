@@ -28,7 +28,12 @@ function tempRoot() {
 function makeBrands(root, names) {
   const brandsDir = path.join(root, 'assets', 'brands');
   fs.mkdirSync(brandsDir, { recursive: true });
-  for (const n of names) fs.mkdirSync(path.join(brandsDir, n), { recursive: true });
+  for (const n of names) {
+    fs.mkdirSync(path.join(brandsDir, n), { recursive: true });
+    // A real brand dir always carries a marker file. brand-dirs.js requires
+    // one so a ghost directory cannot read back as a live brand.
+    fs.writeFileSync(path.join(brandsDir, n, 'brand.md'), '# ' + n + '\n');
+  }
 }
 
 // ─── extractBrandFromSpellId ──────────────────────────────────────────

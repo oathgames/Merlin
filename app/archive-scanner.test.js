@@ -51,7 +51,9 @@ function makeTmpRoot() {
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'merlin-archive-test-'));
   fs.mkdirSync(path.join(tmpRoot, 'results'), { recursive: true });
   fs.mkdirSync(path.join(tmpRoot, 'assets', 'brands', 'acme-labs'), { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, 'assets', 'brands', 'acme-labs', 'brand.md'), '# acme-labs\n');
   fs.mkdirSync(path.join(tmpRoot, 'assets', 'brands', 'brightco'), { recursive: true });
+  fs.writeFileSync(path.join(tmpRoot, 'assets', 'brands', 'brightco', 'brand.md'), '# brightco\n');
   return tmpRoot;
 }
 
@@ -479,6 +481,7 @@ test('ADVERSARIAL: adding a new brand folder busts the cache', async () => {
 
     // Create the brand folder
     fs.mkdirSync(path.join(tmp, 'assets', 'brands', 'new-brand'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, 'assets', 'brands', 'new-brand', 'brand.md'), '# new-brand\n');
     // The brand folder is OUTSIDE results/, so the production watcher
     // (which watches results/) wouldn't fire. Brand-create paths in
     // main.js explicitly invalidate the scan cache (see brand-onboarding

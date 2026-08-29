@@ -119,6 +119,13 @@ jobs:
       # directory no reader ever touched again. Locks down the vault-or-
       # delete boot sweep + its main.js wiring (every boot, no one-shot
       # gate, confirm-vault-write-before-delete).
+      # REGRESSION GUARD (2026-08-29, ghost-brand-directory incident): a
+      # mistyped slug ('rebecca-taylor' for the real 'rebeccataylor') hit a
+      # missing token; the engine's ERROR LOG mkdir'd the brand folder, and
+      # the ghost then read back as a real brand for nine days. Locks down
+      # the shared brand-dir rule + every consumer that enumerates brands.
+      - name: ghost brand-dir lockdown (brand enumeration single source)
+        run: node --test app/brand-dirs.test.js
       - name: stale brand-config sweep (plaintext-in-StateDir lockdown)
         run: node --test app/brand-config-sweep.test.js
       - name: sentence splitter
