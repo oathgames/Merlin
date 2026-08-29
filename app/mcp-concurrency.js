@@ -64,6 +64,7 @@ const DEFAULT_CAPS = Object.freeze({
   postscript:       3, // Postscript Customer API — undocumented concurrent budget; matches klaviyo (similar steady-drain pattern).
   applovin:         2, // AppLovin Report API — 3 req/min documented, 2 concurrent stays within ceiling.
   trendtrack:       3, // TrendTrack ad-library scrape — credit-limited, concurrency cap is anti-thunder rather than ceiling.
+  alia:            1, // Alia uses a plan-scaled shared token bucket; serialize expensive metric windows.
 
   // REGRESSION GUARD (2026-05-06, codex API audit P0 #2 fix): two new
   // platforms wired through PreflightCheck in this session — both got

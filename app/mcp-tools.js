@@ -1637,6 +1637,37 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'clarity-' + args.action, args)),
   }, tool, z, ctx));
 
+  // Alia Popups public API (read-only). Full v1 coverage: merchant identity,
+  // campaign/flow metadata, all 18 stats, arbitrary supported dimensions,
+  // recursive filters, poll answers, and a deck-ready aggregate report.
+  tools.push(defineTool({
+    name: 'alia',
+    description: 'Alia Popups analytics (read-only). Connect a brand with an Alia API key, then pull merchant identity, campaigns/flows, any supported performance stats, dimension distributions, poll-answer distributions, or a presentation-ready client report. The report defaults to 7 days because Alia event queries consume 20 x metrics x days tokens; use stats for a custom metric set or narrower/filtered query. Alia exposes no write API, webhooks, or individual attributed-order feed.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'alia' },
+    input: {
+      action: z.enum(['connect', 'verify', 'status', 'merchant', 'campaigns', 'stats', 'distributions', 'poll-distributions', 'report']).describe('connect -> setup instructions. verify -> validate and securely store apiKey (requires all three read scopes). merchant -> store identity. campaigns -> segments and flows. stats -> selected metrics and time series. distributions -> one selected dimension. poll-distributions -> answer counts by question. report -> deck-ready KPI/campaign JSON artifact.'),
+      brand: brandSchema,
+      apiKey: z.string().optional().describe('Alia API key for verify only. Create it in Alia Settings with read:merchant, read:events, and read:segments.'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data when startDate/endDate are omitted. Defaults to 7.'),
+      startDate: z.string().optional().describe('ISO 8601 range start. Alia also accepts an IANA timezone suffix, for example 2026-08-01T00:00:00-04:00::America/New_York. Supply with endDate.'),
+      endDate: z.string().optional().describe('ISO 8601 range end. Supply with startDate.'),
+      groupByInterval: z.enum(['minute', 'hour', 'day', 'week', 'month', 'entire-range']).optional().describe('Time-series grain for stats/report. Defaults to day.'),
+      stats: z.record(z.any()).optional().describe('Required for stats. Map output labels to Alia stat objects. Names: emailSignupCount, emailSignupRate, phoneSignupCount, phoneSignupRate, emailOptInCount, emailOptInRate, smsOptInCount, smsOptInRate, usersCount, popupViewsCount, popupViewRate, bounceRate, attributedOrderCount, attributedSalesSum, attributedConversionRate, attributedAOV, attributedLTV, attributedRepurchaseRate. Attribution stats may require maxMsSinceSignup and/or orderValueType (pre-discount|post-discount). Example: {sales:{name:"attributedSalesSum",orderValueType:"post-discount",maxMsSinceSignup:2592000000}}.'),
+      filters: z.any().optional().describe('Optional typed Alia FilterExpression. Shapes: {type:"atomic",expr:{type:"comparator",identifier:{...},rhs:{operator,values}}}, {type:"atomic",expr:{type:"event",operator:"has"|"hasNot",event:{type,label?}}}, or recursive {type:"and"|"or",conditions:[...]}/{type:"not",condition:{...}}. Go validates every identifier, operator, event, value type, and nesting depth.'),
+      identifier: z.any().optional().describe('Required for distributions. Alia Identifier: context {type:"context",property}, entity {type:"segmentID"|"flowID"|...}, pollAnswer {type:"pollAnswer",questionText}, setProperty, prismChoice, dynamicTimeOnPageChoice, or clickLabel.'),
+      limit: z.coerce.number().int().optional().describe('Maximum distribution rows/questions (1-1000, validated by Go). Defaults to 100.'),
+      liveStatus: z.enum(['live', 'notLive', 'any']).optional().describe('Campaign status filter. Defaults to any.'),
+      archivedStatus: z.enum(['archived', 'notArchived', 'any']).optional().describe('Campaign archive filter. Defaults to notArchived.'),
+      liveOn: z.string().optional().describe('For campaigns: RFC3339 point in time; return campaigns live then.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'alia-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── posthog ──────────────────────────────────────────────
   // PostHog product/ecommerce analytics (read-only HogQL Query API).
   // Brand-scoped: each brand connects its own PostHog project.

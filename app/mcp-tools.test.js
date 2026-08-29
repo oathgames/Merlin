@@ -114,7 +114,7 @@ test('buildTools registers every advertised tool', () => {
   const expected = [
     'connection_status', 'meta_ads', 'meta_audit', 'google_analytics',
     'tiktok_ads', 'google_ads',
-    'amazon_ads', 'shopify', 'klaviyo', 'email', 'seo', 'content',
+    'amazon_ads', 'shopify', 'klaviyo', 'alia', 'email', 'seo', 'content',
     'video', 'voice', 'dashboard', 'discord', 'threads', 'reddit_ads',
     'linkedin_ads', 'etsy', 'config', 'competitor_spy', 'platform_login',
     'brand_scrape', 'brand_guide', 'decisions',
@@ -157,6 +157,18 @@ test('buildTools flags destructive ad tools with annotations', () => {
   // Rule 18 + analytics.go's REGRESSION GUARD (2026-05-01) block.
   assert.ok(destructiveNames.includes('google_analytics'),
     'google_analytics MUST be flagged destructive — it ships GA4 Admin API write actions (key events, custom dimensions/metrics, audiences, property settings) gated by per-action blastRadius. See Hard-Won Security Rule 18.');
+});
+
+test('alia tool exposes full read-only public API coverage', () => {
+  const { tool, registry } = makeFakeTool();
+  buildTools(tool, makeFakeZ(), makeCtx());
+  const entry = registry.find(t => t.name === 'alia');
+  assert.ok(entry, 'alia tool not registered');
+  assert.match(entry.description, /campaigns\/flows/i);
+  assert.match(entry.description, /poll-answer distributions/i);
+  assert.match(entry.description, /presentation-ready client report/i);
+  assert.match(entry.description, /no write API/i);
+  assert.equal(entry.options.annotations.destructive, false);
 });
 
 test('google_analytics blastRadius: per-action contract — every write action requires approval, every read does not', () => {

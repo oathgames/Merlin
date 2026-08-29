@@ -4239,6 +4239,7 @@ const PLATFORM_DISPLAY_NAMES = {
   rokt: 'Rokt',
   clarity: 'Microsoft Clarity',
   posthog: 'PostHog',
+  alia: 'Alia Popups',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -4272,7 +4273,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -4283,7 +4284,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'MRR',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','google','linkedin','stripe','klaviyo','mailchimp','reddit','twitter','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','google','linkedin','stripe','klaviyo','mailchimp','reddit','twitter','openai_ads', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
   },
   games: {
     key: 'games',
@@ -4294,7 +4295,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'installs',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','tiktok','google','applovin','stripe','reddit','snapchat','twitter','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','google','applovin','stripe','reddit','snapchat','twitter','openai_ads', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
   },
   creator: {
     key: 'creator',
@@ -4305,7 +4306,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'enrollments',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['meta','tiktok','google','twitter','reddit','klaviyo','mailchimp','postscript','stripe','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','google','twitter','reddit','klaviyo','mailchimp','postscript','stripe','openai_ads', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
   },
   local: {
     key: 'local',
@@ -4316,7 +4317,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'leads',
     defaultRevenueConnector: '',
     hasShoppableCatalog: false,
-    integrations: ['meta','google','reddit','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','google','reddit','openai_ads', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
   },
   agency: {
     key: 'agency',
@@ -4327,7 +4328,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'qualified leads',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['linkedin','meta','google','twitter','reddit','stripe','klaviyo','mailchimp','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
+    integrations: ['linkedin','meta','google','twitter','reddit','stripe','klaviyo','mailchimp','openai_ads', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
   },
   b2b: {
     key: 'b2b',
@@ -4338,7 +4339,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'pipeline',
     defaultRevenueConnector: 'stripe',
     hasShoppableCatalog: false,
-    integrations: ['linkedin','google','meta','twitter','reddit','stripe','openai_ads', 'clarity', 'posthog', ...BASE_CREATIVE_TOOLS],
+    integrations: ['linkedin','google','meta','twitter','reddit','stripe','openai_ads', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
   },
 };
 
@@ -6449,6 +6450,9 @@ const API_KEY_PLATFORMS = {
   // (vaulted; in VAULT_SENSITIVE_KEYS + CONFIG_FIELD_ALLOWLIST). Validated lazily
   // on the first insights pull (clarity.go returns a friendly "token rejected").
   clarity: { key: 'clarityApiToken', label: 'Microsoft Clarity', placeholder: 'Data Export API token (Clarity → Settings → Data Export)', url: 'https://clarity.microsoft.com/' },
+  // Alia Popups public API key (brand-scoped, read-only). The key must carry
+  // every read scope so reports can combine merchant, campaign, and event data.
+  alia: { key: 'aliaApiKey', label: 'Alia Popups', placeholder: 'API key with read:merchant, read:events, and read:segments', url: 'https://api.alia-prod.com/v1/docs' },
   // OpenAI / ChatGPT Ads — paste the Ads API key minted at ads.openai.com.
   // Masked tile (not chat-pasted) because this key authorizes real ad spend.
   openai_ads: { key: 'openaiAdsApiKey', label: 'OpenAI Ads', placeholder: 'Ads API key from ads.openai.com (not your ChatGPT key)', url: 'https://ads.openai.com' },
