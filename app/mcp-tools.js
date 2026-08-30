@@ -300,6 +300,8 @@ function metaAuditEngineAction(action) {
 const BRAND_OPTIONAL_ACTIONS = new Set([
   // Installer / utility
   'setup', 'version', 'update', 'subscribe', 'archive', 'dry-run',
+  // Video editing operates on file paths, not brand-scoped platform data.
+  'video-ingest', 'video-render',
   'api-key-setup', 'verify-key',
   // Voice + avatar management — these resources are shared across brands
   'list-voices', 'list-avatars', 'clone-voice', 'delete-voice',
@@ -1666,6 +1668,51 @@ function buildTools(tool, z, ctx) {
       liveOn: z.string().optional().describe('For campaigns: RFC3339 point in time; return campaigns live then.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'alia-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── video editing ──────────────────────────────
+  // Two halves of one loop: video_ingest turns footage into readable facts,
+  // video_render turns a timeline into a file. Everything between them is
+  // the model reasoning over JSON, which is what makes an edit reviewable
+  // before a frame is encoded.
+  //
+  // Neither spends money and neither touches a platform, so both are
+  // non-destructive with costImpact 'none'. The clip GENERATION tools
+  // (fal / veo / heygen) keep their own spend gates; this pair only ever
+  // reads and writes local files.
+  tools.push(defineTool({
+    name: 'video_ingest',
+    description: 'Read a video file and return what is actually in it: duration, resolution, fps, detected scene boundaries, sampled frames with their timecodes burned in, contact sheets tiling those frames, and a word-level transcript with timings. This is how you SEE footage you did not create - call it before critiquing a clip, choosing a soundbite, or picking a cut point, then look at the returned contactSheets with the Read tool. Frames are sampled at scene changes rather than on a fixed interval, so a montage and a locked-off interview both get useful coverage from the same budget. Set skipTranscript for footage you know is silent.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
+      inputPath: z.string().describe('Absolute path to the video file to read.'),
+      outputPath: z.string().optional().describe('Directory to write frames, contact sheets, and the transcript into. Defaults to an ingest_<name> folder beside the source.'),
+      sceneThreshold: z.coerce.number().optional().describe('Scene-detection sensitivity, 0 to 1. Lower finds more cuts. Defaults to 0.25.'),
+      maxFrames: z.coerce.number().int().optional().describe('Hard cap on sampled frames. Defaults to 24.'),
+      skipTranscript: z.boolean().optional().describe('Skip whisper transcription. Set true for known-silent B-roll to save time.'),
+      skipFrames: z.boolean().optional().describe('Skip frame sampling and contact sheets. Set true when you only need the transcript.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'video-ingest', args)),
+  }, tool, z, ctx));
+
+  tools.push(defineTool({
+    name: 'video_render',
+    description: 'Render a finished video from an EDL (edit decision list) - a JSON timeline of clips, transitions, audio tracks, overlays, and captions. The whole edit compiles to ONE ffmpeg pass, so there is no generation loss from re-encoding intermediates and the render is a pure function of the timeline: change a number, re-render, get exactly the predicted result. EDL shape: {format:"9:16"|"4:5"|"1:1"|"16:9", fps, output, clips:[{source, in, out, fit:"cover"|"contain"|"stretch", transition:"cut"|"fade"|"dissolve"|"fade-black"|"wipe-left"|"wipe-right", transitionDur, speed, gain, mute}], audio:[{source, start, in, out, gain, fadeIn, fadeOut, loop, duck}], overlays:[{source, start, end, keys:[{t,x,y,ease}], fadeIn, fadeOut}], captions:{style:"hormozi"|"subtitle"|"lower-third", fontSize, marginV, cues:[{start,end,text,speaker}]}}. Stills are accepted as clips. duck:true ducks a music bed under speech. Unknown field names are refused rather than ignored, so a typo is an error and not a silently wrong render.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'none',
+    brandRequired: false,
+    input: {
+      edl: z.record(z.any()).optional().describe('The timeline as an inline JSON object. Validated in full by the engine, which reports every problem at once. Pass this or edlPath, not both.'),
+      edlPath: z.string().optional().describe('Path to an .edl.json file holding the timeline. Use this when the timeline should be reviewed or version-controlled before rendering.'),
+      outputPath: z.string().optional().describe('Override the output path in the EDL. Must end in .mp4 or .mov.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'video-render', args)),
   }, tool, z, ctx));
 
   // ── posthog ──────────────────────────────────────────────
