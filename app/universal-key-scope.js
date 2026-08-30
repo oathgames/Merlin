@@ -48,12 +48,17 @@ function vaultScopeFor(key, brandName, universalKeys) {
 // vaultGet/vaultPut/vaultDelete, so this stays testable without a real vault,
 // and the destructive half is one obvious loop at the call site.
 //
-// `_global` wins on conflict and is never overwritten. A value already at
-// `_global` is one the resolvers have been using successfully, and a stale
-// brand-scoped copy from an earlier paste must not clobber a working key. The
-// brand copy is still removed, because leaving it makes the same key readable
-// from two places and the next reader picks whichever it happens to check
-// first.
+// On conflict, NOTHING is destroyed. When both scopes hold the key, the entry
+// comes back as `conflict: true` and the caller moves neither and deletes
+// neither. An earlier draft deleted the brand copy on the theory that a value
+// already at `_global` must be the working one, which is exactly backwards in
+// the shape that produced this incident: `_global` held a revoked key (the
+// engine reports 401, not "not connected") and the brand scope held the fresh
+// paste. Deleting the brand copy would have destroyed the only good credential
+// on the machine, and neither scope carries a timestamp or any other signal
+// that could tell them apart. Two readable copies is cosmetic, since every
+// reader resolves at `_global` only; a deleted credential is not recoverable.
+// The user resolves it by re-pasting once, which now lands on `_global`.
 function planUniversalKeyMigration(universalKeys, brands, vaultHas) {
   const plan = [];
   if (!universalKeys || !Array.isArray(brands)) return plan;
@@ -61,7 +66,7 @@ function planUniversalKeyMigration(universalKeys, brands, vaultHas) {
     if (!brand || brand === GLOBAL_SCOPE) continue;
     for (const key of universalKeys) {
       if (!vaultHas(brand, key)) continue;
-      plan.push({ key, fromBrand: brand, clobbersGlobal: !vaultHas(GLOBAL_SCOPE, key) });
+      plan.push({ key, fromBrand: brand, conflict: vaultHas(GLOBAL_SCOPE, key) });
     }
   }
   return plan;

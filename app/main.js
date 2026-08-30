@@ -8987,17 +8987,22 @@ function migrateUniversalKeysToGlobal() {
       try { return !!vaultGet(scope, key); } catch (_) { return false; }
     };
     const plan = planUniversalKeyMigration(UNIVERSAL_KEYS, brands, has);
-    for (const { key, fromBrand, clobbersGlobal } of plan) {
-      // Confirm the read before the delete. A move that deletes first and
+    for (const { key, fromBrand, conflict } of plan) {
+      if (conflict) {
+        // Both scopes hold this key and nothing distinguishes them, so neither
+        // is touched. See universal-key-scope.js: the _global copy is not
+        // necessarily the good one. Re-pasting the key resolves it.
+        console.warn('[vault] universal key %s exists at both _global and brand scope %s; leaving both, re-paste the key to settle it', key, fromBrand);
+        continue;
+      }
+      // Confirm the read back before the delete. A move that deletes first and
       // fails to write has destroyed a credential the user cannot recover.
-      if (clobbersGlobal) {
-        const value = vaultGet(fromBrand, key);
-        if (!value) continue;
-        vaultPut('_global', key, value);
-        if (vaultGet('_global', key) !== value) {
-          console.error('[vault] universal key %s did not read back at _global, leaving brand copy', key);
-          continue;
-        }
+      const value = vaultGet(fromBrand, key);
+      if (!value) continue;
+      vaultPut('_global', key, value);
+      if (vaultGet('_global', key) !== value) {
+        console.error('[vault] universal key %s did not read back at _global, leaving brand copy', key);
+        continue;
       }
       vaultDelete(fromBrand, key);
       // Key NAME only. The value is the credential and never goes to a log.

@@ -49,6 +49,8 @@ t('a brandless write is global for both kinds', () => {
   assert.strictEqual(vaultScopeFor('trendtrackApiKey', null, UNIVERSAL), '_global');
 });
 
+const MAIN = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+
 // ---- planUniversalKeyMigration --------------------------------------------
 
 function vaultOf(entries) {
@@ -61,7 +63,7 @@ t('plans a move for a universal key found under a brand', () => {
     UNIVERSAL, ['apotheke', 'forever21'],
     vaultOf([['apotheke', 'trendtrackApiKey']]));
   assert.deepStrictEqual(plan,
-    [{ key: 'trendtrackApiKey', fromBrand: 'apotheke', clobbersGlobal: true }]);
+    [{ key: 'trendtrackApiKey', fromBrand: 'apotheke', conflict: false }]);
 });
 
 t('plans nothing when the vault is already clean', () => {
@@ -77,15 +79,25 @@ t('never plans to move a brand-scoped key', () => {
   assert.deepStrictEqual(plan, [], 'brand credentials must stay with the brand');
 });
 
-t('an existing _global value is never overwritten, but the stray is still cleared', () => {
-  // A working key at _global outranks a stale brand-scoped paste. The entry is
-  // still reported so the caller deletes the duplicate: one key readable from
-  // two scopes is the next bug.
+t('a key present in both scopes is reported as a conflict, not a move', () => {
+  // Neither copy may be destroyed: _global is NOT reliably the good one. In the
+  // incident it held a revoked key while the brand scope held the fresh paste.
   const plan = planUniversalKeyMigration(
     UNIVERSAL, ['apotheke'],
     vaultOf([['apotheke', 'falApiKey'], ['_global', 'falApiKey']]));
-  assert.strictEqual(plan.length, 1);
-  assert.strictEqual(plan[0].clobbersGlobal, false);
+  assert.deepStrictEqual(plan,
+    [{ key: 'falApiKey', fromBrand: 'apotheke', conflict: true }]);
+});
+
+t('the call site never deletes a conflicted brand copy', () => {
+  const i = MAIN.indexOf('function migrateUniversalKeysToGlobal');
+  const body = MAIN.slice(i, i + 2600);
+  const guard = body.indexOf('if (conflict)');
+  const del = body.indexOf('vaultDelete(');
+  assert.ok(guard > -1, 'conflicts must be branched on before any delete');
+  assert.ok(guard < del, 'the conflict guard must precede the delete');
+  assert.ok(/if \(conflict\) \{[\s\S]{0,600}?continue;/.test(body),
+    'a conflicted entry must continue, not fall through to the move');
 });
 
 t('the _global scope is never treated as a source brand', () => {
@@ -99,8 +111,6 @@ t('survives a missing brand list rather than throwing on boot', () => {
 });
 
 // ---- source scans ----------------------------------------------------------
-
-const MAIN = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
 t('save-config-field routes through vaultScopeFor, not brandName || _global', () => {
   assert.ok(/const vaultBrand = vaultScopeFor\(key, brandName, UNIVERSAL_KEYS\)/.test(MAIN),
