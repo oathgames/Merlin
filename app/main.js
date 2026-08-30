@@ -5595,6 +5595,8 @@ ipcMain.handle('discover-meta-ids', async (_, brandName) => {
 // persisted the raw secret into JSON. The shared allowlist + isSensitiveConfigKey
 // helper makes it a one-liner to add a new key to both lists; the
 // cross-check test in oauth-persist.test.js blocks CI if they drift.
+const { vaultScopeFor, planUniversalKeyMigration } = require('./universal-key-scope');
+
 ipcMain.handle('save-config-field', (_, key, value, brandName) => {
   try {
     if (!key || typeof key !== 'string' || key.startsWith('_') || !CONFIG_FIELD_ALLOWLIST.has(key)) {
@@ -5607,7 +5609,12 @@ ipcMain.handle('save-config-field', (_, key, value, brandName) => {
     // placeholder.
     let persistValue = value;
     if (isSensitiveConfigKey(key)) {
-      const vaultBrand = brandName || '_global';
+      // REGRESSION GUARD (2026-08-30): universal keys ignore the active brand.
+      // The API-key tiles always pass activeBrand, so `brandName || '_global'`
+      // filed workspace-wide keys under whichever brand was selected. The write
+      // succeeded and the placeholder looked right, while every reader resolves
+      // universal keys at _global and got nothing. See universal-key-scope.js.
+      const vaultBrand = vaultScopeFor(key, brandName, UNIVERSAL_KEYS);
       if (typeof value === 'string' && value.length > 0) {
         vaultPut(vaultBrand, key, value);
         persistValue = `@@VAULT:${key}@@`;
@@ -8966,6 +8973,41 @@ const UNIVERSAL_KEYS = new Set([
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId', 'discordWebhookUrl',
 ]);
+
+// Move universal keys that earlier builds filed under a brand scope (see
+// universal-key-scope.js). Runs on every boot rather than behind a one-shot
+// version gate: the same misfiling reappears on any install that has not taken
+// the fix yet, and the sweep is a no-op once the vault is clean. This is the
+// same every-boot reasoning as the stale brand-config sweep (Hard-Won Rule 21),
+// where a one-shot gate WAS the original bug.
+function migrateUniversalKeysToGlobal() {
+  try {
+    const brands = discoverBrands();
+    const has = (scope, key) => {
+      try { return !!vaultGet(scope, key); } catch (_) { return false; }
+    };
+    const plan = planUniversalKeyMigration(UNIVERSAL_KEYS, brands, has);
+    for (const { key, fromBrand, clobbersGlobal } of plan) {
+      // Confirm the read before the delete. A move that deletes first and
+      // fails to write has destroyed a credential the user cannot recover.
+      if (clobbersGlobal) {
+        const value = vaultGet(fromBrand, key);
+        if (!value) continue;
+        vaultPut('_global', key, value);
+        if (vaultGet('_global', key) !== value) {
+          console.error('[vault] universal key %s did not read back at _global, leaving brand copy', key);
+          continue;
+        }
+      }
+      vaultDelete(fromBrand, key);
+      // Key NAME only. The value is the credential and never goes to a log.
+      console.log('[vault] moved universal key %s out of brand scope %s', key, fromBrand);
+    }
+  } catch (err) {
+    // Never block boot on a vault repair.
+    console.error('[vault] universal-key migration skipped:', err && err.message ? err.message : err);
+  }
+}
 // ALL config is plaintext JSON — the Go binary reads it via --config flag.
 // No encryption. Tokens live alongside settings in the same file.
 // This is a local desktop app on the user's device — encryption added complexity
@@ -14207,6 +14249,10 @@ app.whenReady().then(async () => {
     // Vault-or-delete stale plaintext brand configs stranded in StateDir by
     // the workspace split migration (every boot, see brand-config-sweep.js)
     try { sweepStaleBrandConfigsOnBoot(); } catch (err) { console.error('[brand-config-sweep]', err.message); }
+    // Same boot slot, same reasoning: a vault repair that runs before any
+    // platform call, so the first TrendTrack/fal/Slack call of the session
+    // resolves against a corrected _global rather than failing empty.
+    try { migrateUniversalKeysToGlobal(); } catch (err) { console.error('[vault]', err.message); }
   }, 600);
 
   // Start the briefing watcher now that appRoot is guaranteed to exist and
