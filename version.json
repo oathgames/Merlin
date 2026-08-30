@@ -1,5 +1,5 @@
 {
-  "version": "1.38.0",
+  "version": "1.39.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -126,10 +126,10 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults \u2014 a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Video editing: assemble finished videos from clips, stills, music, and captions without leaving Merlin.",
+  "notes": "Video rendering now works on every ffmpeg version, including the 8.x builds that broke it.",
   "whatsNew": [
-    "Video editing is built in. Hand Merlin a folder of clips and it cuts them into a finished piece: trims, dissolves, burned-in captions, lower thirds for interviews, and a music bed that ducks under speech.",
-    "Merlin can now watch video. It reads footage you did not make, finds the scene changes, transcribes the audio with timings, and tells you which seconds are worth keeping.",
-    "Every edit is one clean export. The whole timeline renders in a single pass, so nothing gets re-compressed on the way out and a change is one number away from a new cut."
+    "Fixed: video rendering failed outright on machines running ffmpeg 8. Merlin now detects which ffmpeg it has and uses the option that build understands, so a render works whether the bundled copy or a freshly downloaded one is in play.",
+    "The failure was total and gave no useful signal: no frame was ever drawn, and the error named a command-line option rather than anything about your edit.",
+    "No change to how you use it. Existing timelines re-render unchanged."
   ]
 }
