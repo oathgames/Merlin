@@ -13034,8 +13034,31 @@ async function downloadAndApplyUpdate() {
     // first line of defense; this is the second. Applied before network fetch
     // so we don't waste bandwidth on a doomed entry.
     const rootResolved = path.resolve(appRoot);
+    // REGRESSION GUARD (2026-08-30, update-manifest-dir-entry): a manifest
+    // entry that names a DIRECTORY can never be fetched. raw.githubusercontent
+    // returns 404 for a directory path, the 404 lands in fetchFailures, and the
+    // 2026-05-01 guard below then hard-aborts the WHOLE update before any disk
+    // write or version bump. The install therefore stays on its old version and
+    // retries forever: the user sees files download, nothing install, repeat.
+    //
+    // This is not hypothetical. "assets/brands/example/" sat in the updatable
+    // array from v1.32.0 through v1.39.0 and broke auto-update for every
+    // bootstrapper (unpackaged) install across all eight releases. Nothing
+    // caught it: the manifest is data, no build step resolved it, and
+    // updatable-coverage.test.js only checked the forward direction (every
+    // shipped file is listed) and never the reverse (every listed entry is a
+    // real, fetchable FILE).
+    //
+    // Skipping the entry here rather than failing is deliberate. A directory
+    // entry is a manifest authoring bug, never an integrity problem, and
+    // aborting on it is what caused the outage. Genuine fetch failures on real
+    // files must still hard-abort: do NOT widen this skip to swallow those.
+    // The paired test in updatable-manifest-shape.test.js stops such an entry
+    // from shipping in the first place; this is the runtime backstop for a
+    // manifest that is already out there on a user's disk.
     const isSafeUpdatablePath = (entry) => {
       if (typeof entry !== 'string' || entry.length === 0) return false;
+      if (/[/\\]$/.test(entry)) return false;
       if (path.isAbsolute(entry)) return false;
       if (/(^|[/\\])\.\.([/\\]|$)/.test(entry)) return false;
       const resolved = path.resolve(appRoot, entry);
