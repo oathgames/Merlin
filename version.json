@@ -1,5 +1,5 @@
 {
-  "version": "1.39.0",
+  "version": "1.39.1",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -105,7 +105,7 @@
     "pwa/version.js",
     "pwa/icon.svg",
     "seasonal.json",
-    "assets/brands/example/",
+    "assets/brands/example/brand.md",
     "version.json"
   ],
   "preserve": [
@@ -126,10 +126,10 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults \u2014 a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Video rendering now works on every ffmpeg version, including the 8.x builds that broke it.",
+  "notes": "Fixes the update loop: updates downloaded but never installed.",
   "whatsNew": [
-    "Fixed: video rendering failed outright on machines running ffmpeg 8. Merlin now detects which ffmpeg it has and uses the option that build understands, so a render works whether the bundled copy or a freshly downloaded one is in play.",
-    "The failure was total and gave no useful signal: no frame was ever drawn, and the error named a command-line option rather than anything about your edit.",
-    "No change to how you use it. Existing timelines re-render unchanged."
+    "Fixed: updates downloaded and then silently did nothing, over and over. One entry in the update manifest named a folder instead of a file, that fetch always failed, and a safety rule then abandoned the whole update rather than apply it half-finished.",
+    "Anyone stuck on an older build will now move forward on the next check. Nothing about your install was damaged while it was stuck; the update simply never applied.",
+    "Also fixed for good: the app now skips a bad manifest entry instead of abandoning the update, and a new test blocks a folder entry from shipping again."
   ]
 }
