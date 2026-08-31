@@ -1,6 +1,6 @@
 {
   "name": "Merlin",
-  "version": "1.39.2",
+  "version": "1.39.3",
   "description": "Merlin \u2014 Your AI CMO",
   "main": "app/main.js",
   "scripts": {
