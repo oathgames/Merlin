@@ -1,5 +1,5 @@
 {
-  "version": "1.39.1",
+  "version": "1.39.2",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -126,10 +126,10 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults \u2014 a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Fixes the update loop: updates downloaded but never installed.",
+  "notes": "Fixes the update loop for real: Merlin was deleting its own update on restart.",
   "whatsNew": [
-    "Fixed: updates downloaded and then silently did nothing, over and over. One entry in the update manifest named a folder instead of a file, that fetch always failed, and a safety rule then abandoned the whole update rather than apply it half-finished.",
-    "Anyone stuck on an older build will now move forward on the next check. Nothing about your install was damaged while it was stuck; the update simply never applied.",
-    "Also fixed for good: the app now skips a bad manifest entry instead of abandoning the update, and a new test blocks a folder entry from shipping again."
+    "Fixed: a startup cleanup meant to tidy leftover files was deleting the update that was still running, including the installer itself and the script executing it. Because the update restarts the app, this happened every single time, so the same update was offered again and again.",
+    "The cleanup now leaves anything less than six hours old alone, and never touches the update log at all. The log is what explains a failed update, and deleting it is why earlier failures left nothing to go on.",
+    "If your install has been stuck across several versions, this is why. It will move forward now."
   ]
 }

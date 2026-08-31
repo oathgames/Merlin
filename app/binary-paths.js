@@ -279,6 +279,24 @@ function compareVersionStrings(a, b) {
 //
 // Returns { deleted: [...], skipped: [...] } so the caller can log
 // telemetry. Never throws — every delete is best-effort.
+// An update artifact younger than this is assumed to belong to an update
+// that is running right now. Six hours is far longer than any install takes
+// and far shorter than the gap between a genuine orphan and the next launch.
+const STALE_UPDATE_ARTIFACT_MS = 6 * 60 * 60 * 1000;
+
+// isStaleUpdateArtifact reports whether an installer / update script is old
+// enough to be a leftover rather than part of a live update. Unreadable mtime
+// returns false: refusing to delete is always the safe direction here, because
+// a wrongly-kept file wastes disk while a wrongly-deleted one breaks the
+// update the user is waiting on.
+function isStaleUpdateArtifact(fullPath, now = Date.now()) {
+  try {
+    return (now - fs.statSync(fullPath).mtimeMs) > STALE_UPDATE_ARTIFACT_MS;
+  } catch {
+    return false;
+  }
+}
+
 function cleanupOrphanBinaries({ appRoot, log = console.log }) {
   const canonical = getCanonicalBinaryPath();
   const result = { deleted: [], skipped: [], errors: [] };
@@ -297,19 +315,52 @@ function cleanupOrphanBinaries({ appRoot, log = console.log }) {
 
   // Installer-stage orphans (D1) — Merlin.Setup.X.Y.Z.exe / Merlin-X.Y.Z.dmg
   // left behind by installUpdateFromLatestRelease.
+  //
+  // REGRESSION GUARD (2026-08-30, update-cleanup-race): this sweep used to
+  // delete merlin-update.bat, merlin-update.log, and ANY Merlin.Setup.*.exe
+  // unconditionally on every launch. All three are the LIVE update, not
+  // orphans:
+  //
+  //   - merlin-update.bat is being executed by a detached cmd.exe right now.
+  //     Windows cmd reads a batch file line-by-line off disk as it runs, so
+  //     deleting it mid-flight aborts the script wherever it happens to be —
+  //     possibly between the installer call and the relaunch.
+  //   - Merlin.Setup.<v>.exe is the installer that batch is about to run.
+  //   - merlin-update.log is the ONLY record of what the installer did.
+  //
+  // The update flow quits the app and the installer relaunches it, so a
+  // restart is GUARANTEED to happen while those files are still in use. The
+  // sweep therefore destroyed its own update on every attempt, and the app
+  // reverted to offering the same update forever. Ryan's install sat on
+  // 1.37.0 through 1.38.0, 1.39.0 and 1.39.1 for this reason, and the
+  // deletion of the log is why four attempts left zero diagnostics behind.
+  //
+  // Two rules now:
+  //   1. merlin-update.log is NEVER swept. It is a post-mortem, it is a few
+  //      KB, and it is the first thing anyone needs when an update fails.
+  //   2. merlin-update.bat and the installer are only swept once they are
+  //      older than STALE_UPDATE_ARTIFACT_MS. A real orphan is hours old; an
+  //      in-flight update is seconds old.
+  //
+  // DO NOT re-add an unconditional delete here. If this sweep ever needs to
+  // be more aggressive, gate it on "no update was started this session"
+  // rather than on the filename.
   try {
     const tmpEntries = fs.readdirSync(os.tmpdir());
     for (const entry of tmpEntries) {
       // Match installer artifact name patterns. We DO NOT just glob
       // /^Merlin/ — that would catch our own runtime tmp files (config,
       // STT audio, etc.). Be specific.
-      if (/^Merlin\.Setup\.[\d.]+\.exe$/i.test(entry)) {
-        stale.push(path.join(os.tmpdir(), entry));
-      } else if (/^Merlin-[\d.]+(?:-arm64|-x64)?\.dmg$/i.test(entry)) {
-        stale.push(path.join(os.tmpdir(), entry));
-      } else if (/^merlin-update\.bat$/i.test(entry) || /^merlin-update\.log$/i.test(entry)) {
-        stale.push(path.join(os.tmpdir(), entry));
+      const isInstaller = /^Merlin\.Setup\.[\d.]+\.exe$/i.test(entry)
+        || /^Merlin-[\d.]+(?:-arm64|-x64)?\.dmg$/i.test(entry);
+      const isUpdateScript = /^merlin-update\.bat$/i.test(entry);
+      if (!isInstaller && !isUpdateScript) continue;
+      const full = path.join(os.tmpdir(), entry);
+      if (!isStaleUpdateArtifact(full)) {
+        result.skipped.push(full);
+        continue;
       }
+      stale.push(full);
     }
   } catch {}
 
@@ -574,6 +625,8 @@ module.exports = {
   resolveBinaryPath,
   hydrateCanonicalBinary,
   cleanupOrphanBinaries,
+  isStaleUpdateArtifact,
+  STALE_UPDATE_ARTIFACT_MS,
   cleanupOrphanMacAppBundles,
   compareVersionStrings,
   writePendingRestartMarker,
