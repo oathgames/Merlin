@@ -310,20 +310,39 @@ test('cleanupOrphanBinaries: handles missing files gracefully (idempotent)', () 
   }
 });
 
-test('cleanupOrphanBinaries: deletes installer-stage Merlin.Setup.X.Y.Z.exe in tmpdir (D1 fix)', () => {
-  // Create a fake installer artifact in tmpdir matching the documented
-  // installer naming pattern: Merlin.Setup.<semver>.exe (literal dots,
-  // numeric segments). Run cleanup, confirm it's gone.
-  // Use 999.<rand>.<rand> so we don't collide with a real installer
-  // version that might happen to be on the test machine's disk.
+test('cleanupOrphanBinaries: deletes a STALE installer-stage Merlin.Setup.X.Y.Z.exe (D1 fix)', () => {
+  // AMENDED 2026-08-30 (update-cleanup-race): this test used to write a FRESH
+  // installer and assert it was deleted, which is exactly the bug. The D1
+  // sweep ran on every launch, and the update flow guarantees a launch while
+  // the installer is still in use, so the app deleted its own update every
+  // time and offered the same version forever. The contract is now
+  // age-gated: a stale artifact is reclaimed, a fresh one is left alone.
+  // See the companion assertions in binary-paths-update-race.test.js.
   const v = `999.${Date.now() % 1000}.${Math.floor(Math.random() * 1000)}`;
+  const installer = path.join(os.tmpdir(), `Merlin.Setup.${v}.exe`);
+  fs.writeFileSync(installer, 'fake-installer-bytes-larger-than-zero');
+  // Backdate it well past the in-flight window so it reads as a real orphan.
+  const old = new Date(Date.now() - (bp.STALE_UPDATE_ARTIFACT_MS + 60 * 60 * 1000));
+  fs.utimesSync(installer, old, old);
+  try {
+    const result = bp.cleanupOrphanBinaries({ appRoot: undefined, log: () => {} });
+    assert.equal(fs.existsSync(installer), false,
+      'a stale Merlin.Setup.<semver>.exe in tmpdir must be cleaned (D1 audit finding)');
+    assert.ok(result.deleted.includes(installer), 'installer must appear in deleted list');
+  } finally {
+    try { fs.unlinkSync(installer); } catch {}
+  }
+});
+
+test('cleanupOrphanBinaries: leaves a FRESH installer alone (update-cleanup-race)', () => {
+  const v = `998.${Date.now() % 1000}.${Math.floor(Math.random() * 1000)}`;
   const installer = path.join(os.tmpdir(), `Merlin.Setup.${v}.exe`);
   fs.writeFileSync(installer, 'fake-installer-bytes-larger-than-zero');
   try {
     const result = bp.cleanupOrphanBinaries({ appRoot: undefined, log: () => {} });
-    assert.equal(fs.existsSync(installer), false,
-      'Merlin.Setup.<semver>.exe in tmpdir must be cleaned (D1 audit finding)');
-    assert.ok(result.deleted.includes(installer), 'installer must appear in deleted list');
+    assert.equal(fs.existsSync(installer), true,
+      'a just-written installer is the update currently being run, not an orphan');
+    assert.ok(!result.deleted.includes(installer));
   } finally {
     try { fs.unlinkSync(installer); } catch {}
   }
