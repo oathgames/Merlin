@@ -1,7 +1,37 @@
-!macro customInit
-  ; Graceful-close window before hard-kill.
+; REGRESSION GUARD (2026-08-31, installer-name-collision): every process check
+; and kill in this file is scoped BY EXECUTABLE PATH, never by process name.
+;
+; TWO different programs on a Merlin machine are both named Merlin.exe:
+;
+;   $INSTDIR\Merlin.exe                        the Electron shell (~220 MB)
+;   %LOCALAPPDATA%\Merlin\bin\Merlin.exe       the Go engine (~19 MB)
+;
+; The engine is short-lived and spawned constantly: by the app, by the
+; watchdog, and by the Merlin MCP server running inside any Claude Code
+; session. electron-builder's stock app-running check is name-based
+; (nsProcess::_FindProcess "Merlin.exe"), so it sees an engine invocation,
+; reports "Merlin cannot be closed. Please close it manually and click Retry
+; to continue," and Retry finds the next one. The install can never proceed,
+; and the user is told to close an app that is already closed. Live incident
+; 2026-08-31: a user could not install v1.39.1 by any route.
+;
+; The old name-based `taskkill /IM Merlin.exe /T` had the mirror-image
+; problem: installing the app killed unrelated in-flight engine work, which
+; is exactly the mid-write kill the 2026-04-23 guard below exists to avoid.
+;
+; DO NOT reintroduce a bare /IM or a _FindProcess on the name. Match the path.
+;
+; The target path is handed to PowerShell through an environment variable
+; rather than interpolated into the command line. NSIS has no escape syntax
+; for a quote inside a same-quoted string, so nesting NSIS quoting inside
+; PowerShell quoting inside a WMI filter is unverifiable by reading and
+; silently produces a command that matches nothing. One env var removes all
+; three layers.
+
+!macro KillAppByPath
+  ; Graceful-close window before hard-kill, scoped to $INSTDIR\Merlin.exe.
   ;
-  ; REGRESSION GUARD (2026-04-23): the previous block issued a soft taskkill
+  ; REGRESSION GUARD (2026-04-23): an earlier block issued a soft taskkill
   ; immediately followed by `taskkill /F`, with no gap for Merlin.exe to flush
   ; in-flight writes. The Go binary runs with two rate-limit-critical files
   ; open at any given moment (`.merlin-ratelimit*`) and a vault atomic-rename
@@ -10,33 +40,25 @@
   ; HMAC check on next launch and drops the user into 24h safe mode for no
   ; reason. Give the process up to 5 seconds to exit cleanly, then escalate.
   ;
-  ; Polling design: up to 10 iterations of (500ms sleep + liveness probe).
-  ; Liveness probe is `taskkill /IM Merlin.exe` (no /F, no /T) run in a
-  ; best-effort loop; its exit code is 128 when no matching process exists,
-  ; 0 when it successfully signalled one. We re-send the soft signal each
-  ; iteration so a process that ignored the first WM_CLOSE still gets
-  ; nudged (cheap, safe, no /F yet). Exit code is locale-independent,
-  ; unlike tasklist's stdout text. If we fall off the loop with the process
-  ; still alive, escalate to /F.
-  nsExec::Exec 'taskkill /IM Merlin.exe /T'
+  ; The whole graceful/poll/escalate cycle lives inside ONE PowerShell call
+  ; rather than an NSIS loop. This macro is expanded twice (customInit and
+  ; customCheckAppRunning) and NSIS labels are function-scoped, so an NSIS
+  ; loop here fails to compile with "label already declared" the moment both
+  ; expansions land in .onInit. No labels, no collision.
+  System::Call 'kernel32::SetEnvironmentVariable(t "MERLIN_KILL_TARGET", t "$INSTDIR\${APP_EXECUTABLE_FILENAME}")i.r0'
+  nsExec::Exec 'powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$$t=$$env:MERLIN_KILL_TARGET; $$f={ @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $$_.Path -eq $$t }) }; & $$f | ForEach-Object { try { $$_.CloseMainWindow() } catch { } }; for ($$i=0; $$i -lt 10 -and (& $$f).Count -gt 0; $$i++) { Start-Sleep -Milliseconds 500; & $$f | ForEach-Object { try { $$_.CloseMainWindow() } catch { } } }; if ((& $$f).Count -gt 0) { & $$f | Stop-Process -Force -ErrorAction SilentlyContinue }"'
   Pop $0
+!macroend
 
-  StrCpy $1 0 ; loop counter
-  graceful_wait_loop:
-    IntCmp $1 10 graceful_give_up
-    Sleep 500
-    nsExec::Exec 'taskkill /IM Merlin.exe'
-    Pop $2
-    StrCmp $2 "128" graceful_done
-    IntOp $1 $1 + 1
-    Goto graceful_wait_loop
+!macro customInit
+  !insertmacro KillAppByPath
+!macroend
 
-  graceful_give_up:
-    ; Still running after 5s — assume hung, escalate to force-kill.
-    nsExec::Exec 'taskkill /F /IM Merlin.exe /T'
-    Pop $0
-
-  graceful_done:
+; Replace electron-builder's stock name-based running check entirely. Ours
+; closes the shell by path and then returns, so the "cannot be closed" dialog
+; can never fire on an engine process that was never the app.
+!macro customCheckAppRunning
+  !insertmacro KillAppByPath
 !macroend
 
 !macro customInstall
