@@ -1755,7 +1755,9 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['audit', 'revenue']).describe('Operation'),
       brand: brandSchema,
-      batchCount: z.coerce.number().int().optional().describe('Days of data'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data ending yesterday (revenue). Ignored when startDate/endDate are given.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('revenue: exact window start, YYYY-MM-DD inclusive. Give with endDate.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('revenue: exact window end, YYYY-MM-DD inclusive. Give with startDate.'),
     },
     handler: async (args) => toEnvelope(await runBinary(ctx, 'email-' + args.action, args)),
   }, tool, z, ctx));
