@@ -5595,7 +5595,7 @@ ipcMain.handle('discover-meta-ids', async (_, brandName) => {
 // persisted the raw secret into JSON. The shared allowlist + isSensitiveConfigKey
 // helper makes it a one-liner to add a new key to both lists; the
 // cross-check test in oauth-persist.test.js blocks CI if they drift.
-const { vaultScopeFor, planUniversalKeyMigration } = require('./universal-key-scope');
+const { vaultScopeFor, planUniversalKeyMigration, resolveKeyScopes } = require('./universal-key-scope');
 
 ipcMain.handle('save-config-field', (_, key, value, brandName) => {
   try {
@@ -9324,9 +9324,28 @@ function readBrandConfig(brandName) {
     if (typeof v === 'string' && v.startsWith('@@VAULT:') && v.endsWith('@@')) {
       const vKey = v.slice('@@VAULT:'.length, -2);
       const isBrandScoped = BRAND_KEYS.includes(k) && !UNIVERSAL_KEYS.has(k);
-      let real = vaultGet(brandName, vKey);
-      if (!real && !isBrandScoped) {
-        real = vaultGet('_global', vKey);
+      // REGRESSION GUARD (2026-09-02, universal-key-read-shadow): the scope
+      // ORDER is policy, not a detail, and it lives in one place. This loop
+      // used to read the brand namespace first for every key and only fall
+      // back to _global. For a universal key (trendtrack / fal / elevenlabs /
+      // heygen / foreplay / slack / discord) that is backwards: those keys are
+      // one-per-workspace and the write side has routed them to _global since
+      // 2026-08-30, so a stale brand copy pasted before that fix shadowed the
+      // good _global one on every call, permanently. planUniversalKeyMigration
+      // will not clear the shadow either: on a two-copy conflict it preserves
+      // BOTH, because neither carries a timestamp and deleting the wrong one
+      // destroys an unrecoverable credential. Confirmed live 2026-09-02: the Go
+      // engine (vault.go brandScopedKeys resolves universal keys at _global
+      // only) reported TrendTrack CONNECTED off the same vault, while this path
+      // sent the revoked brand copy and reported "invalid or revoked".
+      // resolveKeyScopes mirrors vaultScopeFor: _global first for universal
+      // keys, brand-only for brand-scoped keys (the 2026-04-27 cross-brand leak
+      // guard, unchanged), brand-then-global for everything else. Do not
+      // reintroduce a bare vaultGet(brandName, vKey) read here.
+      let real = null;
+      for (const scope of resolveKeyScopes(k, brandName, UNIVERSAL_KEYS, BRAND_KEYS)) {
+        real = vaultGet(scope, vKey);
+        if (real) break;
       }
       if (real) {
         cfg[k] = real;
@@ -9364,7 +9383,19 @@ function readBrandOnlyBrandCreds(brandName) {
   for (const [k, v] of Object.entries(brandCfg)) {
     if (typeof v === 'string' && v.startsWith('@@VAULT:') && v.endsWith('@@')) {
       const vKey = v.slice('@@VAULT:'.length, -2);
-      const real = vaultGet(brandName, vKey);
+      // Universal keys resolve _global FIRST here too (2026-09-02,
+      // universal-key-read-shadow). This config is overlaid ON TOP of the
+      // strict global base in buildStrictBrandConfig, so a stale brand copy
+      // read here would overwrite the good _global value the base just
+      // supplied. Every OTHER key stays brand-only by design: no global
+      // fallback for credentials on this path.
+      let real = null;
+      for (const scope of (UNIVERSAL_KEYS.has(k)
+        ? resolveKeyScopes(k, brandName, UNIVERSAL_KEYS, BRAND_KEYS)
+        : [brandName])) {
+        real = vaultGet(scope, vKey);
+        if (real) break;
+      }
       if (real) {
         brandCfg[k] = real;
       } else {

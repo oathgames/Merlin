@@ -72,4 +72,40 @@ function planUniversalKeyMigration(universalKeys, brands, vaultHas) {
   return plan;
 }
 
-module.exports = { GLOBAL_SCOPE, vaultScopeFor, planUniversalKeyMigration };
+// Which vault namespaces to READ, in order, for one key.
+//
+// REGRESSION GUARD (2026-09-02, universal-key-read-shadow). The write side
+// (vaultScopeFor) was fixed on 2026-08-30, but every reader still asked the
+// BRAND namespace first and only fell back to `_global`. On any install that
+// had pasted a universal key before that fix, the stale brand copy therefore
+// shadowed the good `_global` one forever, because planUniversalKeyMigration
+// deliberately preserves both halves of a conflict rather than guessing which
+// credential is live. Confirmed 2026-09-02 by A/B against the real binary: the
+// Go engine, which resolves universal keys at `_global` only, reported
+// TrendTrack CONNECTED, while the Electron-resolved per-brand tmp config sent
+// the revoked brand copy upstream and reported "invalid or revoked".
+//
+// So the read order is the mirror of the write rule: a universal key resolves
+// `_global` FIRST. The brand namespace stays as a fallback so a pre-migration
+// install whose only copy sits under a brand keeps working until the boot
+// sweep or a re-paste settles it.
+//
+// Three classes, one function, so no call site re-derives the policy:
+//   universal      -> ['_global', brand]  (workspace-wide, brand is legacy)
+//   brand-scoped   -> [brand]             (2026-04-27 cross-brand leak guard:
+//                                          NEVER fall back to _global)
+//   everything else-> [brand, '_global']  (unchanged legacy behaviour)
+function resolveKeyScopes(key, brandName, universalKeys, brandScopedKeys) {
+  const brand = brandName && brandName !== GLOBAL_SCOPE ? brandName : null;
+  const isUniversal = !!(universalKeys && universalKeys.has && universalKeys.has(key));
+  if (isUniversal) return brand ? [GLOBAL_SCOPE, brand] : [GLOBAL_SCOPE];
+  const isBrandScoped = !!brandScopedKeys && (
+    typeof brandScopedKeys.includes === 'function'
+      ? brandScopedKeys.includes(key)
+      : !!(brandScopedKeys.has && brandScopedKeys.has(key))
+  );
+  if (isBrandScoped) return brand ? [brand] : [];
+  return brand ? [brand, GLOBAL_SCOPE] : [GLOBAL_SCOPE];
+}
+
+module.exports = { GLOBAL_SCOPE, vaultScopeFor, planUniversalKeyMigration, resolveKeyScopes };
