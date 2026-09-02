@@ -4,7 +4,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { GLOBAL_SCOPE, vaultScopeFor, planUniversalKeyMigration } =
+const { GLOBAL_SCOPE, vaultScopeFor, planUniversalKeyMigration, resolveKeyScopes } =
   require('./universal-key-scope');
 
 const UNIVERSAL = new Set([
@@ -49,6 +49,14 @@ t('a brandless write is global for both kinds', () => {
   assert.strictEqual(vaultScopeFor('trendtrackApiKey', null, UNIVERSAL), '_global');
 });
 
+
+// Mirror of BRAND_KEYS in main.js (only the entries these assertions use).
+// Membership itself is guarded by brand-scope-isolation.test.js; this list
+// exists so resolveKeyScopes can be exercised without loading Electron.
+const BRAND_KEYS = [
+  'metaAccessToken', 'metaAdAccountId', 'shopifyAccessToken', 'klaviyoApiKey',
+  'clarityApiToken', 'aliaApiKey', 'googleAccessToken', 'triplewhaleApiKey',
+];
 const MAIN = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
 // ---- planUniversalKeyMigration --------------------------------------------
@@ -137,6 +145,116 @@ t('the migration logs key names only, never a value', () => {
 
 t('UNIVERSAL_KEYS still contains the key that caused the incident', () => {
   assert.ok(/'trendtrackApiKey'/.test(MAIN));
+});
+
+
+// ---- resolveKeyScopes ------------------------------------------------------
+// REGRESSION GUARD (2026-09-02, universal-key-read-shadow). The write side was
+// fixed on 2026-08-30 but every READER still asked the brand namespace first,
+// so a stale pre-migration brand copy shadowed the good _global one forever.
+
+t('a universal key reads _global FIRST, brand only as legacy fallback', () => {
+  assert.deepStrictEqual(
+    resolveKeyScopes('trendtrackApiKey', 'apotheke', UNIVERSAL, BRAND_KEYS),
+    ['_global', 'apotheke']);
+});
+
+t('every universal key reads _global first', () => {
+  for (const k of UNIVERSAL) {
+    assert.strictEqual(
+      resolveKeyScopes(k, 'forever21', UNIVERSAL, BRAND_KEYS)[0], '_global',
+      k + ' must resolve _global first');
+  }
+});
+
+t('a brand-scoped key reads the brand ONLY, never _global', () => {
+  for (const k of ['metaAccessToken', 'clarityApiToken', 'aliaApiKey',
+                   'shopifyAccessToken', 'klaviyoApiKey']) {
+    assert.deepStrictEqual(
+      resolveKeyScopes(k, 'apotheke', UNIVERSAL, BRAND_KEYS), ['apotheke'],
+      k + ' must not fall back to _global (2026-04-27 cross-brand leak)');
+  }
+});
+
+t('an unclassified key keeps the legacy brand-then-global order', () => {
+  assert.deepStrictEqual(
+    resolveKeyScopes('productUrl', 'apotheke', UNIVERSAL, BRAND_KEYS),
+    ['apotheke', '_global']);
+});
+
+t('a brandless read never invents a brand scope', () => {
+  assert.deepStrictEqual(resolveKeyScopes('trendtrackApiKey', '', UNIVERSAL, BRAND_KEYS), ['_global']);
+  assert.deepStrictEqual(resolveKeyScopes('productUrl', null, UNIVERSAL, BRAND_KEYS), ['_global']);
+  assert.deepStrictEqual(resolveKeyScopes('metaAccessToken', '', UNIVERSAL, BRAND_KEYS), []);
+});
+
+t('the scope order and the write scope agree for every universal key', () => {
+  for (const k of UNIVERSAL) {
+    assert.strictEqual(
+      resolveKeyScopes(k, 'apotheke', UNIVERSAL, BRAND_KEYS)[0],
+      vaultScopeFor(k, 'apotheke', UNIVERSAL),
+      k + ': readers must look first where writers put it');
+  }
+});
+
+// The incident itself, end to end: both copies present, stale under the brand.
+t('a stale brand copy no longer shadows the fresh _global key', () => {
+  const vault = {
+    'apotheke|trendtrackApiKey': 'REVOKED-pasted-before-2026-08-30',
+    '_global|trendtrackApiKey': 'FRESH-workspace-key',
+  };
+  const vaultGet = (scope, key) => vault[scope + '|' + key] || null;
+  let real = null;
+  for (const scope of resolveKeyScopes('trendtrackApiKey', 'apotheke', UNIVERSAL, BRAND_KEYS)) {
+    real = vaultGet(scope, 'trendtrackApiKey');
+    if (real) break;
+  }
+  assert.strictEqual(real, 'FRESH-workspace-key',
+    'the _global key must win; reading the brand copy is the live 2026-09-02 bug');
+});
+
+t('a pre-migration install whose only copy is under the brand still works', () => {
+  const vault = { 'apotheke|trendtrackApiKey': 'only-copy-on-this-machine' };
+  const vaultGet = (scope, key) => vault[scope + '|' + key] || null;
+  let real = null;
+  for (const scope of resolveKeyScopes('trendtrackApiKey', 'apotheke', UNIVERSAL, BRAND_KEYS)) {
+    real = vaultGet(scope, 'trendtrackApiKey');
+    if (real) break;
+  }
+  assert.strictEqual(real, 'only-copy-on-this-machine',
+    'the brand fallback is what keeps un-migrated installs alive');
+});
+
+// ---- source scan: no read site may re-derive the policy ---------------------
+
+t('readBrandConfig routes its vault reads through resolveKeyScopes', () => {
+  const i = MAIN.indexOf('function readBrandConfig');
+  assert.ok(i > 0, 'readBrandConfig must exist');
+  const body = MAIN.slice(i, MAIN.indexOf('function readBrandOnlyBrandCreds'));
+  assert.ok(/resolveKeyScopes\(k, brandName, UNIVERSAL_KEYS, BRAND_KEYS\)/.test(body),
+    'readBrandConfig must resolve scopes through the shared helper');
+  assert.ok(!/let real = vaultGet\(brandName, vKey\)/.test(body),
+    'the bare brand-first read is the 2026-09-02 shadow bug; it must be gone');
+});
+
+t('readBrandOnlyBrandCreds resolves universal keys through the helper too', () => {
+  const i = MAIN.indexOf('function readBrandOnlyBrandCreds');
+  assert.ok(i > 0, 'readBrandOnlyBrandCreds must exist');
+  const body = MAIN.slice(i, MAIN.indexOf('function buildStrictBrandConfig'));
+  assert.ok(/resolveKeyScopes\(/.test(body),
+    'this config is overlaid on the global base, so a stale brand copy would win');
+  assert.ok(!/const real = vaultGet\(brandName, vKey\)/.test(body),
+    'the bare brand-first read must be gone here as well');
+});
+
+t('main.js imports resolveKeyScopes from the single-source module', () => {
+  assert.ok(/resolveKeyScopes[^\n]*require\('\.\/universal-key-scope'\)/.test(MAIN),
+    'the policy must come from universal-key-scope.js, never be re-inlined');
+});
+
+t('the read guard is documented at the read site', () => {
+  assert.ok(/REGRESSION GUARD \(2026-09-02, universal-key-read-shadow\)/.test(MAIN),
+    'a dated guard block must explain the incident at the read site');
 });
 
 console.log(failures ? '\nFAILED ' + failures : '\nall passed');

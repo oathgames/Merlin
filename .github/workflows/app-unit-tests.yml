@@ -128,6 +128,11 @@ jobs:
         run: node --test app/brand-dirs.test.js
       - name: stale brand-config sweep (plaintext-in-StateDir lockdown)
         run: node --test app/brand-config-sweep.test.js
+      # REGRESSION GUARD (2026-08-30 write scope + 2026-09-02 read order):
+      # universal keys live at _global, so writers route there and readers
+      # look there FIRST. A stale brand copy must never shadow the good key.
+      - name: universal-key vault scope (write route + read order)
+        run: node app/universal-key-scope.test.js
       - name: sentence splitter
         run: node app/sentence-splitter.test.js
       - name: update-runner terminal-visibility lockdown
