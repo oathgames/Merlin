@@ -346,6 +346,19 @@ function wrapHandler(def, ctx) {
 
         return env;
       } catch (e) {
+        // REGRESSION GUARD (2026-09-03, silent-tool-exception): an exception
+        // thrown anywhere inside a tool handler used to vanish here. When
+        // e.message was empty (a non-Error throw, or an Error built with no
+        // message), classifyOrFallback fell all the way back to the generic
+        // INTERNAL_ERROR copy and NOTHING was written anywhere - no stack, no
+        // tool name, no args. A live meta-bulk-push failure was undiagnosable:
+        // the only signal available was 'Something went wrong inside Merlin.'
+        // and a 5-second duration. Log the raw throwable to the main-process
+        // console BEFORE redacting it into the user-facing envelope. The user
+        // still gets the friendly string (Hard-Won Rule 6); the operator gets
+        // something to act on. Never remove this without giving the exception
+        // another way out.
+        console.error('[defineTool]', toolName, 'handler threw:', (e && e.stack) || e);
         const err = errors.classifyOrFallback(e && e.message, e && e.message);
         return envelope.fail(err, {
           meta: { tool: toolName, brand: brand || '', durationMs: Date.now() - startedAt },

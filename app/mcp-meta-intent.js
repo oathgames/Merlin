@@ -188,6 +188,9 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       // it and authored descriptions were silently discarded. See
       // metaLinkDescription in autocmo-core/meta.go.
       adDescription: z.string().optional().describe('Ad DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from adHeadline: an offer, a spec, or a provenance line ("Free Garden Candle ($56 value) with $120 purchase", "10.5 oz, 60-70 hour burn", "Made in Brooklyn, NY"). Omit and a video ad reuses the headline (its historical behavior) while an image ad carries no description at all.'),
+      ctaType: z.string().optional().describe("Call-to-action BUTTON VERB for this push, e.g. 'SHOP_NOW', 'LEARN_MORE', 'GET_OFFER'. "
+        + 'Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. '
+        + 'Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.'),
       adLink: z.string().describe('Destination URL'),
       dailyBudget: z.number().describe('Daily budget in DOLLARS (not cents). Pass 10 for $10/day.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, the ad lands in this exact campaign. Wins over campaignName.'),
@@ -269,10 +272,16 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       campaignDailyBudget: z.number().optional().describe('Campaign-level daily budget in DOLLARS. Read only under campaignBudgetMode \'cbo\', where it is the real spend governor and is validated against maxDailyAdBudget - an over-cap value is refused, never silently clamped.'),
       sharedAdSet: z.boolean().optional().describe('Put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
       adSetName: z.string().optional().describe('Shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
+      targetAdSetId: z.string().optional().describe('Shared-ad-set mode only: add every ad to this EXISTING ad set instead of creating a new one. '
+        + "The ad set's budget, targeting and schedule are left untouched - this only adds creative to a batch that is already running. "
+        + 'Requires sharedAdSet:true. Get ids from meta_audit list-adsets.'),
       // REGRESSION GUARD (2026-08-07, dropped-description incident): batch-wide
       // default for the third Meta copy slot, overridden per ad by
       // ads[].description. Read by runMetaBulkPush; declared nowhere until now.
       adDescription: z.string().optional().describe('Batch-wide DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from the headline: an offer, a spec, or a provenance line. A per-ad ads[].description wins over it. Omit and video ads reuse the headline (their historical behavior) while image ads carry no description at all.'),
+      ctaType: z.string().optional().describe("Call-to-action BUTTON VERB for this push, e.g. 'SHOP_NOW', 'LEARN_MORE', 'GET_OFFER'. "
+        + 'Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. '
+        + 'Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
     },
     handler: async (args) => {

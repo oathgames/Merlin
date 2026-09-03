@@ -136,7 +136,20 @@ const byName = (n) => {
 // NORTHWIND ads went out with the headline duplicated into the description slot
 // and an approved offer ("Free Garden Candle ($56 value) with $120 purchase")
 // silently discarded.
-const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription'];
+// `ctaType` was added 2026-09-03. The CTA button verb came from ONE brand-wide
+// key (cfg.DefaultCTA), so RIPIT had accumulated three different verbs across
+// live ad sets (GET_OFFER, GET_OFFER_VIEW, SIGN_UP) with no way to pin one per
+// batch. The engine reads Command.CTAType; if no surface declares it, zod
+// strips it and the operator's chosen verb is silently replaced by the brand
+// default -- the same failure shape as the adDescription incident above.
+// `targetAdSetId` was added to the surfaces 2026-09-03. The ENGINE had read
+// Command.TargetAdSetID in runMetaBulkPush since shared-ad-set mode shipped
+// (it is resolution step 1: append to this existing ad set, leave its budget
+// and targeting untouched), but no MCP surface declared it, so 'add these
+// four videos to the batch that is already running' was unreachable and every
+// push had to mint a new ad set. Same shipped-but-unreachable class as
+// adDescription and ctaType above.
+const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId'];
 const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name'];
 
 // Both surfaces reach the identical 'meta-bulk-push' engine action, so both
@@ -179,6 +192,14 @@ test('meta_launch_test_ad declares adDescription', () => {
   );
 });
 
+test('meta_launch_test_ad declares ctaType', () => {
+  const schema = byName('meta_launch_test_ad').schema;
+  assert.ok(
+    Object.prototype.hasOwnProperty.call(schema, 'ctaType'),
+    'meta_launch_test_ad is missing "ctaType": a single-ad push could never override the brand-wide CTA verb.',
+  );
+});
+
 test('createCampaignIfMissing and sharedAdSet are declared as booleans', () => {
   // A string schema here would let "false" through as a truthy Go bool and
   // silently mint campaigns. Both surfaces, both flags.
@@ -211,6 +232,8 @@ test('bulk-push params survive runBinary into the --cmd JSON', async () => {
     createCampaignIfMissing: true,
     sharedAdSet: true,
     adSetName: 'Cold_Creative_Test',
+    ctaType: 'shop_now',
+    targetAdSetId: '120249558057390637',
     ads: [{ imagePath: '/tmp/a.jpg', name: 'Vinny_Video04', dailyBudget: 10 }],
   });
 
@@ -219,6 +242,14 @@ test('bulk-push params survive runBinary into the --cmd JSON', async () => {
   assert.equal(cmd.createCampaignIfMissing, true, 'createCampaignIfMissing must reach the engine');
   assert.equal(cmd.sharedAdSet, true, 'sharedAdSet must reach the engine');
   assert.equal(cmd.adSetName, 'Cold_Creative_Test', 'adSetName must reach the engine');
+  assert.equal(
+    cmd.ctaType, 'shop_now',
+    'ctaType must reach Command.CTAType verbatim — the engine normalizes and validates it, the MCP layer must not swallow it',
+  );
+  assert.equal(
+    cmd.targetAdSetId, '120249558057390637',
+    'targetAdSetId must reach Command.TargetAdSetID — without it every push mints a new ad set instead of appending to a live batch',
+  );
   assert.equal(cmd.campaignName, 'OrganicBoost');
   assert.equal(cmd.ads[0].name, 'Vinny_Video04', 'per-ad name must reach BulkAd.Name');
 });
