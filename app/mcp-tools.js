@@ -1332,6 +1332,8 @@ function buildTools(tool, z, ctx) {
   //   template-update | template-delete
   //   templates-bulk-upload                              → folder of HTML → many
   //                                                        templates in one call
+  //   image-upload                                       local image file(s) to
+  //                                                        Klaviyo-hosted CDN URLs
   //
   // FLOW CAVEAT (live 2026-04-29 incident, Ryan / POG): Klaviyo Flows
   // themselves are NOT API-creatable. The public API exposes flow read +
@@ -1356,6 +1358,12 @@ function buildTools(tool, z, ctx) {
   //                              assets/brands/<brand>/), dir, optional
   //                              nameTemplate ("POG / 01-welcome / {basename}"),
   //                              optional applyTokens (default true)
+  //   image-upload             brand (REQUIRED - directory must be inside
+  //                              assets/brands/<brand>/), dir, optional
+  //                              templateName to upload ONE named file rather
+  //                              than the whole folder. Returns [{id,name,url,
+  //                              file}]; use the returned url as the <img src>
+  //                              in a template-create/update call.
   //
   // Flow API surface (added 2026-04-29, v1.20.7 — closes the gap that the
   // prior klaviyo_templates.go HISTORY block + merlin-social SKILL incorrectly
@@ -1428,6 +1436,16 @@ function buildTools(tool, z, ctx) {
         // Email template CRUD + bulk
         'templates-list', 'template-get', 'template-create',
         'template-update', 'template-delete', 'templates-bulk-upload',
+        // Image hosting: local file to Klaviyo-hosted CDN URL usable in
+        // template HTML. Required for image-only emails; base64 data URIs
+        // are stripped by Gmail/Outlook so there is no alternative.
+        'image-upload',
+        // Read-only recovery path: the upload response's URL can come back
+        // masked by log redaction (its 40-char opaque-token sweep also matches
+        // long URL path segments). Re-uploading to recover a URL would
+        // duplicate the asset, so recovery is a list, not a retry. Both
+        // actions also write an unredacted manifest.json to disk.
+        'images-list',
         // Flow CRUD + bulk
         'flows-list', 'flow-get', 'flow-create',
         'flow-update-status', 'flow-delete', 'flows-bulk-import',
@@ -1448,9 +1466,9 @@ function buildTools(tool, z, ctx) {
       approved: z.boolean().optional().describe('Approval flag for live sends (campaign-send/campaign-schedule). Set by the Electron approval card on user click; the binary REFUSES the send without it. Do not set true unless the user explicitly approved sending to a real list.'),
       // Template fields (used by template-* + bulk-upload actions)
       templateId: z.string().optional().describe('Klaviyo template ID (get/update/delete)'),
-      templateName: z.string().optional().describe('Display name for the template (create/update)'),
+      templateName: z.string().optional().describe('Display name for the template (create/update). For image-upload, the single filename inside dir to upload instead of the whole folder (e.g. "01_Welcome.png").'),
       htmlContent: z.string().optional().describe('Raw email HTML body (create/update). Max 5 MB.'),
-      dir: z.string().optional().describe('Directory of .html files for bulk-upload (must be inside assets/brands/<brand>/)'),
+      dir: z.string().optional().describe('Directory of files for bulk-upload (.html) or image-upload (.png/.jpg/.gif/.webp). Must be inside assets/brands/<brand>/. For image-upload, files upload in filename order, so a 01_/02_/03_ prefix round-trips as the flow order.'),
       nameTemplate: z.string().optional().describe('Format string for bulk-upload, e.g. "POG / 01-welcome / {basename}". {basename} = filename without extension.'),
       applyTokens: z.boolean().optional().describe('Translate generic placeholders ({{UNSUB_URL}}, {{ FIRST_NAME }}, {{COMPANY_NAME}}, …) into Klaviyo Django tags. Default true for bulk-upload, false for single template-create/update.'),
       // Flow fields (used by flow-* + flows-bulk-import actions, AND flow-performance / flow-message-performance)
