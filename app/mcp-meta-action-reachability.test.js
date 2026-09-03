@@ -725,6 +725,145 @@ test('meta_ads refuses the removed adlib action with a pointer to the replacemen
   assert.equal(execFileCalls.length, 0, 'the dead action must not reach the binary');
 });
 
+// ── 5c. Ad-set DELIVERY writes (2026-09-03) ──────────────────────────
+//
+// Third instance of the Rule 23 class. main.go shipped `meta-clone-adset`,
+// `meta-set-frequency-cap` and `meta-set-optimization-goal` with no MCP route
+// at all, so the app could not change what an ad set optimizes for — the exact
+// RIPIT case, where a retargeting ad set sat on LINK_CLICKS buying cheap clicks
+// while the brand believed it was buying purchases. Nothing failed; the
+// capability simply did not exist as far as the product was concerned.
+//
+// All three are approval-gated WRITEs in the engine (requireApproval), so all
+// three are intent tools rather than meta_audit reads, and the two that touch
+// money route through INTENT_TOOL_TO_ACTION per Hard-Won Rule 19.
+
+test('the ad-set delivery writes are reachable as intent tools', () => {
+  for (const action of ['meta-set-optimization-goal', 'meta-clone-adset', 'meta-set-frequency-cap']) {
+    assert.ok(INTENT_ACTIONS.has(action),
+      `no intent tool routes to ${action} — the ad-set delivery writes went back to being unreachable.`);
+  }
+});
+
+test('meta_set_optimization_goal sends targetAdSetId, optimizationGoal and approved', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_optimization_goal').handler({
+    brand: 'acme',
+    targetAdSetId: '120210000000000000',
+    optimizationGoal: 'OFFSITE_CONVERSIONS',
+    approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-set-optimization-goal');
+  assert.equal(cmd.targetAdSetId, '120210000000000000',
+    'runMetaSetOptimizationGoal reads cmd.TargetAdSetID and fatals without it.');
+  assert.equal(cmd.optimizationGoal, 'OFFSITE_CONVERSIONS',
+    'the goal is the entire point of the action — dropping it leaves the ad set on whatever it had.');
+  assert.equal(cmd.approved, true,
+    'the engine requireApproval() gate refuses the edit unless approved reaches it as true.');
+});
+
+test('meta_set_optimization_goal does NOT invent the approval flag', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_optimization_goal').handler({
+    brand: 'acme', targetAdSetId: '120210000000000000', optimizationGoal: 'VALUE',
+  });
+  const cmd = lastCmd();
+  assert.ok(!('approved' in cmd) || cmd.approved !== true,
+    'the handler must never auto-set approved — that bypasses the rail requireApproval() exists to enforce.');
+});
+
+test('meta_set_optimization_goal refuses a blank ad set id before hitting the binary', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_set_optimization_goal').handler({
+    brand: 'acme', targetAdSetId: '   ', optimizationGoal: 'REACH', approved: true,
+  });
+  assert.match(JSON.stringify(res), /targetAdSetId is required/);
+  assert.equal(execFileCalls.length, 0, 'a blank ad set id must not reach the binary');
+});
+
+test('meta_clone_adset carries every optional override into --cmd', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_clone_adset').handler({
+    brand: 'acme',
+    targetAdSetId: '120210000000000000',
+    adSetName: 'Retarget 15d v2 REACH',
+    optimizationGoal: 'REACH',
+    dailyBudget: 75,
+    frequencyCapEvents: 2,
+    frequencyCapDays: 14,
+    approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-clone-adset');
+  assert.equal(cmd.targetAdSetId, '120210000000000000');
+  assert.equal(cmd.adSetName, 'Retarget 15d v2 REACH',
+    'runMetaCloneAdSet reads cmd.AdSetName; dropping it silently names the clone "<src> v2".');
+  assert.equal(cmd.optimizationGoal, 'REACH',
+    'cloning TO a new goal is the documented escape hatch when Meta refuses the in-place edit.');
+  assert.equal(cmd.dailyBudget, 75, 'dailyBudget is read in DOLLARS and validated by validateDailyBudget.');
+  assert.equal(cmd.frequencyCapEvents, 2);
+  assert.equal(cmd.frequencyCapDays, 14);
+  assert.equal(cmd.approved, true);
+});
+
+test('meta_clone_adset omitting dailyBudget inherits rather than being refused', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_clone_adset').handler({
+    brand: 'acme', targetAdSetId: '120210000000000000', approved: true,
+  });
+  assert.equal(execFileCalls.length, 1,
+    'an omitted dailyBudget means "inherit the source budget" — the cents guard must not refuse it.');
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-clone-adset');
+  assert.ok(!('dailyBudget' in cmd),
+    'an absent budget must stay absent; sending 0 would not mean the same thing to the engine.');
+  assert.doesNotMatch(JSON.stringify(res), /budget/i);
+});
+
+test('meta_set_frequency_cap sends the cap window to the engine', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_frequency_cap').handler({
+    brand: 'acme', targetAdSetId: '120210000000000000',
+    frequencyCapEvents: 2, frequencyCapDays: 30, approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-set-frequency-cap');
+  assert.equal(cmd.targetAdSetId, '120210000000000000');
+  assert.equal(cmd.frequencyCapEvents, 2,
+    'without this the engine silently defaults to 3 impressions and the requested cap is lost.');
+  assert.equal(cmd.frequencyCapDays, 30,
+    'without this the engine silently defaults to a 7-day window.');
+  assert.equal(cmd.approved, true);
+});
+
+test('meta_set_frequency_cap refuses a window past Meta\'s 90-day cap locally', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_set_frequency_cap').handler({
+    brand: 'acme', targetAdSetId: '120210000000000000', frequencyCapDays: 120, approved: true,
+  });
+  assert.match(JSON.stringify(res), /between 1 and 90/);
+  assert.equal(execFileCalls.length, 0,
+    'the engine fatals on >90; refusing here returns a usable message instead of a dead process.');
+});
+
+// Hard-Won Rule 19: a costImpact:'spend' intent tool that is missing from
+// INTENT_TOOL_TO_ACTION falls through main.js's catch-all and fires without a
+// card. mcp-approval-policy.test.js walks the whole registry; this pins the
+// two from THIS incident by name, and pins WHICH action they route to, because
+// 'push' would make them eligible for in-cap auto-approve and neither carries
+// a trustworthy rate signal (clone inherits its budget server-side when
+// dailyBudget is omitted; the goal change has no budget field at all).
+test('the spend-shaped ad-set writes route to an always-cards action', () => {
+  const policySrc = fs.readFileSync(path.join(APP_DIR, 'mcp-approval-policy.js'), 'utf8');
+  for (const name of ['meta_set_optimization_goal', 'meta_clone_adset']) {
+    assert.match(policySrc, new RegExp(`'mcp__merlin__${name}':\\s*'duplicate'`),
+      `${name} is costImpact:'spend' and must route to 'duplicate' — 'push' would auto-approve it in-cap.`);
+  }
+  assert.match(policySrc, /'mcp__merlin__meta_set_frequency_cap':\s*'setup'/,
+    'the frequency cap moves no money but still edits live delivery, so it cards as ad-account state.');
+});
+
 // ── 6. Extraction sanity ─────────────────────────────────────────────
 
 test('extraction found enough to be trustworthy', { skip: SKIP_NO_ENGINE }, () => {
