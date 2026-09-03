@@ -776,6 +776,12 @@ function buildTools(tool, z, ctx) {
       // ads[].description overrides it per ad. See metaLinkDescription in
       // autocmo-core/meta.go for the per-shape fallback rules.
       adDescription: z.string().optional().describe('Ad DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from adHeadline: an offer, a spec, or a provenance line ("Free Garden Candle ($56 value) with $120 purchase", "10.5 oz, 60-70 hour burn", "Made in Brooklyn, NY"). Batch-wide default on bulk-push; a per-ad ads[].description wins over it. Omit and video ads reuse the headline (their historical behavior) while image ads carry no description at all.'),
+      ctaType: z.string().optional().describe("Call-to-action BUTTON VERB for this push, e.g. 'SHOP_NOW', 'LEARN_MORE', 'GET_OFFER'. "
+        + 'Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. '
+        + 'Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.'),
+      targetAdSetId: z.string().optional().describe('Shared-ad-set mode only: add every ad to this EXISTING ad set instead of creating a new one. '
+        + "The ad set's budget, targeting and schedule are left untouched - this only adds creative to a batch that is already running. "
+        + 'Requires sharedAdSet:true. Get ids from meta_audit list-adsets.'),
       adLink: z.string().optional().describe('Destination URL'),
       dailyBudget: z.number().optional().describe('Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform\'s API. If the user says "$10 a day", pass 10. If unsure, ask the user.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
