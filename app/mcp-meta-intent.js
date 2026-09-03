@@ -1048,6 +1048,153 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_set_optimization_goal ─────────────────────────────────────
+  //
+  // Change what an EXISTING Meta ad set optimizes for. The engine
+  // (autocmo-core/meta_adset_optimization.go) restates the ad set's current
+  // billing_event and promoted_object alongside the new goal, because Meta
+  // rejects a bare optimization_goal edit, and then verifies by read-back.
+  //
+  // Why this is worth a tool: there has been no way to change an ad set's
+  // optimization goal from the app at all. A retargeting ad set left on
+  // LINK_CLICKS keeps buying the cheapest clicks it can find while the brand
+  // believes it is buying purchases, and the only fix was rebuilding the ad
+  // set by hand in Ads Manager.
+  //
+  // costImpact mirrors meta_edit_ad_link: no NEW spend, but the ad set is
+  // already spending and this changes what those dollars are bid for, which
+  // the host cannot verify is correct. Always cards
+  // (INTENT_TOOL_TO_ACTION -> 'duplicate').
+  tools.push(defineTool({
+    name: 'meta_set_optimization_goal',
+    description: 'Change what an existing Meta AD SET optimizes for (e.g. move a retargeting ad set off LINK_CLICKS onto OFFSITE_CONVERSIONS so it buys purchases instead of cheap clicks). Edits the live ad set in place and verifies the change by reading it back. OFFSITE_CONVERSIONS and VALUE require the ad set to already carry a promoted_object (pixel + event) — the engine refuses rather than silently creating a non-delivering ad set. If Meta refuses the edit because the ad set has left the learning phase, use meta_clone_adset instead.',
+    destructive: true,
+    // Setting the same goal twice converges: the engine no-ops when the live
+    // goal already matches, so a retry is safe.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      targetAdSetId: z.string().describe('The ad set whose optimization goal to change'),
+      optimizationGoal: z.enum(['OFFSITE_CONVERSIONS', 'VALUE', 'LANDING_PAGE_VIEW', 'LINK_CLICKS', 'REACH', 'IMPRESSIONS'])
+        .describe('New optimization goal. OFFSITE_CONVERSIONS = purchases, VALUE = predicted purchase value; both require an existing promoted_object on the ad set.'),
+      approved: z.boolean().optional().describe('Approval flag for this write. The engine REFUSES the edit without it; set true only with explicit user approval to change what a live ad set bids for.'),
+    },
+    handler: async (args) => {
+      const adSetId = String(args.targetAdSetId || '').trim();
+      if (!adSetId) {
+        return validationEnvelope('targetAdSetId is required — name the ad set whose optimization goal should change.');
+      }
+      // Handler does NOT auto-set args.approved; that would bypass the safety
+      // rail the engine's requireApproval() exists to enforce.
+      return toEnvelope(await runBinary(ctx, 'meta-set-optimization-goal', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
+  // ── meta_clone_adset ───────────────────────────────────────────────
+  //
+  // Copy an existing ad set (and its ads) into a NEW ad set, optionally with a
+  // different optimization goal, frequency cap or daily budget. This is the
+  // documented escape hatch for the two edits Meta refuses in place: an
+  // optimization-goal change on an ad set past the learning phase (subcode
+  // 3260011) and a frequency cap on a non-REACH ad set (subcode 3858722).
+  // Both meta_set_optimization_goal and meta_set_frequency_cap point here when
+  // the platform rejects the in-place edit.
+  //
+  // Everything the engine creates is PAUSED, exactly like meta_dpa_setup, so
+  // no spend starts until a human activates it. The budget is still the spend
+  // surface, so this cards for the same reason DPA setup does — and because
+  // dailyBudget is OPTIONAL (omitting it inherits the source ad set's budget
+  // server-side), there is no reliable rate signal for an in-cap auto-approve.
+  // That is the textbook 'duplicate' case in mcp-approval-policy.js.
+  tools.push(defineTool({
+    name: 'meta_clone_adset',
+    description: 'Copy an existing Meta AD SET, and the ads inside it, into a new PAUSED ad set — optionally with a different optimization goal, frequency cap, name or daily budget. Use when Meta refuses an in-place edit (an optimization-goal change on an ad set past the learning phase, or a frequency cap on a non-REACH ad set), or when you want to A/B a settings change without disturbing the ad set that is already delivering. Nothing starts spending until someone activates the clone.',
+    destructive: true,
+    // NOT idempotent: a retry mints a SECOND ad set with the same settings,
+    // the same failure mode as meta_create_custom_audience.
+    idempotent: false,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      targetAdSetId: z.string().describe('The source ad set to clone'),
+      adSetName: z.string().optional().describe('Name for the new ad set. Defaults to the source name suffixed " v2".'),
+      optimizationGoal: z.enum(['OFFSITE_CONVERSIONS', 'VALUE', 'LANDING_PAGE_VIEW', 'LINK_CLICKS', 'REACH', 'IMPRESSIONS'])
+        .optional().describe('Optimization goal for the clone. Omit to inherit the source ad set goal.'),
+      dailyBudget: z.number().optional().describe('Daily budget for the clone in DOLLARS. Omit to inherit the source ad set budget.'),
+      frequencyCapEvents: z.number().optional().describe('Impressions allowed per person over frequencyCapDays. Omit for no cap. Meta only honours a frequency cap on a REACH ad set.'),
+      frequencyCapDays: z.number().optional().describe('Frequency cap window in days (default 7, max 90).'),
+      approved: z.boolean().optional().describe('Approval flag for this write. The engine REFUSES to create the clone without it; set true only with explicit user approval.'),
+    },
+    handler: async (args) => {
+      const adSetId = String(args.targetAdSetId || '').trim();
+      if (!adSetId) {
+        return validationEnvelope('targetAdSetId is required — name the ad set to clone.');
+      }
+      // Only guard a budget the caller actually supplied. Omitting dailyBudget
+      // means "inherit the source budget", and running the cents-detection
+      // guard over an absent field would refuse that legitimate case.
+      if (typeof args.dailyBudget === 'number' && args.dailyBudget > 0) {
+        const budgetErr = guardBudget(args);
+        if (budgetErr) return budgetErr;
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-clone-adset', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
+  // ── meta_set_frequency_cap ─────────────────────────────────────────
+  //
+  // Cap how many times one person can see the ads in an ad set over a rolling
+  // window. Meta only accepts frequency_control_specs on a REACH-optimized ad
+  // set; the engine reads the live optimization_goal first and refuses locally
+  // rather than letting the platform return an opaque error.
+  //
+  // No money moves and delivery can only go DOWN, so this is not a spend
+  // action. It still edits a live ad set's delivery and the cap is a decision
+  // a human should see, so it routes to 'setup' and cards alongside the other
+  // ad-account-state writes rather than auto-approving.
+  tools.push(defineTool({
+    name: 'meta_set_frequency_cap',
+    description: 'Limit how many times one person can see the ads in an existing Meta AD SET over a rolling window (default 3 impressions per 7 days). Use to stop creative fatigue on a small warm retargeting pool. Meta only honours a frequency cap on a REACH-optimized ad set — the engine checks the live goal first and refuses if it is anything else, in which case clone the ad set to REACH with meta_clone_adset.',
+    destructive: true,
+    // Re-applying the same cap converges on the same end state.
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      targetAdSetId: z.string().describe('The ad set to cap'),
+      frequencyCapEvents: z.number().optional().describe('Impressions allowed per person over the window. Defaults to 3.'),
+      frequencyCapDays: z.number().optional().describe('Window length in days. Defaults to 7; the Meta maximum is 90.'),
+      approved: z.boolean().optional().describe('Approval flag for this write. The engine REFUSES to set the cap without it; set true only with explicit user approval.'),
+    },
+    handler: async (args) => {
+      const adSetId = String(args.targetAdSetId || '').trim();
+      if (!adSetId) {
+        return validationEnvelope('targetAdSetId is required — name the ad set to cap.');
+      }
+      const days = args.frequencyCapDays;
+      if (typeof days === 'number' && (days < 1 || days > 90)) {
+        return validationEnvelope('frequencyCapDays must be between 1 and 90 — Meta rejects anything longer than a 90-day window.');
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-set-frequency-cap', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
   return tools;
 }
 

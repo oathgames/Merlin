@@ -232,6 +232,17 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // against budget that is already flowing, and the host cannot verify the
   // resulting creative renders correctly. Always cards.
   'mcp__merlin__meta_refresh_creative_spec':    'duplicate',
+  // meta_set_optimization_goal changes what an ALREADY-SPENDING ad set bids
+  // for. Same shape as edit_ad_link: no new spend, but every dollar after the
+  // edit buys something different, and the host cannot verify the new goal is
+  // the right one for that ad set's promoted_object. Always cards.
+  'mcp__merlin__meta_set_optimization_goal':    'duplicate',
+  // meta_clone_adset creates a new ad set PAUSED, like meta_dpa_setup, so no
+  // spend starts on create — but the budget it carries IS the spend surface
+  // once a human activates it. dailyBudget is OPTIONAL and omitting it
+  // inherits the source ad set's budget server-side, so there is no reliable
+  // rate signal to auto-approve against. Textbook 'duplicate'.
+  'mcp__merlin__meta_clone_adset':              'duplicate',
 
   // Setup-style — touches ad-account state, no per-call spend
   'mcp__merlin__meta_prepare_retargeting':      'setup',
@@ -245,6 +256,11 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // Uploading a customer list adds ad-account state and handles customer PII,
   // so it cards like the other audience writes even though it costs no spend.
   'mcp__merlin__meta_upload_customer_list': 'setup',
+  // meta_set_frequency_cap moves no money and can only reduce delivery, so it
+  // is not a spend action. It does edit a live ad set's delivery settings and
+  // capping impressions is a judgement call a human should see, so it cards
+  // alongside the other ad-account-state writes instead of auto-approving.
+  'mcp__merlin__meta_set_frequency_cap':        'setup',
 });
 
 // Per-tool friendly label for the approval card. main.js builds a generic
@@ -266,6 +282,9 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
   'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
   'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',
+  'mcp__merlin__meta_set_optimization_goal':    'Change what a live Meta ad set optimizes for',
+  'mcp__merlin__meta_clone_adset':              'Clone a Meta ad set into a new PAUSED ad set',
+  'mcp__merlin__meta_set_frequency_cap':        'Set a frequency cap on a Meta ad set',
 });
 
 /**
