@@ -34,7 +34,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const policy = require('./mcp-approval-policy');
-const { buildTools } = require('./mcp-tools');
+
+// ── execFile capture (for the end-to-end --cmd assertions at the bottom) ──
+//
+// mcp-tools destructures `const { execFile } = require('child_process')` at
+// load time, so the stub has to be installed BEFORE that require. node:test
+// gives each test file its own process, so this never leaks elsewhere.
+const childProcess = require('child_process');
+const execFileCalls = [];
+childProcess.execFile = function fakeExecFile(file, args, options, callback) {
+  execFileCalls.push({ file, args, options });
+  const child = { stdin: { on() {}, write() {}, end() {} }, kill() {} };
+  setImmediate(() => callback(null, 'ok', ''));
+  return child;
+};
+
+const { buildTools, runBinary } = require('./mcp-tools');
 
 const SRC_MAIN = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
@@ -517,3 +532,103 @@ test('main.js wires the auto-mode long-tail decision at the final fallthrough', 
   assert.match(SRC_MAIN, /isDestructiveShell/,
     'main.js must still surface a destructive-shell card via isDestructiveShell');
 });
+
+// ── REGRESSION GUARD (2026-09-04, engine-approval-gate-parity, merlin-core
+// PR #385): three engine actions now refuse to run unless cmd.Approved is
+// true — mailchimp-campaign-send, mailchimp-campaign-schedule, and
+// merchant-sync-shopify. Per Hard-Won Security Rule 19 the app has to (a)
+// card each of them host-side and (b) let the approved flag reach the
+// engine. Two independent ways this silently breaks:
+//
+//   1. The action is missing from CARDED_DESTRUCTIVE_ACTIONS, so it falls
+//      through main.js's catch-all auto-approve and fires with no card.
+//      sync-shopify was in exactly that state: its sibling 'setup' was
+//      carded via SPEND_ACTIONS while the actual catalog write was not.
+//   2. The tool schema never declares `approved`, so zod strips it before
+//      the handler runs and the engine refuses every call with no type
+//      error anywhere (the Rule 23 failure mode).
+//
+// Nothing else in either repo spans the two, so these tests are the link.
+
+test('the three engine-gated actions are all carded host-side', () => {
+  // Routing is by the tool's own action value, which the handler prefixes
+  // on the way to the engine (mailchimp- / merchant-).
+  const gated = {
+    'campaign-send': 'mailchimp-campaign-send',
+    'campaign-schedule': 'mailchimp-campaign-schedule',
+    'sync-shopify': 'merchant-sync-shopify',
+  };
+  for (const [action, engineAction] of Object.entries(gated)) {
+    assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has(action),
+      `${action} must be in CARDED_DESTRUCTIVE_ACTIONS — the engine refuses ${engineAction} without approval, and without the card the user is never asked.`);
+    assert.ok(!policy.READ_ONLY_ACTIONS.has(action),
+      `${action} must not be in READ_ONLY_ACTIONS — the read-only auto-approve fires first and the card never shows.`);
+  }
+});
+
+test('the Bash bypass path cards merchant-sync-shopify too', () => {
+  // The MCP card is one binary invocation away from being skipped: an agent
+  // that knows the engine action name can call it through Bash. main.js
+  // mirrors the tier in BASH_CARDED_DESTRUCTIVE for exactly that reason.
+  const i = SRC_MAIN.indexOf('const BASH_CARDED_DESTRUCTIVE');
+  assert.ok(i > 0, 'main.js must define BASH_CARDED_DESTRUCTIVE');
+  const block = SRC_MAIN.slice(i, i + 900);
+  for (const engineAction of ['mailchimp-campaign-send', 'mailchimp-campaign-schedule', 'merchant-sync-shopify']) {
+    assert.ok(block.includes(`'${engineAction}'`),
+      `${engineAction} must be in BASH_CARDED_DESTRUCTIVE — otherwise the Bash path fires it with no card.`);
+  }
+});
+
+test('mailchimp + google_merchant declare `approved`, and never auto-set it', () => {
+  const SRC_TOOLS = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  const blockFor = (name, next) => {
+    const start = SRC_TOOLS.indexOf(`name: '${name}'`);
+    assert.ok(start > 0, `${name} tool must exist`);
+    const end = SRC_TOOLS.indexOf(`name: '${next}'`, start);
+    return SRC_TOOLS.slice(start, end > 0 ? end : start + 14000);
+  };
+  for (const [name, next] of [['mailchimp', 'applovin'], ['google_merchant', 'triplewhale']]) {
+    const block = blockFor(name, next);
+    assert.ok(/approved:\s*z\.boolean\(\)/.test(block),
+      `${name} must declare an \`approved\` boolean input — zod strips undeclared keys, so without it the flag never reaches the engine and every gated call is refused.`);
+    assert.ok(!/args\.approved\s*=/.test(block),
+      `${name}'s handler assigns args.approved — that bypasses the approval card the flag exists to represent.`);
+  }
+});
+
+// ── End-to-end: the approved flag survives runBinary into the --cmd JSON ──
+
+function lastCmd() {
+  const call = execFileCalls[execFileCalls.length - 1];
+  assert.ok(call, 'execFile must have been invoked');
+  const i = call.args.indexOf('--cmd');
+  assert.ok(i >= 0, '--cmd must be passed to the binary');
+  return JSON.parse(call.args[i + 1]);
+}
+
+function makeBinaryCtx() {
+  return {
+    ...makeCtx(),
+    // Any real, existing path works: execFile is stubbed, nothing is spawned.
+    getBinaryPath: () => __filename,
+    readConfig: () => ({ mailchimpApiKey: 'x' }),
+    readBrandConfig: () => ({ mailchimpApiKey: 'x' }),
+    buildStrictBrandConfig: () => ({ mailchimpApiKey: 'x' }),
+    appRoot: path.join(__dirname, '..'),
+  };
+}
+
+for (const engineAction of ['mailchimp-campaign-send', 'mailchimp-campaign-schedule', 'merchant-sync-shopify']) {
+  test(`${engineAction} carries approved:true into the --cmd JSON`, async () => {
+    execFileCalls.length = 0;
+    await runBinary(makeBinaryCtx(), engineAction, {
+      brand: 'acme',
+      campaignId: 'abc123',
+      approved: true,
+    });
+    const cmd = lastCmd();
+    assert.equal(cmd.action, engineAction);
+    assert.equal(cmd.approved, true,
+      `the engine's requireApproval() gate refuses ${engineAction} unless approved reaches it as true.`);
+  });
+}

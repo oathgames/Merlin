@@ -141,6 +141,17 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // Mailchimp / Klaviyo / future-email-platform real-send actions.
   // These deliver mail to live subscriber lists and are not recoverable.
   'campaign-send', 'campaign-schedule',
+  // Google Merchant Center catalog push (google_merchant action
+  // 'sync-shopify' -> engine 'merchant-sync-shopify'). It writes the
+  // brand's whole Shopify catalog into the live Merchant Center account
+  // via productInputs:insert, which is what Google Shopping ads serve
+  // from: a sync against the wrong bound account, or from a store whose
+  // titles/prices/images are mid-edit, changes what real shoppers see and
+  // can trip policy disapprovals across the feed. It moves no ad dollars
+  // (costImpact 'api'), so it belongs in this tier and not SPEND_ACTIONS.
+  // Its sibling 'setup' is already carded via SPEND_ACTIONS; without this
+  // entry the actual catalog write was the one that auto-approved.
+  'sync-shopify',
   // Workflow-level pause / resume. Recoverable (the inverse action
   // exists) but a fat-fingered pause on a brand's welcome series
   // costs revenue until someone notices, so we card.

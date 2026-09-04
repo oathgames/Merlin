@@ -2779,6 +2779,7 @@ function translateTool(toolName, input) {
       'mailchimp-templates-bulk-upload': { label: 'Upload a folder of HTML files as Mailchimp templates', cost: 'Free' },
       'mailchimp-campaign-create':   { label: 'Create a Mailchimp email campaign (draft)', cost: 'Free — does not send' },
       'mailchimp-campaign-set-content': { label: 'Update the content of a Mailchimp campaign', cost: 'Free — does not send' },
+      'merchant-sync-shopify':       { label: 'Push your Shopify catalog to Google Merchant Center', cost: 'No ad spend — updates the product feed your Google Shopping ads serve from' },
     };
     if (action && translations[action]) return translations[action];
   }
@@ -2809,6 +2810,17 @@ function translateTool(toolName, input) {
       'campaign-set-content': { label: 'Update the content of a Mailchimp campaign', cost: 'Free — does not send' },
     };
     if (mcpMailchimpLabels[input.action]) return mcpMailchimpLabels[input.action];
+  }
+
+  // MCP google_merchant tool — same reasoning as the Mailchimp block
+  // above: without an explicit translation the card reads
+  // "google_merchant — sync-shopify", which tells a paying user nothing
+  // about what is being written or where.
+  if (toolName === 'mcp__merlin__google_merchant' && input && input.action === 'sync-shopify') {
+    return {
+      label: 'Push your Shopify catalog to Google Merchant Center',
+      cost: 'No ad spend — updates the product feed your Google Shopping ads serve from',
+    };
   }
 
   // Generic Bash — use friendly description, never show raw command
@@ -3284,6 +3296,11 @@ async function handleToolApproval(toolName, input) {
     const BASH_CARDED_DESTRUCTIVE = new Set([
       'mailchimp-campaign-send', 'mailchimp-campaign-schedule',
       'mailchimp-automation-pause', 'mailchimp-automation-start',
+      // Same bypass shape for the Merchant Center catalog push: the MCP
+      // google_merchant tool cards sync-shopify, so the Bash path has to
+      // card the engine action it maps to or the card is one binary
+      // invocation away from being skipped.
+      'merchant-sync-shopify',
     ]);
     if (BASH_CARDED_DESTRUCTIVE.has(bashAction)) {
       const toolUseID = newApprovalId();
