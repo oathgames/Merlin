@@ -16,6 +16,19 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// REGRESSION GUARD (2026-09-04, tmpdir-cross-file-race): cleanupOrphanBinaries
+// sweeps the process-wide os.tmpdir() for Merlin.Setup.*.exe, and node --test
+// runs test FILES concurrently in separate processes. binary-paths.test.js and
+// this file both seed fixed-name installers there, so each file's sweep
+// reclaimed the other's fixture and "still reclaims a genuinely stale
+// installer" failed at random. Give this process its own tmpdir before
+// requiring binary-paths.js (os.tmpdir() reads TEMP/TMP/TMPDIR every call).
+{
+  const realTmp = require('node:os').tmpdir();
+  const mine = require('node:fs').mkdtempSync(require('node:path').join(realTmp, 'bpr-proc-'));
+  process.env.TEMP = process.env.TMP = process.env.TMPDIR = mine;
+}
+
 const {
   cleanupOrphanBinaries,
   isStaleUpdateArtifact,
