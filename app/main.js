@@ -2780,6 +2780,12 @@ function translateTool(toolName, input) {
       'mailchimp-campaign-create':   { label: 'Create a Mailchimp email campaign (draft)', cost: 'Free — does not send' },
       'mailchimp-campaign-set-content': { label: 'Update the content of a Mailchimp campaign', cost: 'Free — does not send' },
       'merchant-sync-shopify':       { label: 'Push your Shopify catalog to Google Merchant Center', cost: 'No ad spend — updates the product feed your Google Shopping ads serve from' },
+      // Permanent marketing-asset deletes. The engine refuses each of these
+      // without the approved flag (merlin-core PR #387); the card is the
+      // user gate that produces it.
+      'klaviyo-flow-delete':         { label: 'Permanently delete this Klaviyo flow', cost: 'Cannot be undone — the flow, its steps and its reporting history are removed' },
+      'klaviyo-template-delete':     { label: 'Permanently delete this Klaviyo email template', cost: 'Cannot be undone — any campaign or flow message still using it breaks' },
+      'postscript-automation-delete':{ label: 'Permanently delete this Postscript SMS automation', cost: 'Cannot be undone — the flow stops sending and its steps are removed' },
     };
     if (action && translations[action]) return translations[action];
   }
@@ -2810,6 +2816,24 @@ function translateTool(toolName, input) {
       'campaign-set-content': { label: 'Update the content of a Mailchimp campaign', cost: 'Free — does not send' },
     };
     if (mcpMailchimpLabels[input.action]) return mcpMailchimpLabels[input.action];
+  }
+
+  // MCP klaviyo + postscript tools — same reasoning as the Mailchimp block
+  // above. Without an explicit translation the delete card reads
+  // "klaviyo — flow-delete", which does not tell a paying user that a live
+  // automation is about to be destroyed with no undo.
+  if (toolName === 'mcp__merlin__klaviyo' && input && input.action) {
+    const mcpKlaviyoLabels = {
+      'flow-delete':     { label: 'Permanently delete this Klaviyo flow', cost: 'Cannot be undone — the flow, its steps and its reporting history are removed' },
+      'template-delete': { label: 'Permanently delete this Klaviyo email template', cost: 'Cannot be undone — any campaign or flow message still using it breaks' },
+    };
+    if (mcpKlaviyoLabels[input.action]) return mcpKlaviyoLabels[input.action];
+  }
+  if (toolName === 'mcp__merlin__postscript' && input && input.action === 'automation-delete') {
+    return {
+      label: 'Permanently delete this Postscript SMS automation',
+      cost: 'Cannot be undone — the flow stops sending and its steps are removed',
+    };
   }
 
   // MCP google_merchant tool — same reasoning as the Mailchimp block
@@ -3301,6 +3325,13 @@ async function handleToolApproval(toolName, input) {
       // card the engine action it maps to or the card is one binary
       // invocation away from being skipped.
       'merchant-sync-shopify',
+      // Permanent marketing-asset deletes, gated in the engine by
+      // requireApproval (merlin-core PR #387). Same bypass shape: the MCP
+      // tools card these via CARDED_DESTRUCTIVE_ACTIONS, so the Bash path
+      // has to card the engine action names or the card is one binary
+      // invocation away from being skipped.
+      'klaviyo-flow-delete', 'klaviyo-template-delete',
+      'mailchimp-campaign-delete', 'postscript-automation-delete',
     ]);
     if (BASH_CARDED_DESTRUCTIVE.has(bashAction)) {
       const toolUseID = newApprovalId();

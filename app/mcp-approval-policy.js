@@ -152,6 +152,24 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // Its sibling 'setup' is already carded via SPEND_ACTIONS; without this
   // entry the actual catalog write was the one that auto-approved.
   'sync-shopify',
+  // Marketing-asset DELETES (merlin-core PR #387 gated all four engine
+  // runners behind cmd.Approved):
+  //   'campaign-delete'  -> mailchimp-campaign-delete
+  //   'template-delete'  -> klaviyo-template-delete (the same action name on
+  //                         the mailchimp tool maps to mailchimp-template-
+  //                         delete, which the engine does not gate today; it
+  //                         is equally destructive, so it cards too)
+  //   'flow-delete'      -> klaviyo-flow-delete
+  //   'automation-delete'-> postscript-automation-delete (already listed below)
+  // Each permanently destroys a live marketing asset with no undo on the
+  // platform side: a deleted Klaviyo flow takes its steps, templates
+  // references and reporting history with it, and a deleted template
+  // breaks every campaign or flow message still pointing at it. They move
+  // no ad dollars (costImpact 'api'), so they card here rather than in
+  // SPEND_ACTIONS. Without these entries the deletes fell through main.js's
+  // catch-all auto-approve, which is precisely the state the engine gate
+  // now refuses — the user would see no card and the call would fail.
+  'campaign-delete', 'template-delete', 'flow-delete',
   // Workflow-level pause / resume. Recoverable (the inverse action
   // exists) but a fat-fingered pause on a brand's welcome series
   // costs revenue until someone notices, so we card.
