@@ -1586,7 +1586,13 @@ function buildTools(tool, z, ctx) {
       preheader: z.string().optional().describe('Preview text shown next to the subject in inbox UIs. Optional but recommended (lifts open rate ~5-15%).'),
       scheduleTime: z.string().optional().describe('RFC-3339 UTC timestamp for campaign-schedule, e.g. "2026-06-01T14:00:00+00:00". Mailchimp rounds to the nearest 15-minute slot.'),
       testEmails: z.string().optional().describe('Comma-separated list of recipient addresses for campaign-send-test (max 50 — Mailchimp\'s hard cap on /actions/test). Addresses must be on the authenticated account\'s allowlist.'),
+      approved: z.boolean().optional().describe('Approval flag for live sends (campaign-send/campaign-schedule). Set by the Electron approval card on user click; the engine REFUSES the send without it. Do not set true unless the user explicitly approved sending to a real audience.'),
     },
+    // Handler does NOT auto-set args.approved — that bypasses the safety
+    // rail. The host approval card (CARDED_DESTRUCTIVE_ACTIONS in
+    // mcp-approval-policy.js) is the user-facing gate; the engine's
+    // requireApproval() check on mailchimp-campaign-send /
+    // mailchimp-campaign-schedule is the defense-in-depth half.
     handler: async (args) => toEnvelope(await runBinary(ctx, 'mailchimp-' + args.action, args)),
   }, tool, z, ctx));
 
@@ -2231,7 +2237,7 @@ function buildTools(tool, z, ctx) {
   // from chat to merchant-insights.
   tools.push(defineTool({
     name: 'google_merchant',
-    description: 'Google Merchant Center — product feed sync + Shopping ad diagnostics. Actions: status (account binding check), setup (one-time per brand), sync-shopify (push Shopify catalog → GMC), insights (product disapprovals, policy warnings, item-level issues blocking Google Shopping ads).',
+    description: 'Google Merchant Center — product feed sync + Shopping ad diagnostics. Actions: status (account binding check), setup (one-time per brand), sync-shopify (push Shopify catalog → GMC — a live write to the account Shopping ads serve from; it shows an approval card and the engine refuses it without the approved flag), insights (product disapprovals, policy warnings, item-level issues blocking Google Shopping ads).',
     destructive: true,
     idempotent: true,
     preview: false,
@@ -2242,7 +2248,12 @@ function buildTools(tool, z, ctx) {
       action: z.enum(['status', 'setup', 'sync-shopify', 'insights']).describe('Operation'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (insights)'),
+      approved: z.boolean().optional().describe('Approval flag for the catalog write (sync-shopify). Set by the Electron approval card on user click; the engine REFUSES the sync without it. Do not set true unless the user explicitly approved pushing the Shopify catalog into the live Merchant Center account.'),
     },
+    // Handler does NOT auto-set args.approved — that bypasses the safety
+    // rail. sync-shopify is carded host-side via CARDED_DESTRUCTIVE_ACTIONS;
+    // the engine's requireApproval() check on merchant-sync-shopify is the
+    // defense-in-depth half.
     handler: async (args) => toEnvelope(await runBinary(ctx, 'merchant-' + args.action, args)),
   }, tool, z, ctx));
 
@@ -2519,6 +2530,14 @@ function buildTools(tool, z, ctx) {
       dailyBudget: z.number().optional().describe('Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform\'s API. If the user says "$10 a day", pass 10. If unsure, ask the user.'),
       adHeadline: z.string().optional().describe('Ad headline'),
       adLink: z.string().optional().describe('Destination URL'),
+      // REGRESSION GUARD (2026-09-04, Rule 23): the engine's Command.Bid
+      // (main.go json:"bid") is now the ONLY source of the Reddit CPM bid on
+      // create-ad. It used to be derived from dailyBudget, which conflated a
+      // per-thousand-impression price with a per-day budget. Zod strips
+      // undeclared keys, so without this line the bid never reaches the engine
+      // and every ad silently takes the platform default — the shipped-but-
+      // unreachable failure mode, with no error anywhere.
+      bid: z.number().optional().describe('CPM bid in USD (dollars, not cents, not micros) for create-ad — the price per thousand impressions, NOT a budget. Never derive it from dailyBudget; the two are unrelated. Omit for the platform default.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
     },
     handler: async (args) => {
