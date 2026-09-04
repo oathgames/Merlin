@@ -1492,7 +1492,7 @@ function buildTools(tool, z, ctx) {
       campaignId: z.string().optional().describe('Klaviyo campaign ID to send/schedule (campaign-send, campaign-schedule). The campaign must already exist as a draft in Klaviyo.'),
       replyTo: z.string().optional().describe('From/reply-to email (e.g. hello@yourbrand.com) for campaign-send/campaign-schedule. REQUIRED — Merlin derives the sending domain from it to verify SPF/DKIM/DMARC before the send.'),
       scheduleTime: z.string().optional().describe('RFC-3339 timestamp for campaign-schedule (e.g. 2026-06-01T14:00:00Z).'),
-      approved: z.boolean().optional().describe('Approval flag for live sends (campaign-send/campaign-schedule). Set by the Electron approval card on user click; the binary REFUSES the send without it. Do not set true unless the user explicitly approved sending to a real list.'),
+      approved: z.boolean().optional().describe('Approval flag for live sends (campaign-send/campaign-schedule) AND for the permanent deletes (flow-delete, template-delete). Set by the Electron approval card on user click; the binary REFUSES the call without it. Do not set true unless the user explicitly approved sending to a real list or destroying the flow/template.'),
       // Template fields (used by template-* + bulk-upload actions)
       templateId: z.string().optional().describe('Klaviyo template ID (get/update/delete)'),
       templateName: z.string().optional().describe('Display name for the template (create/update). For image-upload, the single filename inside dir to upload instead of the whole folder (e.g. "01_Welcome.png").'),
@@ -1520,6 +1520,12 @@ function buildTools(tool, z, ctx) {
       manifestPath: z.string().optional().describe('Filesystem path to a flow manifest JSON for flows-bulk-import. MUST live under assets/brands/<brand>/email/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {manifest_version, brand, flows:[{name, status?, trigger, steps}, ...]}. References uploaded templates by template_id (run templates-bulk-upload first to get the IDs).'),
       forceReimport: z.boolean().optional().describe('When true, flows-bulk-import bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.'),
     },
+    // Handler does NOT auto-set args.approved — that bypasses the safety
+    // rail. The host approval card (CARDED_DESTRUCTIVE_ACTIONS in
+    // mcp-approval-policy.js) is the user-facing gate; the engine's
+    // requireApproval() check on klaviyo-flow-delete /
+    // klaviyo-template-delete (and the send actions) is the
+    // defense-in-depth half.
     handler: async (args) => toEnvelope(await runBinary(ctx, 'klaviyo-' + args.action, args)),
   }, tool, z, ctx));
 
@@ -1586,13 +1592,14 @@ function buildTools(tool, z, ctx) {
       preheader: z.string().optional().describe('Preview text shown next to the subject in inbox UIs. Optional but recommended (lifts open rate ~5-15%).'),
       scheduleTime: z.string().optional().describe('RFC-3339 UTC timestamp for campaign-schedule, e.g. "2026-06-01T14:00:00+00:00". Mailchimp rounds to the nearest 15-minute slot.'),
       testEmails: z.string().optional().describe('Comma-separated list of recipient addresses for campaign-send-test (max 50 — Mailchimp\'s hard cap on /actions/test). Addresses must be on the authenticated account\'s allowlist.'),
-      approved: z.boolean().optional().describe('Approval flag for live sends (campaign-send/campaign-schedule). Set by the Electron approval card on user click; the engine REFUSES the send without it. Do not set true unless the user explicitly approved sending to a real audience.'),
+      approved: z.boolean().optional().describe('Approval flag for live sends (campaign-send/campaign-schedule) AND for the permanent deletes (campaign-delete, template-delete). Set by the Electron approval card on user click; the engine REFUSES the call without it. Do not set true unless the user explicitly approved sending to a real audience or destroying the campaign/template.'),
     },
     // Handler does NOT auto-set args.approved — that bypasses the safety
     // rail. The host approval card (CARDED_DESTRUCTIVE_ACTIONS in
     // mcp-approval-policy.js) is the user-facing gate; the engine's
     // requireApproval() check on mailchimp-campaign-send /
-    // mailchimp-campaign-schedule is the defense-in-depth half.
+    // mailchimp-campaign-schedule / mailchimp-campaign-delete is the
+    // defense-in-depth half.
     handler: async (args) => toEnvelope(await runBinary(ctx, 'mailchimp-' + args.action, args)),
   }, tool, z, ctx));
 
@@ -1675,7 +1682,13 @@ function buildTools(tool, z, ctx) {
       manifestPath: z.string().optional().describe('Filesystem path to a flow manifest JSON for bulk-import-flow. MUST live under assets/brands/<brand>/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {flows: [{name, trigger, steps}, ...]}.'),
       activate: z.boolean().optional().describe('When true on automation-create or bulk-import-flow, flip the new automation from draft → active immediately. Default false (drafts only — safer; user reviews in Postscript dashboard before going live).'),
       forceReimport: z.boolean().optional().describe('When true, bulk-import-flow bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.'),
+      approved: z.boolean().optional().describe('Approval flag for the permanent delete (automation-delete). Set by the Electron approval card on user click; the engine REFUSES the delete without it. Do not set true unless the user explicitly approved destroying the SMS automation.'),
     },
+    // Handler does NOT auto-set args.approved — that bypasses the safety
+    // rail. The host approval card (CARDED_DESTRUCTIVE_ACTIONS in
+    // mcp-approval-policy.js) is the user-facing gate; the engine's
+    // requireApproval() check on postscript-automation-delete is the
+    // defense-in-depth half.
     handler: async (args) => toEnvelope(await runBinary(ctx, 'postscript-' + args.action, args)),
   }, tool, z, ctx));
 

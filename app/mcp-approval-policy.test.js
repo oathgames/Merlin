@@ -632,3 +632,101 @@ for (const engineAction of ['mailchimp-campaign-send', 'mailchimp-campaign-sched
       `the engine's requireApproval() gate refuses ${engineAction} unless approved reaches it as true.`);
   });
 }
+
+// ── REGRESSION GUARD (2026-09-04, engine-approval-gate-parity, merlin-core
+// PR #387): four DELETE runners now refuse to run unless cmd.Approved is
+// true — klaviyo-flow-delete, klaviyo-template-delete,
+// mailchimp-campaign-delete and postscript-automation-delete. Same two
+// silent failure modes as the send/sync block above: an action missing from
+// CARDED_DESTRUCTIVE_ACTIONS fires through main.js's catch-all with no card,
+// and a tool that never declares `approved` has the flag stripped by zod so
+// the engine refuses every call with no error anywhere.
+
+test('the four engine-gated deletes are all carded host-side', () => {
+  const gated = {
+    'flow-delete': 'klaviyo-flow-delete',
+    'template-delete': 'klaviyo-template-delete',
+    'campaign-delete': 'mailchimp-campaign-delete',
+    'automation-delete': 'postscript-automation-delete',
+  };
+  for (const [action, engineAction] of Object.entries(gated)) {
+    assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has(action),
+      `${action} must be in CARDED_DESTRUCTIVE_ACTIONS — the engine refuses ${engineAction} without approval, and without the card the user is never asked.`);
+    assert.ok(!policy.READ_ONLY_ACTIONS.has(action),
+      `${action} must not be in READ_ONLY_ACTIONS — the read-only auto-approve fires first and the card never shows.`);
+    assert.ok(!policy.SPEND_ACTIONS.has(action),
+      `${action} must not be in SPEND_ACTIONS — a delete has no budget context to show.`);
+  }
+});
+
+test('the Bash bypass path cards the four engine-gated deletes', () => {
+  const i = SRC_MAIN.indexOf('const BASH_CARDED_DESTRUCTIVE');
+  assert.ok(i > 0, 'main.js must define BASH_CARDED_DESTRUCTIVE');
+  const block = SRC_MAIN.slice(i, i + 1600);
+  for (const engineAction of [
+    'klaviyo-flow-delete', 'klaviyo-template-delete',
+    'mailchimp-campaign-delete', 'postscript-automation-delete',
+  ]) {
+    assert.ok(block.includes(`'${engineAction}'`),
+      `${engineAction} must be in BASH_CARDED_DESTRUCTIVE — otherwise the Bash path fires it with no card.`);
+  }
+});
+
+test('klaviyo + postscript declare `approved`, and never auto-set it', () => {
+  const SRC_TOOLS = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  const blockFor = (name, next) => {
+    const start = SRC_TOOLS.indexOf(`name: '${name}'`);
+    assert.ok(start > 0, `${name} tool must exist`);
+    const end = SRC_TOOLS.indexOf(`name: '${next}'`, start);
+    return SRC_TOOLS.slice(start, end > 0 ? end : start + 14000);
+  };
+  for (const [name, next] of [['klaviyo', 'mailchimp'], ['postscript', 'clarity']]) {
+    const block = blockFor(name, next);
+    assert.ok(/approved:\s*z\.boolean\(\)/.test(block),
+      `${name} must declare an \`approved\` boolean input — zod strips undeclared keys, so without it the flag never reaches the engine and every gated delete is refused.`);
+    assert.ok(!/args\.approved\s*=/.test(block),
+      `${name}'s handler assigns args.approved — that bypasses the approval card the flag exists to represent.`);
+  }
+});
+
+test('every engine-gated delete has a plain-English approval card label', () => {
+  // The generic fallback reads "klaviyo — flow-delete". A paying user must
+  // be told an asset is about to be destroyed with no undo.
+  for (const engineAction of [
+    'klaviyo-flow-delete', 'klaviyo-template-delete',
+    'mailchimp-campaign-delete', 'postscript-automation-delete',
+  ]) {
+    assert.ok(SRC_MAIN.includes(`'${engineAction}':`) || SRC_MAIN.includes(`'${engineAction}':   `),
+      `main.js must translate ${engineAction} into a friendly Bash-path card label.`);
+  }
+  for (const marker of [
+    "'flow-delete':",
+    "'template-delete':",
+    "'campaign-delete':",
+    "mcp__merlin__postscript' && input && input.action === 'automation-delete'",
+  ]) {
+    assert.ok(SRC_MAIN.includes(marker),
+      `main.js must translate the MCP-path action ${marker} into a friendly card label.`);
+  }
+});
+
+for (const engineAction of [
+  'klaviyo-flow-delete', 'klaviyo-template-delete',
+  'mailchimp-campaign-delete', 'postscript-automation-delete',
+]) {
+  test(`${engineAction} carries approved:true into the --cmd JSON`, async () => {
+    execFileCalls.length = 0;
+    await runBinary(makeBinaryCtx(), engineAction, {
+      brand: 'acme',
+      flowId: 'F1',
+      templateId: 'T1',
+      campaignId: 'C1',
+      automationId: 'A1',
+      approved: true,
+    });
+    const cmd = lastCmd();
+    assert.equal(cmd.action, engineAction);
+    assert.equal(cmd.approved, true,
+      `the engine's requireApproval() gate refuses ${engineAction} unless approved reaches it as true.`);
+  });
+}
