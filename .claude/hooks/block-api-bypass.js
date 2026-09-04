@@ -263,9 +263,18 @@ const NETWORK_INTENT_KEYWORDS = [
 // COMMAND patterns match anywhere in a shell command (may be followed by
 // pipes, redirects, args). Keeping them separate avoids the pipe bypass.
 const PROTECTED_PATH_PATTERNS = [
-  /merlin-config\.json$/i,
-  /\.merlin-config-[a-z0-9_-]+\.json$/i,
-  /\.merlin-tokens[a-z0-9_-]*$/i,
+  // REGRESSION GUARD (2026-09-04, Rule 7 sibling gap): these three anchored
+  // on `$`, so the atomic-write siblings every writer of these files
+  // produces — `merlin-config.json.bak`, `merlin-config.json.tmp`,
+  // `.merlin-config-<brand>.json.bak`, `.merlin-tokens-<brand>.tmp` — sailed
+  // straight past the blocklist while the file itself was blocked. Those
+  // siblings carry the SAME plaintext platform tokens (the 2026-07-13 stale
+  // brand-config incident is exactly what lives in them). Hard-Won Security
+  // Rule 7 requires `(\.|$)` on every critical-file pattern for this reason.
+  // DO NOT tighten these back to `$`.
+  /merlin-config\.json(\.|$)/i,
+  /\.merlin-config-[a-z0-9_-]+\.json(\.|$)/i,
+  /\.merlin-tokens[a-z0-9_-]*(\.|$)/i,
   /\.merlin-vault(\.|$)/i,
   /\.merlin-ratelimit(\.|$)/i,
   /\.merlin-audit(\.|$)/i,

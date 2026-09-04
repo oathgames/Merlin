@@ -2616,10 +2616,31 @@ merlin.onSdkMessage((msg) => {
       if (msg.message?.content) {
         for (const block of msg.message.content) {
           if (block.type === 'image' && block.source?.data && block.source.data.length > 100 && block.source.data.length < 10_000_000) { // cap at ~7.5MB decoded
+            // REGRESSION GUARD (2026-09-04, unvalidated-base64-into-innerHTML):
+            // `block.source.data` came straight off the wire and was
+            // interpolated into an innerHTML string. The media_type half was
+            // sanitized; the payload half was not, so a single `"` in the
+            // data closed the src attribute and everything after it was
+            // parsed as markup inside a chat bubble. Validate the WHOLE data
+            // URL against a strict allowlist (known raster mime + base64
+            // alphabet only) and drop the block if it does not match — a
+            // malformed image is a missing image, never a parsed one.
+            const mimeType = (block.source.media_type || 'image/png').replace(/[^a-z0-9/+-]/gi, '');
+            const dataUrl = `data:${mimeType};base64,${block.source.data}`;
+            if (!/^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(dataUrl)) {
+              continue;
+            }
             finalizeBubble();
             const imgBubble = addClaudeBubble();
-            const mimeType = (block.source.media_type || 'image/png').replace(/[^a-z0-9/+-]/gi, '');
-            imgBubble.innerHTML = `<img src="data:${mimeType};base64,${block.source.data}" alt="Image" style="max-width:100%;border-radius:10px">`;
+            // Build via the DOM rather than an innerHTML template so the
+            // payload can never be re-parsed as markup even if the regex
+            // above is ever loosened.
+            const imgEl = document.createElement('img');
+            imgEl.src = dataUrl;
+            imgEl.alt = 'Image';
+            imgEl.style.maxWidth = '100%';
+            imgEl.style.borderRadius = '10px';
+            imgBubble.replaceChildren(imgEl);
             imgBubble.classList.remove('streaming');
             currentBubble = null;
             textBuffer = '';

@@ -297,7 +297,18 @@ function isStaleUpdateArtifact(fullPath, now = Date.now()) {
   }
 }
 
-function cleanupOrphanBinaries({ appRoot, log = console.log }) {
+// REGRESSION GUARD (2026-09-04, tmpdir-sweep-not-injectable):
+// `tmpDir` defaults to os.tmpdir() — production behaviour is unchanged — but
+// it is injectable so a test can point the installer-artifact sweep at a
+// private directory. Before this, two test files that both exercise this
+// function shared the real os.tmpdir(); node --test runs test FILES in
+// parallel processes, so binary-paths.test.js's sweep deleted
+// binary-paths-update-race.test.js's deliberately-stale
+// `Merlin.Setup.9.9.6.exe` fixture out from under it. The race test then saw
+// the file gone but absent from its OWN `result.deleted`, and failed. It
+// passed in isolation and failed in the full sweep, i.e. it was red in CI and
+// green on every developer's targeted re-run.
+function cleanupOrphanBinaries({ appRoot, log = console.log, tmpDir = os.tmpdir() }) {
   const canonical = getCanonicalBinaryPath();
   const result = { deleted: [], skipped: [], errors: [] };
 
@@ -311,7 +322,7 @@ function cleanupOrphanBinaries({ appRoot, log = console.log }) {
     stale.push(path.join(appRoot, '.claude', 'tools', BINARY_NAME));
   }
   // os.tmpdir orphans
-  stale.push(path.join(os.tmpdir(), BINARY_NAME));
+  stale.push(path.join(tmpDir, BINARY_NAME));
 
   // Installer-stage orphans (D1) — Merlin.Setup.X.Y.Z.exe / Merlin-X.Y.Z.dmg
   // left behind by installUpdateFromLatestRelease.
@@ -346,7 +357,7 @@ function cleanupOrphanBinaries({ appRoot, log = console.log }) {
   // be more aggressive, gate it on "no update was started this session"
   // rather than on the filename.
   try {
-    const tmpEntries = fs.readdirSync(os.tmpdir());
+    const tmpEntries = fs.readdirSync(tmpDir);
     for (const entry of tmpEntries) {
       // Match installer artifact name patterns. We DO NOT just glob
       // /^Merlin/ — that would catch our own runtime tmp files (config,
@@ -355,7 +366,7 @@ function cleanupOrphanBinaries({ appRoot, log = console.log }) {
         || /^Merlin-[\d.]+(?:-arm64|-x64)?\.dmg$/i.test(entry);
       const isUpdateScript = /^merlin-update\.bat$/i.test(entry);
       if (!isInstaller && !isUpdateScript) continue;
-      const full = path.join(os.tmpdir(), entry);
+      const full = path.join(tmpDir, entry);
       if (!isStaleUpdateArtifact(full)) {
         result.skipped.push(full);
         continue;

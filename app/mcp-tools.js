@@ -535,7 +535,30 @@ async function runBinary(ctx, action, args, opts = {}) {
     // even though the binary won't read the file.
     const configPathHint = path.join(ctx.appRoot, '.claude', 'tools', 'merlin-config.json');
 
-    const timeout = opts.timeout || 300000; // 5 min default
+    // REGRESSION GUARD (2026-09-04, engine-timeout-past-the-mcp-boundary):
+    // this default was 300000 (5 min), which is LONGER than the MCP tool-call
+    // boundary the agent host enforces (120s). Anything the engine took
+    // between 2 and 5 minutes on was therefore killed by the boundary, not by
+    // us: the agent saw an opaque transport-level timeout with no envelope, no
+    // error code, and no next_action, while the engine kept running against
+    // the platform in a process nobody was reading. Sitting just inside the
+    // boundary means WE time out first, so the caller gets a real envelope it
+    // can act on.
+    //
+    // 110s, not 120s: the remaining 10s is the margin for redactOutput over a
+    // 32MB buffer plus the envelope round-trip, so our resolve still lands
+    // before the boundary fires.
+    //
+    // Work that genuinely cannot finish in 110s does NOT belong behind a
+    // longer timeout — it belongs on the job/overflow path (app/mcp-jobs.js +
+    // the jobs_poll / jobs_list / jobs_cancel tools), which returns a jobId
+    // immediately and runs the work in the background. Meta bulk pushes chunk
+    // themselves below this bound (see META-ADS.md on chunking around the
+    // 2-minute tool timeout) and image pipelines fan out per-image. If you are
+    // reaching for `opts.timeout` above ~110000, add a job instead: a call
+    // site that overrides past the boundary is re-opening this exact hole.
+    const MCP_CALL_BOUNDARY_MS = 120000;
+    const timeout = opts.timeout || (MCP_CALL_BOUNDARY_MS - 10000);
     const child = execFile(
       binaryPath,
       ['--config-stdin', '--config', configPathHint, '--cmd', JSON.stringify(cmdObj)],
@@ -3246,6 +3269,28 @@ function buildTools(tool, z, ctx) {
   // ctx.jobStore is the shared JobStore instance wired in mcp-server.js.
   // If missing (e.g., stripped-down test harnesses), the three tools
   // return a clean BRAND_MISSING-style envelope instead of crashing.
+  //
+  // STATUS (2026-09-04, audited): the store is wired (mcp-server.js
+  // constructs ctx.jobStore on every server build and main.js's before-quit
+  // stops its prune timer) and all three tools are registered, reachable, and
+  // covered end-to-end against a real started store in
+  // app/mcp-jobs-tools.test.js. What does NOT yet exist is a PRODUCER: no
+  // shipped tool calls jobStore.start(), so on a live install jobs_list
+  // correctly returns an empty list rather than being broken. This is a
+  // capability gap, not dead code, and it is deliberate — routing an existing
+  // tool through the job path changes its contract from "returns a result" to
+  // "returns a jobId the agent must poll", which the skills would have to
+  // learn in the same release.
+  //
+  // To add the first producer: in the tool's handler, return
+  // `envelope.ok({ data: ctx.jobStore.start({ tool, brand, runFn }) })` where
+  // runFn does the work and calls reportProgress; keep the synchronous path
+  // for small inputs and take the job path only past a size threshold, so a
+  // one-ad push never makes the agent poll. The `longRunning: true`
+  // annotation on `video` / `transcribe` / `meta_import` marks the candidates.
+  // Do NOT delete this subsystem to "remove dead code": it is the only
+  // overflow path for work that cannot finish inside runBinary's timeout,
+  // which now sits deliberately just inside the MCP call boundary.
   const jobsMissingEnvelope = () =>
     envelope.fail(errors.makeError('INTERNAL_ERROR', {
       message: 'Job store is not initialized on this MCP server.',
