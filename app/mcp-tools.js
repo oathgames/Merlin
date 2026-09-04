@@ -1474,6 +1474,10 @@ function buildTools(tool, z, ctx) {
       templateId: z.string().optional().describe('Klaviyo template ID (get/update/delete)'),
       templateName: z.string().optional().describe('Display name for the template (create/update). For image-upload, the single filename inside dir to upload instead of the whole folder (e.g. "01_Welcome.png").'),
       htmlContent: z.string().optional().describe('Raw email HTML body (create/update). Max 5 MB.'),
+      editorType: z.string().optional().describe('Klaviyo editor the created template opens in: '
+        + "'SYSTEM_DRAGGABLE' for the drag-and-drop builder a marketer can edit visually (use this for CAMPAIGN templates), "
+        + "or 'CODE' for raw HTML (the default, and correct for flow templates Merlin owns end to end). "
+        + 'Klaviyo may store a different editor than requested; the result reports editorTypeStored so a silent downgrade is visible.'),
       dir: z.string().optional().describe('Directory of files for bulk-upload (.html) or image-upload (.png/.jpg/.gif/.webp). Must be inside assets/brands/<brand>/. For image-upload, files upload in filename order, so a 01_/02_/03_ prefix round-trips as the flow order.'),
       nameTemplate: z.string().optional().describe('Format string for bulk-upload, e.g. "POG / 01-welcome / {basename}". {basename} = filename without extension.'),
       applyTokens: z.boolean().optional().describe('Translate generic placeholders ({{UNSUB_URL}}, {{ FIRST_NAME }}, {{COMPANY_NAME}}, …) into Klaviyo Django tags. Default true for bulk-upload, false for single template-create/update.'),
