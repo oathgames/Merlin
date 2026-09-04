@@ -159,25 +159,29 @@ function _resetScrapeTimeoutTrackerForTests() {
 // daily ad budgets and REJECT the tool call with an explanatory error so Claude
 // can correct and retry. The binary also has a hard cap (see main.go validate).
 //
-// We use TWO signals:
-//   1. Absolute ceiling — reject anything ≥ BUDGET_HARD_CEILING (no sane user
-//      runs a $5000/day solo DTC ad budget; we assume 5000+ means cents).
-//   2. Relative to maxDailyAdBudget — if the user configured a cap and the
-//      requested budget exceeds it by more than 10x, treat as cents.
+// We use THREE signals, all implemented once in `app/budget-ceiling.js` and
+// shared with the two approval paths in main.js (they used to be three
+// hand-copied constants that drifted — see that file's REGRESSION GUARD):
+//   1. Absolute ceiling — reject anything ≥ BUDGET_ABSOLUTE_CEILING. No
+//      config key lifts it.
+//   2. The operator's declared maxDailyAdBudget, which AUTHORIZES everything
+//      up to itself. This is how a deliberate high-budget launch (a BFCM or
+//      flash-sale day at $5,000/day) is expressed at all.
+//   3. Otherwise the $5,000/day default backstop and the >10x-cap relative
+//      detector, both of which read as cents-for-dollars.
 //
-// Normal ad budgets for solo DTC founders: $5-$500/day. We reject anything
-// above $1000/day unless the user's configured cap is at least 1/10 of that.
-const BUDGET_HARD_CEILING = 5000; // dollars — above this is almost certainly cents
+// Normal ad budgets for solo DTC founders: $5-$500/day, which is why the
+// backstop sits where it does when nobody has said otherwise.
+// BUDGET_HARD_CEILING stays re-exported below for existing consumers; it is
+// now defined once in budget-ceiling.js rather than here.
+const { denyReasonForBudget, BUDGET_HARD_CEILING } = require('./budget-ceiling');
 
 function validateBudget(ctx, args, platform) {
 	const budget = args.dailyBudget;
 	if (budget === undefined || budget === null) return null;
-	if (typeof budget !== 'number' || !Number.isFinite(budget) || budget < 0) {
-		return `dailyBudget must be a positive number in dollars (e.g. 10 for $10/day). Got: ${budget}`;
-	}
-	if (budget === 0) return null;
 
-	// Read user's configured cap to check for "relative cents" (budget > 10x cap).
+	// Read the user's declared cap. It both authorizes (up to itself) and
+	// triggers the relative cents detector (beyond 10x).
 	let maxCap = 0;
 	try {
 		const brand = args.brand || '';
@@ -185,15 +189,10 @@ function validateBudget(ctx, args, platform) {
 		maxCap = Number(cfg.maxDailyAdBudget || cfg.dailyAdBudget || 0);
 	} catch {}
 
-	// Absolute ceiling — anything this high is almost certainly Claude pre-converting.
-	if (budget >= BUDGET_HARD_CEILING) {
-		return `dailyBudget=${budget} looks like cents, not dollars. ${platform} ads: pass dollars (e.g. 10 for $10/day). If you really need $${budget}/day, ask the user to confirm and raise maxDailyAdBudget in config. NEVER pre-convert dollars to cents — Merlin handles that internally.`;
-	}
-
-	// Relative ceiling — budget more than 10x the user's configured cap is very likely cents.
-	if (maxCap > 0 && budget > maxCap * 10) {
-		return `dailyBudget=${budget} is more than 10x your configured max of $${maxCap}/day. This looks like cents, not dollars — Claude should pass ${Math.round(budget / 100)} for $${Math.round(budget / 100)}/day. NEVER pre-convert to cents.`;
-	}
+	const reason = denyReasonForBudget(budget, maxCap);
+	// Name the platform on the top-level budget so the agent's retry targets
+	// the right tool call when several are in flight.
+	if (reason) return `${platform} ads: ${reason}`;
 
 	// Also validate nested ads[] entries (bulk-push / carousel paths)
 	if (Array.isArray(args.ads)) {
@@ -202,15 +201,8 @@ function validateBudget(ctx, args, platform) {
 			if (!nested || typeof nested !== 'object') continue;
 			const nb = nested.dailyBudget;
 			if (nb === undefined || nb === null || nb === 0) continue;
-			if (typeof nb !== 'number' || !Number.isFinite(nb) || nb < 0) {
-				return `ads[${i}].dailyBudget must be a positive number in dollars. Got: ${nb}`;
-			}
-			if (nb >= BUDGET_HARD_CEILING) {
-				return `ads[${i}].dailyBudget=${nb} looks like cents. Pass dollars (e.g. 10 for $10/day).`;
-			}
-			if (maxCap > 0 && nb > maxCap * 10) {
-				return `ads[${i}].dailyBudget=${nb} is more than 10x your $${maxCap}/day cap. Likely cents — pass ${Math.round(nb / 100)}.`;
-			}
+			const nestedReason = denyReasonForBudget(nb, maxCap, { field: `ads[${i}].dailyBudget` });
+			if (nestedReason) return nestedReason;
 		}
 	}
 
@@ -1048,7 +1040,18 @@ function buildTools(tool, z, ctx) {
       timeIncrement: z.number().optional().describe('For audit-delivery-breakdown: insights bucket size in days. 1 = daily (default, to see WHICH day delivery moved). Pass -1 for a single aggregate window.'),
       breakdowns: z.string().optional().describe('For audit-delivery-breakdown: comma-separated dimensions to slice by (allow-listed): publisher_platform, platform_position, device_platform, impression_device, age, gender, country, region, dma. Unknown values are dropped.'),
       level: z.enum(['account', 'campaign', 'adset', 'ad']).optional().describe('For audit-delivery-breakdown: aggregation level. Default account.'),
-      batchCount: z.coerce.number().int().optional().describe("For attribution-compare: lookback window in DAYS. Omit or pass 0 or less for lifetime (Meta date_preset=maximum, its longest retained window at 37 months). This is the only param that action reads."),
+      batchCount: z.coerce.number().int().optional().describe("For attribution-compare: lookback window in DAYS, ending YESTERDAY (today's insights are partial and keep moving for hours). Omit or pass 0 or less for lifetime (Meta date_preset=maximum, its longest retained window at 37 months). Ignored when startDate + endDate are set."),
+      // REGRESSION GUARD (2026-08-24, Hard-Won Rule 23): attribution-compare
+      // gained explicit startDate/endDate in the engine on 2026-08-16 and these
+      // two lines were NOT added, so the capability shipped unreachable. zod
+      // strips undeclared keys and defineTool's strict check refuses them
+      // outright, so a reporting pull asking for an exact Sun-Sat week came
+      // back as INVALID_INPUT naming params the engine already supported.
+      // A weekly deck cannot use a trailing-day window: attribution has to be
+      // scored over exactly the days the rest of the deck covers, or the slide
+      // sits beside a week it does not describe.
+      startDate: z.string().optional().describe('For attribution-compare: exact window start, YYYY-MM-DD. Both startDate and endDate or neither. Takes precedence over batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week a deck covers.'),
+      endDate: z.string().optional().describe('For attribution-compare: exact window end, YYYY-MM-DD, INCLUSIVE. Must not be in the future.'),
     },
     handler: async (args) => {
       const action = metaAuditEngineAction(args.action);

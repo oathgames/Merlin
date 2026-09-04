@@ -39,6 +39,7 @@
     "app/engine-install.js",
     "app/brand-config-sweep.js",
     "app/brand-dirs.js",
+    "app/budget-ceiling.js",
     "app/brand-manifest-scaffolder.js",
     "app/brand-scaffold.js",
     "app/brand-scraper.js",
