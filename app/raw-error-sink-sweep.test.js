@@ -97,3 +97,30 @@ test('oauth exchange failure prefers Go friendly stderr, never raw Node err.mess
   assert.ok(/goMsg \|\| 'Could not finish connecting\. Please try again\.'/.test(around),
     'oauth exchange error must fall back to a friendly message, not raw err.message');
 });
+
+// REGRESSION GUARD (2026-09-04, raw-error-across-IPC in save-image-data-url):
+// the handler's catch returned `String(err && err.message || err)` as
+// `reason`, i.e. a raw Node error ("EACCES: permission denied, open
+// 'C:\Users\<name>\Downloads\x.png'") crossing the IPC boundary. Today's
+// only caller reads `.success` alone, so nothing rendered it — but Rule 6 is
+// about the sink existing: the next consumer to read `.reason` ships an OS
+// error code and the user's home path into a chat bubble. Every other failure
+// branch in that handler already returns a classified code; the catch now
+// matches, and the detail goes to the main-process console instead.
+test('save-image-data-url returns a classified reason, never a raw err.message', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  const start = src.indexOf("ipcMain.handle('save-image-data-url'");
+  assert.ok(start > 0, 'save-image-data-url handler not found in main.js');
+  const body = src.slice(start, src.indexOf("ipcMain.handle('open-folder'", start));
+  const code = body.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n');
+
+  assert.ok(
+    !/reason:\s*String\(err/.test(code),
+    'the catch must not hand a raw error string to the renderer',
+  );
+  assert.match(code, /reason:\s*'write-failed'/, 'the catch must return a classified code');
+  // The three pre-existing validation branches must stay classified too.
+  for (const reason of ['bad-data-url', 'bad-buffer', 'write-failed']) {
+    assert.ok(code.includes(`'${reason}'`), `reason code ${reason} must be present`);
+  }
+});

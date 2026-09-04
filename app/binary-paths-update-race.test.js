@@ -24,8 +24,20 @@ const {
 
 const HOUR = 60 * 60 * 1000;
 
+// REGRESSION GUARD (2026-09-04, cross-test tmpdir race): these fixtures used
+// to live in the shared os.tmpdir(). `node --test` runs test FILES in parallel
+// processes, and binary-paths.test.js exercises the same sweep, so its
+// cleanupOrphanBinaries() call deleted this file's deliberately-stale
+// `Merlin.Setup.*.exe` before this file's own call could claim it. The
+// assertions then disagreed with each other (file gone, but absent from OUR
+// result.deleted) and the suite was red in CI while every targeted re-run was
+// green. Each fixture now lives in a private directory that is passed to
+// cleanupOrphanBinaries via `tmpDir`, so no other process can see it.
+const SANDBOX = fs.mkdtempSync(path.join(os.tmpdir(), 'bp-race-'));
+process.on('exit', () => { try { fs.rmSync(SANDBOX, { recursive: true, force: true }); } catch {} });
+
 function makeTmpFile(name, ageMs) {
-  const p = path.join(os.tmpdir(), name);
+  const p = path.join(SANDBOX, name);
   fs.writeFileSync(p, 'x'.repeat(64));
   if (ageMs) {
     const when = new Date(Date.now() - ageMs);
@@ -67,7 +79,7 @@ test('cleanup does NOT delete a fresh installer or update script', () => {
   const exe = makeTmpFile('Merlin.Setup.9.9.7.exe', 0);
   const bat = makeTmpFile('merlin-update.bat', 0);
   try {
-    const r = cleanupOrphanBinaries({ appRoot: null, log: () => {} });
+    const r = cleanupOrphanBinaries({ appRoot: null, log: () => {}, tmpDir: SANDBOX });
     assert.ok(fs.existsSync(exe), 'fresh installer must survive: it is the update being run');
     assert.ok(fs.existsSync(bat), 'fresh update script must survive: cmd.exe is reading it now');
     assert.ok(!r.deleted.includes(exe));
@@ -83,11 +95,11 @@ test('cleanup NEVER deletes merlin-update.log, at any age', () => {
   // four consecutive failures undiagnosable.
   const fresh = makeTmpFile('merlin-update.log', 0);
   try {
-    cleanupOrphanBinaries({ appRoot: null, log: () => {} });
+    cleanupOrphanBinaries({ appRoot: null, log: () => {}, tmpDir: SANDBOX });
     assert.ok(fs.existsSync(fresh), 'fresh update log must survive');
     const old = new Date(Date.now() - (STALE_UPDATE_ARTIFACT_MS * 10));
     fs.utimesSync(fresh, old, old);
-    const r = cleanupOrphanBinaries({ appRoot: null, log: () => {} });
+    const r = cleanupOrphanBinaries({ appRoot: null, log: () => {}, tmpDir: SANDBOX });
     assert.ok(fs.existsSync(fresh), 'even an old update log must survive');
     assert.ok(!r.deleted.some((p) => /merlin-update\.log$/i.test(p)));
   } finally { try { fs.unlinkSync(fresh); } catch {} }
@@ -95,7 +107,7 @@ test('cleanup NEVER deletes merlin-update.log, at any age', () => {
 
 test('cleanup still reclaims a genuinely stale installer', () => {
   const exe = makeTmpFile('Merlin.Setup.9.9.6.exe', STALE_UPDATE_ARTIFACT_MS + HOUR);
-  const r = cleanupOrphanBinaries({ appRoot: null, log: () => {} });
+  const r = cleanupOrphanBinaries({ appRoot: null, log: () => {}, tmpDir: SANDBOX });
   assert.ok(!fs.existsSync(exe), 'a hours-old installer is a real orphan and should be reclaimed');
   assert.ok(r.deleted.includes(exe));
 });
@@ -109,4 +121,25 @@ test('source no longer sweeps merlin-update.log', () => {
     !/merlin-update\\.log/.test(codeOnly),
     'merlin-update.log must not appear in a match expression — it is a post-mortem, never an orphan'
   );
+});
+
+// REGRESSION GUARD (2026-09-04, cross-test tmpdir race, part 2): the sweep
+// must honour the injected directory. If a future refactor re-hardcodes
+// os.tmpdir() inside cleanupOrphanBinaries, the isolation above silently stops
+// working and the flake comes back — so assert the scoping directly.
+test('cleanupOrphanBinaries sweeps ONLY the tmpDir it is given', () => {
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'bp-race-other-'));
+  try {
+    const outsider = path.join(other, 'Merlin.Setup.9.9.5.exe');
+    fs.writeFileSync(outsider, 'x'.repeat(64));
+    const when = new Date(Date.now() - (STALE_UPDATE_ARTIFACT_MS + HOUR));
+    fs.utimesSync(outsider, when, when);
+
+    const r = cleanupOrphanBinaries({ appRoot: null, log: () => {}, tmpDir: SANDBOX });
+    assert.ok(fs.existsSync(outsider), 'a stale installer OUTSIDE the given tmpDir must not be touched');
+    assert.ok(!r.deleted.includes(outsider));
+    assert.ok(!r.skipped.includes(outsider));
+  } finally {
+    try { fs.rmSync(other, { recursive: true, force: true }); } catch {}
+  }
 });

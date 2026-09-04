@@ -357,9 +357,21 @@ function _pingWisdomCrash(kind, err) {
   try {
     const msg = err && err.message ? String(err.message) : String(err || '');
     const stack = err && err.stack ? String(err.stack) : '';
+    // REGRESSION GUARD (2026-09-04, crash-ping-unredacted): these two strings
+    // are POSTed off the machine to the wisdom API. They were sent raw, and a
+    // crash message routinely carries the thing that crashed: a Meta EAA
+    // token in a rejected URL, an `Authorization: Bearer …` header echoed by
+    // an HTTP client, a Shopify Admin key in a request-config dump. Every
+    // other outbound engine string already goes through redactOutput; this
+    // one is the one that fires precisely when the process is in its least
+    // trustworthy state. Redact BEFORE the 500-char slice, so a truncated
+    // token can never survive as a partial secret.
+    const { redactOutput } = require('./mcp-redact');
     sendSignedPing({
       id: '', v: require('../package.json').version, p: process.platform,
-      e: kind, error: msg.slice(0, 500), stack: stack.slice(0, 500),
+      e: kind,
+      error: redactOutput(msg, '').slice(0, 500),
+      stack: redactOutput(stack, '').slice(0, 500),
     });
   } catch (e) { console.error('[ping]', e.message); }
 }
@@ -830,6 +842,8 @@ if (app.isPackaged) {
 //      deletes this once canonical is populated, so the fallback only
 //      fires on a one-time transitional launch.
 const binaryPaths = require('./binary-paths');
+// Checksum resolution (fail-closed) + atomic engine swap for ensureBinary().
+const engineInstall = require('./engine-install');
 function getBinaryPath() {
   return binaryPaths.resolveBinaryPath({ appInstall, appRoot });
 }
@@ -1691,8 +1705,35 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      // electron-41-upgrade: preload.js requires require('electron'), which
-      // needs the preload process unsandboxed under modern Electron.
+      // REGRESSION GUARD (2026-09-04, main-window-sandbox-audit):
+      // `sandbox: false` here is REQUIRED, not an oversight, and it is a
+      // deliberate exception to the four-flag lockdown that governs the
+      // brand-scraper window (Hard-Won Security Rule 14).
+      //
+      // WHY: app/preload.js does `require('fs')`, `require('path')`, and
+      // three relative requires (./facts/facts-cache, ./facts/verify-facts,
+      // ./facts/chart-renderer). A sandboxed preload gets only a polyfilled
+      // require serving a small allowlist (electron, events, timers, url) —
+      // `fs`, `path`, and relative module paths all throw, so the preload
+      // fails to load and the app boots with NO IPC bridge at all.
+      //
+      // WHAT IT COSTS: the preload process runs without the OS-level
+      // renderer sandbox, so a renderer compromise reaches Node through the
+      // preload's module graph rather than being confined to the sandbox.
+      // Two things bound that cost, and BOTH must stay true:
+      //   1. `contextIsolation: true` above — the preload's world is
+      //      separate from page scripts, so the page cannot reach `fs`
+      //      except through the explicit contextBridge surface.
+      //   2. This window only ever loads app/index.html, our own local
+      //      first-party markup. It NEVER loads third-party HTML. The window
+      //      that does load arbitrary remote HTML is the brand scraper, and
+      //      that one keeps `sandbox: true` plus no preload at all.
+      // If this window is ever pointed at remote content, this flag has to
+      // be revisited before that change ships, not after.
+      //
+      // The cheaper fix (drop `fs`/`path` from preload.js, move those reads
+      // behind IPC) is a real option and would let this flip to true — it is
+      // a preload refactor, not a one-line change, so it is not done here.
       sandbox: false,
       spellcheck: true,
     },
@@ -7467,7 +7508,18 @@ ipcMain.handle('save-image-data-url', async (_, dataUrl, filename) => {
     try { shell.showItemInFolder(out); } catch {}
     return { success: true, path: out };
   } catch (err) {
-    return { success: false, reason: String(err && err.message || err) };
+    // REGRESSION GUARD (2026-09-04, raw-error-across-IPC): this returned
+    // String(err.message), i.e. a raw Node error like
+    // "EACCES: permission denied, open 'C:\\Users\\<name>\\Downloads\\x.png'"
+    // — an OS error code plus the user's home path, handed to the renderer.
+    // Today's only caller (renderer.js copyShareCardToClipboard) reads just
+    // `.success`, so nothing renders it, but Hard-Won Rule 6 is about the
+    // sink existing at all: the next consumer to read `.reason` ships a
+    // stack-shaped string into a chat bubble. Every other failure branch in
+    // this handler already returns a classified code; make the catch match,
+    // and keep the detail on the main-process console where it is useful.
+    console.warn('[save-image-data-url] write failed:', err && err.message ? err.message : err);
+    return { success: false, reason: 'write-failed' };
   }
 });
 
@@ -12824,46 +12876,41 @@ async function ensureBinary(opts = {}) {
     throw new Error('Downloaded engine too small — possible corrupted download');
   }
 
-  // Verify checksum if published
+  // REGRESSION GUARD (2026-09-04, engine-update-fail-open): verification is
+  // MANDATORY, not "if published". This block used to be wrapped in
+  // `if (checksumAsset)` with an inner `if (expectedHash)`, so a release with
+  // no checksums.txt — or a manifest missing this platform's line — installed
+  // unverified bytes over the engine that holds every user's ad-account
+  // credentials. Hard-Won Security Rule 15 requires the bootstrapper to
+  // SHA-verify every asset against a pinned manifest; this path writes the
+  // same executable and now holds the same line. resolveExpectedHash throws
+  // (with "integrity" in the message, so renderer.js humanizeUpdateError
+  // routes it to the corrupted-download branch) rather than proceeding.
+  // See app/engine-install.js for the full rationale.
   const checksumAsset = (data.assets || []).find(a => a.name === 'checksums.txt');
-  if (checksumAsset) {
-    try {
-      const checksumFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
-      const expectedHash = checksumFile.split('\n')
-        .map(l => l.trim().split(/\s+/))
-        .find(parts => parts[1] === assetName)?.[0];
-      if (expectedHash) {
-        const crypto = require('crypto');
-        const actualHash = crypto.createHash('sha256').update(binary).digest('hex');
-        if (actualHash !== expectedHash) {
-          throw new Error(`Engine checksum mismatch: expected ${expectedHash.slice(0,12)}..., got ${actualHash.slice(0,12)}...`);
-        }
-      }
-    } catch (e) {
-      if (e.message.includes('checksum mismatch')) throw e;
-      // Retry checksum fetch up to 2 more times before hard-failing (S4-05 hardening)
-      let verified = false;
-      for (let attempt = 0; attempt < 2 && !verified; attempt++) {
-        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
-        try {
-          const retryFile = (await httpsGet(checksumAsset.browser_download_url)).toString();
-          const retryHash = retryFile.split('\n').map(l => l.trim().split(/\s+/)).find(p => p[1] === assetName)?.[0];
-          if (retryHash) {
-            const ah = require('crypto').createHash('sha256').update(binary).digest('hex');
-            if (ah !== retryHash) throw new Error('Engine checksum mismatch on retry');
-            verified = true;
-          }
-        } catch (re) { if (re.message.includes('checksum mismatch')) throw re; }
-      }
-      if (!verified) throw new Error('Cannot verify engine integrity — checksum unavailable after 3 attempts. Aborted for security.');
-    }
+  const expectedHash = await engineInstall.resolveExpectedHash({
+    checksumAsset,
+    assetName,
+    httpsGet,
+  });
+  const preWriteHash = require('crypto').createHash('sha256').update(binary).digest('hex').toLowerCase();
+  if (preWriteHash !== expectedHash) {
+    throw new Error(`Engine checksum mismatch: expected ${expectedHash.slice(0, 12)}..., got ${preWriteHash.slice(0, 12)}...`);
   }
 
-  // Atomic write: write to tmp then rename
-  const tmpPath = binaryPath + '.download';
-  fs.writeFileSync(tmpPath, binary);
-  try { fs.unlinkSync(binaryPath); } catch {}
-  fs.renameSync(tmpPath, binaryPath);
+  // REGRESSION GUARD (2026-09-04, non-atomic-swap): this was
+  // `unlinkSync(binaryPath)` followed by `renameSync(tmp, binaryPath)`. A
+  // rename failure between the two left the user with NO engine and no
+  // recovery short of reinstalling. atomicReplaceBinary stages a `.new`,
+  // re-hashes it on disk, moves the incumbent to `.bak`, renames into place,
+  // and restores the `.bak` on any failure.
+  engineInstall.atomicReplaceBinary({
+    fs,
+    crypto: require('crypto'),
+    targetPath: binaryPath,
+    buffer: binary,
+    expectedHash,
+  });
 
   if (process.platform !== 'win32') {
     fs.chmodSync(binaryPath, 0o755);
