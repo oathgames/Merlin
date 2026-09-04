@@ -47,20 +47,39 @@ test('QR relayError is a boolean marker, never a sliced raw exception', () => {
     'QR note must not interpolate the raw relayError value');
 });
 
+// Slice one ipcMain handler's full body out of main.js.
+//
+// REGRESSION GUARD (2026-09-03): this sweep used to slice a fixed byte window
+// (`indexOf(anchor) + 2000`) out of main.js. That window is a magic number that
+// silently decouples from the source: an added comment inside the handler pushes
+// the assertion target past the end of the slice, and the test then fails with
+// "must return a friendly message" while the code is in fact correct. Live case:
+// save-config-field's friendly catch sat at offset 2050 in a 2000-char window.
+// Anchor on the NEXT `ipcMain.handle(` instead, so the window is always exactly
+// the handler, however long it grows.
+function handlerBody(src, name) {
+  const start = src.indexOf(`ipcMain.handle('${name}'`);
+  assert.ok(start >= 0, `handler ${name} not found in main.js`);
+  const next = src.indexOf('ipcMain.handle(', start + 1);
+  return src.slice(start, next > start ? next : src.length);
+}
+
 test('billing + activate-key + config-field producers never return raw stderr/err.message', () => {
   // billing network catch → friendly, not err.message
   assert.ok(!/text: `Could not reach billing portal \(\$\{err/.test(MAIN),
     'billing network catch must not embed raw err.message');
   // activate-key → no `Server returned ${status}` and no raw err?.message default
-  const ak = MAIN.slice(MAIN.indexOf("ipcMain.handle('activate-key'"), MAIN.indexOf("ipcMain.handle('activate-key'") + 2100);
+  const ak = handlerBody(MAIN, 'activate-key');
   assert.ok(!/error: err\?\.message \|\| 'network error'/.test(ak),
     'activate-key catch must not return raw err.message');
   assert.ok(/Could not reach the activation server/.test(ak),
     'activate-key catch must return a friendly network message');
   // save-config-field catch → friendly, not err.message
-  const scf = MAIN.slice(MAIN.indexOf("ipcMain.handle('save-config-field'"), MAIN.indexOf("ipcMain.handle('save-config-field'") + 2000);
+  const scf = handlerBody(MAIN, 'save-config-field');
   assert.ok(/error: 'Could not save that\. Please try again\.'/.test(scf),
     'save-config-field catch must return a friendly message, not err.message');
+  assert.ok(!/return \{ success: false, error: err/.test(scf),
+    'save-config-field must never return a raw err/err.message to the renderer');
 });
 
 test('login-failed producer does not embed raw CLI stderr in the user string', () => {
