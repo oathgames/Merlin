@@ -202,6 +202,18 @@ const TOOL_ROUTING = [
   { name: 'brand_guide', skip: true },
   { name: 'brand_activate', skip: true },
   { name: 'decisions', skip: true },
+  // spend_control's two tool actions are shortened forms of the engine
+  // actions (the tool reads 'pause-all' / 'resume-all'; the engine cases are
+  // 'pause-all-spend' / 'resume-all-spend' in autocmo-core/spend_pause.go), so
+  // it needs an explicit map rather than a prefix. Not skipped: resume-all
+  // existed in the engine with NO MCP route for its whole life, and a parity
+  // exemption here is exactly how that stays invisible.
+  { name: 'spend_control', prefix: '',
+    actionMap: {
+      'pause-all':  'pause-all-spend',
+      'resume-all': 'resume-all-spend',
+    },
+  },
   { name: 'jobs_poll', skip: true },
   { name: 'jobs_list', skip: true },
   { name: 'jobs_cancel', skip: true },

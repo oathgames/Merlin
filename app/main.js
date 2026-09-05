@@ -2787,6 +2787,11 @@ function translateTool(toolName, input) {
       'klaviyo-flow-delete':         { label: 'Permanently delete this Klaviyo flow', cost: 'Cannot be undone — the flow, its steps and its reporting history are removed' },
       'klaviyo-template-delete':     { label: 'Permanently delete this Klaviyo email template', cost: 'Cannot be undone — any campaign or flow message still using it breaks' },
       'postscript-automation-delete':{ label: 'Permanently delete this Postscript SMS automation', cost: 'Cannot be undone — the flow stops sending and its steps are removed' },
+      // Engine actions gated by requireApproval whose card had never been
+      // wired (2026-09-04). Plain-English impact, not the action name.
+      'quiz-funnel-gen':             { label: 'Generate a quiz funnel landing page for this brand', cost: 'No ad spend , writes a new quiz page into your results folder using this brand\'s persona and pain framing' },
+      'resume-all-spend':            { label: 'Turn Merlin ad spend back on for this brand', cost: 'Lifts the spend pause , Merlin can create and raise budgets on every connected platform again' },
+      'pause-all-spend':             { label: 'Stop all Merlin ad spend for this brand', cost: 'Free , Merlin refuses new spend until you resume; campaigns already running at the platform are unaffected' },
     };
     if (action && translations[action]) return translations[action];
   }
@@ -3331,6 +3336,14 @@ async function handleToolApproval(toolName, input) {
       // invocation away from being skipped.
       'klaviyo-flow-delete', 'klaviyo-template-delete',
       'mailchimp-campaign-delete', 'postscript-automation-delete',
+      // Same bypass shape again (2026-09-04). Both are requireApproval-gated
+      // in the engine, and both are now carded on the MCP path via
+      // CARDED_DESTRUCTIVE_ACTIONS ('quiz-funnel-gen' on the content tool,
+      // 'resume-all' on spend_control). Without the engine action names here,
+      // the card is one `Merlin '{"action":"resume-all-spend","approved":true}'`
+      // away from being skipped , and resume-all-spend re-arms every
+      // spend-increasing action across every platform for the brand.
+      'quiz-funnel-gen', 'resume-all-spend',
     ]);
     if (BASH_CARDED_DESTRUCTIVE.has(bashAction)) {
       const toolUseID = newApprovalId();

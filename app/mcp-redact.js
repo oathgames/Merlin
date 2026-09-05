@@ -105,7 +105,10 @@ const LABEL_FIELD_NAMES = new Set([
   'name', 'title', 'headline', 'label', 'audience_name', 'audienceName',
   'pageName', 'page_name', 'pixelName', 'pixel_name', 'adAccountName',
   'product_name', 'productName', 'creative_name', 'creativeName',
-  'window',
+  // 'window' was removed 2026-09-04. It is not a label: it is the field
+  // insights / attribution responses use for a lookback or reporting window,
+  // and nothing that lands under it is a human-authored name, so exempting it
+  // bought no readability and only widened the hole below.
 ]);
 
 // Fields whose values should ALWAYS be redacted from JSON output,
@@ -180,9 +183,33 @@ function applyCredentialPatterns(value) {
 // Heuristic sweep: opaque high-entropy-looking runs embedded in a longer
 // string. This is the guessing half — it is what STRUCTURAL_FIELD_NAMES
 // exempts, because it cannot tell a base64 token from a URL path segment.
-function redactOpaqueRuns(value) {
+function redactOpaqueRuns(value, looksLikeCredential = isLikelyToken) {
   LONG_TOKEN_RE.lastIndex = 0;
-  return value.replace(LONG_TOKEN_RE, (match) => (isLikelyToken(match) ? '[REDACTED]' : match));
+  return value.replace(LONG_TOKEN_RE, (match) => (looksLikeCredential(match) ? '[REDACTED]' : match));
+}
+
+// Segment-level shape test used by the LABEL predicate below. A human-authored
+// ad / campaign / audience name is words and dates joined by separators
+// (MMDDYYYY_Batch_Descriptor, per META-ADS.md); a credential is one opaque
+// high-entropy run. Words, pure numbers, and short mixed tokens like "V2" or
+// "Q4" are human; a long letters-and-digits jumble is not.
+function labelSegmentIsHumanWord(seg) {
+  if (/^\d+$/.test(seg)) return true;
+  if (/^[A-Za-z]+$/.test(seg)) return true;
+  if (seg.length <= 10 && /^[A-Za-z0-9]+$/.test(seg)) return true;
+  return false;
+}
+
+// Credential predicate for LABEL_FIELD_NAMES values. Keeps every exclusion
+// isLikelyToken already makes (paths, UUIDs, hex digests, anything under 32
+// chars) and then asks the question that separates the two populations: does
+// this run decompose into human words? '08102026_Breeds_Schnauzer_Static' does;
+// 'pk_live_51H8xKjE2eZvKYlo2C0abcdefghij' does not, because its last segment is
+// a 29-character letters-and-digits jumble.
+function labelRunLooksLikeCredential(run) {
+  if (!isLikelyToken(run)) return false;
+  const segments = run.split(/[_\-+/]/).filter(Boolean);
+  return !segments.every(labelSegmentIsHumanWord);
 }
 
 // Apply redaction to a single string. Shared by object properties and array
@@ -191,9 +218,25 @@ function redactOpaqueRuns(value) {
 //
 // `structural: true` (see STRUCTURAL_FIELD_NAMES) keeps the deterministic
 // credential rules and drops only the opaque-token heuristic.
-function redactStringValue(value, structural = false) {
+// `label: true` (see LABEL_FIELD_NAMES) is a LENGTH-only exemption: it skips
+// the whole-string isLikelyToken guess so a long human-authored ad name is not
+// replaced wholesale by '[REDACTED]', but it still runs redactOpaqueRuns ,
+// under labelRunLooksLikeCredential, which keeps names made of words and dates
+// and still sweeps an opaque credential run.
+//
+// REGRESSION GUARD (2026-09-04, labels-took-the-structural-branch): label
+// fields were routed through `structural`, which drops redactOpaqueRuns
+// entirely. The comment above LABEL_FIELD_NAMES claimed the exemption was
+// "from the length GUESS only", but structural also skips the heuristic sweep,
+// so any credential WITHOUT a TOKEN_PREFIX / Bearer / access_token= shape
+// round-tripped verbatim: a 40-char `pk_live_…` key and a 44-char base64 run
+// both survived unredacted in `title` / `label` while the identical values
+// under `notes` were redacted. Structural and label are different exemptions
+// and must stay separate parameters , collapsing them again re-opens this.
+function redactStringValue(value, structural = false, label = false) {
   if (typeof value !== 'string') return value;
   if (structural) return applyCredentialPatterns(value);
+  if (label) return redactOpaqueRuns(applyCredentialPatterns(value), labelRunLooksLikeCredential);
   if (isLikelyToken(value)) return '[REDACTED]';
   // Sweep embedded runs here rather than relying on a later whole-text pass:
   // the walker knows which subtrees are structural, a text pass does not.
@@ -227,7 +270,7 @@ function redactJsonObj(obj, structural = false) {
       if (SENSITIVE_FIELD_NAMES.has(key)) {
         obj[key] = '[REDACTED]';
       } else {
-        obj[key] = redactStringValue(value, childStructural || LABEL_FIELD_NAMES.has(key));
+        obj[key] = redactStringValue(value, childStructural, LABEL_FIELD_NAMES.has(key));
       }
     } else if (typeof value === 'object' && value !== null) {
       // Reassign: Array.prototype.map returns a NEW array, so in-place

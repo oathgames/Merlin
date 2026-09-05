@@ -133,3 +133,99 @@ test('jobs_list returns the real jobs from a STARTED store (end-to-end, no mocks
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch {}
   }
 });
+
+// ── the generation exemption, and nothing else ─────────────────────────
+//
+// REGRESSION GUARD (2026-09-04, boundary-test-only-checked-the-default):
+// the tests above pin the DEFAULT and say nothing about call sites, so the
+// same hole could be re-opened one `{ timeout: 300000 }` at a time. Two
+// things go wrong in opposite directions and both need pinning:
+//
+//   1. An override ABOVE the boundary re-creates the original bug (the host
+//      kills the call first, the caller gets no envelope). meta-import
+//      shipped with exactly 120000, i.e. sitting ON the boundary.
+//   2. Removing the DELIBERATE exemptions silently kills real generation
+//      runs at 110s. content(image/batch) and video had no explicit timeout
+//      and inherited the old 300000 default; dropping the default without
+//      pinning them would have started cutting off paid renders mid-flight.
+//
+// So: exactly two call sites may exceed the boundary-safe default, they must
+// be the two generation handlers, and they must go through the named constant
+// (which carries the "delete me once a job producer exists" note).
+
+const BOUNDARY_SAFE_MS = 110000;
+
+// The only handlers allowed a timeout at or above BOUNDARY_SAFE_MS, keyed by
+// the nearest preceding `name: '<tool>'` in the source.
+const LONG_TIMEOUT_ALLOWLIST = new Set(['content', 'video']);
+
+function toolNameAt(src, index) {
+  const before = src.slice(0, index);
+  const i = before.lastIndexOf("name: '");
+  if (i < 0) return '(module scope)';
+  return before.slice(i + 7, before.indexOf("'", i + 7));
+}
+
+test('no mcp-*.js call site sets a timeout above the boundary-safe default, except the generation allowlist', () => {
+  const files = fs.readdirSync(__dirname)
+    .filter((f) => /^mcp-.*\.js$/.test(f) && !f.endsWith('.test.js'));
+  assert.ok(files.length >= 3, 'the scan must actually find the mcp modules');
+
+  const offenders = [];
+  for (const file of files) {
+    const src = readSrc(file);
+    // Resolve `timeout: NAME` through a same-file `const NAME = <number>;`.
+    const consts = new Map();
+    for (const m of src.matchAll(/const\s+([A-Z][A-Z0-9_]*)\s*=\s*(\d+);/g)) {
+      consts.set(m[1], Number(m[2]));
+    }
+    for (const m of src.matchAll(/timeout:\s*([A-Za-z_$][\w$]*|\d+)/g)) {
+      const raw = m[1];
+      const value = /^\d+$/.test(raw) ? Number(raw) : consts.get(raw);
+      if (value === undefined) {
+        // A timeout wired to something this scan cannot resolve (a variable,
+        // an import). Fail loudly rather than quietly waving it through.
+        offenders.push(`${file}: timeout: ${raw} , unresolvable, the scan cannot prove it is inside the boundary`);
+        continue;
+      }
+      // 110000 IS the boundary-safe default, so an explicit override at that
+      // value is fine (meta-import restates it deliberately). Anything ABOVE
+      // it is the hole.
+      if (value <= BOUNDARY_SAFE_MS) continue;
+      const owner = toolNameAt(src, m.index);
+      if (!LONG_TIMEOUT_ALLOWLIST.has(owner)) {
+        offenders.push(`${file}: ${owner} sets timeout ${value} , above ${BOUNDARY_SAFE_MS}ms the host boundary (120000ms) fires first and the caller gets no envelope`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], offenders.join('\n'));
+});
+
+test('the two generation handlers keep an explicit long timeout via the named constant', () => {
+  const src = readSrc('mcp-tools.js');
+  const decl = src.match(/const GENERATION_TIMEOUT_MS = (\d+);/);
+  assert.ok(decl, 'GENERATION_TIMEOUT_MS must exist , the exemption has to be named, not a bare literal');
+  assert.equal(Number(decl[1]), 300000, 'the exemption restores the prior 300000ms budget, not a new number');
+
+  const uses = [...src.matchAll(/timeout:\s*GENERATION_TIMEOUT_MS/g)].map((m) => toolNameAt(src, m.index));
+  assert.deepEqual(uses.sort(), ['content', 'video'],
+    'exactly the content and video handlers may use the generation exemption');
+});
+
+test('the exemption documents why it exists and what retires it', () => {
+  const src = readSrc('mcp-tools.js');
+  const i = src.indexOf('const GENERATION_TIMEOUT_MS');
+  const comment = src.slice(Math.max(0, i - 2200), i);
+  assert.match(comment, /jobs_poll|mcp-jobs/,
+    'the exemption must point at the job/overflow path as the real fix');
+  assert.match(comment, /EXEMPTION|exemption/,
+    'it must read as an exemption, not as a second default');
+});
+
+test('meta_import_account_state no longer overrides the timeout onto the boundary itself', () => {
+  const src = readSrc('mcp-meta-intent.js');
+  assert.ok(!/timeout:\s*120000/.test(src),
+    'a 120000ms override IS the boundary , the host times out first and the caller gets an opaque transport error');
+  assert.match(src, /'meta-import'[^\n]*timeout:\s*110000/,
+    'meta-import must sit strictly inside the boundary like the default does');
+});

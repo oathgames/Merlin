@@ -39,6 +39,36 @@ const { buildMetaIntentTools } = require('./mcp-meta-intent');
 // back to the caller, and documents the contract.
 const BRAND_NAME_PATTERN = /^[a-z0-9_-]{1,100}$/i;
 
+// REGRESSION GUARD (2026-09-04, generation-pipelines-are-the-one-boundary-exemption):
+// runBinary's default engine timeout is 110s so that WE time out before the
+// 120s MCP call boundary does (see the long comment at the `timeout` line in
+// runBinary). Two handlers cannot live inside that bound and have nowhere else
+// to go yet:
+//
+//   content (action image / batch): a 25-image pipeline fans out per image
+//     but still assembles, QAs and re-renders serially; runs of 4-6 minutes
+//     are routine.
+//   video (generate):               a single fal / veo / heygen render plus
+//     captions, cuts and music regularly passes 3 minutes.
+//
+// Both carried NO explicit timeout before 2026-09-04, so they silently
+// inherited the old 300000ms default. Dropping the default to 110000 without
+// pinning them here would have started killing every real generation run mid
+// flight, deleting work the user already paid the provider for.
+//
+// This is an EXEMPTION, not a new default. It is honest about the trade: these
+// calls can still be cut off by the host's 120s boundary, and when they are the
+// caller gets an opaque transport timeout. The real fix is a job producer , a
+// generation handler that returns a jobId immediately and reports through
+// jobs_poll (app/mcp-jobs.js), the same overflow path the boundary comment
+// points at. No generation handler produces a job today, so an over-boundary
+// timeout is strictly better than a guaranteed kill at 110s. DELETE this
+// constant the moment content/video hand their work to the JobStore; do not
+// widen it to any other handler in the meantime, and do not add a new bare
+// numeric `timeout:` over 110000 anywhere (mcp-long-running-boundary.test.js
+// scans for exactly that).
+const GENERATION_TIMEOUT_MS = 300000;
+
 // ── Progress event emission (Task 3.1) ───────────────────────
 //
 // MCP tools cannot stream partial results from a single tool call — the
@@ -1912,11 +1942,31 @@ function buildTools(tool, z, ctx) {
       socialCaption: z.string().optional(),
       socialImageUrl: z.string().optional(),
       socialImagePath: z.string().optional(),
+      // REGRESSION GUARD (2026-09-04, quiz-funnel-gen-approval-unreachable):
+      // quiz_funnel.go:runQuizFunnelGen calls requireApproval("quiz-funnel-gen"),
+      // so the engine REFUSES the action without approved:true. This schema
+      // declared no `approved` key at all, and zod strips (defineTool's strict
+      // check now refuses) undeclared keys, so the flag could never reach the
+      // binary: every quiz-funnel-gen call fatal-erred no matter what the
+      // caller did. Rule 23's "reachable by name but missing a required param
+      // is still unusable" case, exactly. The companion halves are the
+      // 'quiz-funnel-gen' entry in CARDED_DESTRUCTIVE_ACTIONS (the card that
+      // legitimately produces the flag) and the BASH_CARDED_DESTRUCTIVE entry
+      // in main.js (so the card is not one binary invocation away from being
+      // skipped), matching the mailchimp / klaviyo delete precedent.
+      approved: z.boolean().optional().describe('Approval flag for quiz-funnel-gen. Set by the Electron approval card on user click; the engine REFUSES the generation without it. Do not set true unless the user explicitly approved generating the quiz funnel.'),
     },
     handler: async (args) => {
       const actionMap = { 'blog-post': 'blog-post', 'blog-list': 'blog-list', 'social-post': 'social-post' };
       const action = actionMap[args.action] || args.action;
-      return toEnvelope(await runBinary(ctx, action, args));
+      // Image/batch generation pipelines are the documented exemption from the
+      // 110s MCP-boundary default , see GENERATION_TIMEOUT_MS at the top of
+      // this file. Everything else on this tool (blog / social / quiz) is a
+      // single model call and stays inside the default bound.
+      const opts = (args.action === 'image' || args.action === 'batch')
+        ? { timeout: GENERATION_TIMEOUT_MS }
+        : {};
+      return toEnvelope(await runBinary(ctx, action, args, opts));
     },
   }, tool, z, ctx));
 
@@ -1967,7 +2017,9 @@ function buildTools(tool, z, ctx) {
       skipCuts: z.boolean().optional().describe('true = no platform cuts; the master keeps its source aspect (a 1:1 source stays 1:1).'),
       skipMusic: z.boolean().optional().describe('true = no background music bed.'),
     },
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'generate', args)),
+    // Video render is the second documented exemption from the 110s
+    // MCP-boundary default , see GENERATION_TIMEOUT_MS at the top of this file.
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'generate', args, { timeout: GENERATION_TIMEOUT_MS })),
   }, tool, z, ctx));
 
   // ── voice ────────────────────────────────────────────────
@@ -3289,6 +3341,69 @@ function buildTools(tool, z, ctx) {
       const payload = { action: 'decision-queue', brand: args.brand };
       if (args.sinceUnix !== undefined) payload.sinceUnix = args.sinceUnix;
       return toEnvelope(await runBinary(ctx, 'decision-queue', payload));
+    },
+  }, tool, z, ctx));
+
+  // ── spend_control ────────────────────────────────────────
+  //
+  // REGRESSION GUARD (2026-09-04, resume-all-spend-had-no-route): Rule 23,
+  // both directions, and the worst shape of it. The engine ships a master
+  // spend kill-switch pair (autocmo-core/spend_pause.go: pause-all-spend and
+  // resume-all-spend, routed in main.go). NEITHER had an MCP route, so the
+  // capability was unreachable from the app at all; and because
+  // resume-all-spend is the ONLY thing that lifts the pause flag (every
+  // spend-increasing action refuses while it is set, including force=true),
+  // the asymmetric half of that gap is a one-way door: an operator who pauses
+  // through any surface has no in-app way back.
+  //
+  // The two actions are deliberately gated differently, mirroring the engine:
+  //   pause-all:  NOT approval-gated. Pausing is the emergency brake; making
+  //                the brake ask permission defeats it. Routed READ_ONLY-ish
+  //                for the same reason meta_batch_pause is: it moves no money
+  //                in the spending direction. It is still a real state change,
+  //                so the tool is marked destructive for the SDK preview layer.
+  //   resume-all: approval-gated in the engine (requireApproval), so it MUST
+  //                carry `approved` in this schema AND appear in
+  //                CARDED_DESTRUCTIVE_ACTIONS + BASH_CARDED_DESTRUCTIVE, or it
+  //                is the quiz-funnel-gen bug again: reachable by name, fatal
+  //                on every call.
+  //
+  // The engine reads the operator's pause note off cmd.SlackMessage (it reuses
+  // that field rather than adding a Command field for one edge case), so the
+  // handler maps `reason` onto it explicitly. A caller passing `reason` and
+  // getting it silently dropped is the Rule 23 param half of the same bug.
+  tools.push(defineTool({
+    name: 'spend_control',
+    description: 'Master ad-spend kill switch for a brand. action=pause-all makes Merlin refuse every spend-increasing action across all platforms until it is lifted (existing campaigns at the platform keep running , pause those in Ads Manager for a true platform-side stop). action=resume-all lifts the pause and is the ONLY way to lift it; it shows an approval card and the engine refuses it without the approved flag.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'none',
+    brandRequired: true,
+    // preview:false. The SDK preview round-trip exists to let the agent show a
+    // computed blast radius before a large or ambiguous write; there is nothing
+    // to compute here (two actions, one brand, no payload), and pause-all is an
+    // emergency brake that must not gain a second round-trip. resume-all's gate
+    // is the host approval card plus the engine's requireApproval, both of
+    // which are already mandatory.
+    preview: false,
+    input: {
+      action: z.enum(['pause-all', 'resume-all']).describe('pause-all=block all Merlin-initiated spend for this brand; resume-all=lift that block (approval required)'),
+      brand: brandSchema.describe('Brand name'),
+      reason: z.string().optional().describe('pause-all only: short operator note recorded with the pause and included in the Slack alert.'),
+      approved: z.boolean().optional().describe('Approval flag for resume-all. Set by the Electron approval card on user click; the engine REFUSES the resume without it. Do not set true unless the user explicitly approved re-enabling Merlin ad spend for this brand.'),
+    },
+    handler: async (args) => {
+      const action = args.action === 'resume-all' ? 'resume-all-spend' : 'pause-all-spend';
+      const payload = { brand: args.brand };
+      if (args.action === 'resume-all') {
+        // Forwarded, never synthesized: the flag has to come from the
+        // approval card, which is what makes it mean "a human agreed".
+        if (args.approved) payload.approved = true;
+      } else if (args.reason) {
+        // The engine reads the pause note from cmd.SlackMessage.
+        payload.slackMessage = args.reason;
+      }
+      return toEnvelope(await runBinary(ctx, action, payload));
     },
   }, tool, z, ctx));
 
