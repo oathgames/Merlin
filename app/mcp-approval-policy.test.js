@@ -799,3 +799,116 @@ test('P0-02: every dangerous action really exists in a tool schema (no dead entr
   assert.deepEqual(missing, [],
     `these carded actions are not present in any tool schema (stale entries): ${missing.join(', ')}`);
 });
+
+// ── Contract O (2026-09-04): an engine action gated by requireApproval is
+//    DEAD unless three things ship together: an `approved` key in the tool
+//    schema (zod strips undeclared keys), an entry in
+//    CARDED_DESTRUCTIVE_ACTIONS (the card that legitimately produces the
+//    flag), and an entry in BASH_CARDED_DESTRUCTIVE (so the card is not one
+//    binary invocation away from being skipped). Two actions shipped with
+//    none of the three:
+//
+//      quiz-funnel-gen  (quiz_funnel.go:runQuizFunnelGen):  always fatal.
+//      resume-all-spend (spend_pause.go:runResumeAllSpend): always fatal,
+//        AND it is the only thing that lifts the master spend pause, so the
+//        gap was a one-way door: pause with no way back. ─────────────────
+
+test('quiz-funnel-gen is carded host-side and not swallowed by another tier', () => {
+  assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has('quiz-funnel-gen'),
+    'the engine refuses quiz-funnel-gen without approval; without the card the user is never asked and every call fatals.');
+  assert.ok(!policy.READ_ONLY_ACTIONS.has('quiz-funnel-gen'),
+    'read-only auto-approve fires first and the card would never show.');
+  assert.ok(!policy.SPEND_ACTIONS.has('quiz-funnel-gen'),
+    'quiz generation moves no ad dollars, so there is no budget context to render.');
+});
+
+test('spend_control resume-all is carded, and pause-all deliberately is NOT', () => {
+  assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has('resume-all'),
+    'resume-all-spend is requireApproval-gated in the engine and re-arms every spend path for the brand.');
+  assert.ok(!policy.CARDED_DESTRUCTIVE_ACTIONS.has('pause-all'),
+    'pause-all is the emergency brake; a brake that asks permission is not a brake.');
+  assert.ok(!policy.SPEND_ACTIONS.has('pause-all') && !policy.SPEND_ACTIONS.has('resume-all'),
+    'neither action creates spend directly, so neither belongs in the budget-context tier.');
+});
+
+test('the Bash bypass path cards quiz-funnel-gen and resume-all-spend', () => {
+  const i = SRC_MAIN.indexOf('const BASH_CARDED_DESTRUCTIVE');
+  assert.ok(i > 0, 'main.js must define BASH_CARDED_DESTRUCTIVE');
+  const block = SRC_MAIN.slice(i, i + 2600);
+  for (const engineAction of ['quiz-funnel-gen', 'resume-all-spend']) {
+    assert.ok(block.includes(`'${engineAction}'`),
+      `${engineAction} must be in BASH_CARDED_DESTRUCTIVE , otherwise the Bash path fires it with no card.`);
+  }
+});
+
+test('quiz-funnel-gen and resume-all-spend have plain-English card labels', () => {
+  for (const engineAction of ['quiz-funnel-gen', 'resume-all-spend', 'pause-all-spend']) {
+    assert.ok(SRC_MAIN.includes(`'${engineAction}':`),
+      `main.js must translate ${engineAction} into a friendly card label rather than the generic tool-and-action fallback.`);
+  }
+  // The label must read as impact, not as a dev-facing action name.
+  assert.match(SRC_MAIN, /Turn Merlin ad spend back on for this brand/);
+  assert.match(SRC_MAIN, /Generate a quiz funnel landing page for this brand/);
+});
+
+test('content + spend_control declare `approved`, and never auto-set it', () => {
+  const SRC_TOOLS = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  const blockFor = (name, next) => {
+    const start = SRC_TOOLS.indexOf(`name: '${name}'`);
+    assert.ok(start > 0, `${name} tool must exist`);
+    const end = SRC_TOOLS.indexOf(`name: '${next}'`, start);
+    return SRC_TOOLS.slice(start, end > 0 ? end : start + 20000);
+  };
+  for (const [name, next] of [['content', 'video'], ['spend_control', 'jobs_poll']]) {
+    const block = blockFor(name, next);
+    assert.ok(/approved:\s*z\.boolean\(\)/.test(block),
+      `${name} must declare an \`approved\` boolean input , zod strips undeclared keys, so without it the flag never reaches the engine and the gated action is refused on every call.`);
+    assert.ok(!/args\.approved\s*=/.test(block),
+      `${name}'s handler assigns args.approved , that bypasses the approval card the flag exists to represent.`);
+  }
+});
+
+test('spend_control is registered and exposes BOTH halves of the kill switch', () => {
+  const registry = buildRegistry();
+  const t = registry.find((x) => x.name === 'spend_control');
+  assert.ok(t, 'spend_control must be registered , resume-all-spend had no MCP route at all (Rule 23, both directions).');
+  const SRC_TOOLS = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  const start = SRC_TOOLS.indexOf("name: 'spend_control'");
+  const block = SRC_TOOLS.slice(start, start + 4000);
+  assert.ok(block.includes("'pause-all'") && block.includes("'resume-all'"),
+    'exposing pause without resume is the one-way door this fixes.');
+  assert.ok(block.includes("'pause-all-spend'") && block.includes("'resume-all-spend'"),
+    'both engine action names must be routed to; a route to an action that does not exist is the mirror-image Rule 23 bug.');
+});
+
+test('quiz-funnel-gen carries approved:true into the --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  await runBinary(makeBinaryCtx(), 'quiz-funnel-gen', {
+    brand: 'acme',
+    approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'quiz-funnel-gen');
+  assert.equal(cmd.approved, true,
+    "the engine's requireApproval() gate refuses quiz-funnel-gen unless approved reaches it as true.");
+});
+
+test('spend_control resume-all sends approved:true, and pause-all never does', async () => {
+  // The registered handler closes over the ctx buildRegistry supplied, whose
+  // getBinaryPath is a fake path, so the wire assertions go through runBinary
+  // directly; the registration itself is pinned by the test above.
+  execFileCalls.length = 0;
+  await runBinary(makeBinaryCtx(), 'resume-all-spend', { brand: 'acme', approved: true });
+  let cmd = lastCmd();
+  assert.equal(cmd.action, 'resume-all-spend');
+  assert.equal(cmd.approved, true);
+
+  execFileCalls.length = 0;
+  await runBinary(makeBinaryCtx(), 'pause-all-spend', { brand: 'acme', slackMessage: 'runaway CPA' });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'pause-all-spend');
+  assert.equal(cmd.approved, undefined,
+    'pausing must never require or carry an approval flag , the engine deliberately does not gate it.');
+  assert.equal(cmd.slackMessage, 'runaway CPA',
+    'the operator pause note is read from cmd.SlackMessage by the engine; dropping it silently is the Rule 23 param half.');
+});

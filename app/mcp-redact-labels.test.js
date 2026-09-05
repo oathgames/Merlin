@@ -83,3 +83,38 @@ test('a bare credential with no whitespace is still redacted whole', () => {
   const t = 'aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTIz';
   assert.strictEqual(walk({ note: t }).note, '[REDACTED]');
 });
+
+// REGRESSION GUARD (2026-09-04, labels-took-the-structural-branch). The label
+// exemption was implemented by routing label values through the STRUCTURAL
+// branch, which drops redactOpaqueRuns entirely -- not just the whole-string
+// length guess the comment claimed. So any credential WITHOUT a known prefix,
+// a Bearer header, or an access_token= shape round-tripped verbatim out of
+// title / label / name, while the identical value under 'notes' was redacted.
+// Both values below were verified to survive unredacted pre-fix.
+test('an unprefixed key in a label field is redacted, and its shape is why', () => {
+  const key = 'pk_live_51H8xKjE2eZvKYlo2C0abcdefghij';   // 37 chars, no TOKEN_PREFIX match
+  const b64 = 'aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTIz'; // 44 chars, no prefix
+  for (const field of ['title', 'label', 'name', 'ad_name', 'headline']) {
+    for (const secret of [key, b64]) {
+      const bare = walk({ [field]: secret })[field];
+      assert.ok(!bare.includes(secret), `credential survived verbatim in ${field}: ${secret}`);
+      assert.strictEqual(bare, '[REDACTED]');
+      const embedded = walk({ [field]: `Batch ${secret} v2` })[field];
+      assert.ok(!embedded.includes(secret), `embedded credential survived in ${field}`);
+      assert.ok(embedded.includes('[REDACTED]'));
+    }
+  }
+});
+
+test('label and non-label fields agree on what is a credential', () => {
+  const secret = 'aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTIz';
+  assert.strictEqual(walk({ notes: secret }).notes, '[REDACTED]');
+  assert.strictEqual(walk({ title: secret }).title, '[REDACTED]');
+});
+
+test("'window' is not a label field", () => {
+  // It carries reporting windows, never human-authored names, so exempting it
+  // widened the hole for nothing.
+  const secret = 'aGVsbG93b3JsZGhlbGxvd29ybGRoZWxsb3dvcmxkMTIz';
+  assert.strictEqual(walk({ window: secret }).window, '[REDACTED]');
+});

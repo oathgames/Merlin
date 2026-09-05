@@ -710,7 +710,13 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       brand: brandSchema.describe('Brand name'),
       status: z.enum(['active', 'paused', 'all']).optional().describe('Filter ads by status (default: all)'),
     },
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-import', args, { timeout: 120000 })),
+    // 110000, not 120000: 120000 IS the MCP call boundary, so an override that
+    // sat exactly on it guaranteed the host timed out first and the caller got
+    // an opaque transport error instead of an envelope. See the
+    // MCP_CALL_BOUNDARY_MS comment in mcp-tools.js , this is the same bound the
+    // default now uses, restated only because the description promises 30-120s
+    // and a reader would otherwise assume the default was too tight.
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-import', args, { timeout: 110000 })),
   }, tool, z, ctx));
 
   // ── meta_rename_ads ───────────────────────────────────────────────

@@ -231,6 +231,22 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // collection on a real data stream, so it cards like its seven siblings.
   'update-stream-settings',
   'attach-shopify-events',
+  // REGRESSION GUARD (2026-09-04, engine-gate-with-no-card): both of these are
+  // approval-gated in the ENGINE (requireApproval), which means the call is
+  // guaranteed to fatal unless a card produces `approved:true`. Leaving them
+  // out of this set is not "one less prompt", it is a dead action:
+  //   'quiz-funnel-gen' -> quiz_funnel.go:runQuizFunnelGen. Generates a live
+  //     7-frame quiz funnel from the brand manifest persona + pain_state; the
+  //     output is customer-facing copy about a health/pain framing, which is
+  //     exactly the thing a human should read before it exists.
+  //   'resume-all'      -> spend_pause.go:runResumeAllSpend (engine action
+  //     resume-all-spend). Lifting the master kill switch re-arms EVERY
+  //     spend-increasing action across every platform for the brand, so it is
+  //     the highest-consequence non-spend confirmation in the product. Its
+  //     sibling 'pause-all' is deliberately NOT here: an emergency brake that
+  //     asks permission is not an emergency brake.
+  'quiz-funnel-gen',
+  'resume-all',
 ]));
 
 // ── Intent-tool routing ─────────────────────────────────────────────

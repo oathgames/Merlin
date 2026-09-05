@@ -324,6 +324,44 @@ function cleanupOrphanBinaries({ appRoot, log = console.log, tmpDir = os.tmpdir(
   // os.tmpdir orphans
   stale.push(path.join(tmpDir, BINARY_NAME));
 
+  // REGRESSION GUARD (2026-09-04, engine-install-bak-never-swept):
+  // engine-install.js:atomicReplaceBinary stages the download at
+  // `<target>.new` and moves the incumbent to `<target>.bak`. Its final
+  // `try { fs.unlinkSync(bakPath); } catch {}` is deliberately best-effort
+  // (a failed cleanup must not fail an otherwise-good update), and on Windows
+  // it fails routinely: the just-replaced Merlin.exe is commonly still mapped
+  // by AV or a lingering child process, so the unlink throws EBUSY and is
+  // swallowed. The comment there says "a leftover .bak is harmless (the next
+  // update clears it)" , which was only true if there IS a next update, and
+  // nothing else on disk ever looked at these names. A user who updates once
+  // and then stops keeps a full second copy of the engine forever.
+  //
+  // `<target>.new` is the same shape from the other direction: every early
+  // abort in atomicReplaceBinary unlinks it best-effort too.
+  //
+  // Both are swept from the canonical bin dir AND the legacy workspace tools
+  // dir, and both are STALENESS-GATED for the same reason the installer
+  // artifacts are: an update running right now owns those exact files, and a
+  // second app instance sweeping at launch must not delete them out from under
+  // it. Suffixes are appended to BINARY_NAME, so this covers the mac/Linux
+  // `Merlin.bak` / `Merlin.new` names as well as `Merlin.exe.bak` / `.new`.
+  const UPDATE_STAGING_SUFFIXES = ['.bak', '.new'];
+  const stagingDirs = [getCanonicalBinaryDir()];
+  if (appRoot) stagingDirs.push(path.join(appRoot, '.claude', 'tools'));
+  for (const dir of stagingDirs) {
+    for (const suffix of UPDATE_STAGING_SUFFIXES) {
+      const full = path.join(dir, BINARY_NAME + suffix);
+      let present = false;
+      try { present = fs.existsSync(full); } catch { present = false; }
+      if (!present) continue;
+      if (!isStaleUpdateArtifact(full)) {
+        result.skipped.push(full);
+        continue;
+      }
+      stale.push(full);
+    }
+  }
+
   // Installer-stage orphans (D1) — Merlin.Setup.X.Y.Z.exe / Merlin-X.Y.Z.dmg
   // left behind by installUpdateFromLatestRelease.
   //
