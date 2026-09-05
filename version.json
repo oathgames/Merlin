@@ -1,5 +1,5 @@
 {
-  "version": "1.39.4",
+  "version": "1.40.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -128,10 +128,10 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults — a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Fixes TrendTrack (and other workspace-wide keys) failing with \"invalid or revoked\" when a stale per-brand copy of the key shadowed the global one.",
+  "notes": "Full-stack hardening release: engine updates now fail closed without a verified checksum manifest and replace the binary atomically, every destructive or send action is approval-carded end to end, and dozens of connector, vault, and rate-limit fixes from a whole-app audit.",
   "whatsNew": [
-    "TrendTrack and other workspace-wide keys now always read the global key first, so one pasted key works for every brand.",
-    "A stale per-brand copy of a universal key can no longer shadow the good one.",
-    "Regression guard and CI coverage for universal key resolution."
+    "Engine updates verify the checksum manifest before touching your install and swap the binary atomically, so a bad download can never leave Merlin without an engine.",
+    "Every send, delete, sync, and spend-resume action now shows a plain-English approval card before it runs; Reddit bids are set explicitly instead of derived from budget.",
+    "A failed vault write can no longer erase a credential, Shopify tokens migrate to the new expiring format automatically, and Merchant Center feeds use the shop currency."
   ]
 }
