@@ -74,6 +74,13 @@ const EXCLUDED_FILES = new Set([
   'app/icon-1200.png',
   // Unreferenced dev leftover — no code path loads it.
   'app/demo-preview.html',
+  // Frozen-surface parity harness: a dev/CI-only refactor guard. The
+  // collector is loaded only by app/frozen-surfaces.test.js and its snapshot
+  // is a committed review artifact, not runtime data — no app code path
+  // requires either one. Both are excluded from the electron-builder `files`
+  // lists too, so they never reach an install and have nothing to update.
+  'app/frozen-surfaces.js',
+  'app/__snapshots__/frozen-surfaces.snapshot.json',
   // PWA Cloudflare Worker source — deployed to pwa.merlingotme.com
   // via wrangler, not served from the desktop.
   'pwa/worker.js',

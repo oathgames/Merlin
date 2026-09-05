@@ -198,6 +198,18 @@ jobs:
       # "which quiz question do people abandon on" unanswerable from Merlin.
       - name: MCP Analytics reachability (params + write gate + dimension reads)
         run: node --test app/mcp-analytics-param-reachability.test.js app/mcp-analytics-event-breakdown-reachability.test.js
+      # Frozen-surface parity — the before/after harness for large refactors.
+      # Collects every externally visible contract the app owns (80 MCP tools
+      # with their zod input schemas, the SKILL frontmatter + body hashes, the
+      # config key allowlist, the approval-policy action sets, the budget
+      # ceilings, version.json's updatable/removed lists) and compares it
+      # byte-for-byte against a committed snapshot. Nothing else in either
+      # repo can catch these moving: the two repos never compile against each
+      # other and the consumer on the far side is an LLM. A red run is either
+      # a bug or a deliberate change accepted via `npm run parity:update` —
+      # in which case the regenerated snapshot is in the diff for review.
+      - name: Frozen-surface parity snapshot
+        run: node --test app/frozen-surfaces.test.js
       # Rate-limit stress — the "never get a client banned" canary. If
       # any assertion flips, a real brand is about to hit a platform's
       # rate-limit review queue.
