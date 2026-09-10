@@ -1777,7 +1777,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"). Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\".",
+      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email's content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"). Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\".",
       "input": {
         "action": {
           "description": "Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)",
@@ -1805,6 +1805,7 @@
             "flow-update-status",
             "flow-delete",
             "flows-bulk-import",
+            "flow-set-message-template",
             "segments-list",
             "segment-create",
             "export"
@@ -1844,6 +1845,10 @@
         "endDate": {
           "description": "campaign-performance / flow-performance: exact window end, YYYY-MM-DD inclusive (ET). Give with startDate.",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "flowActionId": {
+          "description": "Klaviyo flow ACTION id — one send-email step inside a flow (e.g. 111531895). Required for flow-set-message-template. Get it from flow-get: definition.actions[].id. The action must be type \"send-email\"; anything else is refused.",
           "type": "string"
         },
         "flowBody": {
