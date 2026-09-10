@@ -1545,7 +1545,8 @@ function buildTools(tool, z, ctx) {
   //   flow-create              — flowBody {name, trigger:{type,...}, steps:[{type,...}]}
   //                              CAN-SPAM gate runs BEFORE HTTP — refused if violated.
   //   flow-update-status       — flowId, status (draft|manual|live)
-  //   flow-set-message-template — flowActionId, templateId. Repoints one flow
+  //   flow-set-message-template — flowActionId, templateId, optional messageName.
+  //                              Repoints one flow
   //                              email step at a template in the template
   //                              library. This is the ONLY way to change a live
   //                              flow email's content via API: flow-authored
@@ -1553,8 +1554,10 @@ function buildTools(tool, z, ctx) {
   //                              (PATCH /api/templates/{id} → 404, at every flow
   //                              status), so the fix is template-create + this
   //                              repoint. Read-modify-write: subject, from,
-  //                              preview text and message status are carried
-  //                              over, only template_id changes.
+  //                              preview text, message status and the step label
+  //                              are carried over; only template_id changes.
+  //                              messageName overrides the label (Klaviyo resets
+  //                              an omitted name, so it is always sent).
   //   flow-delete              — flowId
   //   flows-bulk-import        — manifestPath (must live under
   //                              assets/brands/<brand>/email/), brand (REQUIRED),
@@ -1668,6 +1671,7 @@ function buildTools(tool, z, ctx) {
       // Flow fields (used by flow-* + flows-bulk-import actions, AND flow-performance / flow-message-performance)
       flowId: z.string().optional().describe('Klaviyo flow ID. Required for flow-get/update-status/delete and flow-message-performance; optional for flow-performance (when omitted, returns ALL flows).'),
       flowActionId: z.string().optional().describe('Klaviyo flow ACTION id — one send-email step inside a flow (e.g. 111531895). Required for flow-set-message-template. Get it from flow-get: definition.actions[].id. The action must be type "send-email"; anything else is refused.'),
+      messageName: z.string().optional().describe('Optional step label for klaviyo flow-set-message-template — the name shown on the email step in the flow editor. Omit to keep the message\'s current label (it is always sent, because Klaviyo resets an omitted name to its own default).'),
       // Performance fields
       metricId: z.string().optional().describe('Klaviyo metric ID. Required for metric-aggregate (pick one from the metrics list shown by the legacy "performance" action). Optional for campaign-performance / flow-performance: which Placed Order metric to attribute against when the account has more than one (default prefers the Shopify integration metric; the report lists the alternatives).'),
       flowBody: z.any().optional().describe('Full flow body for flow-create. Shape: {name, trigger:{type, list_id?, metric?}, steps:[{type, ...}]}. Step types: "delay" {duration_seconds}, "send_email" {subject, preheader, from_email, from_name, template_id?, body?}, "wait_until" {time_of_day, timezone}, "branch" {condition}. The binary runs CheckFlowCANSPAM before any HTTP — trigger.type must be on the documented-consent allowlist (list_added, segment_added, profile_subscribed_marketing, ecommerce_placed_order, ecommerce_started_checkout, viewed_product, custom_event), every send_email step must have an unsubscribe token + physical address + subject + from_name. Failures REFUSE the create (no auto-fix).'),

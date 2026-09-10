@@ -1878,6 +1878,10 @@
           "description": "Filesystem path to a flow manifest JSON for flows-bulk-import. MUST live under assets/brands/<brand>/email/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {manifest_version, brand, flows:[{name, status?, trigger, steps}, ...]}. References uploaded templates by template_id (run templates-bulk-upload first to get the IDs).",
           "type": "string"
         },
+        "messageName": {
+          "description": "Optional step label for klaviyo flow-set-message-template — the name shown on the email step in the flow editor. Omit to keep the message's current label (it is always sent, because Klaviyo resets an omitted name to its own default).",
+          "type": "string"
+        },
         "metricId": {
           "description": "Klaviyo metric ID. Required for metric-aggregate (pick one from the metrics list shown by the legacy \"performance\" action). Optional for campaign-performance / flow-performance: which Placed Order metric to attribute against when the account has more than one (default prefers the Shopify integration metric; the report lists the alternatives).",
           "type": "string"
