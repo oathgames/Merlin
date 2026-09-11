@@ -1,5 +1,5 @@
 {
-  "version": "1.40.0",
+  "version": "1.40.1",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -128,10 +128,9 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults — a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Full-stack hardening release: engine updates now fail closed without a verified checksum manifest and replace the binary atomically, every destructive or send action is approval-carded end to end, and dozens of connector, vault, and rate-limit fixes from a whole-app audit.",
+  "notes": "Patch: the Merlin engine now accepts a --brand flag that overlays the per-brand config onto the global config for bare CLI invocations, so brand-scoped actions (Klaviyo flows, Meta ads, etc.) authenticate against the correct account instead of silently using the global default.",
   "whatsNew": [
-    "Engine updates verify the checksum manifest before touching your install and swap the binary atomically, so a bad download can never leave Merlin without an engine.",
-    "Every send, delete, sync, and spend-resume action now shows a plain-English approval card before it runs; Reddit bids are set explicitly instead of derived from budget.",
-    "A failed vault write can no longer erase a credential, Shopify tokens migrate to the new expiring format automatically, and Merchant Center feeds use the shop currency."
+    "Fixed: CLI engine runs without a brand context silently used the global/default account — brand-scoped actions like klaviyo-flows-list could return another account's data with no error.",
+    "New: --brand <slug> flag overlays .merlin-config-<slug>.json onto the global config and defaults the command's brand, matching the app's per-brand config merge."
   ]
 }
