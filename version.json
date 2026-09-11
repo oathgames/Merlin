@@ -1,5 +1,5 @@
 {
-  "version": "1.40.2",
+  "version": "1.40.3",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -128,9 +128,10 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults — a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Patch: the auto-update now shows a branded Merlin splash while the installer runs, so the ~1 minute install no longer looks like the app hung. The macOS DMG gets a branded dark background with a drag arrow.",
+  "notes": "Patch: the auto-update now shows a branded Merlin splash while the installer runs, the macOS DMG is styled in Merlin's dark theme, and the Shopify connector now points at the approved App Store listing and accepts the web install's read-only scope grant.",
   "whatsNew": [
     "New: a branded \"Updating Merlin\" window appears while an update installs — no more dead air that looked like a hang.",
-    "New: the macOS installer window is now styled in Merlin's dark theme with a drag-to-Applications arrow."
+    "New: the macOS installer window is styled in Merlin's dark theme with a drag-to-Applications arrow.",
+    "Fixed: Connect Shopify now opens the approved App Store listing, and desktop installs no longer fail on a scope check."
   ]
 }
