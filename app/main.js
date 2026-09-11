@@ -849,6 +849,46 @@ function getBinaryPath() {
   return binaryPaths.resolveBinaryPath({ appInstall, appRoot });
 }
 
+// execEngine — spawn the Go engine with automatic fallback across candidate
+// binary paths. resolveBinaryPath picks the first EXISTING binary, but on
+// Windows a Defender-quarantined canonical Merlin.exe still exists while
+// being unspawnable (os error 225, "file contains a virus" — live incident
+// 2026-09-11, Trojan:Win32/Gracing.I false-positive on the Go engine). That
+// left every engine spawn — OAuth handoff, analytics, connectors — dead.
+//
+// This wrapper runs the spawn against each existing candidate in preference
+// order (canonical → install-local → workspace) until one starts without a
+// spawn-level error. `fn(child)` receives the live ChildProcess; the callback
+// signature matches execFile's (err, stdout, stderr). Spawn-level failures
+// (err with no stdout) advance to the next candidate; a process that ran and
+// exited non-zero is a real engine error and is passed through, not retried.
+function execEngine(args, options, fn) {
+  const { execFile } = require('child_process');
+  const candidates = binaryPaths.resolveBinaryPathCandidates({ appInstall, appRoot });
+  const paths = candidates.length ? candidates : [getBinaryPath()];
+  let idx = 0;
+  const tryNext = () => {
+    const binPath = paths[idx];
+    const child = execFile(binPath, args, options, (err, stdout, stderr) => {
+      // Spawn-level failure (couldn't start the process at all) AND more
+      // candidates remain → try the next binary location.
+      const spawnFailed = err && (err.code === 'ENOENT' || err.code === 'EPERM' || err.code === 'EACCES' || /225|virus|spawn/i.test(err.message || '')) && !stdout;
+      if (spawnFailed && idx + 1 < paths.length) {
+        console.warn(`[engine] spawn failed for ${binPath} (${err.code || err.message}); trying next candidate`);
+        idx++;
+        tryNext();
+        return;
+      }
+      // Pass the child that actually produced this result so callers
+      // tracking activeChildProcesses remove the right handle.
+      fn(err, stdout, stderr, child);
+    });
+    child._enginePath = binPath;
+    return child;
+  };
+  return tryNext();
+}
+
 let claudeSdkModulePromise = null;
 const CLAUDE_SETUP_CACHE_MS = 2500;
 // Mac cold start: SDK → spawn claude CLI → Node.js loads → connects to Desktop.
@@ -5412,7 +5452,13 @@ async function runOAuthFlow(platform, brandName, extra) {
   //              contract — needs a dedicated fast-open migration).
   //   - Any future provider between code-landing and migration.
   const action = `${platform}-login`;
-  const cmd = JSON.stringify({ action });
+  // brand MUST ride the command — the binary vaults under
+  // oauthVaultScope() = activeBrand || '_global', and every QuickBooks key
+  // is brand-scoped (BRAND_KEYS / brandScopedKeys forbid the _global
+  // fallback). Without this the tokens land under _global where brand
+  // resolution never looks: the tile stays gray and reports fail
+  // 'not connected' after a successful OAuth. (2026-09-11 audit P0)
+  const cmd = JSON.stringify({ action, brand: isGlobalPlatform ? '' : (brandName || '') });
   const { execFile } = require('child_process');
 
   return new Promise((resolve) => {
@@ -5551,10 +5597,9 @@ ipcMain.handle('run-shopify-handoff', async (_, handoffCode, brandName) => {
   try { fs.accessSync(configPath); } catch { return { error: 'Config not found. Run preflight first.' }; }
   await maybeHydrateBinaryLicenseToken('shopify-handoff');
 
-  const { execFile } = require('child_process');
   const cmd = JSON.stringify({ action: 'shopify-handoff', handoffCode, brand: brandName });
   return await new Promise((resolve) => {
-    const child = execFile(binaryPath, ['--config', configPath, '--cmd', cmd], {
+    const child = execEngine(['--config', configPath, '--cmd', cmd], {
       timeout: 60000,
       cwd: appRoot,
       maxBuffer: 4 * 1024 * 1024,
@@ -10259,14 +10304,18 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // Cin7 Core — Account ID + Application Key. Mirror of
       // platformVaultKeys["cin7"] in autocmo-core/oauth.go.
       cin7: ['cin7AccountId', 'cin7ApplicationKey'],
-      // Shopify Payments rides the Shopify connection — it has no creds of
-      // its own, so there is nothing to clear (disconnecting Shopify removes
-      // the underlying grant). The empty entry exists so the platform is a
-      // known disconnect target rather than 'unknown platform'.
+      // Shopify Payments rides the Shopify grant (no credentials of its
+      // own — the empty entry exists so the platform is a known disconnect
+      // target rather than 'unknown platform'). The keys.length===0 guard
+      // below turns it into an explanatory message instead of a silent
+      // no-op success.
       shopify_payments: [],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };
+    if (keys.length === 0) {
+      return { success: false, error: 'Shopify Payments uses your Shopify connection — disconnect Shopify to remove it.' };
+    }
 
     // Keys that live in global config (not per-brand files)
     const GLOBAL_KEYS_SET = new Set(['falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'foreplayApiKey', 'trendtrackApiKey', 'slackBotToken', 'slackWebhookUrl', 'slackChannel', 'discordGuildId', 'discordChannelId']);

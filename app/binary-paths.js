@@ -148,6 +148,16 @@ function getCanonicalBinaryPath() {
 //
 // All three locations are examined for *existence*; integrity checks
 // (size, version, signature) live in spawnSafeBinaryCheck.
+// resolveBinaryPath — preferred path order:
+//   1. canonical (user-writable, where /update writes)
+//   2. install-local (bundled with installer, ships fresh)
+//   3. workspace (legacy fallback for old installs that pre-date
+//      this module)
+//
+// All three locations are examined for *existence*; integrity checks
+// (size, version, signature) live in spawnSafeBinaryCheck. Executability
+// (AV-quarantine) is handled at spawn time by the caller — see
+// spawnEngineBinary's canonical→install-local fallback in main.js.
 function resolveBinaryPath({ appInstall, appRoot }) {
   const canonical = getCanonicalBinaryPath();
   try { fs.accessSync(canonical, fs.constants.F_OK); return canonical; } catch {}
@@ -159,6 +169,21 @@ function resolveBinaryPath({ appInstall, appRoot }) {
     return path.join(appRoot, '.claude', 'tools', BINARY_NAME);
   }
   return canonical; // last resort — caller will get ENOENT but at least the path is sensible
+}
+
+// resolveBinaryPathCandidates — the same preference order as
+// resolveBinaryPath but returns EVERY existing candidate, most-preferred
+// first. Used by the spawn wrapper to retry the next candidate when the
+// first exists but won't execute (Windows Defender quarantine leaves the
+// file present yet unspawnable — os error 225 — so existence alone picks a
+// dead path; live incident 2026-09-11).
+function resolveBinaryPathCandidates({ appInstall, appRoot }) {
+  const out = [];
+  const push = (p) => { try { fs.accessSync(p, fs.constants.F_OK); out.push(p); } catch {} };
+  push(getCanonicalBinaryPath());
+  if (appInstall) push(path.join(appInstall, '.claude', 'tools', BINARY_NAME));
+  if (appRoot) push(path.join(appRoot, '.claude', 'tools', BINARY_NAME));
+  return out;
 }
 
 // hydrateCanonicalBinary — copy install-local → canonical when canonical
@@ -668,6 +693,7 @@ function isCachedJsModulePath(candidatePath) {
 }
 
 module.exports = {
+  resolveBinaryPathCandidates,
   BINARY_NAME,
   getCanonicalBinaryDir,
   getCanonicalBinaryPath,

@@ -266,13 +266,6 @@
            arrives on the redirect and is persisted by runQuickBooksLogin.
            See quickbooks.go. -->
       <button class="magic-tile" data-platform="quickbooks" data-scope="brand" data-tip="Connect QuickBooks (accounting)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#2CA01C"/><circle cx="11" cy="11" r="5.5" fill="none" stroke="#fff" stroke-width="2.2"/><path d="M14.8 14.8L18 18" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg></div><div class="tile-name">QuickBooks</div></button>
-      <!-- Shopify Payments: payouts + disputes read through the brand's
-           EXISTING Shopify Admin API grant — no separate credential.
-           Left-click checks the Shopify connection state: connected →
-           info toast; not connected → runs the same install flow as the
-           shopify tile (connectShopifyPayments → startShopifyFlow).
-           See shopify_payments.go. -->
-      <button class="magic-tile" data-platform="shopify_payments" data-scope="brand" data-tip="Shopify Payments (payouts + disputes via your Shopify connection)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#96bf48"/><rect x="4" y="7" width="16" height="11" rx="2" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M4 10.5h16" stroke="#fff" stroke-width="1.6"/><path d="M7 14.5h4" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg></div><div class="tile-name">Shopify Payments</div></button>
       <!-- ShipStation: shipping/fulfillment reporting (READ-ONLY). BYOK
            2-field connect (API Key + API Secret from ShipStation →
            Account → API Settings) via the custom

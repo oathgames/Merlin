@@ -6553,12 +6553,9 @@ function runShopifyOAuthWithStore(activeBrand) {
     showModal({ title: 'Connection Failed', body: friendlyError(err.message, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
   });
 }
-// startShopifyFlow — shared kickoff for the Shopify install flow. Used by
-// the shopify tile branch above AND by the shopify_payments tile (which
-// rides the same Shopify Admin grant — see connectShopifyPayments). The
-// in-flight guard key is pinned to 'shopify:<brand>' (not the clicked
-// platform) so a shopify + shopify_payments double-click can't spawn two
-// parallel installs.
+// startShopifyFlow — kickoff for the Shopify install flow. The in-flight
+// guard key is pinned to 'shopify:<brand>' so a double-click can't spawn
+// two parallel installs.
 function startShopifyFlow(activeBrand) {
   const guardKey = `shopify:${activeBrand || ''}`;
   if (_oauthInFlight.has(guardKey)) return;
@@ -7550,20 +7547,6 @@ function showCin7ConnectModal(activeBrand) {
   });
 }
 
-// Shopify Payments rides the brand's existing Shopify Admin API grant —
-// there is no separate credential to collect. Left-click checks the
-// Shopify connection state (the .connected class painted by
-// loadConnections): already connected → info toast; not connected → run
-// the exact same install flow as the shopify tile (startShopifyFlow).
-// See shopify_payments.go.
-function connectShopifyPayments(activeBrand) {
-  const shopifyTile = document.querySelector('.magic-tile[data-platform="shopify"]');
-  if (shopifyTile && shopifyTile.classList.contains('connected')) {
-    showToast('Shopify Payments rides your Shopify connection — already connected.', { kind: 'info' });
-    return;
-  }
-  startShopifyFlow(activeBrand);
-}
 
 // Platforms whose tile LEFT-CLICK opens a custom multi-field connect modal
 // instead of OAuth or the single-field API_KEY_PLATFORMS modal. Checked in the
@@ -7575,7 +7558,6 @@ const CUSTOM_CONNECT_HANDLERS = {
   sesami: showSesamiConnectModal,
   shipstation: showShipStationConnectModal,
   cin7: showCin7ConnectModal,
-  shopify_payments: connectShopifyPayments,
 };
 
 // Platforms that support a "Use my API key" right-click override. Each entry
