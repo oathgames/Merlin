@@ -2745,6 +2745,23 @@ function translateTool(toolName, input) {
       // budget), so wiring is a deliberate follow-up, not a stray label here.
       'rokt-report':            { label: 'Pull Rokt network performance', cost: 'Free' },
       'rokt-verify':            { label: 'Verify your Rokt credentials', cost: 'Free' },
+      'quickbooks-login':         { label: 'Connect QuickBooks (read-only accounting)', cost: 'Free' },
+      'quickbooks-report':        { label: 'Pull QuickBooks accounting metrics', cost: 'Free' },
+      'yotpo-verify':             { label: 'Verify your Yotpo credentials', cost: 'Free' },
+      'yotpo-report':             { label: 'Pull Yotpo reviews and loyalty metrics', cost: 'Free' },
+      'sesami-verify':            { label: 'Verify your Sesami credentials', cost: 'Free' },
+      'sesami-report':            { label: 'Pull Sesami booking metrics', cost: 'Free' },
+      'faire-verify':             { label: 'Verify your Faire API token', cost: 'Free' },
+      'faire-report':             { label: 'Pull Faire wholesale orders', cost: 'Free' },
+      'shipstation-verify':       { label: 'Verify your ShipStation credentials', cost: 'Free' },
+      'shipstation-report':       { label: 'Pull ShipStation shipping metrics', cost: 'Free' },
+      'loop-verify':              { label: 'Verify your Loop Returns API key', cost: 'Free' },
+      'loop-report':              { label: 'Pull Loop Returns metrics', cost: 'Free' },
+      'cin7-verify':              { label: 'Verify your Cin7 credentials', cost: 'Free' },
+      'cin7-report':              { label: 'Pull Cin7 inventory metrics', cost: 'Free' },
+      'shopify-payments-report':  { label: 'Pull Shopify Payments payouts', cost: 'Free' },
+      'shopify-export':           { label: 'Export full Shopify history (orders, products, customers)', cost: 'Free' },
+      'klaviyo-export':           { label: 'Export full Klaviyo history (profiles, campaigns, flows, events)', cost: 'Free' },
       'slack-login':   { label: 'Connect Slack for notifications', cost: 'Free' },
       'discord-login': { label: 'Connect Discord for notifications', cost: 'Free' },
       'discord-setup': { label: 'Change Discord notification channel', cost: 'Free' },
@@ -9064,6 +9081,21 @@ const BRAND_KEYS = [
   // Rokt — brand-specific BYOK reporting creds. Mirror of brandScopedKeys in
   // autocmo-core/vault.go.
   'roktAppId', 'roktAppSecret', 'roktAccountId',
+  // Yotpo — brand-specific BYOK (App Key + Secret Key). Mirror of
+  // brandScopedKeys in autocmo-core/vault.go.
+  'yotpoAppKey', 'yotpoSecretKey',
+  // Sesami — brand-specific BYOK (PAT + Client ID + Shop ID).
+  'sesamiApiKey', 'sesamiClientId', 'sesamiShopId',
+  // Faire — brand-specific BYOK (X-FAIRE-ACCESS-TOKEN).
+  'faireApiToken',
+  // QuickBooks Online — brand-specific OAuth token pair + expiry + realm id.
+  'quickbooksAccessToken', 'quickbooksRefreshToken', 'quickbooksTokenExpiresAt', 'quickbooksRealmId',
+  // ShipStation — brand-specific BYOK (API Key + Secret).
+  'shipStationApiKey', 'shipStationApiSecret',
+  // Loop Returns — brand-specific BYOK (API key).
+  'loopApiKey',
+  // Cin7 Core — brand-specific BYOK (Account ID + Application Key).
+  'cin7AccountId', 'cin7ApplicationKey',
 ];
 
 // Universal credentials — shared across every brand on a single user's
@@ -9996,6 +10028,77 @@ function getConnections(brandName) {
         : !!roktSecret;
       if (roktResolved) connected.push({ platform: 'rokt', status: 'connected' });
     }
+    // Yotpo — brand-specific BYOK; connected when App Key + Secret Key are
+    // present, with @@VAULT placeholder resolution on the secret.
+    const yotpoAppKey = brandName ? brandCfg.yotpoAppKey : globalCfg.yotpoAppKey;
+    const yotpoSecret = brandName ? brandCfg.yotpoSecretKey : globalCfg.yotpoSecretKey;
+    if (yotpoAppKey && yotpoSecret) {
+      const yotpoResolved = typeof yotpoSecret === 'string' && yotpoSecret.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'yotpoSecretKey')
+        : !!yotpoSecret;
+      if (yotpoResolved) connected.push({ platform: 'yotpo', status: 'connected' });
+    }
+    // Sesami — brand-specific BYOK; connected when PAT + Client ID + Shop ID
+    // are present, with @@VAULT placeholder resolution on the token.
+    const sesamiKey = brandName ? brandCfg.sesamiApiKey : globalCfg.sesamiApiKey;
+    const sesamiClient = brandName ? brandCfg.sesamiClientId : globalCfg.sesamiClientId;
+    const sesamiShop = brandName ? brandCfg.sesamiShopId : globalCfg.sesamiShopId;
+    if (sesamiKey && sesamiClient && sesamiShop) {
+      const sesamiResolved = typeof sesamiKey === 'string' && sesamiKey.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'sesamiApiKey')
+        : !!sesamiKey;
+      if (sesamiResolved) connected.push({ platform: 'sesami', status: 'connected' });
+    }
+    // Faire — brand-specific BYOK; connected when the X-FAIRE-ACCESS-TOKEN is
+    // present, with @@VAULT placeholder resolution.
+    const faireToken = brandName ? brandCfg.faireApiToken : globalCfg.faireApiToken;
+    if (faireToken) {
+      const faireResolved = typeof faireToken === 'string' && faireToken.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'faireApiToken')
+        : !!faireToken;
+      if (faireResolved) connected.push({ platform: 'faire', status: 'connected' });
+    }
+    // QuickBooks Online — brand-specific OAuth; connected when the access
+    // token + realm id are present, with @@VAULT placeholder resolution on
+    // the token. (quickbooks.go refreshes the token itself before pulls.)
+    const qbToken = brandName ? brandCfg.quickbooksAccessToken : globalCfg.quickbooksAccessToken;
+    const qbRealm = brandName ? brandCfg.quickbooksRealmId : globalCfg.quickbooksRealmId;
+    if (qbToken && qbRealm) {
+      const qbResolved = typeof qbToken === 'string' && qbToken.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'quickbooksAccessToken')
+        : !!qbToken;
+      if (qbResolved) connected.push({ platform: 'quickbooks', status: 'connected' });
+    }
+    // ShipStation — brand-specific BYOK; connected when API Key + Secret are
+    // present, with @@VAULT placeholder resolution on the secret.
+    const ssKey = brandName ? brandCfg.shipStationApiKey : globalCfg.shipStationApiKey;
+    const ssSecret = brandName ? brandCfg.shipStationApiSecret : globalCfg.shipStationApiSecret;
+    if (ssKey && ssSecret) {
+      const ssResolved = typeof ssSecret === 'string' && ssSecret.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'shipStationApiSecret')
+        : !!ssSecret;
+      if (ssResolved) connected.push({ platform: 'shipstation', status: 'connected' });
+    }
+    // Loop Returns — brand-specific BYOK; connected when the API key is
+    // present, with @@VAULT placeholder resolution.
+    const loopKey = brandName ? brandCfg.loopApiKey : globalCfg.loopApiKey;
+    if (loopKey) {
+      const loopResolved = typeof loopKey === 'string' && loopKey.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'loopApiKey')
+        : !!loopKey;
+      if (loopResolved) connected.push({ platform: 'loop_returns', status: 'connected' });
+    }
+    // Cin7 Core — brand-specific BYOK; connected when Account ID +
+    // Application Key are present, with @@VAULT placeholder resolution on
+    // the application key.
+    const cin7Acct = brandName ? brandCfg.cin7AccountId : globalCfg.cin7AccountId;
+    const cin7Key = brandName ? brandCfg.cin7ApplicationKey : globalCfg.cin7ApplicationKey;
+    if (cin7Acct && cin7Key) {
+      const cin7Resolved = typeof cin7Key === 'string' && cin7Key.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'cin7ApplicationKey')
+        : !!cin7Key;
+      if (cin7Resolved) connected.push({ platform: 'cin7', status: 'connected' });
+    }
     // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
     const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
     const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
@@ -10003,7 +10106,12 @@ function getConnections(brandName) {
       const hasVaultToken = typeof shopToken === 'string' && shopToken.startsWith('@@VAULT:')
         ? !!vaultGet(brandName || '_global', 'shopifyAccessToken')
         : !!shopToken;
-      if (hasVaultToken) connected.push({ platform: 'shopify', status: 'connected' });
+      if (hasVaultToken) {
+        connected.push({ platform: 'shopify', status: 'connected' });
+        // Shopify Payments rides the Shopify connection — same creds, no
+        // separate token. Connected iff the Shopify check passes.
+        connected.push({ platform: 'shopify_payments', status: 'connected' });
+      }
     }
     // Klaviyo — brand-scoped.
     const klaviyoKey = brandName
@@ -10130,6 +10238,32 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // Rokt — clear all three BYOK creds on disconnect. Mirror of
       // platformVaultKeys["rokt"] in autocmo-core/oauth.go.
       rokt: ['roktAppId', 'roktAppSecret', 'roktAccountId'],
+      // Yotpo — clear both BYOK creds on disconnect. Mirror of
+      // platformVaultKeys["yotpo"] in autocmo-core/oauth.go.
+      yotpo: ['yotpoAppKey', 'yotpoSecretKey'],
+      // Sesami — clear all three BYOK creds on disconnect. Mirror of
+      // platformVaultKeys["sesami"] in autocmo-core/oauth.go.
+      sesami: ['sesamiApiKey', 'sesamiClientId', 'sesamiShopId'],
+      // Faire — single BYOK token. Mirror of platformVaultKeys["faire"] in
+      // autocmo-core/oauth.go.
+      faire: ['faireApiToken'],
+      // QuickBooks Online — OAuth token pair + expiry + realm id. Mirror of
+      // platformVaultKeys["quickbooks"] in autocmo-core/oauth.go.
+      quickbooks: ['quickbooksAccessToken', 'quickbooksRefreshToken', 'quickbooksTokenExpiresAt', 'quickbooksRealmId'],
+      // ShipStation — API Key + Secret. Mirror of
+      // platformVaultKeys["shipstation"] in autocmo-core/oauth.go.
+      shipstation: ['shipStationApiKey', 'shipStationApiSecret'],
+      // Loop Returns — single BYOK API key. Mirror of
+      // platformVaultKeys["loop_returns"] in autocmo-core/oauth.go.
+      loop_returns: ['loopApiKey'],
+      // Cin7 Core — Account ID + Application Key. Mirror of
+      // platformVaultKeys["cin7"] in autocmo-core/oauth.go.
+      cin7: ['cin7AccountId', 'cin7ApplicationKey'],
+      // Shopify Payments rides the Shopify connection — it has no creds of
+      // its own, so there is nothing to clear (disconnecting Shopify removes
+      // the underlying grant). The empty entry exists so the platform is a
+      // known disconnect target rather than 'unknown platform'.
+      shopify_payments: [],
     };
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };
@@ -12258,11 +12392,65 @@ async function installUpdateFromLatestRelease() {
         const installDir = path.dirname(app.getPath('exe'));
         const appExe = path.join(installDir, 'Merlin.exe');
         const logPath = path.join(os.tmpdir(), 'merlin-update.log');
+        const splashPs1 = path.join(os.tmpdir(), 'merlin-update-splash.ps1');
+        const splashPid = path.join(os.tmpdir(), 'merlin-update-splash.pid');
+        // Branded "Updating Merlin" splash shown while the silent NSIS
+        // installer runs. Without it the app quits and ~60s of dead air
+        // reads as a hang (2026-09-11 user report). The splash is a WPF
+        // window driven by PowerShell — no extra binary to ship. It writes
+        // its own PID to splashPid so the batch can kill it deterministically
+        // when the installer exits. If PowerShell/WPF fails (policy, .NET
+        // missing), the install still proceeds — the splash is cosmetic.
+        // Icon: prefer resources/update-splash.png (shipped by the NEW
+        // installer, so only available from the update AFTER this one);
+        // fall back to the icon embedded in the running Merlin.exe.
+        const splashPng = path.join(installDir, 'resources', 'update-splash.png');
+        fs.writeFileSync(splashPs1, [
+          '$ErrorActionPreference = "Stop"',
+          `[System.IO.File]::WriteAllText('${splashPid}', "$PID")`,
+          'Add-Type -AssemblyName PresentationFramework,PresentationCore,WindowsBase,System.Drawing',
+          `$appExe = '${appExe.replace(/'/g, "''")}'`,
+          `$splashPng = '${splashPng.replace(/'/g, "''")}'`,
+          '$imgSource = $null',
+          'if (Test-Path $splashPng) {',
+          '  $imgSource = New-Object System.Windows.Media.Imaging.BitmapImage (New-Object Uri $splashPng)',
+          '} else {',
+          '  $ico = [System.Drawing.Icon]::ExtractAssociatedIcon($appExe)',
+          '  $bmp = $ico.ToBitmap()',
+          '  $h = $bmp.GetHbitmap()',
+          '  $imgSource = [System.Windows.Interop.Imaging]::CreateBitmapSourceFromHBitmap($h, [IntPtr]::Zero, [System.Windows.Int32Rect]::Empty, [System.Windows.Media.Imaging.BitmapSizeOptions]::FromEmptyOptions())',
+          '}',
+          '[xml]$xaml = @"',
+          '<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"',
+          '  Width="360" Height="200" WindowStyle="None" AllowsTransparency="True"',
+          '  Background="Transparent" Topmost="True" ShowInTaskbar="False"',
+          '  WindowStartupLocation="CenterScreen" ResizeMode="NoResize">',
+          '  <Border CornerRadius="14" Background="#FF0F0B1D" BorderBrush="#FF6D28D9" BorderThickness="1" Padding="24">',
+          '    <StackPanel VerticalAlignment="Center">',
+          '      <Image Name="logo" Width="56" Height="56" HorizontalAlignment="Center"/>',
+          '      <TextBlock Text="Updating Merlin" Foreground="#FFF5F3FF" FontSize="18" FontWeight="SemiBold" HorizontalAlignment="Center" Margin="0,14,0,4"/>',
+          '      <TextBlock Text="Installing the latest version — this takes about a minute." Foreground="#FFA78BFA" FontSize="12" HorizontalAlignment="Center" TextWrapping="Wrap" TextAlignment="Center"/>',
+          '      <ProgressBar Height="6" Margin="0,18,0,0" IsIndeterminate="True" Foreground="#FFA78BFA" Background="#FF2A2140" BorderThickness="0"/>',
+          '    </StackPanel>',
+          '  </Border>',
+          '</Window>',
+          '"@',
+          '$win = [System.Windows.Markup.XamlReader]::Load((New-Object System.Xml.XmlNodeReader $xaml))',
+          'if ($imgSource) { $win.FindName("logo").Source = $imgSource; $win.Icon = $imgSource }',
+          '$win.ShowDialog() | Out-Null',
+        ].join('\r\n'));
         const script = [
           '@echo off',
           `echo [%DATE% %TIME%] starting installer "${filePath}" >> "${logPath}"`,
+          // Launch the splash detached; it records its own PID. Failure is
+          // non-fatal — the installer runs regardless.
+          `start "" /min powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${splashPs1}" >> "${logPath}" 2>&1`,
           `"${filePath}" /S >> "${logPath}" 2>&1`,
           `echo [%DATE% %TIME%] installer exit code=%ERRORLEVEL% >> "${logPath}"`,
+          // Kill the splash now that the install is done.
+          `if exist "${splashPid}" (set /p SPLASH_PID=<"${splashPid}") else (set SPLASH_PID=)`,
+          'if defined SPLASH_PID taskkill /PID %SPLASH_PID% /F >nul 2>&1',
+          `del /q "${splashPid}" "${splashPs1}" >nul 2>&1`,
           'set RELAUNCH_TRIES=0',
           ':retry_launch',
           `if exist "${appExe}" goto launch_now`,
@@ -12436,8 +12624,7 @@ async function installUpdateFromLatestRelease() {
     }
     if (process.platform !== 'win32') fs.chmodSync(tmpFile, 0o755);
 
-    if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Installing update...');
-
+    if (win && !win.isDestroyed()) win.webContents.send('update-progress', 'Installing update — a Merlin window will appear while it finishes (~1 min)…');
     setTimeout(() => {
       try { runner(tmpFile); } catch (e) { console.error('[install-update] runner failed', e); }
       // Give the batch script a moment to start before we exit

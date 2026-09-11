@@ -112,6 +112,32 @@ const VAULT_SENSITIVE_KEYS = [
   'roktAppId',
   'roktAppSecret',
   'roktAccountId',
+  // Yotpo BYOK reporting credentials (App Key + Secret Key), saved by the
+  // 2-step Yotpo connect modal (renderer.js showYotpoConnectModal).
+  'yotpoAppKey',
+  'yotpoSecretKey',
+  // Sesami BYOK booking credentials (Personal Access Token + Client ID +
+  // Shop ID), saved by the 3-step Sesami connect modal.
+  'sesamiApiKey',
+  'sesamiClientId',
+  'sesamiShopId',
+  // Faire wholesale API token (X-FAIRE-ACCESS-TOKEN), saved by the masked
+  // API_KEY_PLATFORMS tile.
+  'faireApiToken',
+  // QuickBooks OAuth tokens (binary quickbooks-login path). realmId and
+  // token expiry are non-secret identifiers — allowlist only, below.
+  'quickbooksAccessToken',
+  'quickbooksRefreshToken',
+  // ShipStation BYOK credentials (API Key + API Secret — HTTP Basic pair),
+  // saved by the 2-step ShipStation connect modal.
+  'shipStationApiKey',
+  'shipStationApiSecret',
+  // Loop Returns API key, saved by the masked API_KEY_PLATFORMS tile.
+  'loopApiKey',
+  // Cin7 BYOK credentials (Account ID + Application Key), saved by the
+  // 2-step Cin7 connect modal.
+  'cin7AccountId',
+  'cin7ApplicationKey',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',
@@ -162,6 +188,23 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // Rokt BYOK reporting credentials (App ID / App Secret / Account ID), saved
   // by the 3-step Rokt connect modal. All three mirrored in VAULT_SENSITIVE_KEYS.
   'roktAppId', 'roktAppSecret', 'roktAccountId',
+  // Yotpo / Sesami / Faire / ShipStation / Loop Returns / Cin7 BYOK
+  // credentials, saved by the custom multi-step connect modals and the
+  // masked API_KEY_PLATFORMS tiles (renderer.js). All mirrored in
+  // VAULT_SENSITIVE_KEYS above.
+  'yotpoAppKey', 'yotpoSecretKey',
+  'sesamiApiKey', 'sesamiClientId', 'sesamiShopId',
+  'faireApiToken',
+  'shipStationApiKey', 'shipStationApiSecret',
+  'loopApiKey',
+  'cin7AccountId', 'cin7ApplicationKey',
+  // QuickBooks OAuth tokens + non-secret identifiers. The tokens are
+  // vaulted (VAULT_SENSITIVE_KEYS); realmId / tokenExpiresAt / useSandbox
+  // are non-secret identifiers (same treatment as shopifyStore) — they
+  // must still be allowlisted so save-config-field and the OAuth persist
+  // path accept them.
+  'quickbooksAccessToken', 'quickbooksRefreshToken',
+  'quickbooksRealmId', 'quickbooksTokenExpiresAt', 'quickbooksUseSandbox',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',

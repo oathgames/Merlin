@@ -187,6 +187,40 @@ const TOOL_ROUTING = [
     // via the prefix. connect is JS-only (returns instructions) → exempt.
     exemptions: ['connect'],
   },
+  { name: 'yotpo', prefix: 'yotpo',
+    // report/status/verify map 1:1 via the prefix. connect is JS-only
+    // (returns instructions) → exempt.
+    exemptions: ['connect'],
+  },
+  { name: 'sesami', prefix: 'sesami',
+    exemptions: ['connect'],
+  },
+  { name: 'faire', prefix: 'faire',
+    exemptions: ['connect'],
+  },
+  { name: 'shipstation', prefix: 'shipstation',
+    exemptions: ['connect'],
+  },
+  { name: 'loop_returns', prefix: 'loop',
+    // The tool name is loop_returns but the binary action prefix is loop-
+    // (loop-report / loop-status / loop-verify). connect is JS-only → exempt.
+    exemptions: ['connect'],
+  },
+  { name: 'cin7', prefix: 'cin7',
+    exemptions: ['connect'],
+  },
+  { name: 'quickbooks', prefix: 'quickbooks',
+    // report/status map 1:1 via the prefix. connect is JS-only (returns
+    // instructions pointing at the OAuth tile) → exempt. There is NO verify
+    // action — QuickBooks is OAuth, not BYOK.
+    exemptions: ['connect'],
+  },
+  { name: 'shopify_payments', prefix: 'shopify-payments',
+    // report/status map 1:1 via the prefix. connect is JS-only (rides the
+    // Shopify connection) → exempt. There is NO verify action — status is
+    // the connection check.
+    exemptions: ['connect'],
+  },
   { name: 'reddit_organic', prefix: 'reddit-prospect' },
   { name: 'reddit_organic_post', skip: true },  // single fixed action
   { name: 'trendtrack', prefix: 'trendtrack' },
@@ -227,7 +261,7 @@ const TOOL_ROUTING = [
 function extractToolEnums(src) {
   const out = {};
   // Find every `name: '<id>'` declaration. Each marks a tool boundary.
-  const nameRe = /name:\s*'([a-z_]+)'/g;
+  const nameRe = /name:\s*'([a-z_][a-z0-9_]*)'/g;
   const boundaries = [];
   let m;
   while ((m = nameRe.exec(src)) !== null) {

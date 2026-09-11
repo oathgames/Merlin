@@ -4261,6 +4261,9 @@ const PLATFORM_DISPLAY_NAMES = {
   clarity: 'Microsoft Clarity',
   posthog: 'PostHog',
   alia: 'Alia Popups',
+  yotpo: 'Yotpo', sesami: 'Sesami', faire: 'Faire', quickbooks: 'QuickBooks',
+  shopify_payments: 'Shopify Payments', shipstation: 'ShipStation',
+  loop_returns: 'Loop Returns', cin7: 'Cin7',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -4294,7 +4297,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', 'alia', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -6457,7 +6460,7 @@ document.addEventListener('click', (e) => {
 // users saw a "LinkedIn" tile that did nothing on click.
 // The new source-scan test in oauth-persist.test.js cross-checks
 // every connector_id in oauth-provider-config.js against this Set.
-const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads']);
+const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads', 'quickbooks']);
 const API_KEY_PLATFORMS = {
   fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx…', url: 'https://fal.ai/dashboard/keys' },
   elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx…', url: 'https://elevenlabs.io/app/settings/api-keys' },
@@ -6507,6 +6510,12 @@ const API_KEY_PLATFORMS = {
   // tile's right-click "Use my API key" override, which opens the two-input
   // modal below.
   applovin:   { key: 'applovinMaxReportKey', label: 'AppLovin (MAX)', placeholder: 'applovin-report-key', url: 'https://dash.applovin.com/o/account#keys' },
+  // Faire wholesale marketplace — single X-FAIRE-ACCESS-TOKEN header key
+  // minted at faire.com → Settings → API (brand-scoped, read-only).
+  faire: { key: 'faireApiToken', label: 'Faire', placeholder: 'X-FAIRE-ACCESS-TOKEN from faire.com → Settings → API', url: 'https://www.faire.com/' },
+  // Loop Returns — single API key from Loop admin → Developers → API keys
+  // (brand-scoped, read-only returns/exchanges reporting).
+  loop_returns: { key: 'loopApiKey', label: 'Loop Returns', placeholder: 'API key from Loop admin → Developers → API keys', url: 'https://docs.loopreturns.com/api-reference/authentication' },
 };
 
 // Shopify connect — App-Store-compliant install flow.
@@ -6544,6 +6553,21 @@ function runShopifyOAuthWithStore(activeBrand) {
     showModal({ title: 'Connection Failed', body: friendlyError(err.message, 'Shopify'), confirmLabel: 'OK', onConfirm: () => {} });
   });
 }
+// startShopifyFlow — shared kickoff for the Shopify install flow. Used by
+// the shopify tile branch above AND by the shopify_payments tile (which
+// rides the same Shopify Admin grant — see connectShopifyPayments). The
+// in-flight guard key is pinned to 'shopify:<brand>' (not the clicked
+// platform) so a shopify + shopify_payments double-click can't spawn two
+// parallel installs.
+function startShopifyFlow(activeBrand) {
+  const guardKey = `shopify:${activeBrand || ''}`;
+  if (_oauthInFlight.has(guardKey)) return;
+  _oauthInFlight.add(guardKey);
+  Promise.resolve(runShopifyOAuthWithStore(activeBrand)).finally(() => {
+    _oauthInFlight.delete(guardKey);
+  });
+}
+
 
 // onMerlinDeepLink handler — the post-install Shopify dashboard fires
 // merlin://oauth-complete?handoff=<base64url>&shop=<slug> after the
@@ -6703,10 +6727,7 @@ document.addEventListener('click', async (e) => {
   }
 
   if (platform === 'shopify') {
-    _oauthInFlight.add(inFlightKey);
-    Promise.resolve(runShopifyOAuthWithStore(activeBrand)).finally(() => {
-      _oauthInFlight.delete(inFlightKey);
-    });
+    startShopifyFlow(activeBrand);
     return;
   }
 
@@ -7369,12 +7390,192 @@ function showPosthogConnectModal(activeBrand) {
   });
 }
 
+// Yotpo connect modal — two chained steps (App Key -> Secret Key). Yotpo's
+// BYOK reporting credentials are two fields, so it can't use the generic
+// single-field API_KEY_PLATFORMS modal (same pattern as Rokt). Both fields
+// are vaulted (VAULT_SENSITIVE_KEYS); the connection dot lights on save and
+// yotpo-verify validates live. See yotpo.go.
+function showYotpoConnectModal(activeBrand) {
+  showModal({
+    title: 'Yotpo — App Key',
+    body: 'Enter your Yotpo App Key (Yotpo admin → Settings → General Settings → App Key). (Step 1 of 2)',
+    inputPlaceholder: 'Yotpo App Key',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const appKey = (v1 || '').trim();
+      if (!appKey) { showModalError('Enter your App Key'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'Yotpo — Secret Key',
+          body: 'Enter your Yotpo Secret Key (same page as the App Key). It is stored encrypted and never shown again. (Step 2 of 2)',
+          inputPlaceholder: 'Yotpo Secret Key',
+          confirmLabel: 'Save',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const secretKey = (v2 || '').trim();
+            if (!secretKey) { showModalError('Enter your Secret Key'); throw new Error('validation'); }
+            let r = await merlin.saveConfigField('yotpoAppKey', appKey, activeBrand);
+            if (!r.success) { showModalError(r.error || 'Failed to save App Key'); throw new Error('save'); }
+            r = await merlin.saveConfigField('yotpoSecretKey', secretKey, activeBrand);
+            if (!r.success) { showModalError(r.error || 'Failed to save Secret Key'); throw new Error('save'); }
+            loadConnections();
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
+// Sesami connect modal — three chained steps (Personal Access Token ->
+// Client ID -> Shop ID). Sesami's API requires all three on every call, so
+// it can't use the single-field API_KEY_PLATFORMS modal. All three fields
+// are vaulted (VAULT_SENSITIVE_KEYS). See sesami.go.
+function showSesamiConnectModal(activeBrand) {
+  showModal({
+    title: 'Sesami — Personal Access Token',
+    body: 'Paste your Sesami Personal Access Token (Sesami admin → Settings → API). It is stored encrypted and never shown again. (Step 1 of 3)',
+    inputPlaceholder: 'Sesami Personal Access Token',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const apiKey = (v1 || '').trim();
+      if (!apiKey) { showModalError('Enter your Personal Access Token'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'Sesami — Client ID',
+          body: 'Enter your Sesami Client ID (same API settings page). (Step 2 of 3)',
+          inputPlaceholder: 'Sesami Client ID',
+          confirmLabel: 'Next',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const clientId = (v2 || '').trim();
+            if (!clientId) { showModalError('Enter your Client ID'); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: 'Sesami — Shop ID',
+                body: 'Enter your Sesami Shop ID (the shop these bookings belong to). (Step 3 of 3)',
+                inputPlaceholder: 'Sesami Shop ID',
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v3) => {
+                  const shopId = (v3 || '').trim();
+                  if (!shopId) { showModalError('Enter your Shop ID'); throw new Error('validation'); }
+                  let r = await merlin.saveConfigField('sesamiApiKey', apiKey, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save Personal Access Token'); throw new Error('save'); }
+                  r = await merlin.saveConfigField('sesamiClientId', clientId, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save Client ID'); throw new Error('save'); }
+                  r = await merlin.saveConfigField('sesamiShopId', shopId, activeBrand);
+                  if (!r.success) { showModalError(r.error || 'Failed to save Shop ID'); throw new Error('save'); }
+                  loadConnections();
+                },
+              });
+            }, 0);
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
+// ShipStation connect modal — two chained steps (API Key -> API Secret).
+// ShipStation uses HTTP Basic auth (key:secret), so both fields are needed
+// and the single-field API_KEY_PLATFORMS modal can't collect them. Both
+// fields are vaulted (VAULT_SENSITIVE_KEYS). See shipstation.go.
+function showShipStationConnectModal(activeBrand) {
+  showModal({
+    title: 'ShipStation — API Key',
+    body: 'Enter your ShipStation API Key (ShipStation → Account → API Settings → Generate New API Keys). (Step 1 of 2)',
+    inputPlaceholder: 'ShipStation API Key',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const apiKey = (v1 || '').trim();
+      if (!apiKey) { showModalError('Enter your API Key'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'ShipStation — API Secret',
+          body: 'Enter your ShipStation API Secret (shown once when the key pair is generated). It is stored encrypted and never shown again. (Step 2 of 2)',
+          inputPlaceholder: 'ShipStation API Secret',
+          confirmLabel: 'Save',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const apiSecret = (v2 || '').trim();
+            if (!apiSecret) { showModalError('Enter your API Secret'); throw new Error('validation'); }
+            let r = await merlin.saveConfigField('shipStationApiKey', apiKey, activeBrand);
+            if (!r.success) { showModalError(r.error || 'Failed to save API Key'); throw new Error('save'); }
+            r = await merlin.saveConfigField('shipStationApiSecret', apiSecret, activeBrand);
+            if (!r.success) { showModalError(r.error || 'Failed to save API Secret'); throw new Error('save'); }
+            loadConnections();
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
+// Cin7 connect modal — two chained steps (Account ID -> Application Key).
+// Cin7's API authenticates with both values on every request, so the
+// single-field API_KEY_PLATFORMS modal can't collect them. Both fields are
+// vaulted (VAULT_SENSITIVE_KEYS). See cin7.go.
+function showCin7ConnectModal(activeBrand) {
+  showModal({
+    title: 'Cin7 — Account ID',
+    body: 'Enter your Cin7 Account ID (Cin7 → Settings → Integrations & API). (Step 1 of 2)',
+    inputPlaceholder: 'Cin7 Account ID',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const accountId = (v1 || '').trim();
+      if (!accountId) { showModalError('Enter your Account ID'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'Cin7 — Application Key',
+          body: 'Enter your Cin7 Application Key (same API settings page). It is stored encrypted and never shown again. (Step 2 of 2)',
+          inputPlaceholder: 'Cin7 Application Key',
+          confirmLabel: 'Save',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const appKey = (v2 || '').trim();
+            if (!appKey) { showModalError('Enter your Application Key'); throw new Error('validation'); }
+            let r = await merlin.saveConfigField('cin7AccountId', accountId, activeBrand);
+            if (!r.success) { showModalError(r.error || 'Failed to save Account ID'); throw new Error('save'); }
+            r = await merlin.saveConfigField('cin7ApplicationKey', appKey, activeBrand);
+            if (!r.success) { showModalError(r.error || 'Failed to save Application Key'); throw new Error('save'); }
+            loadConnections();
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
+// Shopify Payments rides the brand's existing Shopify Admin API grant —
+// there is no separate credential to collect. Left-click checks the
+// Shopify connection state (the .connected class painted by
+// loadConnections): already connected → info toast; not connected → run
+// the exact same install flow as the shopify tile (startShopifyFlow).
+// See shopify_payments.go.
+function connectShopifyPayments(activeBrand) {
+  const shopifyTile = document.querySelector('.magic-tile[data-platform="shopify"]');
+  if (shopifyTile && shopifyTile.classList.contains('connected')) {
+    showToast('Shopify Payments rides your Shopify connection — already connected.', { kind: 'info' });
+    return;
+  }
+  startShopifyFlow(activeBrand);
+}
+
 // Platforms whose tile LEFT-CLICK opens a custom multi-field connect modal
 // instead of OAuth or the single-field API_KEY_PLATFORMS modal. Checked in the
 // tile click handler before the API_KEY_PLATFORMS fallback.
 const CUSTOM_CONNECT_HANDLERS = {
   rokt: showRoktConnectModal,
   posthog: showPosthogConnectModal,
+  yotpo: showYotpoConnectModal,
+  sesami: showSesamiConnectModal,
+  shipstation: showShipStationConnectModal,
+  cin7: showCin7ConnectModal,
+  shopify_payments: connectShopifyPayments,
 };
 
 // Platforms that support a "Use my API key" right-click override. Each entry

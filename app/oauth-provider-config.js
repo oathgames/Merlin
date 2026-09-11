@@ -304,6 +304,26 @@ const PROVIDERS = {
     usesPKCE: false,
     extraParams: {},
   },
+  // QuickBooks — brand-scoped accounting reports (READ-ONLY). TODO/pending:
+  // clientId is empty until the Intuit app is registered at
+  // developer.intuit.com, so it is intentionally NOT in ACTIVE_PLATFORMS.
+  // runOAuthFlow('quickbooks') takes the legacy binary-login path, where
+  // getQuickBooksOAuth (oauth.go) pulls the clientId from the BFF the moment
+  // the QUICKBOOKS_CLIENT_ID Worker secret is set. Intuit returns the
+  // company realmId as a query param on the redirect — captured by
+  // oauth-fast-open.js's /callback handler (cmdObj.realmId) and persisted
+  // by runQuickBooksLogin. To graduate to fast-open later: paste the public
+  // clientId here AND add 'quickbooks' to ACTIVE_PLATFORMS.
+  quickbooks: {
+    displayName: 'QuickBooks',
+    providerKey: 'quickbooks',
+    authUrl: 'https://appcenter.intuit.com/connect/oauth2',
+    clientId: '', // pending Intuit app registration — injected via BFF
+    scopes: 'com.intuit.quickbooks.accounting',
+    redirectUri: 'https://merlingotme.com/auth/callback',
+    usesPKCE: false,
+    extraParams: {},
+  },
 };
 
 // ACTIVE_PLATFORMS — the subset of PROVIDERS that main.js's runOAuthFlow

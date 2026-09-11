@@ -348,6 +348,10 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   'shopify-login', 'klaviyo-login', 'etsy-login', 'reddit-login',
   'linkedin-login',
   'stripe-login',
+  // QuickBooks Online — OAuth login (Intuit). Same brand-agnostic login
+  // shape as stripe-login: the binary writes to the correct scope based on
+  // whether brand was passed.
+  'quickbooks-login',
   // AppLovin + Postscript are API-key connectors (no OAuth). The *-login
   // actions in the binary just verify the key and persist it — no brand
   // context needed for the global-scoped case.
@@ -1373,14 +1377,14 @@ function buildTools(tool, z, ctx) {
   // ── shopify ──────────────────────────────────────────────
   tools.push(defineTool({
     name: 'shopify',
-    description: 'Shopify store data — products, orders, analytics, customer cohorts, import.',
+    description: 'Shopify store data — products, orders, analytics, customer cohorts, import, plus a full-history bulk export for data-procurement packages. Actions: products/orders/analytics/cohorts (reads), import (pull store data into the brand), export (full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt — for data-procurement packages).',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
     brandRequired: true,
     concurrency: { platform: 'shopify' },
     input: {
-      action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts']).describe('Operation'),
+      action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts', 'export']).describe('Operation — export → full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt (for data-procurement packages)'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (for analytics/orders)'),
     },
@@ -1516,7 +1520,11 @@ function buildTools(tool, z, ctx) {
         // Klaviyo-UI step. Condition GROUPS are ANDed; conditions WITHIN
         // a group are ORed.
         'segments-list', 'segment-create',
-      ]).describe('Operation'),
+        // Full-history bulk export for data-procurement packages — read-only
+        // cursor pagination of profiles/lists/segments/campaigns/flows/metrics/
+        // events to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt.
+        'export',
+      ]).describe('Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (performance/campaigns/flow-performance/flow-message-performance/metric-aggregate). Default 30.'),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('campaign-performance / flow-performance: exact window start, YYYY-MM-DD inclusive (ET). Give with endDate; overrides batchCount.'),
@@ -2409,6 +2417,249 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── yotpo ─────────────────────────────────────────────────
+  // Yotpo reviews + loyalty reporting (READ-ONLY — yotpo.go ships no write
+  // verbs). BYOK: the brand's own App Key + Secret Key from Yotpo admin →
+  // Settings → General → App Settings, entered on the Yotpo tile.
+  tools.push(defineTool({
+    name: 'yotpo',
+    description: 'Yotpo reviews + loyalty reporting (read-only). Pulls review counts, average rating, and loyalty-program stats into the dashboard. Actions: report (pull metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Yotpo API credentials); verify (validate the saved App Key + Secret Key). Connect by entering your App Key + Secret Key from Yotpo admin → Settings → General → App Settings into the Yotpo tile.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'yotpo' },
+    input: {
+      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull reviews/loyalty metrics for the window. status → check connection (no API call). connect → how to get Yotpo API credentials. verify → validate the saved credentials.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Yotpo',
+          instructions: 'Open the Yotpo tile in the Connections panel and enter your App Key + Secret Key (Yotpo admin → Settings → General → App Settings).',
+        };
+      }
+      const actionMap = { report: 'yotpo-report', status: 'yotpo-status', verify: 'yotpo-verify' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
+  // ── sesami ────────────────────────────────────────────────
+  // Sesami booking-platform reporting (READ-ONLY — sesami.go ships no write
+  // verbs). BYOK: Personal Access Token + Client ID + Shop ID from the
+  // Sesami admin portal → Tokens, entered on the Sesami tile.
+  tools.push(defineTool({
+    name: 'sesami',
+    description: 'Sesami booking-platform reporting (read-only). Pulls bookings, services, and shop stats into the dashboard. Actions: report (pull metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Sesami API credentials); verify (validate the saved PAT + Client ID + Shop ID). Connect by entering your Personal Access Token, Client ID, and Shop ID from the Sesami admin portal → Tokens into the Sesami tile.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'sesami' },
+    input: {
+      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull bookings/services metrics for the window. status → check connection (no API call). connect → how to get Sesami API credentials. verify → validate the saved credentials.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Sesami',
+          instructions: 'Open the Sesami tile in the Connections panel and enter your Personal Access Token + Client ID + Shop ID (Sesami admin portal → Tokens).',
+        };
+      }
+      const actionMap = { report: 'sesami-report', status: 'sesami-status', verify: 'sesami-verify' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
+  // ── faire ─────────────────────────────────────────────────
+  // Faire wholesale-marketplace reporting (READ-ONLY — faire.go ships no
+  // write verbs). BYOK: X-FAIRE-ACCESS-TOKEN from the Faire portal, entered
+  // on the Faire tile.
+  tools.push(defineTool({
+    name: 'faire',
+    description: 'Faire wholesale-marketplace reporting (read-only). Pulls orders and wholesale revenue into the dashboard. Actions: report (pull orders/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get a Faire API token); verify (validate the saved token). Connect by entering your X-FAIRE-ACCESS-TOKEN from the Faire portal into the Faire tile.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'faire' },
+    input: {
+      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull orders/metrics for the window. status → check connection (no API call). connect → how to get a Faire API token. verify → validate the saved token.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Faire',
+          instructions: 'Open the Faire tile in the Connections panel and enter your X-FAIRE-ACCESS-TOKEN from the Faire portal.',
+        };
+      }
+      const actionMap = { report: 'faire-report', status: 'faire-status', verify: 'faire-verify' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
+  // ── shipstation ───────────────────────────────────────────
+  // ShipStation shipping/3PL reporting (READ-ONLY — shipstation.go ships no
+  // write verbs). BYOK: API Key + Secret from ShipStation → Account → API
+  // Settings, entered on the ShipStation tile.
+  tools.push(defineTool({
+    name: 'shipstation',
+    description: 'ShipStation shipping reporting (read-only). Pulls shipments, carriers, and fulfillment stats into the dashboard. Actions: report (pull shipments/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Connect by entering your API Key + Secret from ShipStation → Account → API Settings into the ShipStation tile.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'shipstation' },
+    input: {
+      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull shipments/metrics for the window. status → check connection (no API call). connect → how to get ShipStation API credentials. verify → validate the saved credentials.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect ShipStation',
+          instructions: 'Open the ShipStation tile in the Connections panel and enter your API Key + Secret (ShipStation → Account → API Settings).',
+        };
+      }
+      const actionMap = { report: 'shipstation-report', status: 'shipstation-status', verify: 'shipstation-verify' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
+  // ── loop_returns ──────────────────────────────────────────
+  // Loop Returns reporting (READ-ONLY — loop_returns.go ships no write
+  // verbs). BYOK: API key from Loop admin → Developers, entered on the Loop
+  // tile. NOTE: the binary action prefix is `loop-` (loop-report etc.), not
+  // `loop_returns-` — the actionMap below handles the rename.
+  tools.push(defineTool({
+    name: 'loop_returns',
+    description: 'Loop Returns reporting (read-only). Pulls returns, exchanges, and refund stats into the dashboard. Actions: report (pull returns/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get a Loop API key); verify (validate the saved key). Connect by entering your API key from Loop admin → Developers into the Loop tile.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'loop_returns' },
+    input: {
+      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull returns/metrics for the window. status → check connection (no API call). connect → how to get a Loop API key. verify → validate the saved key.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Loop Returns',
+          instructions: 'Open the Loop tile in the Connections panel and enter your API key (Loop admin → Developers).',
+        };
+      }
+      const actionMap = { report: 'loop-report', status: 'loop-status', verify: 'loop-verify' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
+  // ── cin7 ──────────────────────────────────────────────────
+  // Cin7 Core inventory reporting (READ-ONLY — cin7.go ships no write
+  // verbs). BYOK: Account ID + Application Key from Cin7 Core → Settings →
+  // API, entered on the Cin7 tile.
+  tools.push(defineTool({
+    name: 'cin7',
+    description: 'Cin7 Core inventory reporting (read-only). Pulls products, stock levels, and sales-order stats into the dashboard. Actions: report (pull inventory/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved Account ID + Application Key). Connect by entering your Account ID + Application Key from Cin7 Core → Settings → API into the Cin7 tile.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'cin7' },
+    input: {
+      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull inventory/metrics for the window. status → check connection (no API call). connect → how to get Cin7 API credentials. verify → validate the saved credentials.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Cin7',
+          instructions: 'Open the Cin7 tile in the Connections panel and enter your Account ID + Application Key (Cin7 Core → Settings → API).',
+        };
+      }
+      const actionMap = { report: 'cin7-report', status: 'cin7-status', verify: 'cin7-verify' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
+  // ── quickbooks ────────────────────────────────────────────
+  // QuickBooks Online accounting reporting (READ-ONLY — quickbooks.go ships
+  // no write verbs). OAuth, NOT BYOK: connect runs the Intuit OAuth flow
+  // (quickbooks-login) via the QuickBooks tile / platform_login, so there is
+  // no 'verify' action — 'status' is the connection check.
+  tools.push(defineTool({
+    name: 'quickbooks',
+    description: 'QuickBooks Online accounting reporting (read-only). Pulls revenue, expenses, and P&L-style stats into the dashboard. Actions: report (pull accounting metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to connect via OAuth). Connect by clicking the QuickBooks tile in the Connections panel — it runs the Intuit OAuth flow.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'quickbooks' },
+    input: {
+      action: z.enum(['report', 'status', 'connect']).describe('report → pull accounting metrics for the window. status → check connection (no API call). connect → how to connect via OAuth.'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect QuickBooks',
+          instructions: 'Click the QuickBooks tile in the Connections panel — it opens the Intuit OAuth sign-in (read-only scopes). Alternatively call mcp__merlin__platform_login with platform "quickbooks". Then use connection_status to verify.',
+        };
+      }
+      const actionMap = { report: 'quickbooks-report', status: 'quickbooks-status' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
+  // ── shopify_payments ──────────────────────────────────────
+  // Shopify Payments payout reporting (READ-ONLY — rides the existing
+  // Shopify connection; there is no separate credential). No 'verify'
+  // action: 'status' is the connection check and it passes iff Shopify is
+  // connected.
+  tools.push(defineTool({
+    name: 'shopify_payments',
+    description: 'Shopify Payments payout reporting (read-only). Pulls payouts, fees, and payment-method breakdowns via the existing Shopify connection. Actions: report (pull payouts/metrics for a window — batchCount = days, default 30); status (connection check — passes when Shopify is connected); connect (how to connect — rides the Shopify tile).',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'shopify_payments' },
+    input: {
+      action: z.enum(['report', 'status', 'connect']).describe('report → pull payouts/metrics for the window. status → check connection (passes when Shopify is connected). connect → how to connect (rides the Shopify tile).'),
+      brand: brandSchema.optional(),
+      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Shopify Payments',
+          instructions: 'Shopify Payments uses your existing Shopify connection — connect the Shopify tile if not already connected.',
+        };
+      }
+      const actionMap = { report: 'shopify-payments-report', status: 'shopify-payments-status' };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
   // ── openai_ads ────────────────────────────────────────────
   // OpenAI / ChatGPT Ads — run + manage paid ads on OpenAI's ChatGPT ads
   // platform (api.ads.openai.com). SPENDS REAL MONEY, so destructive:true +
@@ -2749,7 +3000,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'threads']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'shopify_payments']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -2854,6 +3105,54 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'Triple Whale connects via the triplewhale tool',
           instructions: 'Call mcp__merlin__triplewhale with action "connect" for the steps — mint a personal API key at app.triplewhale.com/api-keys (select the "Summary Page: Read" + "Pixel Attribution: Read" scopes), then call triplewhale with action "verify" and the apiKey to save it. Once connected, mcp__merlin__triplewhale action "summary" pulls NC-ROAS, NCPA, MER, and blended ROAS. (OAuth sign-in is the primary path and turns on once the Triple Whale OAuth app is registered.)',
+        };
+      }
+      // Shopify Payments has NO standalone credential: it rides the Shopify
+      // connection (same token + store). Route the agent to connect Shopify.
+      if (args.platform === 'shopify_payments') {
+        return {
+          summary: 'Shopify Payments rides the Shopify connection, no separate login',
+          instructions: 'Shopify Payments uses your existing Shopify connection — there is no separate Shopify Payments OAuth. If Shopify is not connected yet, call platform_login with platform "shopify" (or ask the user to click the Shopify tile in the Connections panel). Once Shopify is connected, Shopify Payments reporting works automatically. Use connection_status to verify.',
+        };
+      }
+      // BYOK API-key connectors (no OAuth): direct the user to the tile input
+      // in the Connections panel, mirroring the postscript/applovin branches
+      // above. quickbooks is NOT in this list — it is OAuth and falls through
+      // to ctx.runOAuthFlow like stripe.
+      if (args.platform === 'yotpo') {
+        return {
+          summary: 'Yotpo connects via API credentials',
+          instructions: 'Click the Yotpo tile in the Connections panel and enter your App Key + Secret Key (Yotpo admin → Settings → General → App Settings). Alternatively call mcp__merlin__yotpo with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'sesami') {
+        return {
+          summary: 'Sesami connects via API credentials',
+          instructions: 'Click the Sesami tile in the Connections panel and enter your Personal Access Token + Client ID + Shop ID (Sesami admin portal → Tokens). Alternatively call mcp__merlin__sesami with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'faire') {
+        return {
+          summary: 'Faire connects via API token',
+          instructions: 'Click the Faire tile in the Connections panel and enter your X-FAIRE-ACCESS-TOKEN from the Faire portal. Alternatively call mcp__merlin__faire with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'shipstation') {
+        return {
+          summary: 'ShipStation connects via API credentials',
+          instructions: 'Click the ShipStation tile in the Connections panel and enter your API Key + Secret (ShipStation → Account → API Settings). Alternatively call mcp__merlin__shipstation with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'loop_returns') {
+        return {
+          summary: 'Loop Returns connects via API key',
+          instructions: 'Click the Loop tile in the Connections panel and enter your API key (Loop admin → Developers). Alternatively call mcp__merlin__loop_returns with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'cin7') {
+        return {
+          summary: 'Cin7 connects via API credentials',
+          instructions: 'Click the Cin7 tile in the Connections panel and enter your Account ID + Application Key (Cin7 Core → Settings → API). Alternatively call mcp__merlin__cin7 with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
         };
       }
       try {

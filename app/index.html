@@ -245,6 +245,48 @@
            (audiences:read, campaigns:read/write, reports:read) and ship
            today. -->
       <button class="magic-tile" data-platform="mailchimp" data-scope="brand" data-tip="Connect Mailchimp" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#FFE01B"/><path fill="#241C15" d="M12 4.2c-1.7 0-3.2 1.5-3.2 3.4 0 .4.1.8.2 1.1-.7.3-1.5 1-1.8 1.7-.5 1.1-.2 2.4.6 3 .4.3 1 .5 1.5.5.1.5.4 1 .8 1.4 1 .9 2.4.9 3.3 0 .6-.6 1-1.5 1-2.3v-.1c.4-.1.7-.3.9-.5.6-.6.6-1.5 0-2.1l-.4-.4.5-.3c.6-.4.9-1.1.8-1.8-.1-.6-.5-1.1-1-1.4.3-.4.5-.9.5-1.5 0-1-.9-1.7-2.7-1.7zm-1.1 6.4c0-.3.2-.5.5-.5s.5.2.5.5-.2.5-.5.5-.5-.2-.5-.5zm2.5 0c0-.3.2-.5.5-.5s.5.2.5.5-.2.5-.5.5-.5-.2-.5-.5zm-3.7 5c1.4-.7 3.4-.7 4.8 0 .2.1.2.3.1.5-.1.2-.3.2-.4.1-1.2-.6-2.9-.6-4.1 0-.2.1-.4 0-.5-.1-.1-.2 0-.4.1-.5z"/></svg></div><div class="tile-name">Mailchimp</div></button>
+      <!-- Yotpo: reviews + loyalty reporting (READ-ONLY). BYOK 2-field
+           connect (App Key + Secret Key from the Yotpo admin) via the
+           custom showYotpoConnectModal (left-click) — same multi-step
+           pattern as Rokt. Both fields vaulted. See yotpo.go. -->
+      <button class="magic-tile" data-platform="yotpo" data-scope="brand" data-tip="Connect Yotpo (reviews + loyalty)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#0E0E0E"/><path fill="#FFC531" d="M12 4l2.3 4.9 5.2.6-3.9 3.6 1.1 5.2L12 15.7l-4.7 2.6 1.1-5.2-3.9-3.6 5.2-.6z"/></svg></div><div class="tile-name">Yotpo</div></button>
+      <!-- Sesami: appointment-booking reporting (READ-ONLY). BYOK 3-field
+           connect (Personal Access Token + Client ID + Shop ID) via the
+           custom showSesamiConnectModal (left-click). See sesami.go. -->
+      <button class="magic-tile" data-platform="sesami" data-scope="brand" data-tip="Connect Sesami (bookings)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#00B2A9"/><rect x="5" y="6" width="14" height="13" rx="2" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M5 10h14M9 4v4M15 4v4" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/><circle cx="12" cy="14.5" r="1.6" fill="#fff"/></svg></div><div class="tile-name">Sesami</div></button>
+      <!-- Faire: wholesale marketplace reporting (READ-ONLY). Single
+           X-FAIRE-ACCESS-TOKEN via the generic API_KEY_PLATFORMS modal
+           (faire.com → Settings → API) → faireApiToken (vaulted).
+           See faire.go. -->
+      <button class="magic-tile" data-platform="faire" data-scope="brand" data-tip="Connect Faire (wholesale)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#F5EDE3"/><path fill="#1E1E1E" d="M5 9l1.2-3h11.6L19 9v1a2.3 2.3 0 01-4.6 0 2.35 2.35 0 01-4.7 0A2.3 2.3 0 015 10V9z"/><path fill="#1E1E1E" d="M6 12.6h12V19h-4.5v-4h-3v4H6v-6.4z"/></svg></div><div class="tile-name">Faire</div></button>
+      <!-- QuickBooks: accounting reports (READ-ONLY). OAuth via the
+           binary-login path (quickbooks-login) until the Intuit app is
+           registered and QUICKBOOKS_CLIENT_ID lands in the Worker —
+           see the TODO entry in oauth-provider-config.js. realmId
+           arrives on the redirect and is persisted by runQuickBooksLogin.
+           See quickbooks.go. -->
+      <button class="magic-tile" data-platform="quickbooks" data-scope="brand" data-tip="Connect QuickBooks (accounting)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#2CA01C"/><circle cx="11" cy="11" r="5.5" fill="none" stroke="#fff" stroke-width="2.2"/><path d="M14.8 14.8L18 18" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg></div><div class="tile-name">QuickBooks</div></button>
+      <!-- Shopify Payments: payouts + disputes read through the brand's
+           EXISTING Shopify Admin API grant — no separate credential.
+           Left-click checks the Shopify connection state: connected →
+           info toast; not connected → runs the same install flow as the
+           shopify tile (connectShopifyPayments → startShopifyFlow).
+           See shopify_payments.go. -->
+      <button class="magic-tile" data-platform="shopify_payments" data-scope="brand" data-tip="Shopify Payments (payouts + disputes via your Shopify connection)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#96bf48"/><rect x="4" y="7" width="16" height="11" rx="2" fill="none" stroke="#fff" stroke-width="1.6"/><path d="M4 10.5h16" stroke="#fff" stroke-width="1.6"/><path d="M7 14.5h4" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/></svg></div><div class="tile-name">Shopify Payments</div></button>
+      <!-- ShipStation: shipping/fulfillment reporting (READ-ONLY). BYOK
+           2-field connect (API Key + API Secret from ShipStation →
+           Account → API Settings) via the custom
+           showShipStationConnectModal (left-click). See shipstation.go. -->
+      <button class="magic-tile" data-platform="shipstation" data-scope="brand" data-tip="Connect ShipStation (shipping)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#0F2D52"/><path fill="#fff" d="M7 8h10v5l-5 1.4L7 13V8z"/><path fill="#4FC3F7" d="M4 15.5l8-2.2 8 2.2-1.6 3.5H5.6L4 15.5z"/></svg></div><div class="tile-name">ShipStation</div></button>
+      <!-- Loop Returns: returns/exchanges reporting (READ-ONLY). Single
+           API key via the generic API_KEY_PLATFORMS modal (Loop admin →
+           Developers → API keys) → loopApiKey (vaulted). See loop_returns.go. -->
+      <button class="magic-tile" data-platform="loop_returns" data-scope="brand" data-tip="Connect Loop Returns" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#111827"/><path d="M18.5 12a6.5 6.5 0 11-6.5-6.5" fill="none" stroke="#A78BFA" stroke-width="2" stroke-linecap="round"/><path fill="#A78BFA" d="M12 2.5l3.8 3-3.8 3v-6z"/></svg></div><div class="tile-name">Loop Returns</div></button>
+      <!-- Cin7: inventory/order reporting (READ-ONLY). BYOK 2-field
+           connect (Account ID + Application Key from Cin7 → Settings →
+           API) via the custom showCin7ConnectModal (left-click).
+           See cin7.go. -->
+      <button class="magic-tile" data-platform="cin7" data-scope="brand" data-tip="Connect Cin7 (inventory)" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><rect width="24" height="24" rx="6" fill="#041E42"/><path d="M12 4l7 3.5v9L12 20l-7-3.5v-9L12 4z" fill="none" stroke="#6BB8FF" stroke-width="1.6" stroke-linejoin="round"/><path d="M5 7.5l7 3.5 7-3.5M12 11v9" fill="none" stroke="#6BB8FF" stroke-width="1.6"/></svg></div><div class="tile-name">Cin7</div></button>
       <!-- Pinterest / Snapchat / X — implementation exists in the binary,
            OAuth credentials pending platform review. Dark gray tile. -->
       <button class="magic-tile" data-platform="pinterest" data-scope="brand" data-stubbed="true" data-tip="Coming soon" data-tip-pos="bottom"><div class="tile-icon"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#E60023" d="M12 0C5.37 0 0 5.37 0 12c0 5.08 3.15 9.42 7.6 11.18-.1-.95-.2-2.42.04-3.46.22-.95 1.4-5.94 1.4-5.94s-.36-.72-.36-1.78c0-1.66.97-2.91 2.17-2.91 1.02 0 1.52.77 1.52 1.69 0 1.03-.65 2.57-.99 3.99-.28 1.19.6 2.16 1.77 2.16 2.13 0 3.77-2.25 3.77-5.49 0-2.87-2.06-4.87-5.01-4.87-3.41 0-5.42 2.56-5.42 5.2 0 1.03.4 2.13.89 2.73a.36.36 0 01.08.34c-.09.38-.29 1.19-.33 1.36-.05.22-.18.27-.41.16-1.55-.72-2.52-2.99-2.52-4.81 0-3.92 2.85-7.52 8.21-7.52 4.31 0 7.66 3.07 7.66 7.17 0 4.28-2.7 7.72-6.44 7.72-1.26 0-2.44-.65-2.84-1.42l-.77 2.95c-.28 1.08-1.04 2.43-1.55 3.26C9.58 23.81 10.77 24 12 24c6.63 0 12-5.37 12-12S18.63 0 12 0z"/></svg></div><div class="tile-name">Pinterest</div></button>

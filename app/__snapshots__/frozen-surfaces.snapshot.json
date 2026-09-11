@@ -159,11 +159,14 @@
       "arcadsApiKey",
       "autoPublishAds",
       "blogPublishMode",
+      "cin7AccountId",
+      "cin7ApplicationKey",
       "clarityApiToken",
       "dailyAdBudget",
       "discordChannelId",
       "discordGuildId",
       "elevenLabsApiKey",
+      "faireApiToken",
       "falApiKey",
       "falModel",
       "foreplayApiKey",
@@ -176,6 +179,7 @@
       "imageModel",
       "klaviyoAccessToken",
       "klaviyoApiKey",
+      "loopApiKey",
       "mailchimpApiKey",
       "maxDailyAdBudget",
       "maxMonthlyAdSpend",
@@ -196,9 +200,19 @@
       "productName",
       "productUrl",
       "qualityGate",
+      "quickbooksAccessToken",
+      "quickbooksRealmId",
+      "quickbooksRefreshToken",
+      "quickbooksTokenExpiresAt",
+      "quickbooksUseSandbox",
       "roktAccountId",
       "roktAppId",
       "roktAppSecret",
+      "sesamiApiKey",
+      "sesamiClientId",
+      "sesamiShopId",
+      "shipStationApiKey",
+      "shipStationApiSecret",
       "shopifyAccessToken",
       "shopifyStore",
       "slackBotToken",
@@ -210,7 +224,9 @@
       "tiktokPixelId",
       "trendtrackApiKey",
       "triplewhaleApiKey",
-      "vertical"
+      "vertical",
+      "yotpoAppKey",
+      "yotpoSecretKey"
     ],
     "scalarDefaultsOwnedBy": "autocmo-core/frozen_surfaces.go (configDefaults)",
     "vaultSensitiveKeys": [
@@ -220,10 +236,13 @@
       "applovinAdReportKey",
       "applovinMaxReportKey",
       "arcadsApiKey",
+      "cin7AccountId",
+      "cin7ApplicationKey",
       "clarityApiToken",
       "elevenLabsApiKey",
       "etsyAccessToken",
       "etsyRefreshToken",
+      "faireApiToken",
       "falApiKey",
       "foreplayApiKey",
       "googleAccessToken",
@@ -236,6 +255,7 @@
       "klaviyoRefreshToken",
       "linkedinAccessToken",
       "linkedinRefreshToken",
+      "loopApiKey",
       "mailchimpApiKey",
       "metaAccessToken",
       "openaiAdsApiKey",
@@ -243,11 +263,18 @@
       "pinterestRefreshToken",
       "posthogApiKey",
       "postscriptApiKey",
+      "quickbooksAccessToken",
+      "quickbooksRefreshToken",
       "redditAccessToken",
       "redditRefreshToken",
       "roktAccountId",
       "roktAppId",
       "roktAppSecret",
+      "sesamiApiKey",
+      "sesamiClientId",
+      "sesamiShopId",
+      "shipStationApiKey",
+      "shipStationApiSecret",
       "shopifyAccessToken",
       "slackBotToken",
       "slackWebhookUrl",
@@ -262,7 +289,9 @@
       "triplewhaleApiKey",
       "triplewhaleRefreshToken",
       "twitterAccessToken",
-      "twitterRefreshToken"
+      "twitterRefreshToken",
+      "yotpoAppKey",
+      "yotpoSecretKey"
     ]
   },
   "mcpTools": [
@@ -641,6 +670,46 @@
         }
       },
       "name": "captions"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "cin7"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Cin7 Core inventory reporting (read-only). Pulls products, stock levels, and sales-order stats into the dashboard. Actions: report (pull inventory/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved Account ID + Application Key). Connect by entering your Account ID + Application Key from Cin7 Core → Settings → API into the Cin7 tile.",
+      "input": {
+        "action": {
+          "description": "report → pull inventory/metrics for the window. status → check connection (no API call). connect → how to get Cin7 API credentials. verify → validate the saved credentials.",
+          "enum": [
+            "report",
+            "status",
+            "connect",
+            "verify"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "cin7"
     },
     {
       "annotations": {
@@ -1172,6 +1241,46 @@
     },
     {
       "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "faire"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Faire wholesale-marketplace reporting (read-only). Pulls orders and wholesale revenue into the dashboard. Actions: report (pull orders/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get a Faire API token); verify (validate the saved token). Connect by entering your X-FAIRE-ACCESS-TOKEN from the Faire portal into the Faire tile.",
+      "input": {
+        "action": {
+          "description": "report → pull orders/metrics for the window. status → check connection (no API call). connect → how to get a Faire API token. verify → validate the saved token.",
+          "enum": [
+            "report",
+            "status",
+            "connect",
+            "verify"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "faire"
+    },
+    {
+      "annotations": {
         "brandRequired": true,
         "concurrency": {
           "platform": "google"
@@ -1669,7 +1778,7 @@
       "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"). Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\".",
       "input": {
         "action": {
-          "description": "Operation",
+          "description": "Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)",
           "enum": [
             "performance",
             "lists",
@@ -1695,7 +1804,8 @@
             "flow-delete",
             "flows-bulk-import",
             "segments-list",
-            "segment-create"
+            "segment-create",
+            "export"
           ],
           "type": "string"
         },
@@ -1880,6 +1990,46 @@
         }
       },
       "name": "linkedin_ads"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "loop_returns"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Loop Returns reporting (read-only). Pulls returns, exchanges, and refund stats into the dashboard. Actions: report (pull returns/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get a Loop API key); verify (validate the saved key). Connect by entering your API key from Loop admin → Developers into the Loop tile.",
+      "input": {
+        "action": {
+          "description": "report → pull returns/metrics for the window. status → check connection (no API call). connect → how to get a Loop API key. verify → validate the saved key.",
+          "enum": [
+            "report",
+            "status",
+            "connect",
+            "verify"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "loop_returns"
     },
     {
       "annotations": {
@@ -3885,7 +4035,15 @@
             "linkedin",
             "triplewhale",
             "openai_ads",
-            "threads"
+            "threads",
+            "quickbooks",
+            "yotpo",
+            "sesami",
+            "faire",
+            "shipstation",
+            "loop_returns",
+            "cin7",
+            "shopify_payments"
           ],
           "type": "string"
         },
@@ -4024,6 +4182,45 @@
         }
       },
       "name": "postscript"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "quickbooks"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "QuickBooks Online accounting reporting (read-only). Pulls revenue, expenses, and P&L-style stats into the dashboard. Actions: report (pull accounting metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to connect via OAuth). Connect by clicking the QuickBooks tile in the Connections panel — it runs the Intuit OAuth flow.",
+      "input": {
+        "action": {
+          "description": "report → pull accounting metrics for the window. status → check connection (no API call). connect → how to connect via OAuth.",
+          "enum": [
+            "report",
+            "status",
+            "connect"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "quickbooks"
     },
     {
       "annotations": {
@@ -4258,6 +4455,86 @@
     },
     {
       "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "sesami"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Sesami booking-platform reporting (read-only). Pulls bookings, services, and shop stats into the dashboard. Actions: report (pull metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Sesami API credentials); verify (validate the saved PAT + Client ID + Shop ID). Connect by entering your Personal Access Token, Client ID, and Shop ID from the Sesami admin portal → Tokens into the Sesami tile.",
+      "input": {
+        "action": {
+          "description": "report → pull bookings/services metrics for the window. status → check connection (no API call). connect → how to get Sesami API credentials. verify → validate the saved credentials.",
+          "enum": [
+            "report",
+            "status",
+            "connect",
+            "verify"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "sesami"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "shipstation"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "ShipStation shipping reporting (read-only). Pulls shipments, carriers, and fulfillment stats into the dashboard. Actions: report (pull shipments/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Connect by entering your API Key + Secret from ShipStation → Account → API Settings into the ShipStation tile.",
+      "input": {
+        "action": {
+          "description": "report → pull shipments/metrics for the window. status → check connection (no API call). connect → how to get ShipStation API credentials. verify → validate the saved credentials.",
+          "enum": [
+            "report",
+            "status",
+            "connect",
+            "verify"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "shipstation"
+    },
+    {
+      "annotations": {
         "brandRequired": true,
         "concurrency": {
           "platform": "shopify"
@@ -4266,16 +4543,17 @@
         "destructive": false,
         "idempotent": true
       },
-      "description": "Shopify store data — products, orders, analytics, customer cohorts, import.",
+      "description": "Shopify store data — products, orders, analytics, customer cohorts, import, plus a full-history bulk export for data-procurement packages. Actions: products/orders/analytics/cohorts (reads), import (pull store data into the brand), export (full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt — for data-procurement packages).",
       "input": {
         "action": {
-          "description": "Operation",
+          "description": "Operation — export → full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt (for data-procurement packages)",
           "enum": [
             "products",
             "orders",
             "import",
             "analytics",
-            "cohorts"
+            "cohorts",
+            "export"
           ],
           "type": "string"
         },
@@ -4295,6 +4573,45 @@
         }
       },
       "name": "shopify"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "shopify_payments"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Shopify Payments payout reporting (read-only). Pulls payouts, fees, and payment-method breakdowns via the existing Shopify connection. Actions: report (pull payouts/metrics for a window — batchCount = days, default 30); status (connection check — passes when Shopify is connected); connect (how to connect — rides the Shopify tile).",
+      "input": {
+        "action": {
+          "description": "report → pull payouts/metrics for the window. status → check connection (passes when Shopify is connected). connect → how to connect (rides the Shopify tile).",
+          "enum": [
+            "report",
+            "status",
+            "connect"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "shopify_payments"
     },
     {
       "annotations": {
@@ -4919,6 +5236,46 @@
         }
       },
       "name": "voice"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "yotpo"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Yotpo reviews + loyalty reporting (read-only). Pulls review counts, average rating, and loyalty-program stats into the dashboard. Actions: report (pull metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Yotpo API credentials); verify (validate the saved App Key + Secret Key). Connect by entering your App Key + Secret Key from Yotpo admin → Settings → General → App Settings into the Yotpo tile.",
+      "input": {
+        "action": {
+          "description": "report → pull reviews/loyalty metrics for the window. status → check connection (no API call). connect → how to get Yotpo API credentials. verify → validate the saved credentials.",
+          "enum": [
+            "report",
+            "status",
+            "connect",
+            "verify"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Days of data for report (default 30).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        }
+      },
+      "name": "yotpo"
     }
   ],
   "meta": {

@@ -1,6 +1,6 @@
 {
   "name": "Merlin",
-  "version": "1.40.1",
+  "version": "1.40.2",
   "description": "Merlin \u2014 Your AI CMO",
   "main": "app/main.js",
   "scripts": {
@@ -90,6 +90,10 @@
       {
         "from": "version.json",
         "to": "version.json"
+      },
+      {
+        "from": "app/update-splash.png",
+        "to": "update-splash.png"
       }
     ],
     "win": {
@@ -176,7 +180,25 @@
       }
     },
     "dmg": {
-      "writeUpdateInfo": false
+      "writeUpdateInfo": false,
+      "background": "build/dmg-background.png",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 130,
+          "y": 190,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 190,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     },
     "linux": {
       "target": "AppImage"

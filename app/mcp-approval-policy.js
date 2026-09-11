@@ -64,6 +64,10 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   // "destructive-tool default" (main.js's catch-all AUTO-APPROVES anything
   // not in one of these three sets; the 2026-07-10 P0-02 fix corrects this).
   'segments-list',
+  // Shopify + Klaviyo full-history bulk exports (2026-09-11 batch) — pure
+  // reads (GraphQL bulk op / cursor pagination), no writes. Listed so the
+  // read-only intent is explicit rather than relying on the catch-all.
+  'export',
 ]));
 
 // SPEND_ACTIONS gate the approval card. `push` is the only action eligible

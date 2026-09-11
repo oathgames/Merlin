@@ -525,6 +525,11 @@ async function runFastOpenOAuth(platform, opts = {}) {
       // /callback — authorization-code flow.
       const code = u.searchParams.get('code') || '';
 
+      // Intuit returns the company realmId as a query param alongside the
+      // code — captured here and forwarded to the binary so
+      // runQuickBooksLogin can persist it without a second discovery call.
+      const realmId = u.searchParams.get('realmId') || '';
+
       if (!implicitToken && !code) {
         res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(htmlAuthError('No authorization code received.'));
@@ -552,6 +557,7 @@ async function runFastOpenOAuth(platform, opts = {}) {
       }
       if (opts.brand) cmdObj.brand = opts.brand;
       if (platform === 'shopify' && shopSlug) cmdObj.shop = shopSlug;
+      if (platform === 'quickbooks') cmdObj.realmId = realmId;
 
       const child = execFile(
         opts.binaryPath,

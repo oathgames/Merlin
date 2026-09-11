@@ -198,3 +198,60 @@ test('Alia tile has a complete masked-key connection path', () => {
   assert.ok(allowlistBlock.includes("'aliaApiKey'"), 'aliaApiKey not in CONFIG_FIELD_ALLOWLIST; save-config-field would reject the key');
   assert.ok(sensitiveBlock.includes("'aliaApiKey'"), 'aliaApiKey not in VAULT_SENSITIVE_KEYS; key would be written in plaintext');
 });
+
+test('all 8 frontier-lab connector tiles exist and are brand-scope', () => {
+  for (const p of ['yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7']) {
+    const t = tiles.find((x) => x.platform === p);
+    assert.ok(t, `brand tile "${p}" missing from index.html`);
+    assert.equal(t.scope, 'brand', `tile "${p}" must be data-scope="brand" (each brand connects its own account)`);
+    assert.ok(!t.stubbed, `tile "${p}" must not be stubbed; the connector ships in the binary`);
+  }
+});
+
+test('ecommerce vertical includes all 8 frontier-lab connectors', () => {
+  const ecom = verticals.find((v) => v.includes('shopify'));
+  assert.ok(ecom, 'ecommerce vertical (the one with shopify) not found');
+  for (const p of ['yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7']) {
+    assert.ok(ecom.includes(p), `ecommerce vertical missing ${p} — the tile would be invisible (the mailchimp bug class)`);
+  }
+});
+
+test('all 8 frontier-lab connectors have a working connect path', () => {
+  // Every non-stubbed tile click must reach OAuth, a custom modal, or the
+  // single-field API_KEY_PLATFORMS modal — otherwise the click is a silent
+  // no-op (the LinkedIn bug class pinned in renderer.js's REGRESSION GUARD).
+  assert.ok(renderer.includes("'quickbooks'"), 'quickbooks missing from OAUTH_PLATFORMS');
+  for (const p of ['yotpo', 'sesami', 'shipstation', 'cin7', 'shopify_payments']) {
+    assert.match(renderer, new RegExp(`${p}:\\s*show|${p}:\\s*connect`), `${p} missing from CUSTOM_CONNECT_HANDLERS; the tile click would do nothing`);
+  }
+  for (const p of ['faire', 'loop_returns']) {
+    assert.match(renderer, new RegExp(`${p}:\\s*\\{\\s*key:`), `${p} missing from API_KEY_PLATFORMS; the tile click would do nothing`);
+  }
+  // Every field the modals save via save-config-field must be allowlisted,
+  // or the save hits "Unknown config field" (postscript-save-broken class).
+  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
+  assert.ok(allowlistStart >= 0, 'CONFIG_FIELD_ALLOWLIST definition not found');
+  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
+  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
+  const savedKeys = [
+    'yotpoAppKey', 'yotpoSecretKey',
+    'sesamiApiKey', 'sesamiClientId', 'sesamiShopId',
+    'faireApiToken',
+    'shipStationApiKey', 'shipStationApiSecret',
+    'loopApiKey',
+    'cin7AccountId', 'cin7ApplicationKey',
+    'quickbooksAccessToken', 'quickbooksRefreshToken',
+    'quickbooksRealmId', 'quickbooksTokenExpiresAt', 'quickbooksUseSandbox',
+  ];
+  for (const k of savedKeys) {
+    assert.ok(allowlistBlock.includes(`'${k}'`), `${k} not in CONFIG_FIELD_ALLOWLIST; save-config-field would reject it`);
+  }
+  // Secrets must be vaulted; the QuickBooks identifiers must NOT be
+  // (non-secret, same treatment as shopifyStore).
+  for (const k of savedKeys.filter((k) => !k.startsWith('quickbooksRealm') && k !== 'quickbooksTokenExpiresAt' && k !== 'quickbooksUseSandbox')) {
+    assert.ok(sensitiveBlock.includes(`'${k}'`), `${k} not in VAULT_SENSITIVE_KEYS; would be written to config in plaintext`);
+  }
+  for (const k of ['quickbooksRealmId', 'quickbooksTokenExpiresAt', 'quickbooksUseSandbox']) {
+    assert.ok(!sensitiveBlock.includes(`'${k}'`), `${k} should NOT be in VAULT_SENSITIVE_KEYS (non-secret identifier)`);
+  }
+});
