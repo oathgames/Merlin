@@ -199,6 +199,35 @@ test('update-runner spawns cmd.exe with windowsHide + detached + stdio ignore', 
   }
 });
 
+test('update batch waits for Merlin.exe to exit before running the installer', () => {
+  // 2026-09-11 incident: the batch is spawned BEFORE app.quit() completes,
+  // so the NSIS installer ran while every Merlin.exe still held the install
+  // dir open. /S stalls on locked files with no exit code and no relaunch —
+  // the update silently died 4 times in one day on a live machine.
+  // The generated script MUST gate the installer on process exit.
+  const batBlock = SRC.match(/const script = \[([\s\S]*?)\]\.join\(/);
+  if (!batBlock) throw new Error('could not locate the update batch script array in main.js');
+  const body = batBlock[1];
+  const hasWaitLoop = /:wait_exit/.test(body) && /tasklist \/fi "imagename eq Merlin\.exe"/.test(body);
+  if (!hasWaitLoop) {
+    throw new Error(
+      'update batch has no wait-for-exit loop. The installer MUST NOT run ' +
+      'while Merlin.exe processes are alive — poll tasklist until the count ' +
+      'is 0, then force-kill stragglers, then install.',
+    );
+  }
+  // The installer invocation must come AFTER the wait loop in the script.
+  const waitIdx = body.indexOf(':wait_exit');
+  const installIdx = body.search(/"\$\{filePath\}" \/S/);
+  if (installIdx < 0 || installIdx < waitIdx) {
+    throw new Error('installer line precedes (or is missing relative to) the :wait_exit loop');
+  }
+  // And a bounded escape hatch so a hung process can't stall the update forever.
+  if (!/taskkill \/F \/IM Merlin\.exe/.test(body)) {
+    throw new Error('wait loop has no force-kill escape hatch (taskkill /F /IM Merlin.exe)');
+  }
+});
+
 console.log('');
 console.log(`${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

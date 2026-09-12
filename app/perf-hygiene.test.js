@@ -119,7 +119,7 @@ test('before-quit clears all long-lived intervals alongside _updateCheckInterval
 // ── 3. Installer download streams to disk (no full buffering) ────────
 
 test('installUpdateFromLatestRelease streams the installer via httpsDownloadToFile', () => {
-  const src = region('async function installUpdateFromLatestRelease', 14000);
+  const src = region('async function installUpdateFromLatestRelease', 22000);
   assert.match(src, /httpsDownloadToFile\(asset\.browser_download_url,\s*tmpFile\)/,
     'the installer download must stream to the tmp file via httpsDownloadToFile');
   assert.ok(!/await httpsGet\(asset\.browser_download_url\)/.test(src),

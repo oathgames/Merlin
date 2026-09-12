@@ -200,3 +200,48 @@ test('endless-loop scenario: 20 rapid-fire identical failures → 1 modal', () =
   assert.equal(ctx._modalActive, true);
   assert.equal(ctx._modalQueue.length, 0);
 });
+
+// ── dismiss() handle (2026-09-11 Shopify handoff UX) ──────────────────
+// The "Finish in your browser" prompt stays on screen while the merchant
+// completes the Shopify install; when merlin://oauth-complete arrives the
+// result modal queued BEHIND it and the user saw doubled modals. showModal
+// now returns a dismiss handle the deep-link handler calls first.
+
+test('dismiss() closes the active modal and lets the queued one show', () => {
+  const { ctx, elements } = makeSandbox(() => 1000);
+  const dismiss = ctx.showModal({ title: 'Finish in your browser', body: 'X', confirmLabel: 'OK' });
+  assert.equal(ctx._modalActive, true);
+  ctx.showModal({ title: 'Shopify connected', body: 'Y', confirmLabel: 'OK' }); // queued behind prompt
+  assert.equal(ctx._modalQueue.length, 1);
+
+  dismiss();
+  // cleanup() drains the queue via setTimeout — synchronous in this
+  // sandbox — so the result modal is already on screen: exactly the
+  // UX we want (prompt gone, result visible, nothing doubled).
+  assert.equal(ctx._modalActive, true);
+  assert.equal(ctx._modalQueue.length, 0);
+  assert.equal(elements['merlin-modal-title'].textContent, 'Shopify connected');
+});
+
+test('dismiss() on a queued modal removes it before it ever shows', () => {
+  const { ctx } = makeSandbox(() => 1000);
+  ctx.showModal({ title: 'A', body: 'first', confirmLabel: 'OK' });
+  const dismissQueued = ctx.showModal({ title: 'B', body: 'second', confirmLabel: 'OK' });
+  assert.equal(ctx._modalQueue.length, 1);
+
+  dismissQueued();
+  assert.equal(ctx._modalQueue.length, 0);
+  assert.equal(ctx._modalActive, true); // 'A' untouched
+});
+
+test('dismiss() is a no-op after the modal was already closed', () => {
+  const { ctx, elements } = makeSandbox(() => 1000);
+  const dismiss = ctx.showModal({ title: 'A', body: 'first', confirmLabel: 'OK' });
+  elements['merlin-modal-confirm'].onclick(); // user closed it themselves
+  assert.equal(ctx._modalActive, false);
+
+  // A different modal is now active — the stale handle must not kill it.
+  ctx.showModal({ title: 'B', body: 'second', confirmLabel: 'OK' });
+  dismiss();
+  assert.equal(ctx._modalActive, true);
+});

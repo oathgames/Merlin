@@ -158,6 +158,7 @@ test('DEFAULT_CAPS covers every rate-limited platform the binary knows about', (
     'meta', 'tiktok', 'google', 'google_merchant', 'shopify', 'amazon',
     'klaviyo', 'etsy', 'reddit_ads', 'reddit_organic', 'linkedin', 'stripe',
     'foreplay', 'fal', 'elevenlabs', 'heygen',
+  'yotpo', 'sesami', 'faire', 'quickbooks', 'shipstation', 'loop_returns', 'cin7',
   ];
   for (const p of binaryPlatforms) {
     assert.ok(

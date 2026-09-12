@@ -111,6 +111,7 @@ test('D2.7: every platform in autocmo-core/ratelimit_preflight.go has a DEFAULT_
     'klaviyo', 'etsy', 'reddit_ads', 'reddit_organic', 'linkedin', 'stripe',
     'foreplay', 'fal', 'elevenlabs', 'heygen',
     'google_analytics', 'postscript', 'applovin', 'trendtrack', // Session 3 fix
+  'yotpo', 'sesami', 'faire', 'quickbooks', 'shipstation', 'loop_returns', 'cin7',
   ];
   for (const p of expected) {
     assert.ok(

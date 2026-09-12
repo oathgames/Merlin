@@ -79,6 +79,16 @@ const DEFAULT_CAPS = Object.freeze({
   // would fall to _default=2 silently.
   arcads:           3, // Arcads UGC video — credit-gated, 3 concurrent matches fal's posture.
 
+  // Commerce-ops connectors (2026-09-11 batch) — all read-only reporting
+  // pulls; caps mirror platformLimits in autocmo-core/ratelimit_preflight.go.
+  yotpo:        2, // uToken exchange + reviews/loyalty reads; no published RPM cap
+  sesami:       2, // bookings/services reads via PAT headers; no published cap
+  faire:        2, // orders/products reads via X-FAIRE-ACCESS-TOKEN; no published cap
+  quickbooks:   2, // QBO realm cap is 500 req/min; 2 concurrent is anti-thunder
+  shipstation:  2, // 40 req/min account cap; 2 concurrent serializes verify+report
+  loop_returns: 2, // returns/warehouse reads; no published cap
+  cin7:         2, // 60 calls/min account cap; 2 concurrent stays well under
+
   // Default for any platform not explicitly listed — err on the side of
   // safety. 2 concurrent forces callers to queue instead of fan out wide.
   _default: 2,

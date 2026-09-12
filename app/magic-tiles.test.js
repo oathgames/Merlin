@@ -28,6 +28,7 @@ const APP_DIR = __dirname;
 const renderer = fs.readFileSync(path.join(APP_DIR, 'renderer.js'), 'utf8');
 const indexHtml = fs.readFileSync(path.join(APP_DIR, 'index.html'), 'utf8');
 const oauthPersist = fs.readFileSync(path.join(APP_DIR, 'oauth-persist.js'), 'utf8');
+const mainSrc = fs.readFileSync(path.join(APP_DIR, 'main.js'), 'utf8');
 
 // Parse every <button class="magic-tile" ...> opening tag from index.html.
 function parseTiles(html) {
@@ -246,12 +247,28 @@ test('all 8 frontier-lab connectors have a working connect path', () => {
   for (const k of savedKeys) {
     assert.ok(allowlistBlock.includes(`'${k}'`), `${k} not in CONFIG_FIELD_ALLOWLIST; save-config-field would reject it`);
   }
-  // Secrets must be vaulted; the QuickBooks identifiers must NOT be
-  // (non-secret, same treatment as shopifyStore).
-  for (const k of savedKeys.filter((k) => !k.startsWith('quickbooksRealm') && k !== 'quickbooksTokenExpiresAt' && k !== 'quickbooksUseSandbox')) {
+  // Secrets must be vaulted. quickbooksRealmId is vaulted too — the Go
+  // binary VaultPuts it brand-scoped (same treatment as shopifyStore), so
+  // leaving it out of VAULT_SENSITIVE_KEYS orphaned the vault entry on
+  // disconnect (2026-09-11 audit fix). tokenExpiresAt and useSandbox stay
+  // plaintext non-secret identifiers.
+  for (const k of savedKeys.filter((k) => k !== 'quickbooksTokenExpiresAt' && k !== 'quickbooksUseSandbox')) {
     assert.ok(sensitiveBlock.includes(`'${k}'`), `${k} not in VAULT_SENSITIVE_KEYS; would be written to config in plaintext`);
   }
-  for (const k of ['quickbooksRealmId', 'quickbooksTokenExpiresAt', 'quickbooksUseSandbox']) {
+  for (const k of ['quickbooksTokenExpiresAt', 'quickbooksUseSandbox']) {
     assert.ok(!sensitiveBlock.includes(`'${k}'`), `${k} should NOT be in VAULT_SENSITIVE_KEYS (non-secret identifier)`);
   }
+});
+
+test('legacy OAuth spawn passes brand — quickbooks tokens must not vault under _global', () => {
+  // 2026-09-11 audit P0: runOAuthFlow's legacy fallback spawned
+  // `Merlin.exe <platform>-login` with { action } only — no brand — so
+  // quickbooks-login vaulted tokens under _global where brand-scoped
+  // resolution (BRAND_KEYS / brandScopedKeys forbid the _global fallback)
+  // never looks. The tile stayed gray and every report failed
+  // 'not connected' after a successful OAuth. The spawn MUST carry brand.
+  const legacySpawn = mainSrc.match(/Legacy binary-login fallback[\s\S]*?JSON\.stringify\(\{[^}]*\}\)/);
+  assert.ok(legacySpawn, 'legacy binary-login spawn not found in main.js');
+  assert.match(legacySpawn[0], /brand:/,
+    'legacy spawn drops brand — brand-scoped OAuth tokens vault under _global and are unreachable');
 });

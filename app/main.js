@@ -12490,7 +12490,36 @@ async function installUpdateFromLatestRelease() {
         ].join('\r\n'));
         const script = [
           '@echo off',
-          `echo [%DATE% %TIME%] starting installer "${filePath}" >> "${logPath}"`,
+          // REGRESSION GUARD (2026-09-11 installer-vs-running-app race):
+          // This batch is spawned BEFORE the app quits (the runner returns,
+          // then app.quit() fires ~1.5s later, and quit is async — WSS server,
+          // MCP sidecar and SDK children take seconds to die). The old script
+          // ran the NSIS installer immediately, so it tried to overwrite
+          // Merlin.exe while every process still held it open. NSIS /S
+          // stalls on locked files with no exit code and no relaunch —
+          // observed 4 dead installs in one day on a live machine, each
+          // leaving the app closed and the user stranded on the old build.
+          // Fix: poll tasklist until zero Merlin.exe remain (grace window
+          // for the async quit), then force-kill whatever is left, then
+          // install. Never remove the wait — the race is guaranteed, not
+          // occasional.
+          'set WAIT_TRIES=0',
+          ':wait_exit',
+          `for /f %%a in ('tasklist /fi "imagename eq Merlin.exe" /nh 2^>nul ^| find /c "Merlin.exe"') do set MERLIN_PROCS=%%a`,
+          'if "%MERLIN_PROCS%"=="0" goto procs_gone',
+          'set /a WAIT_TRIES+=1',
+          // ~30s grace for the async quit, then force-kill. Every remaining
+          // process is the OLD build by definition — this batch only exists
+          // during an update.
+          'if %WAIT_TRIES% geq 15 goto force_kill',
+          'ping -n 3 127.0.0.1 >nul 2>&1',
+          'goto wait_exit',
+          ':force_kill',
+          `echo [%DATE% %TIME%] Merlin still running after wait — force-killing >> "${logPath}"`,
+          'taskkill /F /IM Merlin.exe >nul 2>&1',
+          'ping -n 3 127.0.0.1 >nul 2>&1',
+          ':procs_gone',
+          `echo [%DATE% %TIME%] all Merlin processes exited — starting installer "${filePath}" >> "${logPath}"`,
           // Launch the splash detached; it records its own PID. Failure is
           // non-fatal — the installer runs regardless.
           `start "" /min powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File "${splashPs1}" >> "${logPath}" 2>&1`,
@@ -13780,7 +13809,23 @@ async function downloadAndApplyUpdate() {
           // nul stdio instead of the spawning cmd's console.
           fs.writeFileSync(swapScript, [
             '@echo off',
-            `ping -n 3 127.0.0.1 >nul 2>&1`,
+            // Wait for the old process to fully release the asar before
+            // moving — this script is spawned while the app is still
+            // exiting (see REGRESSION GUARD 2026-09-11 in
+            // installUpdateFromLatestRelease). A bare ping sleep raced
+            // the file lock and the move silently failed.
+            'set WAIT_TRIES=0',
+            ':wait_exit',
+            `for /f %%a in ('tasklist /fi "imagename eq Merlin.exe" /nh 2^>nul ^| find /c "Merlin.exe"') do set MERLIN_PROCS=%%a`,
+            'if "%MERLIN_PROCS%"=="0" goto do_swap',
+            'set /a WAIT_TRIES+=1',
+            'if %WAIT_TRIES% geq 15 goto force_kill',
+            'ping -n 3 127.0.0.1 >nul 2>&1',
+            'goto wait_exit',
+            ':force_kill',
+            'taskkill /F /IM Merlin.exe >nul 2>&1',
+            'ping -n 3 127.0.0.1 >nul 2>&1',
+            ':do_swap',
             `move /Y "${stagedPath}" "${asarPath}"`,
             `start "" "${exePath}" >nul 2>&1`,
             `del "%~f0"`,
@@ -14443,7 +14488,21 @@ app.whenReady().then(async () => {
             // `ping` over `timeout` and `>nul 2>&1` on the start line.
             fs.writeFileSync(swapScript, [
               '@echo off',
-              `ping -n 3 127.0.0.1 >nul 2>&1`,
+              // Same wait-for-exit gate as the primary swap script — this
+              // runs while the app is still exiting, so the move must not
+              // fire until zero Merlin.exe remain.
+              'set WAIT_TRIES=0',
+              ':wait_exit',
+              `for /f %%a in ('tasklist /fi "imagename eq Merlin.exe" /nh 2^>nul ^| find /c "Merlin.exe"') do set MERLIN_PROCS=%%a`,
+              'if "%MERLIN_PROCS%"=="0" goto do_swap',
+              'set /a WAIT_TRIES+=1',
+              'if %WAIT_TRIES% geq 15 goto force_kill',
+              'ping -n 3 127.0.0.1 >nul 2>&1',
+              'goto wait_exit',
+              ':force_kill',
+              'taskkill /F /IM Merlin.exe >nul 2>&1',
+              'ping -n 3 127.0.0.1 >nul 2>&1',
+              ':do_swap',
               `move /Y "${stagedAsar}" "${asarPath}"`,
               `start "" "${exePath}" >nul 2>&1`,
               `del "%~f0"`,

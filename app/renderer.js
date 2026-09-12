@@ -269,6 +269,7 @@ let sessionTotalTokens = 0;
 let _modalQueue = [];
 let _modalActive = false;
 let _modalActiveSig = null;         // signature of currently-visible modal (null when no modal)
+let _modalActiveToken = null;       // identity token for the dismiss() handle
 let _modalLastDismissedSig = null;  // signature of the modal last closed via cleanup
 let _modalLastDismissedAt = 0;      // timestamp (ms) of that dismissal
 const _MODAL_DEDUPE_COOLDOWN_MS = 2000;
@@ -288,11 +289,17 @@ function _modalSignature({ title, body, bodyHTML, bodyNode, inputPlaceholder }) 
   ]);
 }
 
+// showModal returns a dismiss() handle. Calling it closes THIS modal if it
+// is the one on screen, or removes it from the queue if it hasn't shown
+// yet; it's a no-op once the modal was dismissed any other way. Needed by
+// flows that show a "finish in your browser" prompt and later get a
+// deep-link result — without it the result modal queues BEHIND the stale
+// prompt and the user sees doubled modals (2026-09-11 Shopify handoff).
 function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel }) {
   const sig = _modalSignature({ title, body, bodyHTML, bodyNode, inputPlaceholder });
   if (sig !== null) {
-    if (_modalActive && _modalActiveSig === sig) return;
-    if (_modalQueue.some((entry) => entry._sig === sig)) return;
+    if (_modalActive && _modalActiveSig === sig) return () => {};
+    if (_modalQueue.some((entry) => entry._sig === sig)) return () => {};
     if (
       _modalLastDismissedSig === sig
       && (Date.now() - _modalLastDismissedAt) < _MODAL_DEDUPE_COOLDOWN_MS
@@ -310,15 +317,23 @@ function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmL
           showSpellToast(title || 'Already shown', 'Tap again in a moment if you need to see this.', 'info');
         }
       } catch { /* dedupe is best-effort feedback; never block on it */ }
-      return;
+      return () => {};
     }
   }
   if (_modalActive) {
-    _modalQueue.push({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel, _sig: sig });
-    return;
+    const entry = { title, body, bodyHTML, bodyNode, inputPlaceholder, confirmLabel, cancelLabel, onConfirm, onCancel, _sig: sig };
+    _modalQueue.push(entry);
+    return () => {
+      const i = _modalQueue.indexOf(entry);
+      if (i !== -1) _modalQueue.splice(i, 1);
+    };
   }
   _modalActive = true;
   _modalActiveSig = sig;
+  // Identity token for the dismiss handle — sig is null for input modals,
+  // so signature matching can't distinguish two different prompts.
+  const _modalToken = {};
+  _modalActiveToken = _modalToken;
   const modal = document.getElementById('merlin-modal');
   const titleEl = document.getElementById('merlin-modal-title');
   const bodyEl = document.getElementById('merlin-modal-body');
@@ -399,7 +414,6 @@ function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmL
     inputEl.onkeydown = null;
     document.removeEventListener('keydown', escHandler);
     document.removeEventListener('keydown', tabTrapHandler, true);
-    // Restore focus to whatever the user was on before the modal opened.
     // Use a microtask so any focus events from `modal.classList.add('hidden')`
     // settle first; without it, certain WebKit builds steal focus back to
     // the modal's now-hidden close button.
@@ -414,6 +428,7 @@ function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmL
     }
     _modalActive = false;
     _modalActiveSig = null;
+    _modalActiveToken = null;
     if (_modalQueue.length > 0) setTimeout(() => showModal(_modalQueue.shift()), 100);
   }
 
@@ -477,6 +492,13 @@ function showModal({ title, body, bodyHTML, bodyNode, inputPlaceholder, confirmL
   if (inputPlaceholder !== undefined) {
     inputEl.onkeydown = (e) => { if (e.key === 'Enter') confirmBtn.click(); };
   }
+  // Dismiss handle: closes this modal only while it is still the active
+  // one. Token (not sig) matching — input modals share sig=null, and after
+  // cleanup() ran by any path the token no longer matches, so a late
+  // dismiss is a safe no-op.
+  return () => {
+    if (_modalActive && _modalActiveToken === _modalToken) cleanup();
+  };
 }
 
 function showModalError(text) {
@@ -6533,6 +6555,10 @@ const API_KEY_PLATFORMS = {
 //   { awaiting: 'browser' }. The token arrives back via
 //   merlin.onMerlinDeepLink → merlin.runShopifyHandoff. See
 //   shopify-app-review.test.js for the source-scan that pins this.
+// Dismiss handle for the "Finish in your browser" prompt. The deep-link
+// handler calls it the moment merlin://oauth-complete arrives so the
+// result modal doesn't queue behind the stale prompt (2026-09-11).
+let _dismissShopifyBrowserPrompt = null;
 function runShopifyOAuthWithStore(activeBrand) {
   return merlin.runOAuth('shopify', activeBrand).then(result => {
     if (result && result.error) {
@@ -6540,7 +6566,7 @@ function runShopifyOAuthWithStore(activeBrand) {
       return;
     }
     if (result && result.awaiting === 'browser') {
-      showModal({
+      _dismissShopifyBrowserPrompt = showModal({
         title: 'Finish in your browser',
         body: 'Merlin opened Shopify in your browser. Pick the store you want to connect, then click Install. Merlin will reconnect automatically when you finish.',
         confirmLabel: 'OK',
@@ -6598,6 +6624,12 @@ function startShopifyFlow(activeBrand) {
     if (parsed.host !== 'oauth-complete') {
       // Future: dispatch other merlin:// actions here.
       return;
+    }
+    // The browser leg is done — close the "Finish in your browser" prompt
+    // before any result modal so they don't stack (2026-09-11).
+    if (typeof _dismissShopifyBrowserPrompt === 'function') {
+      _dismissShopifyBrowserPrompt();
+      _dismissShopifyBrowserPrompt = null;
     }
     const handoff = parsed.searchParams.get('handoff') || '';
     const shop = parsed.searchParams.get('shop') || '';
@@ -7547,6 +7579,32 @@ function showCin7ConnectModal(activeBrand) {
   });
 }
 
+// Shopify Payments connect — NOT a separate connection. It rides the
+// Shopify OAuth token (shopify_payments.go runs shopifyGraphQL against
+// cfg.ShopifyStore + cfg.ShopifyAccessToken), so "connecting" it means
+// connecting Shopify. If Shopify is already connected the tile is already
+// lit and this modal just explains that; otherwise it hands off to the
+// same startShopifyFlow the Shopify tile uses.
+function showShopifyPaymentsConnectModal(activeBrand) {
+  const shopifyTile = document.querySelector('.magic-tile[data-platform="shopify"]');
+  if (shopifyTile && shopifyTile.classList.contains('connected')) {
+    showModal({
+      title: 'Shopify Payments',
+      body: 'Shopify Payments reporting rides your existing Shopify connection — it is already connected. Payout and balance data is available in reports.',
+      confirmLabel: 'OK',
+      onConfirm: () => {},
+    });
+    return;
+  }
+  showModal({
+    title: 'Connect Shopify first',
+    body: 'Shopify Payments reporting uses your Shopify connection — there is no separate sign-in. Connect Shopify and this tile lights up automatically.',
+    confirmLabel: 'Connect Shopify',
+    cancelLabel: 'Cancel',
+    onConfirm: () => { startShopifyFlow(activeBrand); },
+  });
+}
+
 
 // Platforms whose tile LEFT-CLICK opens a custom multi-field connect modal
 // instead of OAuth or the single-field API_KEY_PLATFORMS modal. Checked in the
@@ -7558,6 +7616,7 @@ const CUSTOM_CONNECT_HANDLERS = {
   sesami: showSesamiConnectModal,
   shipstation: showShipStationConnectModal,
   cin7: showCin7ConnectModal,
+  shopify_payments: showShopifyPaymentsConnectModal,
 };
 
 // Platforms that support a "Use my API key" right-click override. Each entry

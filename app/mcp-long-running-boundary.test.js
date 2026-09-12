@@ -192,6 +192,19 @@ test('no mcp-*.js call site sets a timeout above the boundary-safe default, exce
       // value is fine (meta-import restates it deliberately). Anything ABOVE
       // it is the hole.
       if (value <= BOUNDARY_SAFE_MS) continue;
+      // The job-path exemption: EXPORT_JOB_TIMEOUT_MS is only legal inside
+      // startExportJob — background jobs are the DESIGNED overflow path and
+      // are not bound by the 120s call boundary (the tool returns a jobId
+      // immediately; the binary runs detached). Any other call site above
+      // the boundary is the hole this test exists to catch.
+      if (raw === 'EXPORT_JOB_TIMEOUT_MS') {
+        // Only legal inside startExportJob — its declaration must precede
+        // the call site in the file.
+        if (!/function startExportJob/.test(src.slice(0, m.index))) {
+          offenders.push(`${file}: EXPORT_JOB_TIMEOUT_MS used outside startExportJob`);
+        }
+        continue;
+      }
       const owner = toolNameAt(src, m.index);
       if (!LONG_TIMEOUT_ALLOWLIST.has(owner)) {
         offenders.push(`${file}: ${owner} sets timeout ${value} , above ${BOUNDARY_SAFE_MS}ms the host boundary (120000ms) fires first and the caller gets no envelope`);

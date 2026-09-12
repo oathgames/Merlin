@@ -124,10 +124,14 @@ const VAULT_SENSITIVE_KEYS = [
   // Faire wholesale API token (X-FAIRE-ACCESS-TOKEN), saved by the masked
   // API_KEY_PLATFORMS tile.
   'faireApiToken',
-  // QuickBooks OAuth tokens (binary quickbooks-login path). realmId and
-  // token expiry are non-secret identifiers — allowlist only, below.
+  // QuickBooks OAuth tokens (binary quickbooks-login path). realmId is
+  // vaulted brand-scoped by the Go side (same treatment as shopifyStore) —
+  // it MUST be listed here or disconnect-platform's vaultDelete skips it
+  // and the entry is orphaned forever. tokenExpiresAt is a non-secret
+  // plaintext field — allowlist only, below.
   'quickbooksAccessToken',
   'quickbooksRefreshToken',
+  'quickbooksRealmId',
   // ShipStation BYOK credentials (API Key + API Secret — HTTP Basic pair),
   // saved by the 2-step ShipStation connect modal.
   'shipStationApiKey',

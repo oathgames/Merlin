@@ -348,9 +348,11 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   'shopify-login', 'klaviyo-login', 'etsy-login', 'reddit-login',
   'linkedin-login',
   'stripe-login',
-  // QuickBooks Online — OAuth login (Intuit). Same brand-agnostic login
-  // shape as stripe-login: the binary writes to the correct scope based on
-  // whether brand was passed.
+  // QuickBooks Online — OAuth login (Intuit). Brand-OPTIONAL, not
+  // brand-agnostic: the binary vaults under cmd.Brand's scope, so callers
+  // SHOULD pass brand (platform_login does; the tile's legacy spawn now
+  // does too — 2026-09-11 audit fix). Listed here so a brandless call
+  // still reaches the binary instead of dying on BRAND_MISSING.
   'quickbooks-login',
   // AppLovin + Postscript are API-key connectors (no OAuth). The *-login
   // actions in the binary just verify the key and persist it — no brand
@@ -639,6 +641,10 @@ async function runBinary(ctx, action, args, opts = {}) {
           text: cleanText || 'Done.',
           artifacts: bundles && bundles.length ? bundles : undefined,
           error: err ? true : false,
+          // Job-runner hint: a timeout/SIGTERM kill is resumable for
+          // checkpointed actions (exports) — the caller decides whether
+          // to retry. Undefined on the normal path.
+          timedOut: err ? Boolean(err.killed || err.signal === 'SIGTERM' || /timed out/i.test(err.message || '')) : undefined,
         });
       }
     );
@@ -656,6 +662,72 @@ async function runBinary(ctx, action, args, opts = {}) {
     } catch {}
 
     if (ctx.activeChildProcesses) ctx.activeChildProcesses.add(child);
+    // Job-runner cancellation hook: lets jobs_cancel kill the child
+    // mid-run. Optional — plain callers don't pass it.
+    if (typeof opts.onChild === 'function') {
+      try { opts.onChild(child); } catch {}
+    }
+  });
+}
+
+// ── Long-running export jobs ────────────────────────────────
+// Full-history exports cannot finish inside runBinary's 110s MCP-call
+// boundary — a multi-year order history or a million-event Klaviyo pull
+// takes minutes-to-hours. They route through ctx.jobStore instead: the
+// tool returns { jobId } immediately and the agent polls jobs_poll.
+//
+// Resume safety is built into the engine: klaviyo-export checkpoints its
+// cursor after every page (.checkpoint-<segment>.json) and shopify-export
+// attaches to an in-flight or recently-completed bulk op, so a timed-out
+// or killed run loses nothing — the retry below picks up where it left
+// off rather than restarting. The loop also honors the engine's
+// `paused`/`resumeAfterSec` signal (hour/day rate-cap windows) by
+// sleeping out the window and re-invoking.
+const EXPORT_JOB_TIMEOUT_MS = 1800000;      // 30 min per binary invocation — job path is NOT bound by the 120s MCP call boundary
+const EXPORT_JOB_MAX_ATTEMPTS = 48;         // ~24h of hour-cap pauses
+
+function startExportJob(ctx, toolName, action, args) {
+  if (!ctx.jobStore) return null;
+  return ctx.jobStore.start({
+    tool: toolName,
+    brand: args.brand || '',
+    meta: { action },
+    runFn: async ({ reportProgress, checkCancelled, registerCancel }) => {
+      let last;
+      for (let attempt = 0; attempt < EXPORT_JOB_MAX_ATTEMPTS; attempt++) {
+        checkCancelled();
+        reportProgress({ stage: attempt === 0 ? 'running' : `resuming (attempt ${attempt + 1})` });
+        last = await runBinary(ctx, action, args, {
+          timeout: EXPORT_JOB_TIMEOUT_MS,
+          onChild: (child) => registerCancel(() => { try { child.kill('SIGTERM'); } catch {} }),
+        });
+        if (!last) return toEnvelope({ text: 'Export produced no output.', error: true });
+        // A timeout kill is resumable — engine checkpoints (klaviyo) and
+        // bulk-op attach (shopify) mean the re-invocation continues where
+        // this one stopped. Any other error is final.
+        if (last.error && !last.timedOut) return toEnvelope(last);
+        if (last.error && last.timedOut) {
+          reportProgress({ stage: 'engine timed out — resuming from checkpoint' });
+          continue;
+        }
+        // The engine prints its result JSON at the end of stdout. A
+        // `paused` flag means a rate-cap window fired mid-run — sleep it
+        // out and re-invoke; checkpoints make the re-run a resume.
+        let parsed = null;
+        try {
+          const m = (last.text || '').match(/\{[\s\S]*"exported"[\s\S]*\}/);
+          if (m) parsed = JSON.parse(m[0]);
+        } catch { /* unparseable output — treat as done */ }
+        if (parsed && parsed.paused) {
+          const waitMs = Math.min(Math.max((parsed.resumeAfterSec || 3600) * 1000, 60000), 25 * 3600 * 1000);
+          reportProgress({ stage: `rate-limited — resuming in ${Math.round(waitMs / 60000)}m`, etaSec: Math.round(waitMs / 1000) });
+          await new Promise((r) => setTimeout(r, waitMs));
+          continue;
+        }
+        return toEnvelope(last);
+      }
+      return toEnvelope(last || { text: 'Export did not finish.', error: true });
+    },
   });
 }
 
@@ -1388,7 +1460,23 @@ function buildTools(tool, z, ctx) {
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (for analytics/orders)'),
     },
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'shopify-' + args.action, args)),
+    handler: async (args) => {
+      // export is a full-history pull — it cannot finish inside the MCP
+      // call boundary, so it runs as a background job (jobs_poll for
+      // status). The engine attaches to in-flight bulk ops, so retries
+      // resume rather than restart.
+      if (args.action === 'export' && ctx.jobStore) {
+        const job = startExportJob(ctx, 'shopify', 'shopify-export', args);
+        return envelope.ok({
+          data: {
+            summary: 'Shopify full-history export started in the background.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path.`,
+          },
+        });
+      }
+      return toEnvelope(await runBinary(ctx, 'shopify-' + args.action, args));
+    },
   }, tool, z, ctx));
 
   // ── klaviyo ──────────────────────────────────────────────
@@ -1567,7 +1655,23 @@ function buildTools(tool, z, ctx) {
     // requireApproval() check on klaviyo-flow-delete /
     // klaviyo-template-delete (and the send actions) is the
     // defense-in-depth half.
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'klaviyo-' + args.action, args)),
+    handler: async (args) => {
+      // export is a full-history pull — it cannot finish inside the MCP
+      // call boundary, so it runs as a background job (jobs_poll for
+      // status). The engine checkpoints every page, so retries resume
+      // rather than restart.
+      if (args.action === 'export' && ctx.jobStore) {
+        const job = startExportJob(ctx, 'klaviyo', 'klaviyo-export', args);
+        return envelope.ok({
+          data: {
+            summary: 'Klaviyo full-history export started in the background.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path.`,
+          },
+        });
+      }
+      return toEnvelope(await runBinary(ctx, 'klaviyo-' + args.action, args));
+    },
   }, tool, z, ctx));
 
   // ── mailchimp ────────────────────────────────────────────
