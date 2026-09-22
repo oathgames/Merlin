@@ -4545,7 +4545,7 @@
         "destructive": false,
         "idempotent": true
       },
-      "description": "Shopify store data — products, orders, analytics, customer cohorts, import, plus a full-history bulk export for data-procurement packages. Actions: products/orders/analytics/cohorts (reads), import (pull store data into the brand), export (full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt — for data-procurement packages).",
+      "description": "Shopify store data — products, orders, analytics, customer cohorts, import, plus a full-history bulk export for data-procurement packages. Actions: products/orders/analytics (reads), cohorts (acquisition cohorts by first-order month, split discounted vs full-price, with 60d/90d/any repeat rates — runs as a BACKGROUND JOB, returns a jobId), import (pull store data into the brand), export (full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt — also a background job).",
       "input": {
         "action": {
           "description": "Operation — export → full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt (for data-procurement packages)",
@@ -4560,7 +4560,7 @@
           "type": "string"
         },
         "batchCount": {
-          "description": "Days of data (for analytics/orders)",
+          "description": "Days of data (for analytics/orders) — legacy spelling of days",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -4568,6 +4568,12 @@
         "brand": {
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
+        },
+        "days": {
+          "description": "Lookback window in days. cohorts defaults to 365 (a full seasonal repeat curve); analytics/orders default to 30. Wins over batchCount when both are sent.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -5345,8 +5351,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 15060,
-      "bodySha256": "e4d69dfe25a02a884a2db857c0ce7044b942f2c7dfc6d746e9814dbdf061d13f",
+      "bodyBytes": 15158,
+      "bodySha256": "cd6ea8a6f40a59ce881d310cc2b09d9850172d8927c0db2ad87a81900bf306d5",
       "description": "Use when the user asks about Shopify products, orders, inventory, store analytics, Stripe revenue, MRR, ARR, churn, active subscribers, subscription cohorts, revenue source preference, Google Merchant Center, Google Shopping feed, product disapprovals, or any e-commerce backend question. Handles Shopify product import, order batching, Stripe OAuth (read-only, never write), revenue aggregation with USD normalization, Shopify-vs-Stripe topline disambiguation, and Google Merchant Center product feed sync + disapproval diagnostics for Google Shopping ads.",
       "dir": "merlin-ecom",
       "frontmatterSha256": "d183e6b3ae27f5e6199a48fa34943bd2ea951a86fb64c5ccbdabad448ee09cfe",
