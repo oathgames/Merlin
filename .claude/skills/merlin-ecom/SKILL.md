@@ -13,7 +13,7 @@ owner: ryan
 | `products` | `brand` | List products + inventory counts |
 | `orders` | `brand`, `batchCount` (days) | Recent order data for revenue |
 | `import` | `brand` | Pull all products + images into `assets/brands/<brand>/` |
-| `cohorts` | `brand`, `batchCount` (days) | First-purchase cohorts → LTV, repeat rate |
+| `cohorts` | `brand`, `days` (default 365) | Acquisition cohorts by first-order month, discounted vs full-price. BACKGROUND JOB: returns a jobId |
 | `analytics` | `brand`, `batchCount` (days) | 30-day window with AOV, ATC→purchase rate |
 | `optimize-inventory` | `brand` | Cross-references Shopify inventory with live ads; pauses ads for OOS products, restores on restock |
 
@@ -170,24 +170,24 @@ First `stripe-setup` after connecting BOTH Shopify + Stripe prints a disambiguat
 **Actions:** `shopify-login`, `shopify-products`, `shopify-orders`, `shopify-import`, `shopify-analytics`, `shopify-cohorts`
 
 **Pick when:**
-- revenue topline — shopify-analytics is the canonical source when Shopify is connected (preferred over Stripe for DTC with orders)
-- inventory / SKU enrichment — shopify-products pulls the full catalog with images, variants, compare-at prices; feeds both Meta catalog and Google Merchant
-- cohort analysis — shopify-cohorts splits first-purchase cohorts by month for LTV and repeat-rate math
-- order-level attribution — shopify-orders includes UTM + referrer for cross-platform MER reconciliation
+- revenue topline — shopify-analytics is canonical when Shopify is connected (preferred over Stripe for DTC)
+- inventory / SKU enrichment — shopify-products pulls catalog, images, variants, compare-at prices; feeds Meta catalog + Google Merchant
+- cohort analysis — shopify-cohorts splits first-order cohorts by month for LTV and repeat-rate math
+- order-level attribution — shopify-orders carries UTM + referrer for cross-platform MER work
 - one-time catalog import into Meta/Google Merchant — shopify-import drives both meta-catalog and merchant-sync-shopify
 
 **Skip when:**
-- subscription-only MRR/ARR business with no one-time orders — Stripe is the authoritative source; set revenueSourcePreference='stripe'
-- bulk write operations at >1K products — use Shopify's native GraphQL bulkOperationRunMutation, don't fan out per-product (we already batch via ExecuteBatch)
+- subscription-only MRR/ARR, no one-time orders — Stripe is authoritative; set revenueSourcePreference='stripe'
+- bulk writes at >1K products — use GraphQL bulkOperationRunMutation, never a per-product fan-out (we already batch via ExecuteBatch)
 
 **Killer features:**
-- **GraphQL Admin API** — bulk queries + mutations are 10–100× cheaper than REST on large catalogs; the generator uses bulkOperationRunQuery for any fetch >250 items
-- **shopify-cohorts** — native cohort retention math — first-order month × repeat-purchase rate, zero-dep; most brands pay $200+/mo for this in a separate tool
-- **Unified catalog export** — one shopify-products call feeds Meta catalog, Google Merchant, Klaviyo product blocks — no duplicate scraping
-- **Scope-aware reconnect** — if Shopify scope upgrades (e.g., write_content for blog-post) are required, the UI surfaces a reconnect prompt instead of raw 403
+- **GraphQL Admin API** — bulk ops are 10–100× cheaper than REST; anything >250 items uses bulkOperationRunQuery
+- **shopify-cohorts** — cohort retention on a GraphQL bulk op, so a 34K-order store finishes. Returns `byWindow` (28d/90d/full: orders, newCustomerOrders, returningOrders, returningShare) and `acquisitionCohorts` (month × discounted|fullPrice: customers, repeat60/90/AnyRate, avgFirstOrderNet). A repeat rate is `null`, never 0, for a cohort too young for that window. `firstOrderDetection: window-bounded`: read_orders only, so a pre-window first order reads as new
+- **Unified catalog export** — one shopify-products call feeds Meta catalog, Google Merchant and Klaviyo blocks, no duplicate scraping
+- **Scope-aware reconnect** — a required scope upgrade (e.g. write_content for blog-post) surfaces a reconnect prompt, not a raw 403
 
-**Constraints:** shopifyStore + shopifyAccessToken required; scope additions trigger a ~6-week re-review — audit shopify.app.toml before requesting new scopes; admin API is read-only unless app manifest grants write_*
-**Cost:** Shopify API is free up to reasonable thresholds; rate-limited per-shop (40 request bucket, leaky)
+**Constraints:** shopifyStore + shopifyAccessToken required; scope additions trigger a ~6-week re-review, audit shopify.app.toml first; admin API is read-only unless the manifest grants write_*
+**Cost:** free; rate-limited per-shop (40 request leaky bucket)
 **Output:** results/shopify-analytics_YYYYMMDD.json / shopify-cohorts_YYYYMMDD.json
 **Docs:** <https://shopify.dev/docs/api/admin-graphql>
 **Last verified:** 2026-04-19

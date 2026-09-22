@@ -1449,7 +1449,7 @@ function buildTools(tool, z, ctx) {
   // ── shopify ──────────────────────────────────────────────
   tools.push(defineTool({
     name: 'shopify',
-    description: 'Shopify store data — products, orders, analytics, customer cohorts, import, plus a full-history bulk export for data-procurement packages. Actions: products/orders/analytics/cohorts (reads), import (pull store data into the brand), export (full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt — for data-procurement packages).',
+    description: 'Shopify store data — products, orders, analytics, customer cohorts, import, plus a full-history bulk export for data-procurement packages. Actions: products/orders/analytics (reads), cohorts (acquisition cohorts by first-order month, split discounted vs full-price, with 60d/90d/any repeat rates — runs as a BACKGROUND JOB, returns a jobId), import (pull store data into the brand), export (full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt — also a background job).',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -1458,20 +1458,38 @@ function buildTools(tool, z, ctx) {
     input: {
       action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts', 'export']).describe('Operation — export → full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt (for data-procurement packages)'),
       brand: brandSchema,
-      batchCount: z.coerce.number().int().optional().describe('Days of data (for analytics/orders)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (for analytics/orders) — legacy spelling of days'),
+      days: z.coerce.number().int().optional().describe('Lookback window in days. cohorts defaults to 365 (a full seasonal repeat curve); analytics/orders default to 30. Wins over batchCount when both are sent.'),
     },
     handler: async (args) => {
-      // export is a full-history pull — it cannot finish inside the MCP
-      // call boundary, so it runs as a background job (jobs_poll for
-      // status). The engine attaches to in-flight bulk ops, so retries
-      // resume rather than restart.
-      if (args.action === 'export' && ctx.jobStore) {
-        const job = startExportJob(ctx, 'shopify', 'shopify-export', args);
+      // export and cohorts are both GraphQL bulk-operation pulls: Shopify
+      // assembles the whole result set server-side and we wait on it, which
+      // cannot be promised to finish inside the 110s MCP call boundary. On a
+      // 34K-order store the old serial-REST cohorts walk was killed by that
+      // boundary and surfaced as a bare INTERNAL_ERROR, so both now return a
+      // jobId immediately and run on the job path (jobs_poll for status).
+      // The engine attaches to an in-flight bulk op rather than starting a
+      // second one, so the job runner's retry-after-timeout RESUMES the build.
+      const BULK_JOB_ACTIONS = {
+        export: {
+          binaryAction: 'shopify-export',
+          summary: 'Shopify full-history export started in the background.',
+          next: 'then read result for the manifest path.',
+        },
+        cohorts: {
+          binaryAction: 'shopify-cohorts',
+          summary: 'Shopify acquisition-cohort build started in the background.',
+          next: 'then read result for the cohort report (byWindow + acquisitionCohorts).',
+        },
+      };
+      const bulkJob = BULK_JOB_ACTIONS[args.action];
+      if (bulkJob && ctx.jobStore) {
+        const job = startExportJob(ctx, 'shopify', bulkJob.binaryAction, args);
         return envelope.ok({
           data: {
-            summary: 'Shopify full-history export started in the background.',
+            summary: bulkJob.summary,
             jobId: job.jobId,
-            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path.`,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, ${bulkJob.next}`,
           },
         });
       }
