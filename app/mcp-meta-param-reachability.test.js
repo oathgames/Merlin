@@ -160,7 +160,9 @@ const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSet
 // videoId / reuseAdId (2026-09-29): read by runMetaBulkPush for months (pre-
 // uploaded video, winner-creative reuse) and declared on neither surface.
 // Section 4 below now derives this contract from the Go struct itself.
-const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name', 'verticalImagePath', 'portraitImagePath', 'videoId', 'reuseAdId'];
+// instagramMediaId / instagramPostUrl added 2026-09-24 with the Instagram
+// existing-post path (autocmo-core/meta_instagram_post.go, BulkAd in main.go).
+const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name', 'verticalImagePath', 'portraitImagePath', 'videoId', 'reuseAdId', 'instagramMediaId', 'instagramPostUrl'];
 
 // Both surfaces reach the identical 'meta-bulk-push' engine action, so both
 // must declare the identical param set. meta_ads is the legacy multiplexer;
@@ -667,4 +669,112 @@ test('meta_launch_test_batch cents-checks per-ad budgets even with no top-level 
   });
   assert.equal(execFileCalls.length, 0, 'a refused per-ad budget must never reach the engine');
   assert.match(JSON.stringify(res), /ads\[0\]\.dailyBudget=5000/);
+});
+
+// ── Instagram existing-post ads (2026-09-24) ─────────────────────────
+//
+// Engine: autocmo-core/meta_instagram_post.go. Command gains instagramMediaId,
+// instagramPostUrl and adName (meta-push); BulkAd gains instagramMediaId and
+// instagramPostUrl (meta-bulk-push); meta_audit gains the read-only
+// resolve-instagram-post action. Every surface that routes those engine
+// actions must declare the keys, spelled exactly as the Go json tags, and the
+// values must land in the --cmd JSON (Hard-Won Rule 23).
+const IG_PUSH_KEYS = ['instagramMediaId', 'instagramPostUrl', 'adName'];
+
+test('every meta-push surface declares the Instagram post params', () => {
+  for (const toolName of ['meta_ads', 'meta_launch_test_ad']) {
+    const schema = byName(toolName).schema;
+    for (const key of IG_PUSH_KEYS) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(schema, key),
+        `${toolName} is missing "${key}": zod strips it, so an Instagram post could never reach Command in autocmo-core/main.go.`,
+      );
+    }
+  }
+  const single = byName('meta_launch_test_ad').schema;
+  for (const key of ['targetAdSetId', 'adSetName']) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(single, key),
+      `meta_launch_test_ad is missing "${key}": the engine's Instagram post branch requires an existing ad set id or an explicit ad set name.`,
+    );
+  }
+});
+
+test('meta_audit declares the resolve-instagram-post action and its params', () => {
+  const schema = byName('meta_audit').schema;
+  assert.ok(schema.action.__enum.includes('resolve-instagram-post'), 'meta_audit.action must offer resolve-instagram-post');
+  for (const key of ['instagramMediaId', 'instagramPostUrl']) {
+    assert.ok(Object.prototype.hasOwnProperty.call(schema, key), `meta_audit.${key} must be declared for resolve-instagram-post`);
+  }
+});
+
+// The exact payload the main session uses to launch an Instagram post into an
+// existing ad set. Mirrors TestMetaInstagramPostCommandUnmarshalsMCPPayload in
+// autocmo-core/meta_mcp_wire_contract_test.go, so the two halves meet.
+test('Instagram post bulk-push params survive runBinary into the --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  await runBinary(makeCtx(), 'meta-bulk-push', {
+    brand: 'forever21',
+    sharedAdSet: true,
+    targetAdSetId: '120200000000000001',
+    ads: [
+      { instagramPostUrl: 'https://www.instagram.com/p/DdrRKFakQ4N/', name: '09242026_IGPost_DdrRKFakQ4N', link: 'https://www.forever21.com/us/shop' },
+      { instagramMediaId: '17900000000000003', name: '09242026_IGPost_Media' },
+    ],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-bulk-push');
+  assert.equal(cmd.sharedAdSet, true);
+  assert.equal(cmd.targetAdSetId, '120200000000000001');
+  assert.equal(cmd.ads[0].instagramPostUrl, 'https://www.instagram.com/p/DdrRKFakQ4N/', 'ads[].instagramPostUrl must reach BulkAd.InstagramPostURL');
+  assert.equal(cmd.ads[0].name, '09242026_IGPost_DdrRKFakQ4N');
+  assert.equal(cmd.ads[1].instagramMediaId, '17900000000000003', 'ads[].instagramMediaId must reach BulkAd.InstagramMediaID');
+});
+
+test('meta_launch_test_ad carries an Instagram post to meta-push', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_ad').handler({
+    brand: 'forever21',
+    instagramPostUrl: 'DdrRKFakQ4N',
+    adName: '09242026_IGPost_DdrRKFakQ4N',
+    targetAdSetId: '120200000000000001',
+    adLink: 'https://www.forever21.com/us/shop',
+    dailyBudget: 25,
+  });
+  assert.doesNotMatch(envelopeText(res), /VALIDATION|required/i, 'an Instagram post push without headline/body must not be refused');
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-push');
+  assert.equal(cmd.instagramPostUrl, 'DdrRKFakQ4N');
+  assert.equal(cmd.adName, '09242026_IGPost_DdrRKFakQ4N');
+  assert.equal(cmd.targetAdSetId, '120200000000000001');
+});
+
+test('meta_launch_test_ad still requires headline and body for non-Instagram creatives', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_ad').handler({
+    brand: 'acme', adImagePath: '/tmp/a.jpg', adLink: 'https://example.com', dailyBudget: 10,
+  });
+  assert.match(envelopeText(res), /adHeadline and adBody are required/);
+  assert.equal(execFileCalls.length, 0, 'a refused push must never reach the binary');
+});
+
+test('meta_launch_test_ad refuses an Instagram post without adName or an ad set', async () => {
+  execFileCalls.length = 0;
+  const noName = await byName('meta_launch_test_ad').handler({
+    brand: 'acme', instagramPostUrl: 'DdrRKFakQ4N', targetAdSetId: '1', adLink: 'https://example.com', dailyBudget: 10,
+  });
+  assert.match(envelopeText(noName), /explicit adName/);
+  const noSet = await byName('meta_launch_test_ad').handler({
+    brand: 'acme', instagramPostUrl: 'DdrRKFakQ4N', adName: 'n', adLink: 'https://example.com', dailyBudget: 10,
+  });
+  assert.match(envelopeText(noSet), /targetAdSetId/);
+  assert.equal(execFileCalls.length, 0);
+});
+
+test('meta_audit resolve-instagram-post routes to the read-only engine action with its params', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_audit').handler({ action: 'resolve-instagram-post', brand: 'forever21', instagramPostUrl: 'DdrRKFakQ4N' });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-resolve-instagram-post');
+  assert.equal(cmd.instagramPostUrl, 'DdrRKFakQ4N');
 });

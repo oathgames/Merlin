@@ -231,8 +231,11 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       brand: brandSchema.describe('Brand name'),
       adImagePath: z.string().optional().describe('Absolute path to the ad image'),
       adVideoPath: z.string().optional().describe('Absolute path to the ad video'),
-      adHeadline: z.string().describe('Ad headline text'),
-      adBody: z.string().describe('Ad primary text / body'),
+      // Optional at the schema level ONLY so an Instagram existing-post ad
+      // (whose copy is the post's own caption) can omit them; the handler
+      // still requires both for every other creative source.
+      adHeadline: z.string().optional().describe('Ad headline text. Required unless instagramPostUrl / instagramMediaId is set.'),
+      adBody: z.string().optional().describe('Ad primary text / body. Required unless instagramPostUrl / instagramMediaId is set.'),
       // REGRESSION GUARD (2026-08-07, dropped-description incident): the third
       // Meta copy slot. Read by the engine, declared nowhere, so zod stripped
       // it and authored descriptions were silently discarded. See
@@ -257,12 +260,29 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       })).optional().describe('Carousel card data (2–10 cards)'),
       postId: z.string().optional().describe('Existing Meta post ID to reuse as creative (preserves social proof)'),
       force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
+      // Instagram existing-post ads (meta_instagram_post.go). Keys equal the Go
+      // json tags on Command in autocmo-core/main.go (Rule 23).
+      instagramPostUrl: z.string().optional().describe('Run an EXISTING organic Instagram post or Reel as the ad, keeping its likes and comments. A post or reel link (instagram.com/p/<code>, /reel/<code>, /tv/<code>) or a bare shortcode, resolved against the brand Instagram account. Refused if another account owns the post, it is a Story, or Meta reports it ineligible to boost. Requires adName plus targetAdSetId or adSetName. Verify first with meta_audit resolve-instagram-post.'),
+      instagramMediaId: z.string().optional().describe('Numeric Graph media id of an existing Instagram post; alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which Meta rejects.'),
+      adName: z.string().optional().describe('Explicit ad name. Required with instagramPostUrl / instagramMediaId.'),
+      targetAdSetId: z.string().optional().describe('Instagram post ads only: add the ad to this EXISTING ad set; its budget and targeting are untouched and dailyBudget is not applied. Get ids from meta_audit list-adsets.'),
+      adSetName: z.string().optional().describe('Instagram post ads only: explicit name of the ad set to create (or reuse when one with this name already exists in the campaign) at dailyBudget.'),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
       if (budgetErr) return budgetErr;
-      if (!args.adImagePath && !args.adVideoPath && !args.postId && !args.carouselCards) {
-        return validationEnvelope('Provide adImagePath, adVideoPath, postId, or carouselCards — one is required.');
+      const igPost = !!(args.instagramPostUrl || args.instagramMediaId);
+      if (!args.adImagePath && !args.adVideoPath && !args.postId && !args.carouselCards && !igPost) {
+        return validationEnvelope('Provide adImagePath, adVideoPath, postId, instagramPostUrl, instagramMediaId, or carouselCards. One is required.');
+      }
+      if (!igPost && (!args.adHeadline || !args.adBody)) {
+        return validationEnvelope('adHeadline and adBody are required unless the ad runs an existing Instagram post.');
+      }
+      if (igPost && !args.adName) {
+        return validationEnvelope('An Instagram post ad needs an explicit adName.');
+      }
+      if (igPost && !args.targetAdSetId && !args.adSetName) {
+        return validationEnvelope('An Instagram post ad needs targetAdSetId (existing ad set) or adSetName (ad set to create).');
       }
       return toEnvelope(await runBinary(ctx, 'meta-push', args), {
         nextSuggested: ['meta_review_performance'],
@@ -323,7 +343,11 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         // mcp-meta-param-reachability.test.js.
         videoId: z.string().regex(META_NUMERIC_ID, 'videoId must be a numeric Meta video id').optional().describe(BULK_AD_VIDEO_ID_DESC),
         reuseAdId: z.string().regex(META_NUMERIC_ID, 'reuseAdId must be a numeric Meta ad id').optional().describe(BULK_AD_REUSE_AD_ID_DESC),
-      })).describe('Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
+        // Existing organic Instagram post as the ad (meta_instagram_post.go).
+        // Needs name, sharedAdSet:true and targetAdSetId or adSetName.
+        instagramMediaId: z.string().optional(),
+        instagramPostUrl: z.string().optional(),
+      })).describe('Array of ads (up to 50). An ad with instagramPostUrl (post or Reel link, or bare shortcode) or instagramMediaId (numeric Graph media id) runs that EXISTING organic Instagram post as the ad, keeping its likes and comments; it needs an explicit name, sharedAdSet:true and targetAdSetId or adSetName, and carries no imagePath/videoPath/postId. Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline`: an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
       campaignName: z.string().optional().describe('Target campaign name, looked up via metaFindCampaign. Fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Pass createCampaignIfMissing:true to create it instead. Use campaignId for stricter routing.'),
       createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (objective from the brand config; ABO unless campaignBudgetMode says otherwise) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),

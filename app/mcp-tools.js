@@ -319,6 +319,10 @@ const META_AUDIT_ACTION_MAP = Object.freeze({
   // until 2026-08-11 — the meta-list-adsets bug class again.
   'attribution-compare':        'meta-attribution-compare',
   'resolve-geo':                'meta-geo-resolve',
+  // Resolve an Instagram post URL / shortcode / media id to its Graph media id
+  // plus ownership + boost eligibility, BEFORE launching it as an ad
+  // (meta_instagram_post.go). GETs only.
+  'resolve-instagram-post':     'meta-resolve-instagram-post',
   'aware-audience':             'aware-audience',
   // What each CREATIVE ANGLE actually earned for this brand, from its own ad
   // history. Like aware-audience, the engine action carries no meta- prefix,
@@ -1084,7 +1088,7 @@ function buildTools(tool, z, ctx) {
       // on Command (main.go) / BulkAd: runBinary copies keys through
       // verbatim, so a rename on either side breaks the wire silently.
       // Locked by app/mcp-meta-param-reachability.test.js.
-      ads: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), body: z.string().optional(), description: z.string().optional(), link: z.string().optional(), dailyBudget: z.number().optional(), hookStyle: z.string().optional(), postId: z.string().optional(), name: z.string().optional(), verticalImagePath: z.string().optional(), portraitImagePath: z.string().optional(), videoId: z.string().regex(META_NUMERIC_ID, 'videoId must be a numeric Meta video id').optional().describe(BULK_AD_VIDEO_ID_DESC), reuseAdId: z.string().regex(META_NUMERIC_ID, 'reuseAdId must be a numeric Meta ad id').optional().describe(BULK_AD_REUSE_AD_ID_DESC) })).optional().describe('Array of ads for bulk-push (up to 50). Each ad accepts an optional `name`, the explicit ad name shown in Ads Manager. Omit it and the ad gets an auto-generated name, which makes a batch that reuses several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline) and is separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
+      ads: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), body: z.string().optional(), description: z.string().optional(), link: z.string().optional(), dailyBudget: z.number().optional(), hookStyle: z.string().optional(), postId: z.string().optional(), name: z.string().optional(), verticalImagePath: z.string().optional(), portraitImagePath: z.string().optional(), videoId: z.string().regex(META_NUMERIC_ID, 'videoId must be a numeric Meta video id').optional().describe(BULK_AD_VIDEO_ID_DESC), reuseAdId: z.string().regex(META_NUMERIC_ID, 'reuseAdId must be a numeric Meta ad id').optional().describe(BULK_AD_REUSE_AD_ID_DESC), instagramMediaId: z.string().optional(), instagramPostUrl: z.string().optional() })).optional().describe('Array of ads for bulk-push (up to 50). An ad with instagramPostUrl (a post or Reel link, or bare shortcode) or instagramMediaId (numeric Graph media id) runs that EXISTING organic Instagram post as the ad, keeping its likes and comments; it needs an explicit name, sharedAdSet:true and targetAdSetId or adSetName, and carries no imagePath/videoPath/postId. Each ad accepts an optional `name`, the explicit ad name shown in Ads Manager. Omit it and the ad gets an auto-generated name, which makes a batch that reuses several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline) and is separate copy from `headline`: an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
       sharedAdSet: z.boolean().optional().describe('bulk-push only: put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
       adSetName: z.string().optional().describe('bulk-push shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
       createCampaignIfMissing: z.boolean().optional().describe('When campaignName names a campaign that does not exist, create it (objective from the brand config; ABO unless campaignBudgetMode says otherwise) instead of failing. Off by default so a typo\'d campaignName errors instead of minting a junk campaign. New campaigns are always created PAUSED.'),
@@ -1103,6 +1107,11 @@ function buildTools(tool, z, ctx) {
       adFormat: z.enum(['single', 'carousel', 'collection']).optional().describe('Ad format (default: single)'),
       carouselCards: z.array(z.object({ imagePath: z.string().optional(), videoPath: z.string().optional(), headline: z.string().optional(), description: z.string().optional(), link: z.string().optional() })).optional().describe('Carousel card data (2-10 cards)'),
       postId: z.string().optional().describe('Existing post ID to reuse as ad creative (preserves social proof)'),
+      // Instagram existing-post ads (Rule 23: keys equal the Go json tags on
+      // Command / BulkAd in autocmo-core/main.go). See meta_instagram_post.go.
+      instagramPostUrl: z.string().optional().describe('push only: run an EXISTING organic Instagram post or Reel as the ad (keeps its likes and comments). A post/reel permalink (instagram.com/p/<code>, /reel/<code>, /tv/<code>) or a bare shortcode. Resolved against the brand Instagram account; refused if another account owns the post, if it is a Story, or Meta reports it ineligible to boost. Requires adName and targetAdSetId or adSetName. Check a post first with meta_audit resolve-instagram-post.'),
+      instagramMediaId: z.string().optional().describe('push only: numeric Graph media id of an existing Instagram post, alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which is a different id Meta rejects.'),
+      adName: z.string().optional().describe('push with instagramPostUrl / instagramMediaId: the explicit ad name (required there; Merlin does not auto-name these).'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
       // NOT a launch-status control. The refusal lives in the handler below;
       // the engine only reads cmd.Status on meta-import.
@@ -1294,6 +1303,7 @@ function buildTools(tool, z, ctx) {
         'list-videos',
         'list-catalog-sets',
         'resolve-geo',
+        'resolve-instagram-post',
         'aware-audience',
         'list-boosted-posts',
         'existing-customers',
@@ -1342,6 +1352,8 @@ function buildTools(tool, z, ctx) {
       framesPerVideo: z.number().int().optional().describe('For video-frames: frames per video, evenly spaced at the midpoints of equal slices. Default 6, max 24.'),
       framesDir: z.string().optional().describe('For video-frames: output folder, relative to the workspace or an absolute path inside it. Default <outputDir>/video_frames. Paths containing .. are refused.'),
       overwrite: z.boolean().optional().describe('For video-frames: re-pull ads whose frames.json already records a complete extraction. Default false (skip them).'),
+      instagramPostUrl: z.string().optional().describe('For resolve-instagram-post: an Instagram post or Reel link, or a bare shortcode. Returns the Graph media id, media type, and whether Meta reports it eligible to boost. Read-only.'),
+      instagramMediaId: z.string().optional().describe('For resolve-instagram-post: a numeric Graph media id to verify instead of a link.'),
     },
     handler: async (args) => {
       const action = metaAuditEngineAction(args.action);
