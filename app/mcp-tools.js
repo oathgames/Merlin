@@ -2794,7 +2794,7 @@ function buildTools(tool, z, ctx) {
   // Ads tile (never in chat — it authorizes spend); 'verify' tests it.
   tools.push(defineTool({
     name: 'openai_ads',
-    description: 'OpenAI / ChatGPT Ads — run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (impressions/clicks/spend/CTR/CPC/CPM — batchCount=days, campaignId/adId to scope), push (LAUNCH a live ad: builds campaign + ad group + uploads the creative + ad; needs adHeadline + adImagePath + a destination (adLink or the brand productUrl) + dailyBudget; SPENDS money — shows an approval card with budget), pause (pause a campaignId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked — it authorizes ad spend). US beta.',
+    description: 'OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (LAUNCH a live ad: builds campaign + ad group + uploads the creative + ad; needs adHeadline + adImagePath + a destination (adLink or the brand productUrl) + dailyBudget; SPENDS money, shows an approval card with budget), pause (pause a campaignId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.',
     destructive: true,
     idempotent: false,
     preview: false,
@@ -2812,7 +2812,14 @@ function buildTools(tool, z, ctx) {
       dailyBudget: z.coerce.number().optional().describe('Daily budget in dollars (push). The campaign lifetime budget = dailyBudget × 30, validated against your caps.'),
       campaignId: z.string().optional().describe('Campaign id (insights/pause).'),
       adId: z.string().optional().describe('Ad id (insights/pause).'),
-      batchCount: z.coerce.number().int().optional().describe('Days of data for insights (default 30).'),
+      batchCount: z.coerce.number().int().optional().describe('Insights: trailing days of data ending YESTERDAY in the ad account timezone (default 30). Ignored when startDate + endDate are set.'),
+      // REGRESSION GUARD (2026-09-27, Hard-Won Rule 23): the engine reads
+      // Command.StartDate/EndDate for openai-ads-insights (exact window, both or
+      // neither). Undeclared, they are stripped here and a weekly deck can only
+      // ask for a trailing window. Asserted end to end in
+      // mcp-openai-ads-reachability.test.js.
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: exact window start, YYYY-MM-DD inclusive (ad account timezone). Give with endDate; overrides batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: exact window end, YYYY-MM-DD inclusive. Give with startDate; must not be before startDate.'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {

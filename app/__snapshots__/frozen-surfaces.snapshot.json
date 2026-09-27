@@ -3939,7 +3939,7 @@
         "idempotent": false,
         "preview": false
       },
-      "description": "OpenAI / ChatGPT Ads — run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (impressions/clicks/spend/CTR/CPC/CPM — batchCount=days, campaignId/adId to scope), push (LAUNCH a live ad: builds campaign + ad group + uploads the creative + ad; needs adHeadline + adImagePath + a destination (adLink or the brand productUrl) + dailyBudget; SPENDS money — shows an approval card with budget), pause (pause a campaignId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked — it authorizes ad spend). US beta.",
+      "description": "OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (LAUNCH a live ad: builds campaign + ad group + uploads the creative + ad; needs adHeadline + adImagePath + a destination (adLink or the brand productUrl) + dailyBudget; SPENDS money, shows an approval card with budget), pause (pause a campaignId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.",
       "input": {
         "action": {
           "description": "account/campaigns/insights → read. push → launch a live ad (spends, approval card). pause → pause a campaignId/adId. connect → how to paste the API key. verify → test a saved key.",
@@ -3979,7 +3979,7 @@
           "type": "string"
         },
         "batchCount": {
-          "description": "Days of data for insights (default 30).",
+          "description": "Insights: trailing days of data ending YESTERDAY in the ad account timezone (default 30). Ignored when startDate + endDate are set.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -3995,6 +3995,16 @@
         "dailyBudget": {
           "description": "Daily budget in dollars (push). The campaign lifetime budget = dailyBudget × 30, validated against your caps.",
           "type": "number"
+        },
+        "endDate": {
+          "description": "Insights: exact window end, YYYY-MM-DD inclusive. Give with startDate; must not be before startDate.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "Insights: exact window start, YYYY-MM-DD inclusive (ad account timezone). Give with endDate; overrides batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
         }
       },
       "name": "openai_ads"
@@ -5302,8 +5312,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 42238,
-      "bodySha256": "f3bae842e0e018526acb8248f1f0b24e116ad507d6b3e5bdc2cc1d59c5911bee",
+      "bodyBytes": 42451,
+      "bodySha256": "55fbf5c69ca7ba866dab4c30f1b80b878e21d7206e7b6b39a2a830b06eb03360",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",
