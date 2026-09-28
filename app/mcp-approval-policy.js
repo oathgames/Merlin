@@ -214,7 +214,9 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // and the creative-generation loop deliberately stay auto-approved; the
   // gate is the SEND/activate/delete/publish, not the draft):
   //   Klaviyo/Mailchimp: segment-create (new live audience targeting),
-  //     flow-update-status (flips a live flow on/off), flow-delete,
+  //     flow-update-status (flips a live flow on/off),
+  //     flow-set-message-template (repoints a live flow email at new content),
+  //     flow-delete,
   //     flows-bulk-import (creates+activates flows), template-delete,
   //     campaign-delete.
   //   Social: discord/slack `post` (live channel message).
@@ -224,7 +226,8 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   //     update-property-settings / attach-shopify-events. These already
   //     fail-closed at the binary (requireApproval, Rule 18); carded here so
   //     the human confirmation the tool description promises actually fires.
-  'segment-create', 'flow-update-status', 'flow-delete', 'flows-bulk-import',
+  'segment-create', 'flow-update-status', 'flow-set-message-template',
+  'flow-delete', 'flows-bulk-import',
   'template-delete', 'campaign-delete',
   'post',
   'sync-shopify',

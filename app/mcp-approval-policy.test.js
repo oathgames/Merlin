@@ -749,7 +749,8 @@ const DANGEROUS_ACTIONS = [
   'create-campaign', 'create-ad',
   // Email/SMS live sends + destructive structural writes.
   'campaign-send', 'campaign-schedule', 'campaign-delete',
-  'segment-create', 'flow-update-status', 'flow-delete', 'flows-bulk-import',
+  'segment-create', 'flow-update-status', 'flow-set-message-template',
+  'flow-delete', 'flows-bulk-import',
   'template-delete', 'bulk-import-flow',
   'automation-pause', 'automation-start', 'automation-activate',
   'automation-deactivate', 'automation-delete',
@@ -911,4 +912,16 @@ test('spend_control resume-all sends approved:true, and pause-all never does', a
     'pausing must never require or carry an approval flag , the engine deliberately does not gate it.');
   assert.equal(cmd.slackMessage, 'runaway CPA',
     'the operator pause note is read from cmd.SlackMessage by the engine; dropping it silently is the Rule 23 param half.');
+});
+
+test('klaviyo flow-set-message-template is carded like its sibling flow-update-status', () => {
+  // Repointing a flow email at a new template changes live customer-facing
+  // email content on the next send, so it must never auto-approve.
+  const { effectiveAction: action } = policy.resolveMerlinAction('mcp__merlin__klaviyo', { action: 'flow-set-message-template' });
+  assert.equal(action, 'flow-set-message-template');
+  assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has('flow-set-message-template'),
+    "klaviyo 'flow-set-message-template' must be carded (changes a live flow email)");
+  assert.ok(policy.CARDED_DESTRUCTIVE_ACTIONS.has('flow-update-status'));
+  assert.ok(!policy.READ_ONLY_ACTIONS.has('flow-set-message-template'),
+    'a live content write must not be classified read-only');
 });

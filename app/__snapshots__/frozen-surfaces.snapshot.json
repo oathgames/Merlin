@@ -23,6 +23,7 @@
       "create-key-event",
       "create-version",
       "flow-delete",
+      "flow-set-message-template",
       "flow-update-status",
       "flows-bulk-import",
       "install-ga4",
@@ -1777,7 +1778,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"). Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\".",
+      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email's content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"). Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\".",
       "input": {
         "action": {
           "description": "Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)",
@@ -1805,6 +1806,7 @@
             "flow-update-status",
             "flow-delete",
             "flows-bulk-import",
+            "flow-set-message-template",
             "segments-list",
             "segment-create",
             "export"
@@ -1846,6 +1848,10 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         },
+        "flowActionId": {
+          "description": "Klaviyo flow ACTION id — one send-email step inside a flow (e.g. 111531895). Required for flow-set-message-template. Get it from flow-get: definition.actions[].id. The action must be type \"send-email\"; anything else is refused.",
+          "type": "string"
+        },
         "flowBody": {
           "description": "Full flow body for flow-create. Shape: {name, trigger:{type, list_id?, metric?}, steps:[{type, ...}]}. Step types: \"delay\" {duration_seconds}, \"send_email\" {subject, preheader, from_email, from_name, template_id?, body?}, \"wait_until\" {time_of_day, timezone}, \"branch\" {condition}. The binary runs CheckFlowCANSPAM before any HTTP — trigger.type must be on the documented-consent allowlist (list_added, segment_added, profile_subscribed_marketing, ecommerce_placed_order, ecommerce_started_checkout, viewed_product, custom_event), every send_email step must have an unsubscribe token + physical address + subject + from_name. Failures REFUSE the create (no auto-fix)."
         },
@@ -1871,6 +1877,10 @@
         },
         "manifestPath": {
           "description": "Filesystem path to a flow manifest JSON for flows-bulk-import. MUST live under assets/brands/<brand>/email/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {manifest_version, brand, flows:[{name, status?, trigger, steps}, ...]}. References uploaded templates by template_id (run templates-bulk-upload first to get the IDs).",
+          "type": "string"
+        },
+        "messageName": {
+          "description": "Optional step label for klaviyo flow-set-message-template — the name shown on the email step in the flow editor. Omit to keep the message's current label (it is always sent, because Klaviyo resets an omitted name to its own default).",
           "type": "string"
         },
         "metricId": {
