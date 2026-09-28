@@ -184,6 +184,8 @@ jobs:
       # failure produces a type error, a 404, or a log line on its own.
       - name: MCP Meta reachability (params + actions)
         run: node --test app/mcp-meta-param-reachability.test.js app/mcp-meta-action-reachability.test.js
+      - name: MCP Google Demand Gen reachability (YouTube Shorts)
+        run: node --test app/mcp-google-demandgen-reachability.test.js
       # Same failure class, GA4 surface. google-analytics-update-stream-settings
       # is the write half of a read that already shipped: audit-property has
       # long reported "Enhanced Measurement off" with no way to fix it from

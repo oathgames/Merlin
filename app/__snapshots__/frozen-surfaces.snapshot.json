@@ -127,6 +127,7 @@
       "track",
       "update-rank",
       "version",
+      "video-insights",
       "wisdom"
     ],
     "spendActions": [
@@ -135,6 +136,7 @@
       "bulk-push",
       "create-ad",
       "create-campaign",
+      "demandgen-push",
       "duplicate",
       "kill",
       "lockdown",
@@ -1293,7 +1295,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Manage Google Ads campaigns — create, check performance, pause/scale.",
+      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days).",
       "input": {
         "action": {
           "description": "Operation",
@@ -1303,7 +1305,10 @@
             "kill",
             "duplicate",
             "setup",
-            "status"
+            "status",
+            "demandgen-push",
+            "activate",
+            "video-insights"
           ],
           "type": "string"
         },
@@ -1323,21 +1328,113 @@
           "description": "Final URL",
           "type": "string"
         },
+        "adSetName": {
+          "description": "demandgen-push: ad group to find or create inside the campaign",
+          "type": "string"
+        },
+        "ads": {
+          "description": "demandgen-push: one entry per video ad",
+          "items": {
+            "properties": {
+              "body": {
+                "description": "Descriptions, max 90 chars each, up to 5 separated by |",
+                "type": "string"
+              },
+              "description": {
+                "description": "Long headlines, max 90 chars each, up to 5 separated by |. Defaults to the headlines.",
+                "type": "string"
+              },
+              "headline": {
+                "description": "Headlines, max 40 chars each, up to 5 separated by |",
+                "type": "string"
+              },
+              "link": {
+                "description": "Final URL (full https URL)",
+                "type": "string"
+              },
+              "name": {
+                "description": "Ad name (required, must be unique in the ad group)",
+                "type": "string"
+              },
+              "videoPath": {
+                "description": "Local mp4 to upload through Google Ads when there is no YouTube video yet",
+                "type": "string"
+              },
+              "youtubeVideoId": {
+                "description": "Existing YouTube video id or URL (youtube.com/shorts/..., youtu.be/..., watch?v=...)",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "approved": {
+          "description": "Approval flag for activate. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.",
+          "type": "boolean"
+        },
         "batchCount": {
           "description": "Days of data (-1=today, 7=last week, 30=last month)",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
         },
+        "bidStrategy": {
+          "description": "demandgen-push: bidding for a NEW campaign. AUTO (default) uses maximize conversions only when the account recorded conversions in the last 30 days, otherwise maximize clicks.",
+          "enum": [
+            "AUTO",
+            "MAXIMIZE_CLICKS",
+            "MAXIMIZE_CONVERSIONS",
+            "TARGET_CPA"
+          ],
+          "type": "string"
+        },
         "brand": {
           "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "businessName": {
+          "description": "demandgen-push: advertiser name shown on the ad, max 25 characters",
           "type": "string"
         },
         "campaignId": {
           "type": "string"
         },
+        "campaignName": {
+          "description": "demandgen-push: campaign to find or create (created PAUSED as DEMAND_GEN)",
+          "type": "string"
+        },
+        "channels": {
+          "description": "demandgen-push: placements for a NEW ad group, default [\"youtube_shorts\"]",
+          "items": {
+            "enum": [
+              "youtube_shorts",
+              "youtube_in_feed",
+              "youtube_in_stream",
+              "discover",
+              "gmail",
+              "display"
+            ],
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "ctaType": {
+          "description": "demandgen-push: call to action, default SHOP_NOW (also BUY_NOW, ORDER_NOW, LEARN_MORE, SIGN_UP, WATCH_NOW, ...)",
+          "type": "string"
+        },
         "dailyBudget": {
           "type": "number"
+        },
+        "geoTargetConstants": {
+          "description": "demandgen-push: Google geo target ids for a NEW ad group, default [\"2840\"] (United States)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -1347,8 +1444,24 @@
           "description": "Max results to return",
           "type": "number"
         },
+        "logoPath": {
+          "description": "demandgen-push: absolute path to a square logo image (at least 128x128)",
+          "type": "string"
+        },
         "sortBy": {
           "description": "Sort results by: spend, roas, ctr, clicks, conversions",
+          "type": "string"
+        },
+        "targetAdSetId": {
+          "description": "demandgen-push: existing Google ad group id to add ads to (instead of campaignName + adSetName)",
+          "type": "string"
+        },
+        "targetCpa": {
+          "description": "demandgen-push: target cost per acquisition in dollars, with bidStrategy TARGET_CPA",
+          "type": "number"
+        },
+        "youtubeChannelId": {
+          "description": "demandgen-push: upload mp4s to this YouTube channel (must be linked to the Google Ads account). Omit to upload unlisted to the Google-managed channel.",
           "type": "string"
         }
       },
@@ -5322,8 +5435,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 42451,
-      "bodySha256": "55fbf5c69ca7ba866dab4c30f1b80b878e21d7206e7b6b39a2a830b06eb03360",
+      "bodyBytes": 43019,
+      "bodySha256": "f1b7f98a1e322abfcef0f2a36dc688ac12d0c609dfb13b9100fdcf4877b99765",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",

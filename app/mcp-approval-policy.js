@@ -68,6 +68,8 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   // reads (GraphQL bulk op / cursor pagination), no writes. Listed so the
   // read-only intent is explicit rather than relying on the catch-all.
   'export',
+  // Google Ads per-ad Demand Gen video performance (GAQL reads only).
+  'video-insights',
 ]));
 
 // SPEND_ACTIONS gate the approval card. `push` is the only action eligible
@@ -98,6 +100,10 @@ const SPEND_ACTIONS = Object.freeze(new Set([
   // main.go (meta-activate / meta-budget / meta-retarget / meta-bulk-push /
   // meta-lockdown). 'budget' also covers linkedin_ads' budget action.
   'activate', 'retarget', 'budget', 'bulk-push', 'lockdown',
+  // Google Ads Demand Gen (YouTube) video push: creates a campaign with a
+  // budget. Always cards (not in-cap eligible like 'push'), because it can
+  // also add ads under an existing, possibly live, ad group.
+  'demandgen-push',
 ]));
 
 // CARDED_DESTRUCTIVE_ACTIONS gate the generic confirmation card for
