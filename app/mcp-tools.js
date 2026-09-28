@@ -2806,6 +2806,63 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── gorgias ───────────────────────────────────────────────
+  // Gorgias helpdesk (READ-ONLY by construction: gorgias.go has exactly one
+  // request helper, gorgiasGet, and gorgias_readonly_test.go fails the build
+  // on any write verb). BYOK: Gorgias Settings → REST API gives a Base API
+  // URL, a Username (the account email) and a Password (the API key), entered
+  // on the Gorgias tile and vaulted brand-scoped. Every action returns
+  // de-identified text: customer emails, phones, cards, addresses, order and
+  // tracking numbers and names are replaced with typed placeholders in the
+  // engine, and people are HMAC pseudonyms. `export` builds a full JSONL
+  // corpus as a background job (checkpointed, resumable) and fails closed if
+  // its leak scan finds a residual email, phone, or card number.
+  tools.push(defineTool({
+    name: 'gorgias',
+    description: 'Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'gorgias' },
+    input: {
+      action: z.enum(['status', 'connect', 'setup', 'verify', 'tickets', 'ticket', 'customers', 'tags', 'satisfaction', 'macros', 'stats', 'export']).describe('status → connection check (no API call). connect → how to get Gorgias API credentials. setup/verify → validate saved credentials. tickets → list tickets. ticket → one de-identified transcript. customers → per-customer volume (pseudonymous). tags → tag frequency. satisfaction → CSAT. macros → saved replies. stats → support KPIs. export → full de-identified corpus (background job).'),
+      brand: brandSchema.optional(),
+      days: z.coerce.number().int().optional().describe('Window length in days, ending now (default 30). Ignored when startDate is set.'),
+      startDate: z.string().optional().describe('Window start, YYYY-MM-DD or RFC3339.'),
+      endDate: z.string().optional().describe('Window end, YYYY-MM-DD (inclusive) or RFC3339. Defaults to now.'),
+      status: z.enum(['open', 'closed', 'all']).optional().describe('Ticket status filter for tickets / stats / export (default all).'),
+      limit: z.coerce.number().int().optional().describe('Max rows returned by tickets / customers / tags / macros.'),
+      gorgiasTicketId: z.string().regex(/^\d+$/).optional().describe('Numeric Gorgias ticket id for action "ticket".'),
+      gorgiasChannel: z.string().optional().describe('Channel filter, e.g. email, chat, sms, phone, facebook, instagram-direct-message.'),
+      gorgiasTags: z.array(z.string()).optional().describe('Tag filter: a ticket matches if it carries ANY of these tags (case-insensitive).'),
+      gorgiasMaxTickets: z.coerce.number().int().optional().describe('export only: cap on exported tickets (default: the whole window).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Gorgias',
+          instructions: 'In Gorgias open Settings → REST API and create an API key. The panel shows a Base API URL, a Username (your email) and a Password (the API key). Open the Gorgias tile in the Connections panel and enter those three values, then run action "verify".',
+        };
+      }
+      // export is a full-history pull that cannot finish inside the MCP call
+      // boundary, so it runs as a background job (jobs_poll for status). The
+      // engine checkpoints every page, so a retry resumes rather than restarts.
+      if (args.action === 'export' && ctx.jobStore) {
+        const job = startExportJob(ctx, 'gorgias', 'gorgias-export', args);
+        return envelope.ok({
+          data: {
+            summary: 'Gorgias de-identified export started in the background.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path. The manifest's deidentification caveat applies: review before sharing.`,
+          },
+        });
+      }
+      return toEnvelope(await runBinary(ctx, 'gorgias-' + args.action, args));
+    },
+  }, tool, z, ctx));
+
   // ── quickbooks ────────────────────────────────────────────
   // QuickBooks Online accounting reporting (READ-ONLY — quickbooks.go ships
   // no write verbs). OAuth, NOT BYOK: connect runs the Intuit OAuth flow
@@ -3215,7 +3272,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'shopify_payments']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -3362,6 +3419,12 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'Loop Returns connects via API key',
           instructions: 'Click the Loop tile in the Connections panel and enter your API key (Loop admin → Developers). Alternatively call mcp__merlin__loop_returns with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+        };
+      }
+      if (args.platform === 'gorgias') {
+        return {
+          summary: 'Gorgias connects via API credentials',
+          instructions: 'In Gorgias open Settings → REST API and create an API key. Click the Gorgias tile in the Connections panel and enter the Base API URL (or just the subdomain), the Username (your email) and the Password (the API key). Alternatively call mcp__merlin__gorgias with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
         };
       }
       if (args.platform === 'cin7') {

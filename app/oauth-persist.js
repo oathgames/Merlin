@@ -142,6 +142,12 @@ const VAULT_SENSITIVE_KEYS = [
   // 2-step Cin7 connect modal.
   'cin7AccountId',
   'cin7ApplicationKey',
+  // Gorgias BYOK credentials (subdomain + account email + REST API key,
+  // an HTTP Basic pair), saved by the 3-step Gorgias connect modal. The
+  // email is personal data, so all three are vaulted, not plaintext.
+  'gorgiasDomain',
+  'gorgiasEmail',
+  'gorgiasApiKey',
   'googleApiKey',
   'slackBotToken',
   'slackWebhookUrl',
@@ -202,6 +208,7 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   'shipStationApiKey', 'shipStationApiSecret',
   'loopApiKey',
   'cin7AccountId', 'cin7ApplicationKey',
+  'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
   // QuickBooks OAuth tokens + non-secret identifiers. The tokens are
   // vaulted (VAULT_SENSITIVE_KEYS); realmId / tokenExpiresAt / useSandbox
   // are non-secret identifiers (same treatment as shopifyStore) — they

@@ -182,6 +182,9 @@
       "googleAdsDeveloperToken",
       "googleApiKey",
       "googleRefreshToken",
+      "gorgiasApiKey",
+      "gorgiasDomain",
+      "gorgiasEmail",
       "heygenApiKey",
       "imageModel",
       "klaviyoAccessToken",
@@ -256,6 +259,9 @@
       "googleAdsDeveloperToken",
       "googleApiKey",
       "googleRefreshToken",
+      "gorgiasApiKey",
+      "gorgiasDomain",
+      "gorgiasEmail",
       "heygenApiKey",
       "klaviyoAccessToken",
       "klaviyoApiKey",
@@ -1819,6 +1825,99 @@
         }
       },
       "name": "google_tag_manager"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "gorgias"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.",
+      "input": {
+        "action": {
+          "description": "status → connection check (no API call). connect → how to get Gorgias API credentials. setup/verify → validate saved credentials. tickets → list tickets. ticket → one de-identified transcript. customers → per-customer volume (pseudonymous). tags → tag frequency. satisfaction → CSAT. macros → saved replies. stats → support KPIs. export → full de-identified corpus (background job).",
+          "enum": [
+            "status",
+            "connect",
+            "setup",
+            "verify",
+            "tickets",
+            "ticket",
+            "customers",
+            "tags",
+            "satisfaction",
+            "macros",
+            "stats",
+            "export"
+          ],
+          "type": "string"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "days": {
+          "description": "Window length in days, ending now (default 30). Ignored when startDate is set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "Window end, YYYY-MM-DD (inclusive) or RFC3339. Defaults to now.",
+          "type": "string"
+        },
+        "gorgiasChannel": {
+          "description": "Channel filter, e.g. email, chat, sms, phone, facebook, instagram-direct-message.",
+          "type": "string"
+        },
+        "gorgiasMaxTickets": {
+          "description": "export only: cap on exported tickets (default: the whole window).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "gorgiasTags": {
+          "description": "Tag filter: a ticket matches if it carries ANY of these tags (case-insensitive).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "gorgiasTicketId": {
+          "description": "Numeric Gorgias ticket id for action \"ticket\".",
+          "pattern": "^\\d+$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max rows returned by tickets / customers / tags / macros.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "startDate": {
+          "description": "Window start, YYYY-MM-DD or RFC3339.",
+          "type": "string"
+        },
+        "status": {
+          "description": "Ticket status filter for tickets / stats / export (default all).",
+          "enum": [
+            "open",
+            "closed",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "name": "gorgias"
     },
     {
       "annotations": {
@@ -4217,6 +4316,7 @@
             "shipstation",
             "loop_returns",
             "cin7",
+            "gorgias",
             "shopify_payments"
           ],
           "type": "string"
@@ -5484,12 +5584,12 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 22922,
-      "bodySha256": "ccb7a650488324aeb5400f406f8cf13603292a0cb5b2c461c54d1df71a009281",
+      "bodyBytes": 24587,
+      "bodySha256": "e5c3e218dd527ca2a871a589281696865ebab6f277cadfd805a49bb4ada325d5",
       "bytes_justification": "GA4 read+write (2026-05-01) added 13-action surface + write-side approval-card flows alongside the existing dashboard / wisdom / calendar / Conversion Rubric / incrementality blocks. Splitting GA4 into its own SKILL would fragment the analytics-vs-attribution narrative the dashboard relies on.",
-      "description": "Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach). Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.",
+      "description": "Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach), plus Gorgias customer-support ticket analytics and de-identified support-corpus exports. Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.",
       "dir": "merlin-analytics",
-      "frontmatterSha256": "9453718cc60e3f271e3f6247922ca796b887e44024a8a883b489b49f826d562a",
+      "frontmatterSha256": "56700118fa000e80d6d9fdb7513edca3b2d5786593b755197871ba9f829b2ae3",
       "name": "merlin-analytics",
       "owner": "ryan"
     },
