@@ -1185,7 +1185,10 @@ test('legacy multiplexer enums have no orphan actions (E002)', () => {
         // Reddit create-shaped writes
         'create-campaign', 'create-ad',
       ]);
-      const covered = inSpend || inRead || optionalActions.has(action) ||
+      // CARDED_DESTRUCTIVE_ACTIONS always card too (e.g. google_ads
+      // 'brand-exclusion'), so they are covered, not orphans.
+      const inCarded = !!(policy.CARDED_DESTRUCTIVE_ACTIONS && policy.CARDED_DESTRUCTIVE_ACTIONS.has(action));
+      const covered = inSpend || inRead || inCarded || optionalActions.has(action) ||
         PLATFORM_VERBS.has(action);
       assert.ok(covered,
         `${toolName} action '${action}' is an orphan — not covered by BRAND_OPTIONAL_ACTIONS, SPEND_ACTIONS, READ_ONLY_ACTIONS, or the platform-specific allowlist. Add it to one of those sets or to the test's recognized list.`);

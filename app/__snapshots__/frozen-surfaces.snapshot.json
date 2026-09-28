@@ -13,6 +13,7 @@
       "automation-step-delete",
       "automation-step-update",
       "automation-update",
+      "brand-exclusion",
       "bulk-import-flow",
       "campaign-delete",
       "campaign-schedule",
@@ -95,6 +96,8 @@
       "automation-emails",
       "automations-list",
       "blog-list",
+      "brand-exclusion-preview",
+      "budget-status",
       "calendar",
       "campaign-content",
       "campaigns",
@@ -1295,7 +1298,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days).",
+      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days), budget-status (read one campaign's daily budget, bidding strategy, and whether the budget is shared; pass campaignId), budget (change one campaign's daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google's brand directory and shows the list + campaigns that would change), brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card).",
       "input": {
         "action": {
           "description": "Operation",
@@ -1308,7 +1311,11 @@
             "status",
             "demandgen-push",
             "activate",
-            "video-insights"
+            "video-insights",
+            "budget-status",
+            "budget",
+            "brand-exclusion-preview",
+            "brand-exclusion"
           ],
           "type": "string"
         },
@@ -1373,7 +1380,7 @@
           "type": "array"
         },
         "approved": {
-          "description": "Approval flag for activate. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.",
+          "description": "Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.",
           "type": "boolean"
         },
         "batchCount": {
@@ -1396,12 +1403,34 @@
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
         },
+        "brandEntityIds": {
+          "description": "brand-exclusion: brand entity ids from the preview's suggestions; required when the preview says needsBrandChoice",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "brandListName": {
+          "description": "brand-exclusion: brand list name to create or reuse, default \"Brand Exclusions\"",
+          "type": "string"
+        },
+        "brandQuery": {
+          "description": "brand-exclusion: brand name to look up in Google's brand directory, e.g. \"Apotheke\"",
+          "type": "string"
+        },
         "businessName": {
           "description": "demandgen-push: advertiser name shown on the ad, max 25 characters",
           "type": "string"
         },
         "campaignId": {
           "type": "string"
+        },
+        "campaignIds": {
+          "description": "brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "campaignName": {
           "description": "demandgen-push: campaign to find or create (created PAUSED as DEMAND_GEN)",
