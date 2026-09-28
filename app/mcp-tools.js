@@ -2817,9 +2817,19 @@ function buildTools(tool, z, ctx) {
   // engine, and people are HMAC pseudonyms. `export` builds a full JSONL
   // corpus as a background job (checkpointed, resumable) and fails closed if
   // its leak scan finds a residual email, phone, or card number.
+  //
+  // REGRESSION GUARD (2026-09-28, gorgias-raw): `export` with raw:true runs
+  // the SEPARATE engine action gorgias-export-raw, which writes customer
+  // records verbatim (NOT de-identified) for a brand that has authorised it.
+  // Three layers keep that from happening silently: mcp-approval-policy.js
+  // resolves export+raw to 'export-raw', which is in CARDED_DESTRUCTIVE_ACTIONS
+  // (a human clicks the card); the engine refuses without approved:true
+  // (requireApproval); and the engine always drops health-related tickets.
+  // A raw call must never reach the de-identified engine action or the other
+  // way round, so the routing below keys on raw === true explicitly.
   tools.push(defineTool({
     name: 'gorgias',
-    description: 'Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.',
+    description: 'Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). export with raw:true writes the corpus WITHOUT de-identification (tickets, messages, customers, surveys, tags, macros, custom fields verbatim) for a brand that has authorised it; it always shows an approval card, always drops health-related tickets, and accepts gorgiasOptOutCsv (path to a CSV of customer emails to exclude). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -2838,6 +2848,9 @@ function buildTools(tool, z, ctx) {
       gorgiasChannel: z.string().optional().describe('Channel filter, e.g. email, chat, sms, phone, facebook, instagram-direct-message.'),
       gorgiasTags: z.array(z.string()).optional().describe('Tag filter: a ticket matches if it carries ANY of these tags (case-insensitive).'),
       gorgiasMaxTickets: z.coerce.number().int().optional().describe('export only: cap on exported tickets (default: the whole window).'),
+      raw: z.boolean().optional().describe('export only: true writes the corpus WITHOUT removing personal info (the brand must have authorised it). Always shows an approval card; health-related tickets are always excluded. Omit for the normal de-identified export.'),
+      gorgiasOptOutCsv: z.string().optional().describe('raw export only: path to a CSV of customer emails (opt-outs, deletion requests) whose tickets and customer records are excluded.'),
+      approved: z.boolean().optional().describe('Approval flag for the raw export. Set by the Electron approval card on user click; the engine REFUSES a raw export without it. Do not set true unless the user explicitly approved exporting un-de-identified customer data.'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
@@ -2849,8 +2862,28 @@ function buildTools(tool, z, ctx) {
       // export is a full-history pull that cannot finish inside the MCP call
       // boundary, so it runs as a background job (jobs_poll for status). The
       // engine checkpoints every page, so a retry resumes rather than restarts.
+      if (args.action === 'export' && args.raw === true) {
+        const rawArgs = { ...args };
+        delete rawArgs.raw;
+        if (ctx.jobStore) {
+          const job = startExportJob(ctx, 'gorgias', 'gorgias-export-raw', rawArgs);
+          return envelope.ok({
+            data: {
+              summary: 'Gorgias RAW export (not de-identified, health-related tickets excluded) started in the background.',
+              jobId: job.jobId,
+              next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path. This corpus contains customer personal information: store it only where customer data is allowed.`,
+            },
+          });
+        }
+        return toEnvelope(await runBinary(ctx, 'gorgias-export-raw', rawArgs));
+      }
+      // The raw-only keys never ride along on a de-identified call.
+      const plainArgs = { ...args };
+      delete plainArgs.raw;
+      delete plainArgs.gorgiasOptOutCsv;
+      delete plainArgs.approved;
       if (args.action === 'export' && ctx.jobStore) {
-        const job = startExportJob(ctx, 'gorgias', 'gorgias-export', args);
+        const job = startExportJob(ctx, 'gorgias', 'gorgias-export', plainArgs);
         return envelope.ok({
           data: {
             summary: 'Gorgias de-identified export started in the background.',
@@ -2859,7 +2892,7 @@ function buildTools(tool, z, ctx) {
           },
         });
       }
-      return toEnvelope(await runBinary(ctx, 'gorgias-' + args.action, args));
+      return toEnvelope(await runBinary(ctx, 'gorgias-' + args.action, plainArgs));
     },
   }, tool, z, ctx));
 

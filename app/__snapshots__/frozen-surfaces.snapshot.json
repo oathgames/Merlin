@@ -23,6 +23,7 @@
       "create-custom-metric",
       "create-key-event",
       "create-version",
+      "export-raw",
       "flow-delete",
       "flow-set-message-template",
       "flow-update-status",
@@ -1837,7 +1838,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.",
+      "description": "Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). export with raw:true writes the corpus WITHOUT de-identification (tickets, messages, customers, surveys, tags, macros, custom fields verbatim) for a brand that has authorised it; it always shows an approval card, always drops health-related tickets, and accepts gorgiasOptOutCsv (path to a CSV of customer emails to exclude). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.",
       "input": {
         "action": {
           "description": "status → connection check (no API call). connect → how to get Gorgias API credentials. setup/verify → validate saved credentials. tickets → list tickets. ticket → one de-identified transcript. customers → per-customer volume (pseudonymous). tags → tag frequency. satisfaction → CSAT. macros → saved replies. stats → support KPIs. export → full de-identified corpus (background job).",
@@ -1856,6 +1857,10 @@
             "export"
           ],
           "type": "string"
+        },
+        "approved": {
+          "description": "Approval flag for the raw export. Set by the Electron approval card on user click; the engine REFUSES a raw export without it. Do not set true unless the user explicitly approved exporting un-de-identified customer data.",
+          "type": "boolean"
         },
         "brand": {
           "pattern": "^[a-z0-9_-]{1,100}$",
@@ -1881,6 +1886,10 @@
           "minimum": -9007199254740991,
           "type": "integer"
         },
+        "gorgiasOptOutCsv": {
+          "description": "raw export only: path to a CSV of customer emails (opt-outs, deletion requests) whose tickets and customer records are excluded.",
+          "type": "string"
+        },
         "gorgiasTags": {
           "description": "Tag filter: a ticket matches if it carries ANY of these tags (case-insensitive).",
           "items": {
@@ -1902,6 +1911,10 @@
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
+        },
+        "raw": {
+          "description": "export only: true writes the corpus WITHOUT removing personal info (the brand must have authorised it). Always shows an approval card; health-related tickets are always excluded. Omit for the normal de-identified export.",
+          "type": "boolean"
         },
         "startDate": {
           "description": "Window start, YYYY-MM-DD or RFC3339.",

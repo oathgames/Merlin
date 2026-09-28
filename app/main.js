@@ -2887,6 +2887,7 @@ function translateTool(toolName, input) {
       'gorgias-macros':           { label: 'Pull Gorgias saved reply macros', cost: 'Free' },
       'gorgias-stats':            { label: 'Pull Gorgias support metrics', cost: 'Free' },
       'gorgias-export':           { label: 'Export de-identified Gorgias support history', cost: 'Free' },
+      'gorgias-export-raw':       { label: "Export this brand's Gorgias tickets WITHOUT removing personal info (health-related tickets excluded)", cost: 'Free , writes customer names, emails and messages to your results folder as-is' },
       'shopify-payments-report':  { label: 'Pull Shopify Payments payouts', cost: 'Free' },
       'shopify-export':           { label: 'Export full Shopify history (orders, products, customers)', cost: 'Free' },
       'klaviyo-export':           { label: 'Export full Klaviyo history (profiles, campaigns, flows, events)', cost: 'Free' },
@@ -2967,6 +2968,20 @@ function translateTool(toolName, input) {
       'campaign-set-content': { label: 'Update the content of a Mailchimp campaign', cost: 'Free — does not send' },
     };
     if (mcpMailchimpLabels[input.action]) return mcpMailchimpLabels[input.action];
+  }
+
+  // MCP gorgias raw export (2026-09-28, gorgias-raw). The card must say in
+  // plain words that personal info is NOT removed, and name the brand, so
+  // nobody clicks Allow thinking it is the normal de-identified export.
+  if (toolName === 'mcp__merlin__gorgias' && input && input.action === 'export' &&
+      input.raw !== undefined && input.raw !== false) {
+    const brandLabel = (typeof input.brand === 'string' && input.brand.trim())
+      ? `${input.brand.trim().toUpperCase()}'s`
+      : "this brand's";
+    return {
+      label: `Export ${brandLabel} Gorgias tickets WITHOUT removing personal info (health-related tickets excluded)`,
+      cost: 'Free , writes customer names, emails and messages to your results folder as-is',
+    };
   }
 
   // MCP klaviyo + postscript tools — same reasoning as the Mailchimp block
