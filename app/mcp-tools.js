@@ -1383,7 +1383,11 @@ function buildTools(tool, z, ctx) {
       + 'Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), '
       + 'and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), '
       + 'activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), '
-      + 'video-insights (per-ad Demand Gen video performance; batchCount = days).',
+      + 'video-insights (per-ad Demand Gen video performance; batchCount = days), '
+      + 'budget-status (read one campaign\'s daily budget, bidding strategy, and whether the budget is shared; pass campaignId), '
+      + 'budget (change one campaign\'s daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), '
+      + 'brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google\'s brand directory and shows the list + campaigns that would change), '
+      + 'brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card).',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -1391,7 +1395,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'google' },
     preview: false,
     input: {
-      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights']).describe('Operation'),
+      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion']).describe('Operation'),
       brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
@@ -1425,7 +1429,13 @@ function buildTools(tool, z, ctx) {
         body: z.string().optional().describe('Descriptions, max 90 chars each, up to 5 separated by |'),
         link: z.string().optional().describe('Final URL (full https URL)'),
       })).optional().describe('demandgen-push: one entry per video ad'),
-      approved: z.boolean().optional().describe('Approval flag for activate. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
+      // PMax brand exclusions (engine google-ads-brand-exclusion). Keys match
+      // the engine Command json tags verbatim.
+      brandQuery: z.string().optional().describe('brand-exclusion: brand name to look up in Google\'s brand directory, e.g. "Apotheke"'),
+      brandEntityIds: z.array(z.string()).optional().describe('brand-exclusion: brand entity ids from the preview\'s suggestions; required when the preview says needsBrandChoice'),
+      brandListName: z.string().optional().describe('brand-exclusion: brand list name to create or reuse, default "Brand Exclusions"'),
+      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign'),
+      approved: z.boolean().optional().describe('Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
     },
     // Handler does NOT auto-set args.approved; the approval card does.
     handler: async (args) => {
@@ -1444,6 +1454,17 @@ function buildTools(tool, z, ctx) {
             next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read the result for the created campaign, ad group and ads.`,
           },
         });
+      }
+      // Read aliases route to the same engine actions in their read/preview
+      // mode. The write-only fields are stripped so a read alias can never
+      // carry a write through the READ_ONLY (uncarded) approval tier.
+      if (args.action === 'budget-status') {
+        const { dailyBudget, approved, ...rest } = args;
+        return toEnvelope(await runBinary(ctx, 'google-ads-budget', rest));
+      }
+      if (args.action === 'brand-exclusion-preview') {
+        const { approved, ...rest } = args;
+        return toEnvelope(await runBinary(ctx, 'google-ads-brand-exclusion', rest));
       }
       return toEnvelope(await runBinary(ctx, 'google-ads-' + args.action, args));
     },
