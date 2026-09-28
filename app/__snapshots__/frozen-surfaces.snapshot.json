@@ -23,6 +23,7 @@
       "create-key-event",
       "create-version",
       "flow-delete",
+      "flow-set-message-template",
       "flow-update-status",
       "flows-bulk-import",
       "install-ga4",
