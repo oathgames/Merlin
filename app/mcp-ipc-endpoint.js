@@ -246,12 +246,25 @@ function buildToolsListPayload(tools) {
   return { tools: out };
 }
 
+// Tool names on this socket are bare ("klaviyo"); the host approval
+// policy is keyed on the SDK-qualified name ("mcp__merlin__klaviyo"),
+// which is what the in-app chat's canUseTool receives.
+const MERLIN_TOOL_PREFIX = 'mcp__merlin__';
+
+// Return a shallow copy of `args` with any caller-supplied `approved`
+// flag removed. See the REGRESSION GUARD (2026-09-28) in dispatchRequest.
+function stripCallerApproval(args) {
+  const out = Object.assign({}, args);
+  delete out.approved;
+  return out;
+}
+
 // Dispatch one parsed request. Returns a response envelope.
 //
 // Auth check FAILS CLOSED — if `expectedToken` is empty/null (somehow
 // not initialized) we refuse every request. Hard-Won Rule 5: never
 // coalesce missing-secret with `||''` at compare site.
-async function dispatchRequest(reqJson, { tools, expectedToken, ctx }) {
+async function dispatchRequest(reqJson, { tools, expectedToken, ctx, approve }) {
   const id = (reqJson && typeof reqJson.id !== 'undefined') ? reqJson.id : null;
   const fail = (code, message) => ({ id, ok: false, error: { code, message } });
 
@@ -297,13 +310,63 @@ async function dispatchRequest(reqJson, { tools, expectedToken, ctx }) {
     const ab = readActiveBrand(ctx);
     if (ab) args.brand = ab;
   }
+
+  // REGRESSION GUARD (2026-09-28, ipc-approval-bypass): every tools/call
+  // over this socket runs through the SAME host approval decision the
+  // in-app chat uses (handleToolApproval in main.js, backed by
+  // mcp-approval-policy.js), injected as `approve`. Before this guard the
+  // dispatcher called tool.handler directly, so the approval gate existed
+  // only on the Agent SDK canUseTool path. An external Claude Code session
+  // holding the shim token called klaviyo flow-set-message-template (a
+  // CARDED_DESTRUCTIVE action) and it executed in ~1.7s with no card; five
+  // live Klaviyo flow emails were changed that way. Three rules, all
+  // load-bearing:
+  //   1. No `approve` function means NO tools/call. Fail closed: a future
+  //      refactor that forgets to pass it must break loudly, not run
+  //      every tool ungated.
+  //   2. A caller-supplied `approved` flag is stripped BEFORE the decision
+  //      and BEFORE the handler. The engine's requireApproval() backstop
+  //      trusts that flag, so a caller that can set it approves itself.
+  //      The flag is re-added only when a human clicked Allow on a card
+  //      (decision.humanApproved) and the tool schema declares it.
+  //   3. Anything other than behavior 'allow' returns a structured error
+  //      (APPROVAL_REQUIRED / APPROVAL_DENIED / APPROVAL_TIMEOUT) with
+  //      friendly text, and the handler never runs.
+  // The shim token is a local bearer credential; if it leaks, this gate is
+  // what stops the holder from spending money or emailing customers.
+  // Tests: mcp-ipc-endpoint.test.js "IPC approval gate" block.
+  if (typeof approve !== 'function') {
+    return fail('APPROVAL_UNAVAILABLE',
+      'Merlin could not check approval for this action, so it was not run. Restart Merlin and try again.');
+  }
+  const gatedArgs = stripCallerApproval(args);
+  let decision;
+  try {
+    decision = await approve(MERLIN_TOOL_PREFIX + name, gatedArgs);
+  } catch (_) {
+    return fail('APPROVAL_UNAVAILABLE',
+      'Merlin could not check approval for this action, so it was not run. Try again in a moment.');
+  }
+  if (!decision || decision.behavior !== 'allow') {
+    const code = (decision && typeof decision.code === 'string' && decision.code) || 'APPROVAL_DENIED';
+    const message = (decision && typeof decision.message === 'string' && decision.message) ||
+      'This action needs approval in the Merlin app and was not approved.';
+    return fail(code, message);
+  }
+  const finalArgs = stripCallerApproval(
+    (decision.updatedInput && typeof decision.updatedInput === 'object') ? decision.updatedInput : gatedArgs
+  );
+  if (decision.humanApproved === true &&
+      tool.inputSchema && Object.prototype.hasOwnProperty.call(tool.inputSchema, 'approved')) {
+    finalArgs.approved = true;
+  }
   try {
     // The handler is the wrapped one from mcp-define-tool — already runs
     // brand-check, idempotency, preview gate, concurrency slot, redaction.
     // Pass an empty `extra` since the SDK transport-specific extra object
     // (signal, sessionId) is not meaningful here; the wrapped handler in
     // mcp-define-tool ignores `extra` anyway.
-    const result = await tool.handler(args, {});
+    const result = await tool.handler(finalArgs, {});
     return { id, ok: true, result };
   } catch (e) {
     return fail('INTERNAL_ERROR', (e && e.message) || String(e));
@@ -370,12 +433,15 @@ function makeLineReader(onLine, onError) {
 // `onTokenRotate(token)` is optional — invoked once after the token
 // has been written. Useful for tests / integration probes.
 function start(opts) {
-  const { ctx, stateDir, tools, getCtx, onTokenRotate } = opts || {};
+  const { ctx, stateDir, tools, getCtx, onTokenRotate, approve } = opts || {};
   if (!ctx && typeof getCtx !== 'function') {
     throw new Error('mcp-ipc-endpoint: ctx or getCtx required');
   }
   if (!stateDir) throw new Error('mcp-ipc-endpoint: stateDir required');
   if (!Array.isArray(tools)) throw new Error('mcp-ipc-endpoint: tools array required');
+  // Fail closed at boot too: an endpoint without the host approval
+  // decision would run every tool ungated. See REGRESSION GUARD (2026-09-28).
+  if (typeof approve !== 'function') throw new Error('mcp-ipc-endpoint: approve function required');
   // Live tool reference — mutable so startSession can swap in a fresh
   // array without restarting the endpoint. Wrapped in a holder so the
   // dispatch closure always reads the latest.
@@ -427,7 +493,7 @@ function start(opts) {
         }
         inflight++;
         const liveCtx = (typeof getCtx === 'function') ? (getCtx() || ctx) : ctx;
-        dispatchRequest(parsed, { tools: liveTools, expectedToken: token, ctx: liveCtx })
+        dispatchRequest(parsed, { tools: liveTools, expectedToken: token, ctx: liveCtx, approve })
           .then((resp) => {
             try { sock.write(JSON.stringify(resp) + '\n'); } catch (_) { /* socket closed mid-write */ }
           })
@@ -521,6 +587,8 @@ module.exports = {
   toJsonSchema,
   buildToolsListPayload,
   dispatchRequest,
+  stripCallerApproval,
+  MERLIN_TOOL_PREFIX,
   readActiveBrand,
   makeLineReader,
 };
