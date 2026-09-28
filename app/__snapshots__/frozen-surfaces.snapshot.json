@@ -2591,7 +2591,13 @@
               "name": {
                 "type": "string"
               },
+              "portraitImagePath": {
+                "type": "string"
+              },
               "postId": {
+                "type": "string"
+              },
+              "verticalImagePath": {
                 "type": "string"
               },
               "videoPath": {
@@ -2692,6 +2698,14 @@
           "description": "Existing post ID to reuse as ad creative (preserves social proof)",
           "type": "string"
         },
+        "publishInstagramId": {
+          "description": "Instagram user id to publish from alongside publishPageId. Numeric. Omit it and the ads carry NO Instagram identity (the brand Instagram is never used as a fallback). Requires publishPageId.",
+          "type": "string"
+        },
+        "publishPageId": {
+          "description": "meta-push / bulk-push only: publish THIS push from a second brand or retail Facebook page on the same ad account (e.g. a retailer page), instead of the configured brand page. Numeric page id. The engine verifies the page is publishable by the ad account (promote_pages or the token's pages) and refuses otherwise; the override is logged naming both pages and applies to this push only. Not a partnership ad: no Paid-partnership label. Mutually exclusive with partnerPageId, postId and reuseAdId.",
+          "type": "string"
+        },
         "sharedAdSet": {
           "description": "bulk-push only: put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.",
           "type": "boolean"
@@ -2745,6 +2759,7 @@
             "list-adsets",
             "list-ads",
             "inspect-adset",
+            "inspect-ads",
             "list-videos",
             "list-catalog-sets",
             "resolve-geo",
@@ -2842,7 +2857,7 @@
           "type": "string"
         },
         "targetAdSetId": {
-          "description": "For list-ads: the ad set whose ads to list. Falls back to adId when omitted.",
+          "description": "For list-ads: the ad set whose ads to list. For inspect-ads: the ad set to VERIFY after a push; returns per ad name, status, effective_status, creative page_id, instagram_user_id, links, CTA, url_tags, contextual_multi_ads and local_store_extension enroll status. Falls back to adId when omitted.",
           "type": "string"
         },
         "timeIncrement": {
@@ -3425,6 +3440,14 @@
         "postId": {
           "description": "Existing Meta post ID to reuse as creative (preserves social proof)",
           "type": "string"
+        },
+        "publishInstagramId": {
+          "description": "Instagram user id to publish from alongside publishPageId. Omit it and the ad carries no Instagram identity (never the brand Instagram).",
+          "type": "string"
+        },
+        "publishPageId": {
+          "description": "Publish this ad from a second brand or retail Facebook page on the same ad account instead of the configured brand page. Numeric page id, verified publishable by the engine (refused otherwise). Not a partnership ad. See meta_launch_test_batch.",
+          "type": "string"
         }
       },
       "name": "meta_launch_test_ad"
@@ -3479,7 +3502,13 @@
               "name": {
                 "type": "string"
               },
+              "portraitImagePath": {
+                "type": "string"
+              },
               "postId": {
+                "type": "string"
+              },
+              "verticalImagePath": {
                 "type": "string"
               },
               "videoPath": {
@@ -3545,6 +3574,14 @@
         "preview": {
           "description": "If true, return the exact payload that would be sent without executing. Returns a confirm_token you can pass on a follow-up call to actually execute.",
           "type": "boolean"
+        },
+        "publishInstagramId": {
+          "description": "Instagram user id to publish from alongside publishPageId. Numeric. Omit it and the ads carry NO Instagram identity (the brand Instagram is never used as a fallback). Requires publishPageId.",
+          "type": "string"
+        },
+        "publishPageId": {
+          "description": "meta-push / bulk-push only: publish THIS push from a second brand or retail Facebook page on the same ad account (e.g. a retailer page), instead of the configured brand page. Numeric page id. The engine verifies the page is publishable by the ad account (promote_pages or the token's pages) and refuses otherwise; the override is logged naming both pages and applies to this push only. Not a partnership ad: no Paid-partnership label. Mutually exclusive with partnerPageId, postId and reuseAdId.",
+          "type": "string"
         },
         "sharedAdSet": {
           "description": "Put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.",
