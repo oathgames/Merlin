@@ -2877,6 +2877,16 @@ function translateTool(toolName, input) {
       'loop-report':              { label: 'Pull Loop Returns metrics', cost: 'Free' },
       'cin7-verify':              { label: 'Verify your Cin7 credentials', cost: 'Free' },
       'cin7-report':              { label: 'Pull Cin7 inventory metrics', cost: 'Free' },
+      'gorgias-setup':            { label: 'Verify your Gorgias credentials', cost: 'Free' },
+      'gorgias-verify':           { label: 'Verify your Gorgias credentials', cost: 'Free' },
+      'gorgias-tickets':          { label: 'List Gorgias support tickets (de-identified)', cost: 'Free' },
+      'gorgias-ticket':           { label: 'Read a Gorgias ticket transcript (de-identified)', cost: 'Free' },
+      'gorgias-customers':        { label: 'Pull Gorgias support volume by customer (pseudonymous)', cost: 'Free' },
+      'gorgias-tags':             { label: 'Pull Gorgias ticket tags', cost: 'Free' },
+      'gorgias-satisfaction':     { label: 'Pull Gorgias satisfaction scores', cost: 'Free' },
+      'gorgias-macros':           { label: 'Pull Gorgias saved reply macros', cost: 'Free' },
+      'gorgias-stats':            { label: 'Pull Gorgias support metrics', cost: 'Free' },
+      'gorgias-export':           { label: 'Export de-identified Gorgias support history', cost: 'Free' },
       'shopify-payments-report':  { label: 'Pull Shopify Payments payouts', cost: 'Free' },
       'shopify-export':           { label: 'Export full Shopify history (orders, products, customers)', cost: 'Free' },
       'klaviyo-export':           { label: 'Export full Klaviyo history (profiles, campaigns, flows, events)', cost: 'Free' },
@@ -9226,6 +9236,9 @@ const BRAND_KEYS = [
   'loopApiKey',
   // Cin7 Core — brand-specific BYOK (Account ID + Application Key).
   'cin7AccountId', 'cin7ApplicationKey',
+  // Gorgias helpdesk — brand-specific BYOK (subdomain + account email + API
+  // key). Mirror of brandScopedKeys in autocmo-core/vault.go.
+  'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
 ];
 
 // Universal credentials — shared across every brand on a single user's
@@ -10229,6 +10242,17 @@ function getConnections(brandName) {
         : !!cin7Key;
       if (cin7Resolved) connected.push({ platform: 'cin7', status: 'connected' });
     }
+    // Gorgias — brand-specific BYOK; connected when subdomain + email + API
+    // key are all present, with @@VAULT placeholder resolution on the key.
+    const gorgiasDomain = brandName ? brandCfg.gorgiasDomain : globalCfg.gorgiasDomain;
+    const gorgiasEmail = brandName ? brandCfg.gorgiasEmail : globalCfg.gorgiasEmail;
+    const gorgiasKey = brandName ? brandCfg.gorgiasApiKey : globalCfg.gorgiasApiKey;
+    if (gorgiasDomain && gorgiasEmail && gorgiasKey) {
+      const gorgiasResolved = typeof gorgiasKey === 'string' && gorgiasKey.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'gorgiasApiKey')
+        : !!gorgiasKey;
+      if (gorgiasResolved) connected.push({ platform: 'gorgias', status: 'connected' });
+    }
     // Shopify needs both token + store. Brand-scoped — reads brandCfg only.
     const shopToken = brandName ? brandCfg.shopifyAccessToken : globalCfg.shopifyAccessToken;
     const shopStore = brandName ? brandCfg.shopifyStore : globalCfg.shopifyStore;
@@ -10389,6 +10413,9 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // Cin7 Core — Account ID + Application Key. Mirror of
       // platformVaultKeys["cin7"] in autocmo-core/oauth.go.
       cin7: ['cin7AccountId', 'cin7ApplicationKey'],
+      // Gorgias — subdomain + account email + API key. Mirror of
+      // platformVaultKeys["gorgias"] in autocmo-core/oauth.go.
+      gorgias: ['gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey'],
       // Shopify Payments rides the Shopify grant (no credentials of its
       // own — the empty entry exists so the platform is a known disconnect
       // target rather than 'unknown platform'). The keys.length===0 guard

@@ -216,6 +216,11 @@ const TOOL_ROUTING = [
   { name: 'cin7', prefix: 'cin7',
     exemptions: ['connect'],
   },
+  { name: 'gorgias', prefix: 'gorgias',
+    // Every action maps 1:1 via the prefix (export runs the same engine
+    // action on the background-job path). connect is JS-only → exempt.
+    exemptions: ['connect'],
+  },
   { name: 'quickbooks', prefix: 'quickbooks',
     // report/status map 1:1 via the prefix. connect is JS-only (returns
     // instructions pointing at the OAuth tile) → exempt. There is NO verify

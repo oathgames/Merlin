@@ -1,6 +1,6 @@
 ---
 name: merlin-analytics
-description: Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach). Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.
+description: Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach), plus Gorgias customer-support ticket analytics and de-identified support-corpus exports. Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.
 owner: ryan
 bytes_justification: GA4 read+write (2026-05-01) added 13-action surface + write-side approval-card flows alongside the existing dashboard / wisdom / calendar / Conversion Rubric / incrementality blocks. Splitting GA4 into its own SKILL would fragment the analytics-vs-attribution narrative the dashboard relies on.
 ---
@@ -197,6 +197,19 @@ When BOTH Shopify and GA4 report revenue: Shopify wins per Hard-Won Security Rul
 
 Use when the brand runs ads on the Rokt post-transaction network and wants their Rokt performance (impressions, referrals, spend) surfaced. `action: "report"` (batchCount = days, default 30) pulls the Query API; `status` checks the connection; `verify` validates the saved credentials. Connect is BYOK 3-field (App ID + App Secret + Account ID from `my.rokt.com`) via the Rokt tile. **Rokt has no campaign-management API**, so Merlin can REPORT on Rokt performance but cannot launch, pause, or change Rokt campaigns (dashboard-only at Rokt). Requires an active Rokt advertiser account (enterprise-onboarded). Read-only by construction — `rokt.go` ships no write verbs.
 
+## Customer support (`mcp__merlin__gorgias`) — read-only, de-identified
+
+Use when the user asks what customers write to support: ticket volume, top complaint themes, CSAT, response and resolution times, or a support-ticket corpus for analysis. Merlin only reads from Gorgias. Every response is de-identified in the engine: emails, phones, cards, addresses, order and tracking numbers, and names become typed placeholders (`[EMAIL]`, `[ORDER_NUMBER]`, `[NAME]`, ...), people are per-export pseudonyms, attachments are dropped.
+
+| Action | Key params | Returns |
+|---|---|---|
+| `stats` | `days` or `startDate`/`endDate`, `status`, `gorgiasChannel`, `gorgiasTags` | Volume, channel mix, first-response and resolution times |
+| `tickets` / `ticket` | window + filters, `limit` / `gorgiasTicketId` | Ticket list / one scrubbed transcript |
+| `tags` / `satisfaction` / `macros` / `customers` | window, `limit` | Tag frequency / CSAT / saved replies / volume per pseudonymous customer |
+| `export` | window + filters, `gorgiasMaxTickets` | Background job (poll `jobs_poll`): JSONL corpus + `manifest.json`, resumable |
+
+An export fails closed if its leak scan finds a residual email, phone, or card number. De-identification is best-effort: tell the user a person must review the corpus before it is shared outside the company, and quote the manifest caveat. Connect via the Gorgias tile (Settings → REST API → Base API URL, Username, Password).
+
 <!-- Updated 2026-05-10 (v1.22.0 RSI fixes B001/B002/B004/D004/D005/E003) -->
 ## Email/SMS performance (Klaviyo flow analytics)
 
@@ -213,6 +226,8 @@ Cross-link: deeper email strategy / flow taxonomy / RFM segmentation / deliverab
 ## Routing hints
 
 - "numbers" / "how we doing" / "performance" / "dashboard" → `dashboard({action: "dashboard"})`
+- "what are customers complaining about" / "support ticket volume" / "gorgias" / "CSAT" → `gorgias({action: "stats"})`, then `tags`
+- "export our support tickets" / "support corpus" → `gorgias({action: "export"})`
 - "how are my flows doing" / "recovered revenue" / "klaviyo flow ROI" → `klaviyo({action: "flow-performance"})`
 - "which subject line is winning" / "best email in my flow" → `klaviyo({action: "flow-message-performance"})`
 - "how many checkouts last week" / "aggregate site events" → `klaviyo({action: "metric-aggregate"})`

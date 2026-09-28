@@ -201,7 +201,7 @@ test('Alia tile has a complete masked-key connection path', () => {
 });
 
 test('all 8 frontier-lab connector tiles exist and are brand-scope', () => {
-  for (const p of ['yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7']) {
+  for (const p of ['yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias']) {
     const t = tiles.find((x) => x.platform === p);
     assert.ok(t, `brand tile "${p}" missing from index.html`);
     assert.equal(t.scope, 'brand', `tile "${p}" must be data-scope="brand" (each brand connects its own account)`);
@@ -212,7 +212,7 @@ test('all 8 frontier-lab connector tiles exist and are brand-scope', () => {
 test('ecommerce vertical includes all 8 frontier-lab connectors', () => {
   const ecom = verticals.find((v) => v.includes('shopify'));
   assert.ok(ecom, 'ecommerce vertical (the one with shopify) not found');
-  for (const p of ['yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7']) {
+  for (const p of ['yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias']) {
     assert.ok(ecom.includes(p), `ecommerce vertical missing ${p} — the tile would be invisible (the mailchimp bug class)`);
   }
 });
@@ -222,7 +222,7 @@ test('all 8 frontier-lab connectors have a working connect path', () => {
   // single-field API_KEY_PLATFORMS modal — otherwise the click is a silent
   // no-op (the LinkedIn bug class pinned in renderer.js's REGRESSION GUARD).
   assert.ok(renderer.includes("'quickbooks'"), 'quickbooks missing from OAUTH_PLATFORMS');
-  for (const p of ['yotpo', 'sesami', 'shipstation', 'cin7', 'shopify_payments']) {
+  for (const p of ['yotpo', 'sesami', 'shipstation', 'cin7', 'gorgias', 'shopify_payments']) {
     assert.match(renderer, new RegExp(`${p}:\\s*show|${p}:\\s*connect`), `${p} missing from CUSTOM_CONNECT_HANDLERS; the tile click would do nothing`);
   }
   for (const p of ['faire', 'loop_returns']) {
@@ -241,6 +241,7 @@ test('all 8 frontier-lab connectors have a working connect path', () => {
     'shipStationApiKey', 'shipStationApiSecret',
     'loopApiKey',
     'cin7AccountId', 'cin7ApplicationKey',
+    'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
     'quickbooksAccessToken', 'quickbooksRefreshToken',
     'quickbooksRealmId', 'quickbooksTokenExpiresAt', 'quickbooksUseSandbox',
   ];

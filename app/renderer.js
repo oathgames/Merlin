@@ -4285,7 +4285,7 @@ const PLATFORM_DISPLAY_NAMES = {
   alia: 'Alia Popups',
   yotpo: 'Yotpo', sesami: 'Sesami', faire: 'Faire', quickbooks: 'QuickBooks',
   shopify_payments: 'Shopify Payments', shipstation: 'ShipStation',
-  loop_returns: 'Loop Returns', cin7: 'Cin7',
+  loop_returns: 'Loop Returns', cin7: 'Cin7', gorgias: 'Gorgias',
 };
 function platformDisplayName(platform) {
   if (!platform) return '';
@@ -4319,7 +4319,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -7579,6 +7579,65 @@ function showCin7ConnectModal(activeBrand) {
   });
 }
 
+// Gorgias connect modal: three chained steps (Base API URL -> Username ->
+// Password). Gorgias Settings -> REST API shows exactly these three values;
+// the API authenticates with HTTP Basic (email:apikey) against
+// https://<subdomain>.gorgias.com/api, so the single-field API_KEY_PLATFORMS
+// modal can't collect them. All three are vaulted (VAULT_SENSITIVE_KEYS):
+// the key is a secret and the email is personal data. See gorgias.go.
+function normalizeGorgiasDomain(raw) {
+  let s = String(raw || '').trim().toLowerCase();
+  s = s.replace(/^https?:\/\//, '').split(/[/?#]/)[0];
+  s = s.replace(/\.gorgias\.(com|io)$/, '');
+  return /^[a-z0-9][a-z0-9-]{0,62}$/.test(s) ? s : '';
+}
+function showGorgiasConnectModal(activeBrand) {
+  showModal({
+    title: 'Gorgias: Base API URL',
+    body: 'In Gorgias open Settings, then REST API, and create an API key. Paste the Base API URL shown there (for example https://yourstore.gorgias.com/api), or just the subdomain. (Step 1 of 3)',
+    inputPlaceholder: 'https://yourstore.gorgias.com/api',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const domain = normalizeGorgiasDomain(v1);
+      if (!domain) { showModalError('Paste the Base API URL, like https://yourstore.gorgias.com/api'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'Gorgias: Username',
+          body: 'Enter the Username shown on the same REST API page. It is the email address of the Gorgias user that owns the key. (Step 2 of 3)',
+          inputPlaceholder: 'you@yourstore.com',
+          confirmLabel: 'Next',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const email = (v2 || '').trim();
+            if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { showModalError('Enter the Username (an email address)'); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: 'Gorgias: Password (API key)',
+                body: 'Enter the Password shown on the REST API page. This is your API key. It is stored encrypted and never shown again. Merlin only reads from Gorgias and never changes tickets. (Step 3 of 3)',
+                inputPlaceholder: 'Gorgias API key',
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v3) => {
+                  const apiKey = (v3 || '').trim();
+                  if (!apiKey) { showModalError('Enter the Password (API key)'); throw new Error('validation'); }
+                  let r = await merlin.saveConfigField('gorgiasDomain', domain, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save the Base API URL', 'Gorgias')); throw new Error('save'); }
+                  r = await merlin.saveConfigField('gorgiasEmail', email, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save the Username', 'Gorgias')); throw new Error('save'); }
+                  r = await merlin.saveConfigField('gorgiasApiKey', apiKey, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save the API key', 'Gorgias')); throw new Error('save'); }
+                  loadConnections();
+                },
+              });
+            }, 0);
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
 // Shopify Payments connect — NOT a separate connection. It rides the
 // Shopify OAuth token (shopify_payments.go runs shopifyGraphQL against
 // cfg.ShopifyStore + cfg.ShopifyAccessToken), so "connecting" it means
@@ -7616,6 +7675,7 @@ const CUSTOM_CONNECT_HANDLERS = {
   sesami: showSesamiConnectModal,
   shipstation: showShipStationConnectModal,
   cin7: showCin7ConnectModal,
+  gorgias: showGorgiasConnectModal,
   shopify_payments: showShopifyPaymentsConnectModal,
 };
 
