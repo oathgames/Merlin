@@ -138,7 +138,7 @@ First `stripe-setup` after connecting BOTH Shopify + Stripe prints a disambiguat
 | Vendor | Primary pick-when | Entry action |
 |---|---|---|
 | **Klaviyo** | post-purchase flow, abandoned-cart flow, browse-abandon — flows beat campaigns on revenue-per-recipient by 3–5× (set-and-forget vs blast) | `klaviyo-login` |
-| **Shopify** | revenue topline — shopify-analytics is the canonical source when Shopify is connected (preferred over Stripe for DTC with orders) | `shopify-login` |
+| **Shopify** | revenue topline — shopify-analytics is canonical when Shopify is connected (preferred over Stripe for DTC) | `shopify-login` |
 
 ### Klaviyo — email + SMS (flows, campaigns, segments, predictive analytics)
 
@@ -181,7 +181,7 @@ First `stripe-setup` after connecting BOTH Shopify + Stripe prints a disambiguat
 - bulk writes at >1K products — use GraphQL bulkOperationRunMutation, never a per-product fan-out (we already batch via ExecuteBatch)
 
 **Killer features:**
-- **GraphQL Admin API** — bulk ops are 10–100× cheaper than REST; anything >250 items uses bulkOperationRunQuery
+- **GraphQL Admin API** — bulk ops are 10–100× cheaper than REST; fetches >250 items use bulkOperationRunQuery
 - **shopify-cohorts** — cohort retention on a GraphQL bulk op, so a 34K-order store finishes. Returns `byWindow` (28d/90d/full: orders, newCustomerOrders, returningOrders, returningShare) and `acquisitionCohorts` (month × discounted|fullPrice: customers, repeat60/90/AnyRate, avgFirstOrderNet). A repeat rate is `null`, never 0, for a cohort too young for that window. `firstOrderDetection: window-bounded`: read_orders only, so a pre-window first order reads as new
 - **Unified catalog export** — one shopify-products call feeds Meta catalog, Google Merchant and Klaviyo blocks, no duplicate scraping
 - **Scope-aware reconnect** — a required scope upgrade (e.g. write_content for blog-post) surfaces a reconnect prompt, not a raw 403
