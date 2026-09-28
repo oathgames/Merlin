@@ -5494,8 +5494,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 15158,
-      "bodySha256": "cd6ea8a6f40a59ce881d310cc2b09d9850172d8927c0db2ad87a81900bf306d5",
+      "bodyBytes": 15133,
+      "bodySha256": "d432125ae194d18e7f63920d18ee4fffa78c6aa7f0f0eea5cc7c60ac049061c7",
       "description": "Use when the user asks about Shopify products, orders, inventory, store analytics, Stripe revenue, MRR, ARR, churn, active subscribers, subscription cohorts, revenue source preference, Google Merchant Center, Google Shopping feed, product disapprovals, or any e-commerce backend question. Handles Shopify product import, order batching, Stripe OAuth (read-only, never write), revenue aggregation with USD normalization, Shopify-vs-Stripe topline disambiguation, and Google Merchant Center product feed sync + disapproval diagnostics for Google Shopping ads.",
       "dir": "merlin-ecom",
       "frontmatterSha256": "d183e6b3ae27f5e6199a48fa34943bd2ea951a86fb64c5ccbdabad448ee09cfe",
