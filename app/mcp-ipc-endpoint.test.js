@@ -54,6 +54,13 @@ function test(name, fn) {
 
 // ── Helpers ──────────────────────────────────────────────────
 
+// Approval decision that allows everything. The dispatcher refuses every
+// tools/call without an `approve` function (REGRESSION GUARD 2026-09-28);
+// these routing tests are about dispatch mechanics, so they opt in to an
+// allow-all decision. The real gate is exercised in
+// mcp-ipc-approval-gate.test.js.
+const ALLOW_ALL = async (_name, input) => ({ behavior: 'allow', updatedInput: input });
+
 function tmpDir() {
   const d = path.join(os.tmpdir(), 'merlin-mcp-ipc-test-' + crypto.randomBytes(4).toString('hex'));
   fs.mkdirSync(d, { recursive: true });
@@ -165,14 +172,14 @@ test('atomicWrite: tmp + rename, mode 0o600 on POSIX', () => {
 
 test('dispatchRequest: missing auth → AUTH_FAILED', async () => {
   const { tools } = fakeTools();
-  const resp = await ipc.dispatchRequest({ id: '1', method: 'ping' }, { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } });
+  const resp = await ipc.dispatchRequest({ id: '1', method: 'ping' }, { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } });
   assert.strictEqual(resp.ok, false);
   assert.strictEqual(resp.error.code, 'AUTH_FAILED');
 });
 
 test('dispatchRequest: wrong auth → AUTH_FAILED', async () => {
   const { tools } = fakeTools();
-  const resp = await ipc.dispatchRequest({ id: '1', auth: 'wrong', method: 'ping' }, { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } });
+  const resp = await ipc.dispatchRequest({ id: '1', auth: 'wrong', method: 'ping' }, { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } });
   assert.strictEqual(resp.ok, false);
   assert.strictEqual(resp.error.code, 'AUTH_FAILED');
 });
@@ -188,7 +195,7 @@ test('dispatchRequest: unknown method → METHOD_NOT_FOUND', async () => {
   const { tools } = fakeTools();
   const resp = await ipc.dispatchRequest(
     { id: '1', auth: 'abc', method: 'vault/get' },
-    { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } }
+    { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } }
   );
   assert.strictEqual(resp.ok, false);
   assert.strictEqual(resp.error.code, 'METHOD_NOT_FOUND');
@@ -202,7 +209,7 @@ test('dispatchRequest: ping → pong + timestamp', async () => {
   const before = Date.now();
   const resp = await ipc.dispatchRequest(
     { id: 'x', auth: 'abc', method: 'ping' },
-    { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } }
+    { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } }
   );
   assert.strictEqual(resp.ok, true);
   assert.strictEqual(resp.result.pong, true);
@@ -213,7 +220,7 @@ test('dispatchRequest: tools/list returns name/description/inputSchema/annotatio
   const { tools } = fakeTools();
   const resp = await ipc.dispatchRequest(
     { id: 'l', auth: 'abc', method: 'tools/list' },
-    { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } }
+    { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } }
   );
   assert.strictEqual(resp.ok, true);
   assert.ok(Array.isArray(resp.result.tools));
@@ -232,7 +239,7 @@ test('dispatchRequest: tools/call routes to handler and returns result', async (
   const { tools, calls } = fakeTools();
   const resp = await ipc.dispatchRequest(
     { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights', brand: 'vela' } } },
-    { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } }
+    { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } }
   );
   assert.strictEqual(resp.ok, true);
   assert.strictEqual(calls.length, 1);
@@ -245,7 +252,7 @@ test('dispatchRequest: tools/call on unknown tool → TOOL_NOT_FOUND', async () 
   const { tools } = fakeTools();
   const resp = await ipc.dispatchRequest(
     { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'nuke_database', arguments: {} } },
-    { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } }
+    { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } }
   );
   assert.strictEqual(resp.ok, false);
   assert.strictEqual(resp.error.code, 'TOOL_NOT_FOUND');
@@ -258,7 +265,7 @@ test('dispatchRequest: tools/call auto-injects active brand when missing', async
     const { tools, calls } = fakeTools();
     const resp = await ipc.dispatchRequest(
       { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights' } } },
-      { tools, expectedToken: 'abc', ctx: { appRoot: d } }
+      { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: d } }
     );
     assert.strictEqual(resp.ok, true);
     assert.strictEqual(calls[0].args.brand, 'vela', 'expected brand auto-injected');
@@ -274,7 +281,7 @@ test('dispatchRequest: tools/call does NOT override an explicit brand', async ()
     const { tools, calls } = fakeTools();
     const resp = await ipc.dispatchRequest(
       { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'meta_ads', arguments: { action: 'insights', brand: 'orbi' } } },
-      { tools, expectedToken: 'abc', ctx: { appRoot: d } }
+      { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: d } }
     );
     assert.strictEqual(resp.ok, true);
     assert.strictEqual(calls[0].args.brand, 'orbi', 'explicit brand must win over active');
@@ -294,7 +301,7 @@ test('dispatchRequest: handler throw → INTERNAL_ERROR with message', async () 
   });
   const resp = await ipc.dispatchRequest(
     { id: 'c', auth: 'abc', method: 'tools/call', params: { name: 'broken', arguments: {} } },
-    { tools, expectedToken: 'abc', ctx: { appRoot: tmpDir() } }
+    { tools, expectedToken: 'abc', approve: ALLOW_ALL, ctx: { appRoot: tmpDir() } }
   );
   assert.strictEqual(resp.ok, false);
   assert.strictEqual(resp.error.code, 'INTERNAL_ERROR');
@@ -526,7 +533,7 @@ test('start/stop: token + socket created, socket accepts a tools/list call, stop
   const d = tmpDir();
   try {
     const { tools } = fakeTools();
-    const ep = ipc.start({ stateDir: d, tools, ctx: { appRoot: d } });
+    const ep = ipc.start({ stateDir: d, tools, ctx: { appRoot: d }, approve: ALLOW_ALL });
     // Token write happens inside the server's `listening` callback now
     // (Gitar PR #150 follow-up — was a TOCTOU race against the shim).
     // Wait for the event before asserting on the file.

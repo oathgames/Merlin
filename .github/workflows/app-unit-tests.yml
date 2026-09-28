@@ -186,6 +186,13 @@ jobs:
         run: node --test app/mcp-meta-param-reachability.test.js app/mcp-meta-action-reachability.test.js
       - name: MCP Google Demand Gen reachability (YouTube Shorts)
         run: node --test app/mcp-google-demandgen-reachability.test.js
+      # 2026-09-28 incident: the IPC sidecar (mcp-shim-token named pipe)
+      # dispatched tools/call straight to the handler, so a klaviyo
+      # flow-set-message-template call from an external session changed five
+      # live flow emails with no approval card. Every IPC call now runs the
+      # same handleToolApproval decision as the in-app chat.
+      - name: MCP IPC sidecar approval gate
+        run: node --test app/mcp-ipc-approval-gate.test.js
       # Same failure class, GA4 surface. google-analytics-update-stream-settings
       # is the write half of a read that already shipped: audit-property has
       # long reported "Enhanced Measurement off" with no way to fix it from

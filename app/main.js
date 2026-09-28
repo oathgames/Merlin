@@ -2583,6 +2583,84 @@ function setPendingApproval(toolUseID, fn) {
   pendingApprovals.set(toolUseID, { fn, timer });
 }
 
+// -- IPC sidecar approvals ------------------------------------
+//
+// REGRESSION GUARD (2026-09-28, ipc-approval-bypass): tools/call requests
+// from the local IPC sidecar (mcp-ipc-endpoint.js: Claude Desktop, external
+// Claude Code sessions holding the mcp-shim-token) used to call the tool
+// handler directly, so NONE of handleToolApproval ran for them. A klaviyo
+// flow-set-message-template call (CARDED_DESTRUCTIVE) executed in ~1.7s
+// with no card and changed five live Klaviyo flow emails. The endpoint now
+// calls handleToolApproval with { merlinApprovalSurface: 'ipc' }, so both
+// transports share one decision. These helpers are the only places the
+// IPC surface behaves differently, and only for calls that need a card:
+//   * No window to show the card on: refuse immediately with
+//     APPROVAL_REQUIRED instead of parking an invisible card for 15 min.
+//   * The wait is bounded by IPC_APPROVAL_DEADLINE_MS (below the shim's
+//     own request timeout), then the card is withdrawn and the caller gets
+//     APPROVAL_TIMEOUT. The deadline also covers the session-restart path
+//     that clears pendingApprovals without resolving them.
+//   * A human Allow returns humanApproved:true, which is the ONLY way the
+//     endpoint will set the engine's `approved` flag; a caller-supplied
+//     `approved` is stripped before this decision ever runs.
+// SDK-path results are unchanged in shape. Do not collapse these helpers
+// back into inline Promises without keeping the IPC branches.
+function isIpcApprovalSurface(opts) {
+  return !!(opts && opts.merlinApprovalSurface === 'ipc');
+}
+
+function prepareIpcApprovalCard(payload, opts) {
+  if (!isIpcApprovalSurface(opts)) return null;
+  if (!win || win.isDestroyed()) {
+    return {
+      behavior: 'deny',
+      code: 'APPROVAL_REQUIRED',
+      message: 'This action needs your approval in the Merlin app, but the Merlin window is not open, so it was not run. Open Merlin and try again.',
+    };
+  }
+  const mins = Math.round(require('./mcp-approval-policy').IPC_APPROVAL_DEADLINE_MS / 60000);
+  payload.label = `External session: ${payload.label}`;
+  const note = `Requested by a Claude session outside this window. Expires in ${mins} min.`;
+  payload.budget = payload.budget ? `${payload.budget} | ${note}` : note;
+  return null;
+}
+
+function awaitApprovalDecision(toolUseID, input, opts) {
+  const ipc = isIpcApprovalSurface(opts);
+  return new Promise((resolve) => {
+    let settled = false;
+    let deadline = null;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (deadline) clearTimeout(deadline);
+      resolve(result);
+    };
+    setPendingApproval(toolUseID, (approved) => {
+      if (approved) {
+        finish(ipc
+          ? { behavior: 'allow', updatedInput: input, humanApproved: true }
+          : { behavior: 'allow', updatedInput: input });
+      } else {
+        finish(ipc
+          ? { behavior: 'deny', code: 'APPROVAL_DENIED', message: 'This action was declined in the Merlin app, so it was not run.' }
+          : { behavior: 'deny', message: 'User declined' });
+      }
+    });
+    if (ipc) {
+      deadline = setTimeout(() => {
+        const entry = pendingApprovals.get(toolUseID);
+        if (entry) { clearTimeout(entry.timer); pendingApprovals.delete(toolUseID); }
+        finish({
+          behavior: 'deny',
+          code: 'APPROVAL_TIMEOUT',
+          message: 'Nobody approved this action in the Merlin app in time, so it was not run. Run it again and click Allow on the card.',
+        });
+      }, require('./mcp-approval-policy').IPC_APPROVAL_DEADLINE_MS);
+    }
+  });
+}
+
 // ── SDK Integration ─────────────────────────────────────────
 
 const autoApproveTools = new Set([
@@ -2974,7 +3052,12 @@ function getBudgetContext() {
   } catch { return null; }
 }
 
-async function handleToolApproval(toolName, input) {
+// `opts` is normally the Agent SDK's canUseTool options object, which this
+// function does not read. The IPC sidecar (mcp-ipc-endpoint.js) calls it
+// directly with { merlinApprovalSurface: 'ipc' } so external sessions go
+// through this exact decision; see REGRESSION GUARD (2026-09-28) above
+// awaitApprovalDecision and at the startMcpIpc call site.
+async function handleToolApproval(toolName, input, opts) {
   // SECURITY: hard-deny bypass attempts BEFORE any auto-approve logic.
   // This duplicates the PreToolUse hook as defense in depth.
   const deny = checkHardDeny(toolName, input);
@@ -3128,14 +3211,12 @@ async function handleToolApproval(toolName, input) {
       }
       const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
+      const ipcBlocked = prepareIpcApprovalCard(payload, opts);
+      if (ipcBlocked) return ipcBlocked;
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
       wsServer.broadcast('approval-request', payload);
       nudgeForApproval();
-      return new Promise((resolve) => {
-        setPendingApproval(toolUseID, (approved) => {
-          resolve(approved ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'User declined' });
-        });
-      });
+      return awaitApprovalDecision(toolUseID, input, opts);
     }
 
     // CARDED_DESTRUCTIVE_ACTIONS — destructive writes that don't move ad
@@ -3166,14 +3247,12 @@ async function handleToolApproval(toolName, input) {
         cost: (translated && translated.cost) || `${toolName} action=${action}`,
         budget: 'Live customer-facing action. Auto-expires in 15 min if ignored.',
       };
+      const ipcBlocked = prepareIpcApprovalCard(payload, opts);
+      if (ipcBlocked) return ipcBlocked;
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
       wsServer.broadcast('approval-request', payload);
       nudgeForApproval();
-      return new Promise((resolve) => {
-        setPendingApproval(toolUseID, (approved) => {
-          resolve(approved ? { behavior: 'allow', updatedInput: input } : { behavior: 'deny', message: 'User declined' });
-        });
-      });
+      return awaitApprovalDecision(toolUseID, input, opts);
     }
 
     // All other MCP merlin tools: auto-approve (config, voice, content, etc.)
@@ -3931,6 +4010,12 @@ async function startSession(brandOverride) {
           tools: allTools,
           ctx: mcpCtx,
           getCtx: () => _lastMcpCtx,
+          // REGRESSION GUARD (2026-09-28, ipc-approval-bypass): the sidecar
+          // MUST route every tools/call through the same host approval
+          // decision as the in-app chat. startMcpIpc throws without it.
+          // See the guard above awaitApprovalDecision.
+          approve: (toolName, input) =>
+            handleToolApproval(toolName, input, { merlinApprovalSurface: 'ipc' }),
         });
         console.log(`[mcp-ipc] sidecar endpoint listening (${_mcpIpcEndpoint.socketPath})`);
       }
