@@ -135,13 +135,31 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     input: {
       brand: brandSchema.describe('Brand name'),
-      batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
+      batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month). Ignored when startDate + endDate are set.'),
+      // REGRESSION GUARD (2026-09-21, Hard-Won Rule 23): meta-insights resolves
+      // an exact window through metaResolveInsightsWindow (autocmo-core/meta.go),
+      // but these two keys were never declared here, so defineTool's strict check
+      // refused an exact Sun-Fri pull with "unknown field(s)" and the caller had
+      // to reconstruct the window by subtracting trailing pulls. Same gap, same
+      // fix as meta_audit attribution-compare on 2026-08-24.
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Exact window start, YYYY-MM-DD. Give BOTH startDate and endDate or neither. Takes precedence over batchCount. Use for an exact calendar window, e.g. a Sun-Sat reporting week.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Exact window end, YYYY-MM-DD, INCLUSIVE. Must be yesterday or earlier: same-day Meta insights are still moving.'),
       granularity: z.enum(['summary', 'daily']).optional().describe('daily = also return daily_series, one account-level row per day in the window (Meta time_increment=1). Default: summary only.'),
       sortBy: z.string().optional().describe('Sort by: spend, roas, ctr, clicks, impressions, cpc, purchases'),
       sortOrder: z.enum(['asc', 'desc']).optional().describe('Sort order (default: desc)'),
       limit: z.number().optional().describe('Max results (e.g. 5 for top 5)'),
     },
-    handler: async (args) => toEnvelope(await runBinary(ctx, 'meta-insights', args)),
+    handler: async (args) => {
+      // Half a window is never a window. The engine refuses it too; refusing
+      // here saves a binary spawn and a rate-limit slot.
+      if (Boolean(args.startDate) !== Boolean(args.endDate)) {
+        return validationEnvelope('To pull an exact window, give BOTH startDate and endDate (YYYY-MM-DD). For a trailing window, leave both out and use batchCount.');
+      }
+      if (args.startDate && args.endDate < args.startDate) {
+        return validationEnvelope(`endDate ${args.endDate} is before startDate ${args.startDate}. Swap them.`);
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-insights', args));
+    },
   }, tool, z, ctx));
 
   // ── meta_tofu (top-of-funnel analyzer) ─────────────────────────────

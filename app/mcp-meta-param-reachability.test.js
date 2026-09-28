@@ -285,6 +285,47 @@ test('meta_audit declares startDate and endDate for attribution-compare', () => 
   }
 });
 
+// REGRESSION GUARD (2026-09-21, Hard-Won Rule 23): the same gap one tool over.
+// meta-insights resolves an exact window (metaResolveInsightsWindow in
+// autocmo-core/meta.go) but meta_review_performance never declared the two
+// keys, so an exact Sun-Fri pull was refused with "unknown field(s)". These go
+// through the TOOL HANDLER, not runBinary directly, because the handler is what
+// a caller reaches and it now carries its own both-or-neither check.
+test('meta_review_performance declares startDate and endDate', () => {
+  const schema = byName('meta_review_performance').schema;
+  for (const key of ['startDate', 'endDate']) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(schema, key),
+      `meta_review_performance.${key} must be declared: the engine reads it and zod strips what is not declared.`,
+    );
+  }
+});
+
+test('meta_review_performance exact window reaches the --cmd JSON through the handler', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_review_performance').handler({
+    brand: 'ripit', startDate: '2026-09-13', endDate: '2026-09-18', granularity: 'daily',
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-insights');
+  assert.equal(cmd.startDate, '2026-09-13', 'startDate must reach the engine');
+  assert.equal(cmd.endDate, '2026-09-18', 'endDate must reach the engine');
+  assert.equal(cmd.granularity, 'daily', 'sibling params must still ride along');
+});
+
+test('meta_review_performance refuses half a window and a reversed window without spawning the engine', async () => {
+  for (const args of [
+    { brand: 'ripit', startDate: '2026-09-13' },
+    { brand: 'ripit', endDate: '2026-09-18' },
+    { brand: 'ripit', startDate: '2026-09-18', endDate: '2026-09-13' },
+  ]) {
+    execFileCalls.length = 0;
+    const res = await byName('meta_review_performance').handler(args);
+    assert.match(JSON.stringify(res), /INVALID_INPUT/, `${JSON.stringify(args)} must be refused`);
+    assert.equal(execFileCalls.length, 0, 'a refused window must not spawn the binary');
+  }
+});
+
 // REGRESSION GUARD (2026-08-07): the third copy slot has to survive the whole
 // boundary — batch-wide AND per-ad — or an approved offer never reaches the ad
 // and nothing in the output says so.

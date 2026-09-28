@@ -3668,7 +3668,7 @@
       "description": "Read Meta ad performance at campaign, ad-set, AND ad granularity — spend, CTR, ROAS, CPC, purchases. One pull returns pre-aggregated campaign_summary + adset_summary rollups plus the raw ad-level array, so you can quote any tier without summing rows yourself. Use adset_summary for budget decisions (ad set is the meaningful-volume unit). For trend-shaped questions (\"daily ROAS this week\", \"how does today compare to the weekly average\") pass granularity:\"daily\" — the response then also carries daily_series, an account-level per-day array (date, spend, impressions, clicks, ctr, purchases, purchase_value, roas), so one call answers the trend without N pulls and manual diffs. Read-only; does not change campaigns.",
       "input": {
         "batchCount": {
-          "description": "Days of data (-1=today, 7=last week, 30=last month)",
+          "description": "Days of data (-1=today, 7=last week, 30=last month). Ignored when startDate + endDate are set.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -3676,6 +3676,11 @@
         "brand": {
           "description": "Brand name",
           "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "endDate": {
+          "description": "Exact window end, YYYY-MM-DD, INCLUSIVE. Must be yesterday or earlier: same-day Meta insights are still moving.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         },
         "granularity": {
@@ -3704,6 +3709,11 @@
             "asc",
             "desc"
           ],
+          "type": "string"
+        },
+        "startDate": {
+          "description": "Exact window start, YYYY-MM-DD. Give BOTH startDate and endDate or neither. Takes precedence over batchCount. Use for an exact calendar window, e.g. a Sun-Sat reporting week.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         }
       },
