@@ -149,8 +149,12 @@ const byName = (n) => {
 // four videos to the batch that is already running' was unreachable and every
 // push had to mint a new ad set. Same shipped-but-unreachable class as
 // adDescription and ctaType above.
-const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId'];
-const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name'];
+// publishPageId / publishInstagramId (2026-09-28): per-push publishing identity
+// for multi-identity accounts (meta_publish_identity.go). verticalImagePath had
+// been read by the engine since placement pairing shipped but was never
+// declared on ads[]; portraitImagePath is the new 4x5 feed asset.
+const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId', 'publishPageId', 'publishInstagramId'];
+const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name', 'verticalImagePath', 'portraitImagePath'];
 
 // Both surfaces reach the identical 'meta-bulk-push' engine action, so both
 // must declare the identical param set. meta_ads is the legacy multiplexer;
