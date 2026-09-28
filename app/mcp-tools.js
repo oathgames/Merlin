@@ -1375,7 +1375,15 @@ function buildTools(tool, z, ctx) {
   // ── google_ads ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'google_ads',
-    description: 'Manage Google Ads campaigns — create, check performance, pause/scale.',
+    description: 'Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. '
+      + 'Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, '
+      + 'demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. '
+      + 'Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand\'s organic Shorts, no upload) '
+      + 'OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). '
+      + 'Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), '
+      + 'and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), '
+      + 'activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), '
+      + 'video-insights (per-ad Demand Gen video performance; batchCount = days).',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -1383,7 +1391,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'google' },
     preview: false,
     input: {
-      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status']).describe('Operation'),
+      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights']).describe('Operation'),
       brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
@@ -1395,10 +1403,48 @@ function buildTools(tool, z, ctx) {
       batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks, conversions'),
       limit: z.number().optional().describe('Max results to return'),
+      // Demand Gen (YouTube) video push. Keys match the engine Command/BulkAd json
+      // tags verbatim; runBinary copies them straight into --cmd.
+      campaignName: z.string().optional().describe('demandgen-push: campaign to find or create (created PAUSED as DEMAND_GEN)'),
+      adSetName: z.string().optional().describe('demandgen-push: ad group to find or create inside the campaign'),
+      targetAdSetId: z.string().optional().describe('demandgen-push: existing Google ad group id to add ads to (instead of campaignName + adSetName)'),
+      businessName: z.string().optional().describe('demandgen-push: advertiser name shown on the ad, max 25 characters'),
+      logoPath: z.string().optional().describe('demandgen-push: absolute path to a square logo image (at least 128x128)'),
+      ctaType: z.string().optional().describe('demandgen-push: call to action, default SHOP_NOW (also BUY_NOW, ORDER_NOW, LEARN_MORE, SIGN_UP, WATCH_NOW, ...)'),
+      youtubeChannelId: z.string().optional().describe('demandgen-push: upload mp4s to this YouTube channel (must be linked to the Google Ads account). Omit to upload unlisted to the Google-managed channel.'),
+      channels: z.array(z.enum(['youtube_shorts', 'youtube_in_feed', 'youtube_in_stream', 'discover', 'gmail', 'display'])).optional().describe('demandgen-push: placements for a NEW ad group, default ["youtube_shorts"]'),
+      geoTargetConstants: z.array(z.string()).optional().describe('demandgen-push: Google geo target ids for a NEW ad group, default ["2840"] (United States)'),
+      bidStrategy: z.enum(['AUTO', 'MAXIMIZE_CLICKS', 'MAXIMIZE_CONVERSIONS', 'TARGET_CPA']).optional().describe('demandgen-push: bidding for a NEW campaign. AUTO (default) uses maximize conversions only when the account recorded conversions in the last 30 days, otherwise maximize clicks.'),
+      targetCpa: z.number().optional().describe('demandgen-push: target cost per acquisition in dollars, with bidStrategy TARGET_CPA'),
+      ads: z.array(z.object({
+        name: z.string().describe('Ad name (required, must be unique in the ad group)'),
+        youtubeVideoId: z.string().optional().describe('Existing YouTube video id or URL (youtube.com/shorts/..., youtu.be/..., watch?v=...)'),
+        videoPath: z.string().optional().describe('Local mp4 to upload through Google Ads when there is no YouTube video yet'),
+        headline: z.string().optional().describe('Headlines, max 40 chars each, up to 5 separated by |'),
+        description: z.string().optional().describe('Long headlines, max 90 chars each, up to 5 separated by |. Defaults to the headlines.'),
+        body: z.string().optional().describe('Descriptions, max 90 chars each, up to 5 separated by |'),
+        link: z.string().optional().describe('Final URL (full https URL)'),
+      })).optional().describe('demandgen-push: one entry per video ad'),
+      approved: z.boolean().optional().describe('Approval flag for activate. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
     },
+    // Handler does NOT auto-set args.approved; the approval card does.
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Google Ads');
       if (budgetError) return validationEnvelope(budgetError);
+      // mp4 uploads wait on YouTube processing (minutes), past the 110s
+      // MCP-call boundary, so they run on the job path. The engine caches
+      // each upload by content hash before polling and skips existing ads
+      // by name, so a timed-out attempt resumes instead of duplicating.
+      if (args.action === 'demandgen-push' && ctx.jobStore && Array.isArray(args.ads) && args.ads.some((a) => a && a.videoPath)) {
+        const job = startExportJob(ctx, 'google_ads', 'google-ads-demandgen-push', args);
+        return envelope.ok({
+          data: {
+            summary: 'YouTube video upload + Demand Gen push started in the background.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read the result for the created campaign, ad group and ads.`,
+          },
+        });
+      }
       return toEnvelope(await runBinary(ctx, 'google-ads-' + args.action, args));
     },
   }, tool, z, ctx));

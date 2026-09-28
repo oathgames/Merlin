@@ -279,6 +279,9 @@ sending the user to Ads Manager when they ask "what audiences do I have",
 | `insights` | `brand` |
 | `kill` | `campaignId` |
 | `duplicate` | `campaignId` |
+| `demandgen-push` | YouTube Shorts video ads. `campaignName`, `adSetName`, `dailyBudget`, `businessName`, `logoPath` (square), `ads[]` of `{name, youtubeVideoId OR videoPath, headline, body, link}`. Existing Shorts: pass `youtubeVideoId` (no upload). Meta winners: pass the mp4 `videoPath` (uploads unlisted, background job, poll `jobs_poll`). Campaign created PAUSED; re-runs skip existing ad names. |
+| `activate` | `campaignId` (approval card; turns a PAUSED campaign on) |
+| `video-insights` | `brand`, `batchCount` = days (per-ad Demand Gen video performance) |
 
 **Connect:** `platform_login({platform: "google", brand})` — OAuth, token + customer ID saved automatically.
 
