@@ -2597,7 +2597,17 @@
               "postId": {
                 "type": "string"
               },
+              "reuseAdId": {
+                "description": "Numeric id of an existing ad whose exact creative is duplicated into this ad set by creative_id. Keeps the social proof of the source post and, unlike postId, also works for Collection/catalog creatives. Wins over postId, videoId/videoPath and imagePath on the same ad (those are ignored). Refused with publishPageId.",
+                "pattern": "^\\d+$",
+                "type": "string"
+              },
               "verticalImagePath": {
+                "type": "string"
+              },
+              "videoId": {
+                "description": "Numeric id of a video ALREADY uploaded to this ad account (find ids with meta_audit list-videos). Builds a video ad from it instead of uploading videoPath, so a large file is not re-uploaded. Ignored when reuseAdId or postId is set on the same ad.",
+                "pattern": "^\\d+$",
                 "type": "string"
               },
               "videoPath": {
@@ -3508,7 +3518,17 @@
               "postId": {
                 "type": "string"
               },
+              "reuseAdId": {
+                "description": "Numeric id of an existing ad whose exact creative is duplicated into this ad set by creative_id. Keeps the social proof of the source post and, unlike postId, also works for Collection/catalog creatives. Wins over postId, videoId/videoPath and imagePath on the same ad (those are ignored). Refused with publishPageId.",
+                "pattern": "^\\d+$",
+                "type": "string"
+              },
               "verticalImagePath": {
+                "type": "string"
+              },
+              "videoId": {
+                "description": "Numeric id of a video ALREADY uploaded to this ad account (find ids with meta_audit list-videos). Builds a video ad from it instead of uploading videoPath, so a large file is not re-uploaded. Ignored when reuseAdId or postId is set on the same ad.",
+                "pattern": "^\\d+$",
                 "type": "string"
               },
               "videoPath": {
