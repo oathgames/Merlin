@@ -211,6 +211,8 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         + 'Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.'),
       adLink: z.string().describe('Destination URL'),
       dailyBudget: z.number().describe('Daily budget in DOLLARS (not cents). Pass 10 for $10/day.'),
+      publishPageId: z.string().optional().describe('Publish this ad from a second brand or retail Facebook page on the same ad account instead of the configured brand page. Numeric page id, verified publishable by the engine (refused otherwise). Not a partnership ad. See meta_launch_test_batch.'),
+      publishInstagramId: z.string().optional().describe('Instagram user id to publish from alongside publishPageId. Omit it and the ad carries no Instagram identity (never the brand Instagram).'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, the ad lands in this exact campaign. Wins over campaignName.'),
       campaignName: z.string().optional().describe('Target campaign name. Looked up via metaFindCampaign — fails if not found. Use campaignId for stricter routing.'),
       adFormat: z.enum(['single', 'carousel', 'collection']).optional().describe('Ad format (default: single)'),
@@ -277,6 +279,11 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         hookStyle: z.string().optional(),
         postId: z.string().optional(),
         name: z.string().optional(),
+        // Placement pairing (meta_placement_portrait.go): imagePath is the 1x1;
+        // portraitImagePath a 4x5 for feeds; verticalImagePath a 9x16 for Stories/Reels.
+        // Shared-ad-set mode only.
+        verticalImagePath: z.string().optional(),
+        portraitImagePath: z.string().optional(),
       })).describe('Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
       campaignName: z.string().optional().describe('Target campaign name, looked up via metaFindCampaign. Fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Pass createCampaignIfMissing:true to create it instead. Use campaignId for stricter routing.'),
@@ -285,6 +292,11 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       // the --cmd JSON and read by Command.CampaignBudgetMode /
       // Command.CampaignDailyBudget (see metaCreateCampaign in meta.go).
       campaignBudgetMode: z.string().optional().describe('Budget mode for a campaign created by createCampaignIfMissing. \'cbo\' puts the daily budget on the CAMPAIGN - Meta then DISCARDS ad-set budgets, so do NOT also pass dailyBudget (the engine hard-errors on that combination). Omitted or anything else means ABO, with the budget on the ad set.'),
+      // REGRESSION GUARD (2026-09-28, Benebone Walmart / Welovedogs, amends Rule 22):
+      // per-push publishing identity for multi-identity accounts. Read by
+      // Command.PublishPageID / PublishInstagramID (meta_publish_identity.go).
+      publishPageId: z.string().optional().describe("meta-push / bulk-push only: publish THIS push from a second brand or retail Facebook page on the same ad account (e.g. a retailer page), instead of the configured brand page. Numeric page id. The engine verifies the page is publishable by the ad account (promote_pages or the token's pages) and refuses otherwise; the override is logged naming both pages and applies to this push only. Not a partnership ad: no Paid-partnership label. Mutually exclusive with partnerPageId, postId and reuseAdId."),
+      publishInstagramId: z.string().optional().describe("Instagram user id to publish from alongside publishPageId. Numeric. Omit it and the ads carry NO Instagram identity (the brand Instagram is never used as a fallback). Requires publishPageId."),
       partnerPageId: z.string().optional().describe("Publish this push from a CREATOR page instead of the brand page (allowlisted / partnership ads). Numeric Meta page id. The ad account must already hold posting permission on that page, granted by the creator. Verified live: the RIPIT partnership ad set publishes from page 117203078065824 while brand ads use 902808256258024. NOTE: the resulting ad is served from the creator handle but carries no Paid-partnership label, so confirm the creator agreement covers it."),
       partnerInstagramUserId: z.string().optional().describe("Instagram user id to publish from alongside partnerPageId (allowlisted / partnership ads). Numeric. Requires partnerPageId, because an Instagram-only override would publish from the BRAND page on Facebook placements and the creator on Instagram; the engine refuses that split identity."),
       campaignDailyBudget: z.number().optional().describe('Campaign-level daily budget in DOLLARS. Read only under campaignBudgetMode \'cbo\', where it is the real spend governor and is validated against maxDailyAdBudget - an over-cap value is refused, never silently clamped.'),

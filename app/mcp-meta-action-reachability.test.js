@@ -316,6 +316,7 @@ test('the account-inventory reads are reachable through meta_audit', () => {
     'resolve-geo':       'meta-geo-resolve',
     'aware-audience':    'aware-audience',
     'export-creatives':  'meta-export-creatives',
+    'inspect-ads':       'meta-inspect-ads',
   };
   for (const [action, engine] of Object.entries(expected)) {
     assert.ok(META_AUDIT_ENUM.includes(action),
@@ -655,6 +656,47 @@ test('meta_audit routes batchCount through to --cmd for attribution-compare', as
   assert.equal(cmd.action, 'meta-attribution-compare');
   assert.equal(cmd.batchCount, 30,
     'batchCount must reach the binary — without it every call silently reports lifetime');
+});
+
+// Rule 23 for the publishing identity override (2026-09-28, Benebone Walmart /
+// Welovedogs). Stripped between tool and binary, the push silently publishes
+// from the configured brand page, and the page gate refuses nothing because
+// no override ever arrived.
+test('meta_launch_test_batch carries publishPageId through to --cmd with no IG key', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_launch_test_batch').handler({
+    brand: 'acme', campaignName: 'C', sharedAdSet: true, targetAdSetId: '120253990199360580',
+    publishPageId: '1307019419167369',
+    ads: [{ imagePath: 'C:/tmp/a.png', portraitImagePath: 'C:/tmp/a45.png', name: 'a', headline: 'h', body: 'b', link: 'https://x.com' }],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-bulk-push');
+  assert.equal(cmd.publishPageId, '1307019419167369',
+    'publishPageId must reach the binary, or the ads publish from the brand page');
+  assert.ok(!('publishInstagramId' in cmd), 'no publishInstagramId requested means no key at all');
+  assert.ok(!('partnerPageId' in cmd), 'the publish override must never be translated into a partnership field');
+  assert.equal(cmd.ads[0].portraitImagePath, 'C:/tmp/a45.png', 'the 4x5 feed asset must reach the binary');
+});
+
+test('meta_ads bulk-push carries publishPageId + publishInstagramId through to --cmd', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_ads').handler({
+    brand: 'acme', action: 'bulk-push', campaignName: 'C', adSetName: 'S',
+    publishPageId: '1307019419167369', publishInstagramId: '17841400000000000',
+    ads: [{ imagePath: 'C:/tmp/a.png', verticalImagePath: 'C:/tmp/a916.png', name: 'a', headline: 'h', body: 'b', link: 'https://x.com' }],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.publishPageId, '1307019419167369');
+  assert.equal(cmd.publishInstagramId, '17841400000000000');
+  assert.equal(cmd.ads[0].verticalImagePath, 'C:/tmp/a916.png');
+});
+
+test('meta_audit inspect-ads routes targetAdSetId to meta-inspect-ads', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_audit').handler({ brand: 'acme', action: 'inspect-ads', targetAdSetId: '120253990199360580' });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-inspect-ads');
+  assert.equal(cmd.targetAdSetId, '120253990199360580');
 });
 
 test('meta_ads bulk-push carries the partner identity through to --cmd', async () => {
