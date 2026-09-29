@@ -687,49 +687,175 @@ async function runBinary(ctx, action, args, opts = {}) {
 const EXPORT_JOB_TIMEOUT_MS = 1800000;      // 30 min per binary invocation — job path is NOT bound by the 120s MCP call boundary
 const EXPORT_JOB_MAX_ATTEMPTS = 48;         // ~24h of hour-cap pauses
 
+// REGRESSION GUARD (2026-09-28, gorgias-raw hung job job-482d692d682a480e):
+// heartbeat, stall watchdog, and restart recovery for export jobs.
+//
+// (1) Heartbeat. An engine that supports it prints one
+//     `MERLIN_PROGRESS stage=... k=v ...` line per unit of forward progress
+//     (gorgias-export and gorgias-export-raw: one per ticket page and per
+//     side-entity step; counts only, never content). Each line updates the
+//     job's stage and heartbeatAt, so jobs_poll shows live counts and an
+//     updatedAt that moves. Before this, updatedAt never changed during a
+//     30-minute engine run, so a dead job and a busy one looked identical.
+// (2) Stall watchdog. Once an engine has emitted its first MERLIN_PROGRESS
+//     line, EXPORT_JOB_STALL_MS without another one means it is wedged; the
+//     child is killed and the loop resumes from the engine checkpoint, the
+//     same path as a timeout. Engines that never print the line are never
+//     armed, so exports without heartbeats keep the plain 30-minute bound.
+// (3) Restart recovery. The job's runFn lives in this process, so a Merlin
+//     restart killed the engine and left the job "running" forever (the
+//     incident). JobStore.recoverOrphans now finalizes such jobs, and
+//     RESTART_RESUMABLE_EXPORT_ACTIONS re-runs the checkpointed, read-only,
+//     approval-free exports under the same jobId. gorgias-export-raw is
+//     deliberately NOT in the set: its approval is an in-memory card click
+//     and is never written to disk, so an approval cannot outlive the
+//     process that received it; after a restart the job is marked
+//     INTERRUPTED and re-running it (a new card) resumes from the same
+//     checkpoint. google-ads-demandgen-push is excluded because it spends.
+const EXPORT_JOB_STALL_MS = 15 * 60 * 1000;
+const EXPORT_PROGRESS_PREFIX = 'MERLIN_PROGRESS ';
+const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export']);
+
+// Parse one MERLIN_PROGRESS line into { stage, counts } or null.
+function parseExportProgressLine(line) {
+  const s = String(line || '').trim();
+  if (!s.startsWith(EXPORT_PROGRESS_PREFIX.trim())) return null;
+  const out = { stage: '', counts: {} };
+  for (const tok of s.slice(EXPORT_PROGRESS_PREFIX.trim().length).trim().split(/\s+/)) {
+    const i = tok.indexOf('=');
+    if (i <= 0) continue;
+    const k = tok.slice(0, i);
+    const v = tok.slice(i + 1);
+    if (!/^[a-z_]{1,40}$/.test(k)) continue;
+    if (k === 'stage') { if (/^[a-z_]{1,40}$/.test(v)) out.stage = v; continue; }
+    if (/^\d{1,12}$/.test(v)) out.counts[k] = Number(v);
+  }
+  return out.stage ? out : null;
+}
+
+function describeExportProgress(p) {
+  const parts = Object.entries(p.counts).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`);
+  return `running: ${p.stage.replace(/_/g, ' ')}${parts.length ? ` (${parts.join(', ')})` : ''}`;
+}
+
 function startExportJob(ctx, toolName, action, args) {
   if (!ctx.jobStore) return null;
+  const meta = { action };
+  // Only restart-resumable actions persist their args, and never the
+  // approval flag (see REGRESSION GUARD above).
+  if (RESTART_RESUMABLE_EXPORT_ACTIONS.has(action)) {
+    const resumeArgs = { ...args };
+    delete resumeArgs.approved;
+    delete resumeArgs.confirm_token;
+    meta.resume = { tool: toolName, action, args: resumeArgs };
+  }
   return ctx.jobStore.start({
     tool: toolName,
     brand: args.brand || '',
-    meta: { action },
-    runFn: async ({ reportProgress, checkCancelled, registerCancel }) => {
-      let last;
-      for (let attempt = 0; attempt < EXPORT_JOB_MAX_ATTEMPTS; attempt++) {
-        checkCancelled();
-        reportProgress({ stage: attempt === 0 ? 'running' : `resuming (attempt ${attempt + 1})` });
-        last = await runBinary(ctx, action, args, {
-          timeout: EXPORT_JOB_TIMEOUT_MS,
-          onChild: (child) => registerCancel(() => { try { child.kill('SIGTERM'); } catch {} }),
-        });
-        if (!last) return toEnvelope({ text: 'Export produced no output.', error: true });
-        // A timeout kill is resumable — engine checkpoints (klaviyo) and
-        // bulk-op attach (shopify) mean the re-invocation continues where
-        // this one stopped. Any other error is final.
-        if (last.error && !last.timedOut) return toEnvelope(last);
-        if (last.error && last.timedOut) {
-          reportProgress({ stage: 'engine timed out — resuming from checkpoint' });
-          continue;
-        }
-        // The engine prints its result JSON at the end of stdout. A
-        // `paused` flag means a rate-cap window fired mid-run — sleep it
-        // out and re-invoke; checkpoints make the re-run a resume.
-        let parsed = null;
-        try {
-          const m = (last.text || '').match(/\{[\s\S]*"exported"[\s\S]*\}/);
-          if (m) parsed = JSON.parse(m[0]);
-        } catch { /* unparseable output — treat as done */ }
-        if (parsed && parsed.paused) {
-          const waitMs = Math.min(Math.max((parsed.resumeAfterSec || 3600) * 1000, 60000), 25 * 3600 * 1000);
-          reportProgress({ stage: `rate-limited — resuming in ${Math.round(waitMs / 60000)}m`, etaSec: Math.round(waitMs / 1000) });
-          await new Promise((r) => setTimeout(r, waitMs));
-          continue;
-        }
-        return toEnvelope(last);
-      }
-      return toEnvelope(last || { text: 'Export did not finish.', error: true });
-    },
+    meta,
+    runFn: exportJobRunFn(ctx, action, args),
   });
+}
+
+// Re-runs restart-resumable export jobs a previous Merlin process orphaned;
+// every other orphan is finalized as INTERRUPTED. Called once per JobStore.
+function recoverExportJobs(ctx) {
+  const store = ctx && ctx.jobStore;
+  if (!store || typeof store.recoverOrphans !== 'function' || store._exportRecoveryDone) return null;
+  store._exportRecoveryDone = true;
+  try {
+    return store.recoverOrphans((job) => {
+      const r = job && job.meta && job.meta.resume;
+      if (!r || !RESTART_RESUMABLE_EXPORT_ACTIONS.has(r.action) || !r.args || typeof r.args !== 'object') return null;
+      const args = { ...r.args };
+      delete args.approved;
+      return exportJobRunFn(ctx, r.action, args);
+    });
+  } catch (e) {
+    console.warn('[mcp] export job recovery failed:', e && e.message);
+    return null;
+  }
+}
+
+function exportJobRunFn(ctx, action, args) {
+  return async ({ reportProgress, checkCancelled, registerCancel }) => {
+    let last;
+    for (let attempt = 0; attempt < EXPORT_JOB_MAX_ATTEMPTS; attempt++) {
+      checkCancelled();
+      reportProgress({ stage: attempt === 0 ? 'running' : `resuming (attempt ${attempt + 1})` });
+      let stalled = false;
+      last = await runBinary(ctx, action, args, {
+        timeout: EXPORT_JOB_TIMEOUT_MS,
+        onChild: (child) => {
+          registerCancel(() => { try { child.kill('SIGTERM'); } catch {} });
+          watchExportChild(child, reportProgress, () => { stalled = true; });
+        },
+      });
+      if (stalled && last) {
+        last.timedOut = true;
+        reportProgress({ stage: 'engine stopped making progress, resuming from checkpoint' });
+        continue;
+      }
+      if (!last) return toEnvelope({ text: 'Export produced no output.', error: true });
+      // A timeout kill is resumable — engine checkpoints (klaviyo) and
+      // bulk-op attach (shopify) mean the re-invocation continues where
+      // this one stopped. Any other error is final.
+      if (last.error && !last.timedOut) return toEnvelope(last);
+      if (last.error && last.timedOut) {
+        reportProgress({ stage: 'engine timed out — resuming from checkpoint' });
+        continue;
+      }
+      // The engine prints its result JSON at the end of stdout. A
+      // `paused` flag means a rate-cap window fired mid-run — sleep it
+      // out and re-invoke; checkpoints make the re-run a resume.
+      let parsed = null;
+      try {
+        const m = (last.text || '').match(/\{[\s\S]*"exported"[\s\S]*\}/);
+        if (m) parsed = JSON.parse(m[0]);
+      } catch { /* unparseable output — treat as done */ }
+      if (parsed && parsed.paused) {
+        const waitMs = Math.min(Math.max((parsed.resumeAfterSec || 3600) * 1000, 60000), 25 * 3600 * 1000);
+        reportProgress({ stage: `rate-limited — resuming in ${Math.round(waitMs / 60000)}m`, etaSec: Math.round(waitMs / 1000) });
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      return toEnvelope(last);
+    }
+    return toEnvelope(last || { text: 'Export did not finish.', error: true });
+  };
+}
+
+// Streams an export engine's stdout for MERLIN_PROGRESS lines (heartbeat)
+// and arms the stall watchdog after the first one. execFile keeps buffering
+// stdout for the final result; this listener only observes it.
+function watchExportChild(child, reportProgress, onStall, stallMs = EXPORT_JOB_STALL_MS) {
+  if (!child || !child.stdout || typeof child.stdout.on !== 'function') return;
+  let pending = '';
+  let timer = null;
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      try { onStall(); } catch {}
+      try { child.kill('SIGTERM'); } catch {}
+    }, stallMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  };
+  child.stdout.on('data', (chunk) => {
+    pending += chunk.toString('utf8');
+    let i;
+    while ((i = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, i);
+      pending = pending.slice(i + 1);
+      const p = parseExportProgressLine(line);
+      if (!p) continue;
+      arm();
+      try { reportProgress({ stage: describeExportProgress(p), heartbeat: true }); } catch {}
+    }
+    if (pending.length > 65536) pending = pending.slice(-65536);
+  });
+  const stop = () => { if (timer) clearTimeout(timer); timer = null; };
+  child.on('exit', stop);
+  child.on('error', stop);
 }
 
 // ── Binary-result → envelope adapter ─────────────────────────
@@ -796,6 +922,9 @@ function validationEnvelope(message, data) {
  */
 function buildTools(tool, z, ctx) {
   const tools = [];
+  // Finalize or resume export jobs a previous Merlin process left "running"
+  // (REGRESSION GUARD 2026-09-28 above startExportJob). Once per JobStore.
+  recoverExportJobs(ctx);
   // Canonical brand-name zod schema — use `brandSchema.optional()` or
   // `brandSchema.describe(...)` at every `brand: ...` input. See the
   // BRAND_NAME_PATTERN comment above for why this is defense-in-depth.
@@ -2824,9 +2953,19 @@ function buildTools(tool, z, ctx) {
   // engine, and people are HMAC pseudonyms. `export` builds a full JSONL
   // corpus as a background job (checkpointed, resumable) and fails closed if
   // its leak scan finds a residual email, phone, or card number.
+  //
+  // REGRESSION GUARD (2026-09-28, gorgias-raw): `export` with raw:true runs
+  // the SEPARATE engine action gorgias-export-raw, which writes customer
+  // records verbatim (NOT de-identified) for a brand that has authorised it.
+  // Three layers keep that from happening silently: mcp-approval-policy.js
+  // resolves export+raw to 'export-raw', which is in CARDED_DESTRUCTIVE_ACTIONS
+  // (a human clicks the card); the engine refuses without approved:true
+  // (requireApproval); and the engine always drops health-related tickets.
+  // A raw call must never reach the de-identified engine action or the other
+  // way round, so the routing below keys on raw === true explicitly.
   tools.push(defineTool({
     name: 'gorgias',
-    description: 'Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.',
+    description: 'Gorgias helpdesk support data (read-only, de-identified). Actions: status (connection check, no API call); connect (how to get Gorgias API credentials); setup / verify (validate the saved credentials); tickets (list tickets in a window, filter by status / gorgiasChannel / gorgiasTags); ticket (one ticket transcript by gorgiasTicketId); customers (support volume by pseudonymous customer); tags (tag frequency); satisfaction (CSAT survey scores); macros (saved reply macros); stats (volume, channel mix, response and resolution times); export (full de-identified JSONL corpus plus manifest.json, runs as a background job, poll jobs_poll). export with raw:true writes the corpus WITHOUT de-identification (tickets, messages, customers, surveys, tags, macros, custom fields verbatim) for a brand that has authorised it; it always shows an approval card, always drops health-related tickets, and accepts gorgiasOptOutCsv (path to a CSV of customer emails to exclude). Window: days (default 30) or startDate / endDate (YYYY-MM-DD). Customer PII is replaced with typed placeholders like [EMAIL] and [ORDER_NUMBER]; de-identification is best-effort, so human review is required before sharing an export outside the company.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -2845,6 +2984,9 @@ function buildTools(tool, z, ctx) {
       gorgiasChannel: z.string().optional().describe('Channel filter, e.g. email, chat, sms, phone, facebook, instagram-direct-message.'),
       gorgiasTags: z.array(z.string()).optional().describe('Tag filter: a ticket matches if it carries ANY of these tags (case-insensitive).'),
       gorgiasMaxTickets: z.coerce.number().int().optional().describe('export only: cap on exported tickets (default: the whole window).'),
+      raw: z.boolean().optional().describe('export only: true writes the corpus WITHOUT removing personal info (the brand must have authorised it). Always shows an approval card; health-related tickets are always excluded. Omit for the normal de-identified export.'),
+      gorgiasOptOutCsv: z.string().optional().describe('raw export only: path to a CSV of customer emails (opt-outs, deletion requests) whose tickets and customer records are excluded.'),
+      approved: z.boolean().optional().describe('Approval flag for the raw export. Set by the Electron approval card on user click; the engine REFUSES a raw export without it. Do not set true unless the user explicitly approved exporting un-de-identified customer data.'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
@@ -2856,8 +2998,28 @@ function buildTools(tool, z, ctx) {
       // export is a full-history pull that cannot finish inside the MCP call
       // boundary, so it runs as a background job (jobs_poll for status). The
       // engine checkpoints every page, so a retry resumes rather than restarts.
+      if (args.action === 'export' && args.raw === true) {
+        const rawArgs = { ...args };
+        delete rawArgs.raw;
+        if (ctx.jobStore) {
+          const job = startExportJob(ctx, 'gorgias', 'gorgias-export-raw', rawArgs);
+          return envelope.ok({
+            data: {
+              summary: 'Gorgias RAW export (not de-identified, health-related tickets excluded) started in the background.',
+              jobId: job.jobId,
+              next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path. This corpus contains customer personal information: store it only where customer data is allowed.`,
+            },
+          });
+        }
+        return toEnvelope(await runBinary(ctx, 'gorgias-export-raw', rawArgs));
+      }
+      // The raw-only keys never ride along on a de-identified call.
+      const plainArgs = { ...args };
+      delete plainArgs.raw;
+      delete plainArgs.gorgiasOptOutCsv;
+      delete plainArgs.approved;
       if (args.action === 'export' && ctx.jobStore) {
-        const job = startExportJob(ctx, 'gorgias', 'gorgias-export', args);
+        const job = startExportJob(ctx, 'gorgias', 'gorgias-export', plainArgs);
         return envelope.ok({
           data: {
             summary: 'Gorgias de-identified export started in the background.',
@@ -2866,7 +3028,7 @@ function buildTools(tool, z, ctx) {
           },
         });
       }
-      return toEnvelope(await runBinary(ctx, 'gorgias-' + args.action, args));
+      return toEnvelope(await runBinary(ctx, 'gorgias-' + args.action, plainArgs));
     },
   }, tool, z, ctx));
 
@@ -4171,4 +4333,11 @@ module.exports = {
   // from production code; it exists solely to keep test isolation clean.
   _resetScrapeTimeoutTrackerForTests,
   SCRAPE_TIMEOUT_TTL_MS,
+  // Export-job heartbeat / stall watchdog / restart recovery (tests).
+  startExportJob,
+  recoverExportJobs,
+  watchExportChild,
+  parseExportProgressLine,
+  RESTART_RESUMABLE_EXPORT_ACTIONS,
+  EXPORT_JOB_STALL_MS,
 };

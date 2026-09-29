@@ -42,6 +42,21 @@ const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000; // 6 hours
 // Terminal states — once reached, state is frozen except for retention cleanup.
 const TERMINAL_STATES = new Set(['done', 'failed', 'cancelled']);
 
+// REGRESSION GUARD (2026-09-28, gorgias-raw hung job job-482d692d682a480e):
+// a job's runFn lives in THIS process. When Merlin restarts (a relaunch, a
+// crash, a local build) the engine child dies with it, but the job file on
+// disk still says state:"running" and nothing ever touches it again:
+// jobs_poll reported "running, 0%, error null" for 77+ minutes with an
+// updatedAt frozen at creation, and jobs_cancel could only set
+// cancelRequested on a job no runner would ever read. Every job now records
+// the JobStore instance that owns it. recoverOrphans() (called once the tool
+// surface is built) finds non-terminal jobs owned by a previous instance and
+// either re-runs them under the same jobId (only when the caller supplies a
+// resume runFn for that job) or marks them failed with code INTERRUPTED and a
+// message saying how to continue. cancel() finalizes a job that has no live
+// runner here. A job is never left "running" without a runner.
+const ORPHAN_ERROR_CODE = 'INTERRUPTED';
+
 // ── Job shape ─────────────────────────────────────────────────
 // {
 //   jobId: 'job-<hex>',
@@ -76,6 +91,10 @@ class JobStore {
     // persisted — a restart loses the ability to cancel in-flight work, which
     // is fine because the binary process is also killed by the restart.
     this._cancelHandles = new Map();
+    // Identifies the process that owns a job's runFn. A non-terminal job
+    // whose owner differs was started by a previous Merlin process and has
+    // no runner (see recoverOrphans).
+    this.instanceId = `${process.pid}-${crypto.randomBytes(6).toString('hex')}`;
     // Re-entry guard for _pruneOld. The filesystem work is synchronous today
     // but we may add an async prune path later; this guard makes the method
     // safe to call concurrently regardless.
@@ -216,9 +235,20 @@ class JobStore {
       result: null,
       error: null,
       meta: opts.meta || null,
+      owner: this.instanceId,
+      heartbeatAt: null,
     };
     this._writeJob(job);
+    this._launch(jobId, opts.runFn, 'running');
+    return { jobId };
+  }
 
+  /**
+   * Run a job's runFn under this instance. Shared by start() and
+   * recoverOrphans() so a resumed job gets exactly the same progress,
+   * cancel, and terminal-state handling as a fresh one.
+   */
+  _launch(jobId, runFn, initialStage) {
     // Expose a cancel handle if the runFn registers one. This lets
     // jobs_cancel kill the underlying child process.
     //
@@ -233,13 +263,17 @@ class JobStore {
     // Run on a microtask so the caller sees { jobId } immediately.
     queueMicrotask(async () => {
       try {
-        this._updateJob(jobId, { state: 'running', stage: 'running' });
+        this._updateJob(jobId, { state: 'running', stage: initialStage || 'running', owner: this.instanceId });
 
-        const reportProgress = ({ stage, pct, etaSec } = {}) => {
+        // heartbeat:true stamps heartbeatAt: the runner saw real forward
+        // progress (an engine MERLIN_PROGRESS line), not just a stage label
+        // change. updatedAt moves on every patch.
+        const reportProgress = ({ stage, pct, etaSec, heartbeat } = {}) => {
           const patch = {};
           if (typeof stage === 'string') patch.stage = stage;
           if (typeof pct === 'number') patch.pct = Math.max(0, Math.min(1, pct));
           if (typeof etaSec === 'number') patch.etaSec = Math.max(0, etaSec);
+          if (heartbeat) patch.heartbeatAt = Date.now();
           if (Object.keys(patch).length > 0) this._updateJob(jobId, patch);
         };
 
@@ -256,7 +290,7 @@ class JobStore {
           cancelHandle.cancelFn = fn;
         };
 
-        const envelope = await opts.runFn({ reportProgress, checkCancelled, registerCancel });
+        const envelope = await runFn({ reportProgress, checkCancelled, registerCancel });
 
         this._updateJob(jobId, {
           state: 'done',
@@ -288,8 +322,53 @@ class JobStore {
         this._cancelHandles.delete(jobId);
       }
     });
+  }
 
-    return { jobId };
+  /**
+   * Recover jobs orphaned by a previous Merlin process (see the REGRESSION
+   * GUARD at ORPHAN_ERROR_CODE). For every non-terminal job this instance
+   * does not own:
+   *   - cancelRequested: cancelled (the user already asked to stop it);
+   *   - resumeFn(job) returns a runFn: re-run under the SAME jobId, so a
+   *     poller holding the old id keeps working;
+   *   - otherwise: failed with code INTERRUPTED and a plain-English message.
+   * Idempotent: a recovered job is owned by this instance afterwards.
+   *
+   * @param {function} [resumeFn] - (job) => runFn | null
+   * @returns {{ resumed: string[], interrupted: string[], cancelled: string[] }}
+   */
+  recoverOrphans(resumeFn) {
+    const out = { resumed: [], interrupted: [], cancelled: [] };
+    for (const job of this.list()) {
+      if (TERMINAL_STATES.has(job.state) || job.owner === this.instanceId) continue;
+      if (job.cancelRequested) {
+        this._updateJob(job.jobId, { state: 'cancelled', stage: 'cancelled', owner: this.instanceId, _allowFrozen: true });
+        out.cancelled.push(job.jobId);
+        continue;
+      }
+      let runFn = null;
+      if (typeof resumeFn === 'function') {
+        try { runFn = resumeFn(job); } catch { runFn = null; }
+      }
+      if (typeof runFn === 'function') {
+        this._updateJob(job.jobId, { owner: this.instanceId });
+        this._launch(job.jobId, runFn, 'resuming after Merlin restarted');
+        out.resumed.push(job.jobId);
+        continue;
+      }
+      this._updateJob(job.jobId, {
+        state: 'failed',
+        stage: 'interrupted',
+        owner: this.instanceId,
+        error: {
+          code: ORPHAN_ERROR_CODE,
+          message: 'Merlin restarted while this job was running, so it stopped. Saved progress is kept: run the same request again to continue from where it stopped.',
+        },
+        _allowFrozen: true,
+      });
+      out.interrupted.push(job.jobId);
+    }
+    return out;
   }
 
   /**
@@ -349,9 +428,16 @@ class JobStore {
     if (TERMINAL_STATES.has(job.state)) {
       return { cancelled: false, reason: 'already_terminal', state: job.state };
     }
-    this._updateJob(jobId, { cancelRequested: true });
     const handle = this._cancelHandles.get(jobId);
-    if (handle && typeof handle.cancelFn === 'function') {
+    if (!handle) {
+      // No runner in this process (orphaned by a restart): nothing will ever
+      // read cancelRequested, so finalize it here instead of leaving a
+      // "running" job behind forever.
+      this._updateJob(jobId, { cancelRequested: true, state: 'cancelled', stage: 'cancelled', _allowFrozen: true });
+      return { cancelled: true, reason: 'no_runner' };
+    }
+    this._updateJob(jobId, { cancelRequested: true });
+    if (typeof handle.cancelFn === 'function') {
       try { handle.cancelFn(); } catch {}
     }
     return { cancelled: true, reason: 'requested' };
@@ -407,4 +493,4 @@ class JobStore {
   }
 }
 
-module.exports = { JobStore, JOB_RETENTION_MS, PRUNE_INTERVAL_MS, TERMINAL_STATES, DEFAULT_DIR_NAME };
+module.exports = { JobStore, JOB_RETENTION_MS, PRUNE_INTERVAL_MS, TERMINAL_STATES, DEFAULT_DIR_NAME, ORPHAN_ERROR_CODE };

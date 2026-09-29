@@ -269,6 +269,14 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   //     asks permission is not an emergency brake.
   'quiz-funnel-gen',
   'resume-all',
+  // Gorgias RAW export (2026-09-28, gorgias-raw). resolveMerlinAction maps
+  // mcp__merlin__gorgias {action:'export', raw:true} to this synthetic
+  // action, because plain 'export' is READ_ONLY and would auto-approve.
+  // It moves no money and changes nothing at Gorgias, but it writes a
+  // brand's customer personal information to disk WITHOUT de-identification,
+  // so a human confirms every run. The engine (gorgias-export-raw) also
+  // refuses without approved:true.
+  'export-raw',
 ]));
 
 // ── Intent-tool routing ─────────────────────────────────────────────
@@ -409,6 +417,14 @@ const INTENT_TOOL_LABELS = Object.freeze({
  */
 function resolveMerlinAction(toolName, input) {
   const rawAction = (input && typeof input.action === 'string') ? input.action : '';
+  // REGRESSION GUARD (2026-09-28, gorgias-raw): the Gorgias raw export shares
+  // action 'export' with the de-identified export (READ_ONLY). Any raw flag
+  // that is not literally false routes to the carded 'export-raw', so a
+  // malformed flag over-cards rather than slipping through as a read.
+  if (toolName === 'mcp__merlin__gorgias' && rawAction === 'export' &&
+      input && input.raw !== undefined && input.raw !== false) {
+    return { effectiveAction: 'export-raw', label: null };
+  }
   if (rawAction) return { effectiveAction: rawAction, label: null };
   const mapped = INTENT_TOOL_TO_ACTION[toolName];
   if (mapped) {
