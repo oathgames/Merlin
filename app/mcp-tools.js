@@ -686,49 +686,175 @@ async function runBinary(ctx, action, args, opts = {}) {
 const EXPORT_JOB_TIMEOUT_MS = 1800000;      // 30 min per binary invocation — job path is NOT bound by the 120s MCP call boundary
 const EXPORT_JOB_MAX_ATTEMPTS = 48;         // ~24h of hour-cap pauses
 
+// REGRESSION GUARD (2026-09-28, gorgias-raw hung job job-482d692d682a480e):
+// heartbeat, stall watchdog, and restart recovery for export jobs.
+//
+// (1) Heartbeat. An engine that supports it prints one
+//     `MERLIN_PROGRESS stage=... k=v ...` line per unit of forward progress
+//     (gorgias-export and gorgias-export-raw: one per ticket page and per
+//     side-entity step; counts only, never content). Each line updates the
+//     job's stage and heartbeatAt, so jobs_poll shows live counts and an
+//     updatedAt that moves. Before this, updatedAt never changed during a
+//     30-minute engine run, so a dead job and a busy one looked identical.
+// (2) Stall watchdog. Once an engine has emitted its first MERLIN_PROGRESS
+//     line, EXPORT_JOB_STALL_MS without another one means it is wedged; the
+//     child is killed and the loop resumes from the engine checkpoint, the
+//     same path as a timeout. Engines that never print the line are never
+//     armed, so exports without heartbeats keep the plain 30-minute bound.
+// (3) Restart recovery. The job's runFn lives in this process, so a Merlin
+//     restart killed the engine and left the job "running" forever (the
+//     incident). JobStore.recoverOrphans now finalizes such jobs, and
+//     RESTART_RESUMABLE_EXPORT_ACTIONS re-runs the checkpointed, read-only,
+//     approval-free exports under the same jobId. gorgias-export-raw is
+//     deliberately NOT in the set: its approval is an in-memory card click
+//     and is never written to disk, so an approval cannot outlive the
+//     process that received it; after a restart the job is marked
+//     INTERRUPTED and re-running it (a new card) resumes from the same
+//     checkpoint. google-ads-demandgen-push is excluded because it spends.
+const EXPORT_JOB_STALL_MS = 15 * 60 * 1000;
+const EXPORT_PROGRESS_PREFIX = 'MERLIN_PROGRESS ';
+const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export']);
+
+// Parse one MERLIN_PROGRESS line into { stage, counts } or null.
+function parseExportProgressLine(line) {
+  const s = String(line || '').trim();
+  if (!s.startsWith(EXPORT_PROGRESS_PREFIX.trim())) return null;
+  const out = { stage: '', counts: {} };
+  for (const tok of s.slice(EXPORT_PROGRESS_PREFIX.trim().length).trim().split(/\s+/)) {
+    const i = tok.indexOf('=');
+    if (i <= 0) continue;
+    const k = tok.slice(0, i);
+    const v = tok.slice(i + 1);
+    if (!/^[a-z_]{1,40}$/.test(k)) continue;
+    if (k === 'stage') { if (/^[a-z_]{1,40}$/.test(v)) out.stage = v; continue; }
+    if (/^\d{1,12}$/.test(v)) out.counts[k] = Number(v);
+  }
+  return out.stage ? out : null;
+}
+
+function describeExportProgress(p) {
+  const parts = Object.entries(p.counts).map(([k, v]) => `${k.replace(/_/g, ' ')} ${v}`);
+  return `running: ${p.stage.replace(/_/g, ' ')}${parts.length ? ` (${parts.join(', ')})` : ''}`;
+}
+
 function startExportJob(ctx, toolName, action, args) {
   if (!ctx.jobStore) return null;
+  const meta = { action };
+  // Only restart-resumable actions persist their args, and never the
+  // approval flag (see REGRESSION GUARD above).
+  if (RESTART_RESUMABLE_EXPORT_ACTIONS.has(action)) {
+    const resumeArgs = { ...args };
+    delete resumeArgs.approved;
+    delete resumeArgs.confirm_token;
+    meta.resume = { tool: toolName, action, args: resumeArgs };
+  }
   return ctx.jobStore.start({
     tool: toolName,
     brand: args.brand || '',
-    meta: { action },
-    runFn: async ({ reportProgress, checkCancelled, registerCancel }) => {
-      let last;
-      for (let attempt = 0; attempt < EXPORT_JOB_MAX_ATTEMPTS; attempt++) {
-        checkCancelled();
-        reportProgress({ stage: attempt === 0 ? 'running' : `resuming (attempt ${attempt + 1})` });
-        last = await runBinary(ctx, action, args, {
-          timeout: EXPORT_JOB_TIMEOUT_MS,
-          onChild: (child) => registerCancel(() => { try { child.kill('SIGTERM'); } catch {} }),
-        });
-        if (!last) return toEnvelope({ text: 'Export produced no output.', error: true });
-        // A timeout kill is resumable — engine checkpoints (klaviyo) and
-        // bulk-op attach (shopify) mean the re-invocation continues where
-        // this one stopped. Any other error is final.
-        if (last.error && !last.timedOut) return toEnvelope(last);
-        if (last.error && last.timedOut) {
-          reportProgress({ stage: 'engine timed out — resuming from checkpoint' });
-          continue;
-        }
-        // The engine prints its result JSON at the end of stdout. A
-        // `paused` flag means a rate-cap window fired mid-run — sleep it
-        // out and re-invoke; checkpoints make the re-run a resume.
-        let parsed = null;
-        try {
-          const m = (last.text || '').match(/\{[\s\S]*"exported"[\s\S]*\}/);
-          if (m) parsed = JSON.parse(m[0]);
-        } catch { /* unparseable output — treat as done */ }
-        if (parsed && parsed.paused) {
-          const waitMs = Math.min(Math.max((parsed.resumeAfterSec || 3600) * 1000, 60000), 25 * 3600 * 1000);
-          reportProgress({ stage: `rate-limited — resuming in ${Math.round(waitMs / 60000)}m`, etaSec: Math.round(waitMs / 1000) });
-          await new Promise((r) => setTimeout(r, waitMs));
-          continue;
-        }
-        return toEnvelope(last);
-      }
-      return toEnvelope(last || { text: 'Export did not finish.', error: true });
-    },
+    meta,
+    runFn: exportJobRunFn(ctx, action, args),
   });
+}
+
+// Re-runs restart-resumable export jobs a previous Merlin process orphaned;
+// every other orphan is finalized as INTERRUPTED. Called once per JobStore.
+function recoverExportJobs(ctx) {
+  const store = ctx && ctx.jobStore;
+  if (!store || typeof store.recoverOrphans !== 'function' || store._exportRecoveryDone) return null;
+  store._exportRecoveryDone = true;
+  try {
+    return store.recoverOrphans((job) => {
+      const r = job && job.meta && job.meta.resume;
+      if (!r || !RESTART_RESUMABLE_EXPORT_ACTIONS.has(r.action) || !r.args || typeof r.args !== 'object') return null;
+      const args = { ...r.args };
+      delete args.approved;
+      return exportJobRunFn(ctx, r.action, args);
+    });
+  } catch (e) {
+    console.warn('[mcp] export job recovery failed:', e && e.message);
+    return null;
+  }
+}
+
+function exportJobRunFn(ctx, action, args) {
+  return async ({ reportProgress, checkCancelled, registerCancel }) => {
+    let last;
+    for (let attempt = 0; attempt < EXPORT_JOB_MAX_ATTEMPTS; attempt++) {
+      checkCancelled();
+      reportProgress({ stage: attempt === 0 ? 'running' : `resuming (attempt ${attempt + 1})` });
+      let stalled = false;
+      last = await runBinary(ctx, action, args, {
+        timeout: EXPORT_JOB_TIMEOUT_MS,
+        onChild: (child) => {
+          registerCancel(() => { try { child.kill('SIGTERM'); } catch {} });
+          watchExportChild(child, reportProgress, () => { stalled = true; });
+        },
+      });
+      if (stalled && last) {
+        last.timedOut = true;
+        reportProgress({ stage: 'engine stopped making progress, resuming from checkpoint' });
+        continue;
+      }
+      if (!last) return toEnvelope({ text: 'Export produced no output.', error: true });
+      // A timeout kill is resumable — engine checkpoints (klaviyo) and
+      // bulk-op attach (shopify) mean the re-invocation continues where
+      // this one stopped. Any other error is final.
+      if (last.error && !last.timedOut) return toEnvelope(last);
+      if (last.error && last.timedOut) {
+        reportProgress({ stage: 'engine timed out — resuming from checkpoint' });
+        continue;
+      }
+      // The engine prints its result JSON at the end of stdout. A
+      // `paused` flag means a rate-cap window fired mid-run — sleep it
+      // out and re-invoke; checkpoints make the re-run a resume.
+      let parsed = null;
+      try {
+        const m = (last.text || '').match(/\{[\s\S]*"exported"[\s\S]*\}/);
+        if (m) parsed = JSON.parse(m[0]);
+      } catch { /* unparseable output — treat as done */ }
+      if (parsed && parsed.paused) {
+        const waitMs = Math.min(Math.max((parsed.resumeAfterSec || 3600) * 1000, 60000), 25 * 3600 * 1000);
+        reportProgress({ stage: `rate-limited — resuming in ${Math.round(waitMs / 60000)}m`, etaSec: Math.round(waitMs / 1000) });
+        await new Promise((r) => setTimeout(r, waitMs));
+        continue;
+      }
+      return toEnvelope(last);
+    }
+    return toEnvelope(last || { text: 'Export did not finish.', error: true });
+  };
+}
+
+// Streams an export engine's stdout for MERLIN_PROGRESS lines (heartbeat)
+// and arms the stall watchdog after the first one. execFile keeps buffering
+// stdout for the final result; this listener only observes it.
+function watchExportChild(child, reportProgress, onStall, stallMs = EXPORT_JOB_STALL_MS) {
+  if (!child || !child.stdout || typeof child.stdout.on !== 'function') return;
+  let pending = '';
+  let timer = null;
+  const arm = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => {
+      try { onStall(); } catch {}
+      try { child.kill('SIGTERM'); } catch {}
+    }, stallMs);
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  };
+  child.stdout.on('data', (chunk) => {
+    pending += chunk.toString('utf8');
+    let i;
+    while ((i = pending.indexOf('\n')) >= 0) {
+      const line = pending.slice(0, i);
+      pending = pending.slice(i + 1);
+      const p = parseExportProgressLine(line);
+      if (!p) continue;
+      arm();
+      try { reportProgress({ stage: describeExportProgress(p), heartbeat: true }); } catch {}
+    }
+    if (pending.length > 65536) pending = pending.slice(-65536);
+  });
+  const stop = () => { if (timer) clearTimeout(timer); timer = null; };
+  child.on('exit', stop);
+  child.on('error', stop);
 }
 
 // ── Binary-result → envelope adapter ─────────────────────────
@@ -795,6 +921,9 @@ function validationEnvelope(message, data) {
  */
 function buildTools(tool, z, ctx) {
   const tools = [];
+  // Finalize or resume export jobs a previous Merlin process left "running"
+  // (REGRESSION GUARD 2026-09-28 above startExportJob). Once per JobStore.
+  recoverExportJobs(ctx);
   // Canonical brand-name zod schema — use `brandSchema.optional()` or
   // `brandSchema.describe(...)` at every `brand: ...` input. See the
   // BRAND_NAME_PATTERN comment above for why this is defense-in-depth.
@@ -4197,4 +4326,11 @@ module.exports = {
   // from production code; it exists solely to keep test isolation clean.
   _resetScrapeTimeoutTrackerForTests,
   SCRAPE_TIMEOUT_TTL_MS,
+  // Export-job heartbeat / stall watchdog / restart recovery (tests).
+  startExportJob,
+  recoverExportJobs,
+  watchExportChild,
+  parseExportProgressLine,
+  RESTART_RESUMABLE_EXPORT_ACTIONS,
+  EXPORT_JOB_STALL_MS,
 };
