@@ -68,7 +68,7 @@ function makeRecordingZ() {
       optional: () => node(extra),
       describe: () => node(extra),
       default: () => node(extra),
-      regex: () => node(extra),
+      regex: (re) => node({ ...extra, __regex: re }),
       int: () => node(extra),
     };
     return self;
@@ -154,7 +154,10 @@ const byName = (n) => {
 // been read by the engine since placement pairing shipped but was never
 // declared on ads[]; portraitImagePath is the new 4x5 feed asset.
 const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId', 'publishPageId', 'publishInstagramId'];
-const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name', 'verticalImagePath', 'portraitImagePath'];
+// videoId / reuseAdId (2026-09-29): read by runMetaBulkPush for months (pre-
+// uploaded video, winner-creative reuse) and declared on neither surface.
+// Section 4 below now derives this contract from the Go struct itself.
+const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name', 'verticalImagePath', 'portraitImagePath', 'videoId', 'reuseAdId'];
 
 // Both surfaces reach the identical 'meta-bulk-push' engine action, so both
 // must declare the identical param set. meta_ads is the legacy multiplexer;
@@ -449,4 +452,145 @@ test('meta_ads status description does not advertise launch-status control', () 
     src, /READ FILTER for action:"import" ONLY/,
     'the status describe() must state plainly that it is an import-only read filter',
   );
+});
+
+// ── 4. BulkAd both-direction parity, derived from the Go struct ──────
+//
+// REGRESSION GUARD (2026-09-29, Hard-Won Rule 23, bulk ads[] schema gap):
+// the hand-maintained BULK_AD_KEYS list above is exactly how videoId and
+// reuseAdId stayed unreachable: a key nobody remembered to add to the list was
+// never asserted. This section parses the BulkAd struct's json tags out of
+// autocmo-core/main.go and requires, for BOTH Meta bulk surfaces:
+//   (a) every tag is declared on ads[] items, or sits on BULK_AD_EXEMPT_KEYS
+//       with a reason that reads as a decision;
+//   (b) no ads[] key is declared that BulkAd lacks. Since merlin-core #411 the
+//       engine REFUSES unknown ads[] keys on meta-bulk-push (bulk_ad_strict.go),
+//       so a surplus key here is a hard failure for every caller that sends it.
+// Skips (like mcp-meta-action-reachability.test.js) when the private
+// autocmo-core sibling is absent, which is the case in public-repo CI.
+
+const fs = require('node:fs');
+const MAIN_GO_PATH = path.join(__dirname, '..', '..', 'autocmo-core', 'main.go');
+const MAIN_GO_SRC = fs.existsSync(MAIN_GO_PATH) ? fs.readFileSync(MAIN_GO_PATH, 'utf8') : null;
+const SKIP_NO_ENGINE = MAIN_GO_SRC === null && 'autocmo-core sibling repo not present (public-repo CI)';
+
+function goBulkAdTags(src) {
+  const m = src.match(/\ntype BulkAd struct \{\r?\n([\s\S]*?)\r?\n\}/);
+  assert.ok(m, 'type BulkAd struct not found in autocmo-core/main.go');
+  const tags = [];
+  for (const line of m[1].split(/\r?\n/)) {
+    if (/^\s*\/\//.test(line)) continue;
+    const t = line.match(/`json:"([^",]+)[^"]*"`/);
+    if (t && t[1] !== '-') tags.push(t[1]);
+  }
+  return tags;
+}
+
+// Every entry is a decision, not a backlog item: the test below rejects
+// reasons that read as deferral.
+const BULK_AD_EXEMPT_KEYS = {
+  youtubeVideoId: 'Google Ads Demand Gen only (googleads_demandgen.go). runMetaBulkPush never reads it, so declaring it on a Meta surface would accept the key and silently ignore it. It is declared on google_ads ads[], its real route.',
+  languages: 'BulkAd.Languages is decoded but read by no engine code path: multi-language variants come from the top-level Command.Languages, which both surfaces already declare. A per-ad key would be a silent no-op, the exact failure Rule 23 exists to prevent.',
+};
+
+const GO_BULK_AD_TAGS = MAIN_GO_SRC ? goBulkAdTags(MAIN_GO_SRC) : [];
+
+test('BulkAd tag extraction found enough to be trustworthy', { skip: SKIP_NO_ENGINE }, () => {
+  assert.ok(GO_BULK_AD_TAGS.length >= 14, `only ${GO_BULK_AD_TAGS.length} BulkAd json tags parsed; the struct parser is broken`);
+  for (const k of ['imagePath', 'reuseAdId', 'videoId', 'name']) {
+    assert.ok(GO_BULK_AD_TAGS.includes(k), `parser missed BulkAd tag "${k}"`);
+  }
+});
+
+for (const toolName of BULK_PUSH_SURFACES) {
+  test(`${toolName} ads[] declares every BulkAd json tag or exempts it`, { skip: SKIP_NO_ENGINE }, () => {
+    const shape = byName(toolName).schema.ads.__item.__shape;
+    const missing = GO_BULK_AD_TAGS.filter((k) => !Object.prototype.hasOwnProperty.call(shape, k) && !BULK_AD_EXEMPT_KEYS[k]);
+    assert.deepEqual(missing, [],
+      `${toolName}.ads[] is missing BulkAd field(s) ${missing.join(', ')}: the engine accepts them and zod strips them, so they are unreachable. Declare them, or add a reasoned BULK_AD_EXEMPT_KEYS entry.`);
+  });
+
+  test(`${toolName} ads[] declares no key the Go BulkAd lacks`, { skip: SKIP_NO_ENGINE }, () => {
+    const shape = byName(toolName).schema.ads.__item.__shape;
+    const extra = Object.keys(shape).filter((k) => !GO_BULK_AD_TAGS.includes(k));
+    assert.deepEqual(extra, [],
+      `${toolName}.ads[] declares ${extra.join(', ')}, which BulkAd does not decode. meta-bulk-push refuses unknown ads[] keys (bulk_ad_strict.go), so every push carrying one fails.`);
+  });
+
+  test(`${toolName} ads[] does not declare an exempted key`, () => {
+    const shape = byName(toolName).schema.ads.__item.__shape;
+    for (const k of Object.keys(BULK_AD_EXEMPT_KEYS)) {
+      assert.ok(!Object.prototype.hasOwnProperty.call(shape, k),
+        `${toolName}.ads[].${k} is declared AND exempted. Remove the exemption (and its reason) if the key is now genuinely routed.`);
+    }
+  });
+}
+
+test('google_ads ads[] declares no key the Go BulkAd lacks', { skip: SKIP_NO_ENGINE }, () => {
+  // demandgen-push decodes the same BulkAd; a key outside it is silently dropped.
+  const shape = byName('google_ads').schema.ads.__item.__shape;
+  const extra = Object.keys(shape).filter((k) => !GO_BULK_AD_TAGS.includes(k));
+  assert.deepEqual(extra, [], `google_ads.ads[] declares ${extra.join(', ')}, which BulkAd does not decode`);
+});
+
+test('BULK_AD_EXEMPT_KEYS only lists real BulkAd tags', { skip: SKIP_NO_ENGINE }, () => {
+  for (const k of Object.keys(BULK_AD_EXEMPT_KEYS)) {
+    assert.ok(GO_BULK_AD_TAGS.includes(k), `exempted key "${k}" is not a BulkAd json tag; delete the stale exemption`);
+  }
+});
+
+test('BULK_AD_EXEMPT_KEYS reasons are decisions, not deferrals', () => {
+  for (const [k, reason] of Object.entries(BULK_AD_EXEMPT_KEYS)) {
+    assert.ok(typeof reason === 'string' && reason.length >= 60, `exemption for "${k}" needs a substantive reason`);
+    assert.doesNotMatch(reason, /\b(TODO|later|for now|not yet|temporar)/i,
+      `exemption for "${k}" reads as a deferral; an exemption is a documented decision, not a backlog item`);
+  }
+});
+
+// ── 5. videoId / reuseAdId: validated ids, end to end ────────────────
+
+const { META_NUMERIC_ID } = require('./mcp-meta-intent');
+
+test('videoId and reuseAdId are pinned to numeric Meta ids on both surfaces', () => {
+  // reuseAdId is interpolated into a Graph GET path by metaGetAdCreativeID,
+  // so the boundary refuses anything that is not a bare id.
+  for (const toolName of BULK_PUSH_SURFACES) {
+    const shape = byName(toolName).schema.ads.__item.__shape;
+    for (const k of ['videoId', 'reuseAdId']) {
+      assert.equal(shape[k].__regex, META_NUMERIC_ID, `${toolName}.ads[].${k} must be validated with META_NUMERIC_ID`);
+    }
+  }
+  assert.ok(META_NUMERIC_ID.test('120249558057390637'));
+  for (const bad of ['', '123/ads', 'act_123', '123?fields=access_token', ' 123', '12 3']) {
+    assert.ok(!META_NUMERIC_ID.test(bad), `META_NUMERIC_ID must refuse ${JSON.stringify(bad)}`);
+  }
+});
+
+test('per-ad videoId and reuseAdId survive runBinary into the --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  await runBinary(makeCtx(), 'meta-bulk-push', {
+    brand: 'ripit',
+    sharedAdSet: true,
+    ads: [
+      { reuseAdId: '120240000000000001', name: 'Winner_Reuse' },
+      { videoId: '1180000000000002', headline: 'h', name: 'Uploaded_Video' },
+    ],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.ads[0].reuseAdId, '120240000000000001', 'reuseAdId must reach BulkAd.ReuseAdID');
+  assert.equal(cmd.ads[1].videoId, '1180000000000002', 'videoId must reach BulkAd.VideoID');
+  assert.ok(!('videoId' in cmd.ads[0]) && !('reuseAdId' in cmd.ads[1]), 'the boundary must not invent per-ad keys');
+});
+
+test('meta_launch_test_batch handler carries videoId and reuseAdId to meta-bulk-push', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_launch_test_batch').handler({
+    brand: 'ripit',
+    sharedAdSet: true,
+    ads: [{ reuseAdId: '120240000000000001' }, { videoId: '1180000000000002' }],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-bulk-push');
+  assert.equal(cmd.ads[0].reuseAdId, '120240000000000001');
+  assert.equal(cmd.ads[1].videoId, '1180000000000002');
 });

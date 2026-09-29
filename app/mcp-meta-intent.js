@@ -28,6 +28,21 @@ const envelope = require('./mcp-envelope');
 const errors = require('./mcp-errors');
 const { DEFAULT_POLICIES } = require('./mcp-preview');
 
+// REGRESSION GUARD (2026-09-29, Hard-Won Rule 23, bulk ads[] schema gap):
+// BulkAd.VideoID and BulkAd.ReuseAdID (autocmo-core/main.go) were read by
+// runMetaBulkPush but declared on neither ads[] schema, so zod stripped them
+// and "reuse this winner" / "use the video already uploaded" were unreachable.
+// Shared by meta_launch_test_batch here and meta_ads in mcp-tools.js so the two
+// surfaces cannot drift. Both are Graph ids: reuseAdId is interpolated into a
+// Graph GET path by metaGetAdCreativeID, so it is pinned to digits at the
+// boundary rather than trusting the engine to reject a crafted path.
+const META_NUMERIC_ID = /^\d+$/;
+const BULK_AD_VIDEO_ID_DESC = 'Numeric id of a video ALREADY uploaded to this ad account (find ids with meta_audit list-videos). '
+  + 'Builds a video ad from it instead of uploading videoPath, so a large file is not re-uploaded. Ignored when reuseAdId or postId is set on the same ad.';
+const BULK_AD_REUSE_AD_ID_DESC = 'Numeric id of an existing ad whose exact creative is duplicated into this ad set by creative_id. '
+  + 'Keeps the social proof of the source post and, unlike postId, also works for Collection/catalog creatives. '
+  + 'Wins over postId, videoId/videoPath and imagePath on the same ad (those are ignored). Refused with publishPageId.';
+
 function firstLine(text) {
   if (!text || typeof text !== 'string') return '';
   const idx = text.indexOf('\n');
@@ -284,6 +299,12 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         // Shared-ad-set mode only.
         verticalImagePath: z.string().optional(),
         portraitImagePath: z.string().optional(),
+        // Pre-uploaded video and winner-creative reuse. See the 2026-09-29 guard
+        // on META_NUMERIC_ID above. Per-ad languages and youtubeVideoId are
+        // deliberately NOT declared: see BULK_AD_EXEMPT_KEYS in
+        // mcp-meta-param-reachability.test.js.
+        videoId: z.string().regex(META_NUMERIC_ID, 'videoId must be a numeric Meta video id').optional().describe(BULK_AD_VIDEO_ID_DESC),
+        reuseAdId: z.string().regex(META_NUMERIC_ID, 'reuseAdId must be a numeric Meta ad id').optional().describe(BULK_AD_REUSE_AD_ID_DESC),
       })).describe('Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
       campaignName: z.string().optional().describe('Target campaign name, looked up via metaFindCampaign. Fails if not found rather than auto-creating, so the user knows their pick wasn\'t honored. Pass createCampaignIfMissing:true to create it instead. Use campaignId for stricter routing.'),
@@ -1243,4 +1264,4 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   return tools;
 }
 
-module.exports = { buildMetaIntentTools };
+module.exports = { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC };
