@@ -317,6 +317,7 @@ test('the account-inventory reads are reachable through meta_audit', () => {
     'aware-audience':    'aware-audience',
     'export-creatives':  'meta-export-creatives',
     'inspect-ads':       'meta-inspect-ads',
+    'ad-rejections':     'meta-ad-rejections',
   };
   for (const [action, engine] of Object.entries(expected)) {
     assert.ok(META_AUDIT_ENUM.includes(action),
@@ -438,6 +439,29 @@ test('meta_audit list-ads sends targetAdSetId', async () => {
   const cmd = lastCmd();
   assert.equal(cmd.action, 'meta-list-ads');
   assert.equal(cmd.targetAdSetId, '120210000000000000');
+});
+
+test('meta_audit ad-rejections reaches the engine as meta-ad-rejections', async () => {
+  // 2026-09-30: RIPIT disapprovals came back with ad_review_feedback empty and
+  // the reason only on failed_delivery_checks. The engine read that surfaces it
+  // is meta-ad-rejections; assert the literal --cmd the binary receives.
+  execFileCalls.length = 0;
+  await tool('meta_audit').handler({ action: 'ad-rejections', brand: 'acme' });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-ad-rejections');
+  assert.equal(cmd.brand, 'acme');
+});
+
+test('meta_audit declares the rejection-reason fields ad-rejections returns', () => {
+  const auditBlock = MCP_TOOLS_SRC.slice(
+    MCP_TOOLS_SRC.indexOf("name: 'meta_audit'"),
+    MCP_TOOLS_SRC.indexOf("name: 'google_analytics'"),
+  );
+  assert.ok(auditBlock.length > 0, 'could not locate the meta_audit tool block');
+  for (const field of ['failedDeliveryChecks', 'reviewFeedback', 'noReasonReturned', 'reasons[]']) {
+    assert.ok(auditBlock.includes(field),
+      `meta_audit never mentions "${field}"; meta-ad-rejections emits it and the agent will not know to read it.`);
+  }
 });
 
 // ── 5b. RETURN-path reachability (2026-08-07) ────────────────────────

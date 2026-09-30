@@ -252,6 +252,7 @@ sending the user to Ads Manager when they ask "what audiences do I have",
 | `audit-events` | `brand`, optional `adId` (override pixel id) | Per-event Event Match Quality (EMQ) — mirrors the EMQ column in Events Manager → Data Sources. Returns a row per event with Grade (Great ≥8 / Good ≥6 / Low <6), 7d event count, and plain-English findings ("Match quality is low — turn on Automatic Advanced Matching, verify CAPI sends hashed email + phone"). Use to answer "is my pixel set up right" / "audit my events" / "check EMQ" / "is my CAPI sending the right params". |
 | `audit-frequency-caps` | `brand`, optional `status` | Every active ad set's `frequency_control_specs`. Flags ad sets with no cap configured (fatigue risk). |
 | `audit-catalog` | `brand`, `catalogId`, optional `limit` | Catalog product status counts (review_status, availability), top disapproval reasons, sample of disapproved products. Find catalogId via `meta_ads({action: "catalog"})`. |
+| `ad-rejections` | `brand` | Every DISAPPROVED / WITH_ISSUES ad with its ad set, campaign and the actual policy reason: `failedDeliveryChecks` (Meta often puts the reason here while `reviewFeedback` is empty), `issues`, `reviewFeedback`, flattened `reasons[]`, and `noReasonReturned` (true = no reason given, send the user to Account Quality). Use for "why was my ad rejected". |
 
 **When to use audit before optimize:** before `merlin-optimize` ships a kill verdict on a retargeting ad set, run `audit-retargeting-cascade` — sometimes the "low ROAS" is the ad set retargeting buyers because the exclusion was never wired up. Fixing the exclusion lifts the ad set's ROAS without killing it.
 
@@ -359,6 +360,7 @@ Foreplay indexes 100M+ Meta/TikTok/LinkedIn ads worldwide. **Covers the US and a
 - "is my pixel healthy" / "pixel diagnostics" / "is my pixel firing" → `meta_audit({action: "audit-pixel"})`
 - "what's my pixel match quality" / "check EMQ" / "audit my events" / "is my CAPI sending the right params" / "are my events set up right" → `meta_audit({action: "audit-events"})`
 - "are my ad sets capped" / "frequency caps" / "fatigue check" → `meta_audit({action: "audit-frequency-caps"})`
+- "why was my ad rejected" / "which ads are disapproved" / "what policy did we violate" → `meta_audit({action: "ad-rejections"})`
 - "is my catalog healthy" / "any disapproved products" / "audit my facebook catalog" → `meta_audit({action: "audit-catalog", catalogId: "<id>"})` (find id via `meta_ads({action: "catalog"})`)
 - "insights" / "performance" on a specific platform → platform's `insights` (prefer `dashboard` for aggregate — see `merlin-analytics`)
 - "set up" + platform → platform's `setup` action after OAuth
