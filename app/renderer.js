@@ -4280,6 +4280,7 @@ const PLATFORM_DISPLAY_NAMES = {
   triplewhale: 'Triple Whale',
   openai_ads: 'OpenAI Ads',
   rokt: 'Rokt',
+  rakuten: 'Rakuten Advertising',
   clarity: 'Microsoft Clarity',
   posthog: 'PostHog',
   alia: 'Alia Popups',
@@ -4319,7 +4320,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'rakuten', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -7638,6 +7639,71 @@ function showGorgiasConnectModal(activeBrand) {
   });
 }
 
+// Rakuten Advertising connect modal: two chained steps (performance report
+// link -> optional transactions report link). The Advertiser Reporting API
+// authenticates with a per-report token embedded in the report's "Get API"
+// link (https://ran-reporting.rakutenmarketing.com/<locale>/reports/<key>/
+// filters?...&token=...), so the user pastes that link once and Merlin
+// extracts the token, report key, locale and network from it. Every field is
+// vaulted (VAULT_SENSITIVE_KEYS); the token is a secret. See rakuten.go.
+// The key and locale patterns mirror rakutenReportKeyRe / rakutenLocaleRe in
+// rakuten.go so a link the modal accepts is one the engine accepts.
+function parseRakutenReportUrl(raw) {
+  let u;
+  try { u = new URL(String(raw || '').trim()); } catch (_) { return null; }
+  if (u.protocol !== 'https:' || u.hostname.toLowerCase() !== 'ran-reporting.rakutenmarketing.com') return null;
+  const m = u.pathname.match(/^\/([a-z]{2}(?:-[a-z]{2})?)\/reports\/([A-Za-z0-9][A-Za-z0-9_-]{0,127})\/filters\/?$/);
+  if (!m) return null;
+  const token = (u.searchParams.get('token') || '').trim();
+  if (!token) return null;
+  let network = (u.searchParams.get('network') || '1').trim();
+  if (!/^[0-9]{1,4}$/.test(network)) network = '1';
+  return { locale: m[1], reportKey: m[2], token, network };
+}
+function showRakutenConnectModal(activeBrand) {
+  showModal({
+    title: 'Rakuten Advertising: performance report link',
+    body: 'In Rakuten Advertising open Reports, run a performance report with publisher and date columns, then click Get API and copy the link. Paste the whole link here. It contains a private token, which is stored encrypted. Merlin only reads reports and never changes your program. (Step 1 of 2)',
+    inputPlaceholder: 'https://ran-reporting.rakutenmarketing.com/en/reports/...',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const perf = parseRakutenReportUrl(v1);
+      if (!perf) { showModalError('Paste the full Get API link from a Rakuten report. It starts with https://ran-reporting.rakutenmarketing.com/'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'Rakuten Advertising: transactions report link (optional)',
+          body: 'For order-level detail, open a transaction-level report, click Get API and paste that link. Leave this blank to skip; you can add it later by reconnecting. (Step 2 of 2)',
+          inputPlaceholder: 'Optional: https://ran-reporting.rakutenmarketing.com/en/reports/...',
+          confirmLabel: 'Save',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            let txKey = '';
+            if ((v2 || '').trim()) {
+              const tx = parseRakutenReportUrl(v2);
+              if (!tx) { showModalError('That is not a Rakuten report Get API link. Paste the full link or leave this blank.'); throw new Error('validation'); }
+              if (tx.token !== perf.token) { showModalError('Both reports must come from the same Rakuten login, so their links carry the same token. Copy both links from the same account.'); throw new Error('validation'); }
+              txKey = tx.reportKey;
+            }
+            const fields = [
+              ['rakutenReportToken', perf.token, 'the report token'],
+              ['rakutenReportKey', perf.reportKey, 'the report key'],
+              ['rakutenReportLocale', perf.locale, 'the report locale'],
+              ['rakutenNetwork', perf.network, 'the network'],
+            ];
+            if (txKey) fields.push(['rakutenTransactionsReportKey', txKey, 'the transactions report key']);
+            for (const [key, value, label] of fields) {
+              const r = await merlin.saveConfigField(key, value, activeBrand);
+              if (!r.success) { showModalError(friendlyErrorPlain(r.error || ('Failed to save ' + label), 'Rakuten Advertising')); throw new Error('save'); }
+            }
+            loadConnections();
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
 // Shopify Payments connect — NOT a separate connection. It rides the
 // Shopify OAuth token (shopify_payments.go runs shopifyGraphQL against
 // cfg.ShopifyStore + cfg.ShopifyAccessToken), so "connecting" it means
@@ -7670,6 +7736,7 @@ function showShopifyPaymentsConnectModal(activeBrand) {
 // tile click handler before the API_KEY_PLATFORMS fallback.
 const CUSTOM_CONNECT_HANDLERS = {
   rokt: showRoktConnectModal,
+  rakuten: showRakutenConnectModal,
   posthog: showPosthogConnectModal,
   yotpo: showYotpoConnectModal,
   sesami: showSesamiConnectModal,

@@ -112,6 +112,16 @@ const VAULT_SENSITIVE_KEYS = [
   'roktAppId',
   'roktAppSecret',
   'roktAccountId',
+  // Rakuten Advertising Reporting API connection, saved by the Rakuten
+  // connect modal (renderer.js showRakutenConnectModal), which splits the
+  // report's "Get API" link. The token is the secret; the report keys,
+  // locale and network are vaulted with it (same treatment as roktAccountId)
+  // so a brand's whole connection lives brand-scoped in one place.
+  'rakutenReportToken',
+  'rakutenReportKey',
+  'rakutenTransactionsReportKey',
+  'rakutenReportLocale',
+  'rakutenNetwork',
   // Yotpo BYOK reporting credentials (App Key + Secret Key), saved by the
   // 2-step Yotpo connect modal (renderer.js showYotpoConnectModal).
   'yotpoAppKey',
@@ -198,6 +208,10 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // Rokt BYOK reporting credentials (App ID / App Secret / Account ID), saved
   // by the 3-step Rokt connect modal. All three mirrored in VAULT_SENSITIVE_KEYS.
   'roktAppId', 'roktAppSecret', 'roktAccountId',
+  // Rakuten Advertising Reporting API connection (token + report keys +
+  // locale + network), saved by the Rakuten connect modal. All five mirrored
+  // in VAULT_SENSITIVE_KEYS.
+  'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
   // Yotpo / Sesami / Faire / ShipStation / Loop Returns / Cin7 BYOK
   // credentials, saved by the custom multi-step connect modals and the
   // masked API_KEY_PLATFORMS tiles (renderer.js). All mirrored in

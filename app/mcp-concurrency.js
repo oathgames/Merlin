@@ -89,6 +89,7 @@ const DEFAULT_CAPS = Object.freeze({
   loop_returns: 2, // returns/warehouse reads; no published cap
   cin7:         2, // 60 calls/min account cap; 2 concurrent stays well under
   gorgias:      2, // 40 req/20s per account (API key); export fans out 3 inside the engine
+  rakuten:      2, // Advertiser Reporting API; no published cap, engine chunks windows at concurrency 2
 
   // Default for any platform not explicitly listed — err on the side of
   // safety. 2 concurrent forces callers to queue instead of fan out wide.

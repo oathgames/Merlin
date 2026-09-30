@@ -66,6 +66,14 @@ const BANNED_HOSTS = [
   // App ID/Secret from the vault). A direct curl/WebFetch would bypass the
   // rate-limit preflight and could leak the Basic-auth credentials.
   'api.rokt.com',
+  // Rakuten Advertising (affiliate network, formerly LinkShare) reporting,
+  // read-only. The Advertiser Reporting API lives on ran-reporting and carries
+  // a private per-report token in the query string, so a direct curl/WebFetch
+  // would leak it into shell history and bypass the rate-limit preflight.
+  // api.linksynergy.com is the legacy network API host. Every call MUST go
+  // through rakuten.go (PreflightCheck + RecordSuccess).
+  'ran-reporting.rakutenmarketing.com',
+  'api.linksynergy.com',
   // Foreplay — competitor ad intelligence. Routed through the binary so every
   // credit-burning call passes PreflightCheck + shows up in the audit log.
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and
