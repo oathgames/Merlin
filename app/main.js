@@ -2863,6 +2863,11 @@ function translateTool(toolName, input) {
       // budget), so wiring is a deliberate follow-up, not a stray label here.
       'rokt-report':            { label: 'Pull Rokt network performance', cost: 'Free' },
       'rokt-verify':            { label: 'Verify your Rokt credentials', cost: 'Free' },
+      'rakuten-setup':          { label: 'Verify your Rakuten Advertising report link', cost: 'Free' },
+      'rakuten-verify':         { label: 'Verify your Rakuten Advertising report link', cost: 'Free' },
+      'rakuten-report':         { label: 'Pull Rakuten affiliate program performance', cost: 'Free' },
+      'rakuten-publishers':     { label: 'List Rakuten affiliate publishers', cost: 'Free' },
+      'rakuten-transactions':   { label: 'Pull Rakuten affiliate transactions', cost: 'Free' },
       'quickbooks-login':         { label: 'Connect QuickBooks (read-only accounting)', cost: 'Free' },
       'quickbooks-report':        { label: 'Pull QuickBooks accounting metrics', cost: 'Free' },
       'yotpo-verify':             { label: 'Verify your Yotpo credentials', cost: 'Free' },
@@ -9236,6 +9241,10 @@ const BRAND_KEYS = [
   // Rokt — brand-specific BYOK reporting creds. Mirror of brandScopedKeys in
   // autocmo-core/vault.go.
   'roktAppId', 'roktAppSecret', 'roktAccountId',
+  // Rakuten Advertising: brand-specific Reporting API connection (token +
+  // report keys + locale + network). Mirror of brandScopedKeys in
+  // autocmo-core/vault.go.
+  'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
   // Yotpo — brand-specific BYOK (App Key + Secret Key). Mirror of
   // brandScopedKeys in autocmo-core/vault.go.
   'yotpoAppKey', 'yotpoSecretKey',
@@ -10186,6 +10195,17 @@ function getConnections(brandName) {
         : !!roktSecret;
       if (roktResolved) connected.push({ platform: 'rokt', status: 'connected' });
     }
+    // Rakuten Advertising: brand-specific Reporting API; connected when the
+    // report token + performance report key are present, with @@VAULT
+    // placeholder resolution on the token.
+    const rakutenToken = brandName ? brandCfg.rakutenReportToken : globalCfg.rakutenReportToken;
+    const rakutenKey = brandName ? brandCfg.rakutenReportKey : globalCfg.rakutenReportKey;
+    if (rakutenToken && rakutenKey) {
+      const rakutenResolved = typeof rakutenToken === 'string' && rakutenToken.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'rakutenReportToken')
+        : !!rakutenToken;
+      if (rakutenResolved) connected.push({ platform: 'rakuten', status: 'connected' });
+    }
     // Yotpo — brand-specific BYOK; connected when App Key + Secret Key are
     // present, with @@VAULT placeholder resolution on the secret.
     const yotpoAppKey = brandName ? brandCfg.yotpoAppKey : globalCfg.yotpoAppKey;
@@ -10407,6 +10427,10 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // Rokt — clear all three BYOK creds on disconnect. Mirror of
       // platformVaultKeys["rokt"] in autocmo-core/oauth.go.
       rokt: ['roktAppId', 'roktAppSecret', 'roktAccountId'],
+      // Rakuten Advertising: clear the whole Reporting API connection on
+      // disconnect. Mirror of platformVaultKeys["rakuten"] in
+      // autocmo-core/oauth.go.
+      rakuten: ['rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork'],
       // Yotpo — clear both BYOK creds on disconnect. Mirror of
       // platformVaultKeys["yotpo"] in autocmo-core/oauth.go.
       yotpo: ['yotpoAppKey', 'yotpoSecretKey'],

@@ -2761,6 +2761,52 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── rakuten ───────────────────────────────────────────────
+  // Rakuten Advertising (affiliate network, formerly LinkShare) reporting,
+  // READ-ONLY. rakuten.go reads the advertiser Reporting API
+  // (ran-reporting.rakutenmarketing.com) with the brand's own report token, so
+  // this tool can only READ program performance; it cannot change commissions,
+  // publishers or offers (destructive:false, costImpact:'api', no approval
+  // card). Read-only by construction: rakuten.go has one GET-only request
+  // constructor (TestRakutenSourceIsReadOnly). Connect happens in the Rakuten
+  // tile, which splits the report's "Get API" link into vaulted brand keys.
+  tools.push(defineTool({
+    name: 'rakuten',
+    description: 'Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first). Window: days (default 30, transactions default 7, max 365) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'rakuten' },
+    input: {
+      action: z.enum(['status', 'connect', 'setup', 'verify', 'report', 'publishers', 'transactions']).describe('status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day. publishers → publishers ranked by sales. transactions → order-level rows.'),
+      brand: brandSchema.optional(),
+      days: z.coerce.number().int().optional().describe('Window length in days ending today (default 30; transactions default 7; max 365). Ignored when startDate is set.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window start, YYYY-MM-DD (inclusive).'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window end, YYYY-MM-DD (inclusive). Defaults to today.'),
+      limit: z.coerce.number().int().optional().describe('Max rows returned: top publishers for report (default 25), publishers (default 50), transactions (default 200). The results file always keeps every row.'),
+      rakutenDateType: z.enum(['transaction', 'process']).optional().describe('Which date the window applies to: transaction (when the order happened, default) or process (when Rakuten processed it).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Rakuten Advertising',
+          instructions: 'In Rakuten Advertising open Reports, open (or build) a report with Transaction Date, Publisher ID, Publisher Name, # of Clicks, # of Orders, Sales and Total Commission, then click the arrow next to View Report and choose "Get API". Copy that link. Optionally do the same for an order-level report (for example Signature Orders) to enable transactions. Open the Rakuten tile in the Connections panel, paste the link(s), then run action "verify". Merlin reads reports only; it cannot change commissions, publishers or offers.',
+        };
+      }
+      const actionMap = {
+        status: 'rakuten-status',
+        setup: 'rakuten-setup',
+        verify: 'rakuten-verify',
+        report: 'rakuten-report',
+        publishers: 'rakuten-publishers',
+        transactions: 'rakuten-transactions',
+      };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
   // ── yotpo ─────────────────────────────────────────────────
   // Yotpo reviews + loyalty reporting (READ-ONLY — yotpo.go ships no write
   // verbs). BYOK: the brand's own App Key + Secret Key from Yotpo admin →

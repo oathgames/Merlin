@@ -189,6 +189,9 @@ const TOOL_ROUTING = [
     // openai-ads-*. connect is JS-only (returns instructions) → exempt.
     exemptions: ['connect'],
   },
+  // setup/verify/status/report/publishers/transactions → rakuten-<action> 1:1;
+  // connect is JS-only (returns instructions, no engine call).
+  { name: 'rakuten', prefix: 'rakuten', exemptions: ['connect'] },
   { name: 'rokt', prefix: 'rokt',
     // report → rokt-report, status → rokt-status, verify → rokt-verify map 1:1
     // via the prefix. connect is JS-only (returns instructions) → exempt.

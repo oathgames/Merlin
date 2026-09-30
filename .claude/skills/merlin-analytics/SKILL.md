@@ -197,6 +197,19 @@ When BOTH Shopify and GA4 report revenue: Shopify wins per Hard-Won Security Rul
 
 Use when the brand runs ads on the Rokt post-transaction network and wants their Rokt performance (impressions, referrals, spend) surfaced. `action: "report"` (batchCount = days, default 30) pulls the Query API; `status` checks the connection; `verify` validates the saved credentials. Connect is BYOK 3-field (App ID + App Secret + Account ID from `my.rokt.com`) via the Rokt tile. **Rokt has no campaign-management API**, so Merlin can REPORT on Rokt performance but cannot launch, pause, or change Rokt campaigns (dashboard-only at Rokt). Requires an active Rokt advertiser account (enterprise-onboarded). Read-only by construction — `rokt.go` ships no write verbs.
 
+## Affiliate reporting (`mcp__merlin__rakuten`): read-only
+
+Use when the brand runs an affiliate program on Rakuten Advertising (formerly LinkShare) and asks how affiliates or publishers are performing: affiliate sales, commissions, top publishers, affiliate ROAS or effective commission rate. Connect is one pasted link: in Rakuten open a report, click Get API, paste it on the Rakuten tile (optional second link for a transaction-level report). Merlin extracts the report token, key and locale and vaults them per brand.
+
+| Action | Use |
+|---|---|
+| `status` / `verify` | Connection check; `verify` pulls 2 days and lists any expected columns the saved report lacks |
+| `report` | Totals (sales, orders, clicks, commission, AOV, effective rate, ROAS on commission), top publishers, daily trend. `days` (default 30, max 365) or `startDate`/`endDate` |
+| `publishers` | Publisher leaderboard by sales, `limit` up to 1000 |
+| `transactions` | Order-level rows, newest first; needs the transactions report link |
+
+`rakutenDateType`: `transaction` (default, date of sale) or `process` (date Rakuten booked it, matches invoices). Column sets are whatever the brand's saved report contains, so if `verify` reports missing columns, ask the user to add them to that report in Rakuten. Read-only by construction: Merlin cannot change publishers, commissions or offers.
+
 ## Customer support (`mcp__merlin__gorgias`) — read-only, de-identified
 
 Use when the user asks what customers write to support: ticket volume, top complaint themes, CSAT, response and resolution times, or a support-ticket corpus for analysis. Merlin only reads from Gorgias. Every response is de-identified in the engine: emails, phones, cards, addresses, order and tracking numbers, and names become typed placeholders (`[EMAIL]`, `[ORDER_NUMBER]`, `[NAME]`, ...), people are per-export pseudonyms, attachments are dropped.

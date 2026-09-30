@@ -273,3 +273,48 @@ test('legacy OAuth spawn passes brand — quickbooks tokens must not vault under
   assert.match(legacySpawn[0], /brand:/,
     'legacy spawn drops brand — brand-scoped OAuth tokens vault under _global and are unreachable');
 });
+
+// Rakuten Advertising (2026-09-30): read-only affiliate reporting. The connect
+// modal parses the report's "Get API" link, so the parser is exercised here
+// against the same key/locale/network patterns rakuten.go enforces.
+test('rakuten tile exists, is brand-scope, visible, and has a connect path', () => {
+  const t = tiles.find((x) => x.platform === 'rakuten');
+  assert.ok(t, 'brand tile "rakuten" missing from index.html');
+  assert.equal(t.scope, 'brand');
+  assert.ok(!t.stubbed, 'rakuten tile must not be stubbed; the connector ships in the binary');
+  const ecom = verticals.find((v) => v.includes('shopify'));
+  assert.ok(ecom && ecom.includes('rakuten'), 'ecommerce vertical missing rakuten');
+  assert.match(renderer, /rakuten:\s*showRakutenConnectModal/, 'rakuten missing from CUSTOM_CONNECT_HANDLERS');
+  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
+  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
+  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
+  for (const k of ['rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork']) {
+    assert.ok(allowlistBlock.includes(`'${k}'`), `${k} not in CONFIG_FIELD_ALLOWLIST`);
+    assert.ok(sensitiveBlock.includes(`'${k}'`), `${k} not in VAULT_SENSITIVE_KEYS`);
+    assert.ok(mainSrc.includes(`'${k}'`), `${k} not in main.js BRAND_KEYS / disconnect map`);
+  }
+});
+
+test('parseRakutenReportUrl accepts real Get API links and rejects everything else', () => {
+  const start = renderer.indexOf('function parseRakutenReportUrl(');
+  assert.ok(start >= 0, 'parseRakutenReportUrl not found in renderer.js');
+  const end = renderer.indexOf('\nfunction showRakutenConnectModal', start);
+  const parse = new Function(`${renderer.slice(start, end)}\nreturn parseRakutenReportUrl;`)();
+  const base = 'https://ran-reporting.rakutenmarketing.com';
+  assert.deepStrictEqual(
+    parse(`${base}/en/reports/perf-by-publisher/filters?start_date=2026-01-01&end_date=2026-01-31&include_summary=N&network=1&tz=GMT&date_type=transaction&token=abc123`),
+    { locale: 'en', reportKey: 'perf-by-publisher', token: 'abc123', network: '1' });
+  assert.deepStrictEqual(parse(`  ${base}/en-gb/reports/k_1/filters?token=t&network=3  `),
+    { locale: 'en-gb', reportKey: 'k_1', token: 't', network: '3' });
+  assert.equal(parse(`${base}/en/reports/k/filters?token=t&network=abc`).network, '1', 'bad network falls back to 1');
+  for (const bad of [
+    '', 'not a url', `http://ran-reporting.rakutenmarketing.com/en/reports/k/filters?token=t`,
+    `https://evil.example.com/en/reports/k/filters?token=t`,
+    `https://ran-reporting.rakutenmarketing.com.evil.com/en/reports/k/filters?token=t`,
+    `${base}/en/reports/k/filters`, `${base}/en/reports/k/filters?token=`,
+    `${base}/EN/reports/k/filters?token=t`, `${base}/en/reports/../x/filters?token=t`,
+    `${base}/en/reports/k/other?token=t`, `${base}/en/reports/-k/filters?token=t`,
+  ]) {
+    assert.equal(parse(bad), null, `should reject: ${bad}`);
+  }
+});

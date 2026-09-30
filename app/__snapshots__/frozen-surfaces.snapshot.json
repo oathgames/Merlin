@@ -216,6 +216,11 @@
       "quickbooksRefreshToken",
       "quickbooksTokenExpiresAt",
       "quickbooksUseSandbox",
+      "rakutenNetwork",
+      "rakutenReportKey",
+      "rakutenReportLocale",
+      "rakutenReportToken",
+      "rakutenTransactionsReportKey",
       "roktAccountId",
       "roktAppId",
       "roktAppSecret",
@@ -280,6 +285,11 @@
       "quickbooksAccessToken",
       "quickbooksRealmId",
       "quickbooksRefreshToken",
+      "rakutenNetwork",
+      "rakutenReportKey",
+      "rakutenReportLocale",
+      "rakutenReportToken",
+      "rakutenTransactionsReportKey",
       "redditAccessToken",
       "redditRefreshToken",
       "roktAccountId",
@@ -4568,6 +4578,73 @@
     },
     {
       "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "rakuten"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first). Window: days (default 30, transactions default 7, max 365) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.",
+      "input": {
+        "action": {
+          "description": "status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day. publishers → publishers ranked by sales. transactions → order-level rows.",
+          "enum": [
+            "status",
+            "connect",
+            "setup",
+            "verify",
+            "report",
+            "publishers",
+            "transactions"
+          ],
+          "type": "string"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "days": {
+          "description": "Window length in days ending today (default 30; transactions default 7; max 365). Ignored when startDate is set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "Window end, YYYY-MM-DD (inclusive). Defaults to today.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max rows returned: top publishers for report (default 25), publishers (default 50), transactions (default 200). The results file always keeps every row.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "rakutenDateType": {
+          "description": "Which date the window applies to: transaction (when the order happened, default) or process (when Rakuten processed it).",
+          "enum": [
+            "transaction",
+            "process"
+          ],
+          "type": "string"
+        },
+        "startDate": {
+          "description": "Window start, YYYY-MM-DD (inclusive).",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        }
+      },
+      "name": "rakuten"
+    },
+    {
+      "annotations": {
         "brandRequired": true,
         "concurrency": {
           "platform": "reddit_ads"
@@ -5654,8 +5731,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 24587,
-      "bodySha256": "e5c3e218dd527ca2a871a589281696865ebab6f277cadfd805a49bb4ada325d5",
+      "bodyBytes": 25950,
+      "bodySha256": "ca845774a3111cf04c6e03ba40fd8e9bfc058cf2a808ef6e18aabfc28d68fc9d",
       "bytes_justification": "GA4 read+write (2026-05-01) added 13-action surface + write-side approval-card flows alongside the existing dashboard / wisdom / calendar / Conversion Rubric / incrementality blocks. Splitting GA4 into its own SKILL would fragment the analytics-vs-attribution narrative the dashboard relies on.",
       "description": "Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach), plus Gorgias customer-support ticket analytics and de-identified support-corpus exports. Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.",
       "dir": "merlin-analytics",
