@@ -40,6 +40,7 @@
     "app/brand-config-sweep.js",
     "app/brand-dirs.js",
     "app/budget-ceiling.js",
+    "app/bash-merlin-action.js",
     "app/brand-manifest-scaffolder.js",
     "app/brand-scaffold.js",
     "app/brand-scraper.js",

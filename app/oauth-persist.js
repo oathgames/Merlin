@@ -122,6 +122,16 @@ const VAULT_SENSITIVE_KEYS = [
   'rakutenTransactionsReportKey',
   'rakutenReportLocale',
   'rakutenNetwork',
+  // Roundel (Target retail media) via the Criteo Retail Media API: the
+  // brand's own Criteo developer app (Client ID + Client Secret, which mint
+  // the OAuth client-credentials token) plus the retail media account and
+  // optional retailer id, saved by the Roundel connect modal
+  // (renderer.js showRoundelConnectModal). The secret authorizes ad spend;
+  // the ids are vaulted with it so the connection lives brand-scoped.
+  'roundelClientId',
+  'roundelClientSecret',
+  'roundelAccountId',
+  'roundelRetailerId',
   // Yotpo BYOK reporting credentials (App Key + Secret Key), saved by the
   // 2-step Yotpo connect modal (renderer.js showYotpoConnectModal).
   'yotpoAppKey',
@@ -212,6 +222,9 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // locale + network), saved by the Rakuten connect modal. All five mirrored
   // in VAULT_SENSITIVE_KEYS.
   'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
+  // Roundel (Criteo Retail Media API app + account), saved by the Roundel
+  // connect modal. All four mirrored in VAULT_SENSITIVE_KEYS.
+  'roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId',
   // Yotpo / Sesami / Faire / ShipStation / Loop Returns / Cin7 BYOK
   // credentials, saved by the custom multi-step connect modals and the
   // masked API_KEY_PLATFORMS tiles (renderer.js). All mirrored in

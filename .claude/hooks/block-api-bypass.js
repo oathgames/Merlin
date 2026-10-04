@@ -74,6 +74,10 @@ const BANNED_HOSTS = [
   // through rakuten.go (PreflightCheck + RecordSuccess).
   'ran-reporting.rakutenmarketing.com',
   'api.linksynergy.com',
+  // Roundel (Target retail media) runs on the Criteo Retail Media API. All
+  // calls route through roundel.go (PreflightCheck + RecordSuccess), which
+  // also performs the OAuth client-credentials token exchange.
+  'api.criteo.com',
   // Foreplay — competitor ad intelligence. Routed through the binary so every
   // credit-burning call passes PreflightCheck + shows up in the audit log.
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and

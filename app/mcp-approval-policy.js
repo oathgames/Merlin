@@ -74,7 +74,11 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   'export',
   // Google Ads per-ad Demand Gen video performance (GAQL reads only).
   'video-insights',
-]));
+  // Roundel (Criteo Retail Media) auction line-item listing: GETs only.
+  // Its spend verbs ('activate', 'budget') are in SPEND_ACTIONS; 'pause'
+  // deliberately stays on the uncarded path (the emergency brake).
+  'line-items',
+]))
 
 // SPEND_ACTIONS gate the approval card. `push` is the only action eligible
 // for in-cap auto-approve (caller passes an explicit, knowable dailyBudget).

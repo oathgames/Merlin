@@ -2812,6 +2812,86 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── roundel ───────────────────────────────────────────────
+  // Roundel (Target's retail media network). Roundel has no API of its own:
+  // its self-serve programmatic surface is the Criteo Retail Media API
+  // (api.criteo.com), authenticated with the brand's own Criteo developer app
+  // (OAuth2 client credentials) after the advertiser account grants consent.
+  // roundel.go reads accounts, campaigns, auction line items and async
+  // performance reports, and can pause, activate and re-budget a line item.
+  // SPENDS REAL MONEY on activate/budget, so destructive:true +
+  // costImpact:'spend': both route through the host approval card
+  // (SPEND_ACTIONS 'activate' / 'budget') and the engine independently
+  // refuses them without the approved flag (requireApproval), validates the
+  // final daily number (validateDailyBudget) and the projected account total
+  // against the monthly caps. pause is never gated: it is the emergency brake.
+  // Read actions (status/verify/discover/campaigns/line-items/insights)
+  // auto-approve. Connect happens in the Roundel tile (the client secret is vaulted).
+  // The engine also accepts roundel-setup as an alias of roundel-verify; the
+  // MCP enum exposes verify only, because 'setup' is a SPEND_ACTIONS verb and
+  // would put a misleading "Set up ad campaigns" card in front of a read.
+  tools.push(defineTool({
+    name: 'roundel',
+    description: 'Roundel (Target retail media) via the Criteo Retail Media API. Actions: status (connection check, no API call); connect (how to create the Criteo API app and grant access); verify (test the saved credentials and confirm the account is reachable); discover (list the retail media accounts the app can see and the retailers on each, flagging the Target one, so you know which account and retailer ids to save); campaigns (list campaigns, status filter); line-items (auction line items with status, budget and daily pacing, optionally for one campaignId); insights (spend, impressions, clicks, attributed sales, units and ROAS by campaign, line item and day, from an async report: when it returns status "pending" with a roundelReportId, call insights again with that roundelReportId instead of starting a new report; days default 30 or startDate/endDate, max 90 days); pause (pause one lineItemId, never needs approval); activate (turn a paused lineItemId on: SPENDS money, shows an approval card, refused if the line item has no knowable daily spend or the projected account total breaks your caps); budget (set a lineItemId daily pacing to dailyBudget dollars: shows an approval card). ROAS is attributed target.com sales, not your store revenue, and recent days fill in for up to 14 days.',
+    destructive: true,
+    idempotent: false,
+    preview: false,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'roundel' },
+    input: {
+      action: z.enum(['status', 'connect', 'verify', 'discover', 'campaigns', 'line-items', 'insights', 'pause', 'activate', 'budget']).describe('status → connection check (no API call). connect → how to connect. verify → test credentials. discover → accounts + retailers. campaigns / line-items / insights → read. pause → pause a lineItemId. activate → turn a lineItemId on (spends, approval card). budget → set a lineItemId daily budget (approval card).'),
+      brand: brandSchema,
+      days: z.coerce.number().int().optional().describe('Insights: window length in days ending today (default 30, max 90). Ignored when startDate is set.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: window start, YYYY-MM-DD inclusive.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: window end, YYYY-MM-DD inclusive. Defaults to today.'),
+      campaignId: z.string().optional().describe('Campaign id: scopes line-items to one campaign.'),
+      lineItemId: z.string().optional().describe('Auction line item id (pause / activate / budget).'),
+      dailyBudget: z.coerce.number().optional().describe('Budget: the new daily pacing in dollars for lineItemId. Validated against your daily and monthly caps.'),
+      status: z.enum(['all', 'active', 'paused', 'scheduled', 'ended', 'draft', 'archived', 'budgetHit', 'noFunds']).optional().describe('campaigns / line-items: filter by status (default all).'),
+      limit: z.coerce.number().int().optional().describe('Max rows returned (campaigns, line-items, insights breakdowns). The results file always keeps every row.'),
+      roundelReportId: z.string().optional().describe('Insights: resume a pending report by the id a previous insights call returned, instead of creating a new one.'),
+      approved: z.boolean().optional().describe('Approval flag for activate and budget. Set by the Electron approval card on user click; the engine REFUSES both without it. Do not set true unless the user explicitly approved the spend change.'),
+    },
+    // Handler does NOT auto-set args.approved; the approval card does.
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect Roundel (Target)',
+          instructions: 'Roundel campaigns are managed through the Criteo Retail Media API. 1) At developers.criteo.com create an app with the Retail Media domain and the campaign read and manage permissions, and note its Client ID and Client Secret. 2) Generate a consent link for the app and have an Admin (or Business / Technical Manager) of the brand\'s Roundel retail media account approve it. 3) Open the Roundel tile in the Connections panel and paste the Client ID, Client Secret and retail media Account ID (Retailer ID is optional and limits reports to Target). 4) Run action "verify", then "discover" if you do not know the account or retailer id. Never paste the client secret in chat.',
+        };
+      }
+      // Only budget carries a budget to validate. A dailyBudget riding along
+      // on any other action is dropped so it can never decorate a read or a
+      // pause with a spend figure.
+      if (args.action === 'budget') {
+        const budgetError = validateBudget(ctx, args, 'Roundel');
+        if (budgetError) return validationEnvelope(budgetError);
+      }
+      const actionMap = {
+        status: 'roundel-status',
+        verify: 'roundel-verify',
+        discover: 'roundel-discover',
+        campaigns: 'roundel-campaigns',
+        'line-items': 'roundel-line-items',
+        insights: 'roundel-insights',
+        pause: 'roundel-pause',
+        activate: 'roundel-activate',
+        budget: 'roundel-budget',
+      };
+      let pass = args;
+      if (args.action !== 'budget') {
+        const { dailyBudget, ...rest } = args;
+        pass = rest;
+      }
+      if (args.action !== 'activate' && args.action !== 'budget') {
+        const { approved, ...rest } = pass;
+        pass = rest;
+      }
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], pass));
+    },
+  }, tool, z, ctx));
+
   // ── yotpo ─────────────────────────────────────────────────
   // Yotpo reviews + loyalty reporting (READ-ONLY — yotpo.go ships no write
   // verbs). BYOK: the brand's own App Key + Secret Key from Yotpo admin →
@@ -3492,7 +3572,7 @@ function buildTools(tool, z, ctx) {
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'roundel', 'threads', 'quickbooks', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -3563,6 +3643,12 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'OpenAI Ads connects via API key',
           instructions: 'Click the OpenAI Ads tile in the Connections panel and paste your Ads API key from ads.openai.com (Settings → API). It authorizes real ad spend, so it is entered in a masked field, never in chat. Then call mcp__merlin__openai_ads with action "verify" to confirm it works, or connection_status to check.',
+        };
+      }
+      if (args.platform === 'roundel') {
+        return {
+          summary: 'Roundel (Target) connects with a Criteo Retail Media API app',
+          instructions: 'Create an app with the Retail Media domain at developers.criteo.com, have an Admin of the brand Roundel retail media account approve its consent link, then click the Roundel tile in the Connections panel and paste the Client ID, Client Secret (stored encrypted; never paste it in chat) and Account ID. Then call mcp__merlin__roundel with action "verify", or "discover" to find the account and Target retailer ids.',
         };
       }
       // Microsoft Clarity connects via the dedicated `clarity` tool: it

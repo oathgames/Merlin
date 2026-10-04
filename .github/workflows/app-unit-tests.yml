@@ -142,6 +142,11 @@ jobs:
       # cards, and every JS call site routes through the shared module.
       - name: daily-budget ceilings (declared-cap authority + cents guards)
         run: node --test app/budget-ceiling.test.js
+      # REGRESSION GUARD (2026-10-04): the Bash approval gate must read the
+      # action and dailyBudget the way Go does (last key wins, case-insensitive,
+      # escapes decoded) and deny commands that name their action twice.
+      - name: Bash Merlin command parser (duplicate-key card bypass)
+        run: node --test app/bash-merlin-action.test.js
       - name: sentence splitter
         run: node app/sentence-splitter.test.js
       - name: update-runner terminal-visibility lockdown
