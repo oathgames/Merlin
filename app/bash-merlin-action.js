@@ -1,0 +1,99 @@
+'use strict';
+
+// Reads the engine action (and other fields) out of a Bash `Merlin --cmd '{...}'`
+// command line the SAME way the Go engine will, so the approval gate cards
+// what actually runs.
+//
+// REGRESSION GUARD (2026-10-04, Roundel adversarial review, MEDIUM 6):
+// handleToolApproval used to take the FIRST `"action":"..."` match, while
+// Go's encoding/json keeps the LAST duplicate key and matches keys
+// case-insensitively after decoding \u escapes. So
+//   {"action":"roundel-status","action":"roundel-budget","approved":true}
+// carded as a harmless read (or not at all) and then ran a spend write. The
+// same first-vs-last split let `"dailyBudget":5,"dailyBudget":5000` pass the
+// in-cap auto-approve at $5 and launch at $5000. Rules here:
+//   - keys are decoded (JSON string escapes) and compared case-insensitively;
+//   - more than one action key, or an action key/value Merlin cannot decode,
+//     is AMBIGUOUS and the caller denies the command outright;
+//   - numeric fields resolve to the LAST occurrence, as Go does.
+// A command that only carries the JSON with backslash-escaped quotes (a
+// double-quoted shell argument) is read through the unescaped form too.
+
+const STRING_KEY_RE = /"((?:[^"\\]|\\.)*)"\s*:\s*/g;
+
+function decodeJSONString(lit) {
+  try {
+    const v = JSON.parse('"' + lit + '"');
+    return typeof v === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function scanKeys(text, wantKey) {
+  const hits = []; // { valueText, undecodable }
+  const want = wantKey.toLowerCase();
+  STRING_KEY_RE.lastIndex = 0;
+  let m;
+  while ((m = STRING_KEY_RE.exec(text)) !== null) {
+    const key = decodeJSONString(m[1]);
+    if (key === null) {
+      if (m[1].toLowerCase().includes(want.slice(0, 3))) hits.push({ valueText: null, undecodable: true });
+      continue;
+    }
+    if (key.toLowerCase() !== want) continue;
+    hits.push({ valueText: text.slice(m.index + m[0].length), undecodable: false });
+  }
+  return hits;
+}
+
+function candidates(command) {
+  const s = String(command || '');
+  const out = [s];
+  if (s.includes('\\"')) out.push(s.replace(/\\"/g, '"'));
+  return out;
+}
+
+// parseAction -> { action: string, ambiguous: boolean, count: number }
+function parseAction(command) {
+  let best = { action: '', ambiguous: false, count: 0 };
+  for (const text of candidates(command)) {
+    const hits = scanKeys(text, 'action');
+    if (hits.length === 0) continue;
+    const values = hits.map((h) => {
+      if (h.undecodable) return null;
+      const vm = h.valueText.match(/^"((?:[^"\\]|\\.)*)"/);
+      return vm ? decodeJSONString(vm[1]) : null;
+    });
+    const ambiguous = hits.length > 1 || values.some((v) => v === null || v === '');
+    best = { action: values[values.length - 1] || '', ambiguous, count: hits.length };
+    break;
+  }
+  return best;
+}
+
+// lastNumber -> number | null. Go keeps the last duplicate key, so do we.
+function lastNumber(command, key) {
+  for (const text of candidates(command)) {
+    const hits = scanKeys(text, key).filter((h) => !h.undecodable);
+    if (hits.length === 0) continue;
+    const vm = hits[hits.length - 1].valueText.match(/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/);
+    if (!vm) return null;
+    const n = Number(vm[0]);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+// lastString -> string | null (same last-wins rule).
+function lastString(command, key) {
+  for (const text of candidates(command)) {
+    const hits = scanKeys(text, key).filter((h) => !h.undecodable);
+    if (hits.length === 0) continue;
+    const vm = hits[hits.length - 1].valueText.match(/^"((?:[^"\\]|\\.)*)"/);
+    return vm ? decodeJSONString(vm[1]) : null;
+  }
+  return null;
+}
+
+module.exports = { parseAction, lastNumber, lastString };

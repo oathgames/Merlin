@@ -295,6 +295,29 @@ test('rakuten tile exists, is brand-scope, visible, and has a connect path', () 
   }
 });
 
+// Roundel (2026-10-04): Target retail media via the Criteo Retail Media API.
+// Four brand-scoped fields (app Client ID + Secret, account, optional
+// retailer), all vaulted, collected by a custom multi-step modal.
+test('roundel tile exists, is brand-scope, visible, and has a connect path', () => {
+  const t = tiles.find((x) => x.platform === 'roundel');
+  assert.ok(t, 'brand tile "roundel" missing from index.html');
+  assert.equal(t.scope, 'brand');
+  assert.ok(!t.stubbed, 'roundel tile must not be stubbed; the connector ships in the binary');
+  const ecom = verticals.find((v) => v.includes('shopify'));
+  assert.ok(ecom && ecom.includes('roundel'), 'ecommerce vertical missing roundel');
+  assert.match(renderer, /roundel:\s*showRoundelConnectModal/, 'roundel missing from CUSTOM_CONNECT_HANDLERS');
+  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
+  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
+  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
+  for (const k of ['roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId']) {
+    assert.ok(allowlistBlock.includes(`'${k}'`), `${k} not in CONFIG_FIELD_ALLOWLIST`);
+    assert.ok(sensitiveBlock.includes(`'${k}'`), `${k} not in VAULT_SENSITIVE_KEYS`);
+    assert.ok(mainSrc.includes(`'${k}'`), `${k} not in main.js BRAND_KEYS / disconnect map`);
+  }
+  assert.match(mainSrc, /roundel:\s*\['roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId'\]/,
+    'roundel disconnect map must clear all four keys');
+});
+
 test('parseRakutenReportUrl accepts real Get API links and rejects everything else', () => {
   const start = renderer.indexOf('function parseRakutenReportUrl(');
   assert.ok(start >= 0, 'parseRakutenReportUrl not found in renderer.js');

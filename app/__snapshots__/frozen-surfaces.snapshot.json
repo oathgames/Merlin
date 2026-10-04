@@ -114,6 +114,7 @@
       "insights",
       "keywords",
       "landing-audit",
+      "line-items",
       "list",
       "list-avatars",
       "list-versions",
@@ -224,6 +225,10 @@
       "roktAccountId",
       "roktAppId",
       "roktAppSecret",
+      "roundelAccountId",
+      "roundelClientId",
+      "roundelClientSecret",
+      "roundelRetailerId",
       "sesamiApiKey",
       "sesamiClientId",
       "sesamiShopId",
@@ -295,6 +300,10 @@
       "roktAccountId",
       "roktAppId",
       "roktAppSecret",
+      "roundelAccountId",
+      "roundelClientId",
+      "roundelClientSecret",
+      "roundelRetailerId",
       "sesamiApiKey",
       "sesamiClientId",
       "sesamiShopId",
@@ -4389,6 +4398,7 @@
             "linkedin",
             "triplewhale",
             "openai_ads",
+            "roundel",
             "threads",
             "quickbooks",
             "yotpo",
@@ -4833,6 +4843,99 @@
         }
       },
       "name": "rokt"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "roundel"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": false,
+        "preview": false
+      },
+      "description": "Roundel (Target retail media) via the Criteo Retail Media API. Actions: status (connection check, no API call); connect (how to create the Criteo API app and grant access); verify (test the saved credentials and confirm the account is reachable); discover (list the retail media accounts the app can see and the retailers on each, flagging the Target one, so you know which account and retailer ids to save); campaigns (list campaigns, status filter); line-items (auction line items with status, budget and daily pacing, optionally for one campaignId); insights (spend, impressions, clicks, attributed sales, units and ROAS by campaign, line item and day, from an async report: when it returns status \"pending\" with a roundelReportId, call insights again with that roundelReportId instead of starting a new report; days default 30 or startDate/endDate, max 90 days); pause (pause one lineItemId, never needs approval); activate (turn a paused lineItemId on: SPENDS money, shows an approval card, refused if the line item has no knowable daily spend or the projected account total breaks your caps); budget (set a lineItemId daily pacing to dailyBudget dollars: shows an approval card). ROAS is attributed target.com sales, not your store revenue, and recent days fill in for up to 14 days.",
+      "input": {
+        "action": {
+          "description": "status → connection check (no API call). connect → how to connect. verify → test credentials. discover → accounts + retailers. campaigns / line-items / insights → read. pause → pause a lineItemId. activate → turn a lineItemId on (spends, approval card). budget → set a lineItemId daily budget (approval card).",
+          "enum": [
+            "status",
+            "connect",
+            "verify",
+            "discover",
+            "campaigns",
+            "line-items",
+            "insights",
+            "pause",
+            "activate",
+            "budget"
+          ],
+          "type": "string"
+        },
+        "approved": {
+          "description": "Approval flag for activate and budget. Set by the Electron approval card on user click; the engine REFUSES both without it. Do not set true unless the user explicitly approved the spend change.",
+          "type": "boolean"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "Campaign id: scopes line-items to one campaign.",
+          "type": "string"
+        },
+        "dailyBudget": {
+          "description": "Budget: the new daily pacing in dollars for lineItemId. Validated against your daily and monthly caps.",
+          "type": "number"
+        },
+        "days": {
+          "description": "Insights: window length in days ending today (default 30, max 90). Ignored when startDate is set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "Insights: window end, YYYY-MM-DD inclusive. Defaults to today.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max rows returned (campaigns, line-items, insights breakdowns). The results file always keeps every row.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "lineItemId": {
+          "description": "Auction line item id (pause / activate / budget).",
+          "type": "string"
+        },
+        "roundelReportId": {
+          "description": "Insights: resume a pending report by the id a previous insights call returned, instead of creating a new one.",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "Insights: window start, YYYY-MM-DD inclusive.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "status": {
+          "description": "campaigns / line-items: filter by status (default all).",
+          "enum": [
+            "all",
+            "active",
+            "paused",
+            "scheduled",
+            "ended",
+            "draft",
+            "archived",
+            "budgetHit",
+            "noFunds"
+          ],
+          "type": "string"
+        }
+      },
+      "name": "roundel"
     },
     {
       "annotations": {
@@ -5722,12 +5825,12 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 43532,
-      "bodySha256": "d28a456bd13a095317c95cfc0f8cd73ef18783e03c4a83f8b06734495fa29d3c",
+      "bodyBytes": 44610,
+      "bodySha256": "9d734a59f2878a464a1fb0a85a8adf4065aaacff6127045a6c84b714939ae00c",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
-      "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
+      "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Etsy, or Roundel (Target retail media). Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",
-      "frontmatterSha256": "b301a53355e9e07daebb6ce287bbbb8d059bfa1bdb1e2ba59875e9465e2ffbcb",
+      "frontmatterSha256": "4ff32c190eb1e2009d871a693ffcddcada337572b1b1457a6801e1933179690e",
       "name": "merlin-ads",
       "owner": "ryan"
     },
@@ -5868,6 +5971,7 @@
       "app/brand-config-sweep.js",
       "app/brand-dirs.js",
       "app/budget-ceiling.js",
+      "app/bash-merlin-action.js",
       "app/brand-manifest-scaffolder.js",
       "app/brand-scaffold.js",
       "app/brand-scraper.js",
