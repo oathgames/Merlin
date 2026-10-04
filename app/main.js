@@ -9218,6 +9218,20 @@ const BRAND_KEYS = [
   // Never split a name from its id again: if you add a new id key below, add
   // its name key too.
   'adAccountName', 'pageName', 'pixelName',
+  // metaInstagramUserId was MISSING here until 2026-08-22 while its three
+  // siblings (metaAdAccountId, metaPageId, metaPixelId) were all present -
+  // the same brand-scoped-key drift class as the mailchimpApiKey and
+  // googleAnalyticsMeasurementId incidents, and the worst-behaved instance of
+  // it so far. Because it was absent, buildStrictBrandConfig did NOT strip it
+  // from the global base, so ONE brand-agnostic value in the global config
+  // rode into EVERY brand as instagram_user_id on every creative POST
+  // (meta.go sets objectStory instagram_user_id whenever cfg.MetaInstagramUserID
+  // is non-empty). Benebone got another brand's IG account id and Meta refused
+  // all 8 ads with "Ad Account Has No Access To Instagram Account"
+  // (code 200/1815199). Brand-scoped, no _global fallback: with no id set,
+  // Meta correctly derives the IG identity from the ad's own page. Mirror of
+  // brandScopedKeys in autocmo-core/vault.go.
+  'metaInstagramUserId',
   'tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId',
   'shopifyStore', 'shopifyAccessToken',
   // googleTokenScope rides with googleAccessToken (same oauthVaultScope()
@@ -10407,7 +10421,12 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
   try {
     // Map platform to config keys that should be cleared
     const keyMap = {
-      meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId'],
+      // metaInstagramUserId added 2026-08-22 with the BRAND_KEYS fix: it is
+      // an account-bound identity field like the page and pixel ids, so
+      // leaving it behind on disconnect means a reconnect to a DIFFERENT
+      // Meta account inherits the old account's IG identity and every
+      // creative POST is refused with 200/1815199.
+      meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaInstagramUserId'],
       tiktok: ['tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId'],
       google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsDeveloperToken', 'googleAdsCustomerId', 'googleAnalyticsPropertyId'],
       shopify: ['shopifyAccessToken', 'shopifyStore'],

@@ -17,6 +17,32 @@
 
 'use strict';
 
+const { redactText } = require('./mcp-redact');
+
+// REGRESSION GUARD (2026-08-22, Benebone 7-Pack push): EVERY error envelope
+// carries `detail` - the raw, redacted platform/engine text that produced the
+// classification. Before this, `classifyBinaryError` matched a pattern,
+// returned a canned friendly `message`, and THREW THE RAW TEXT AWAY. A live
+// bulk-push failed 8/8 on Meta's
+//
+//   "Ad Account Has No Access To Instagram Account ... (code 200/1815199)"
+//
+// and the agent received only "Access denied - the platform refused this
+// request." with next_action check_permissions. The word "permissions" inside
+// Meta's string tripped the PERMISSION_DENIED arm, and every id, subcode and
+// noun in the actual cause was discarded. Diagnosing it took a direct CLI
+// invocation of the engine outside the app, and the real cause (a leaked
+// cross-brand Instagram id) was invisible from the envelope alone.
+//
+// `message` stays friendly and is what a human reads (Hard-Won Rule 6 is
+// unchanged - friendlyError still governs anything rendered in the UI).
+// `detail` is the machine/agent-facing diagnostic: it never replaces
+// `message`, and it is redacted through mcp-redact before it leaves this
+// module, so a token embedded in engine stderr cannot ride out on it.
+//
+// Do NOT "clean up" a classifier arm by dropping detail. A classification
+// without the evidence behind it is a guess the next session cannot check.
+
 // Error code table. Each row: { code, defaultMessage, next_action }.
 const CODES = {
   // ── Transient (auto-retry safe) ────────────────────────────
@@ -117,6 +143,7 @@ function makeError(code, overrides = {}) {
       message: overrides.message || CODES.INTERNAL_ERROR.message,
       next_action: overrides.next_action || CODES.INTERNAL_ERROR.next_action,
       retry_after_sec: overrides.retry_after_sec || null,
+      detail: normalizeDetail(overrides.detail),
     };
   }
   return {
@@ -124,7 +151,36 @@ function makeError(code, overrides = {}) {
     message: overrides.message || base.message,
     next_action: overrides.next_action || base.next_action,
     retry_after_sec: typeof overrides.retry_after_sec === 'number' ? overrides.retry_after_sec : null,
+    detail: normalizeDetail(overrides.detail),
   };
+}
+
+// Maximum characters of raw output carried on `detail`. Long enough for a
+// full Meta Graph error line (message + type + code + subcode + fbtrace_id)
+// plus the surrounding context, short enough that a 60-ad bulk-push failure
+// log does not flood the agent's context.
+const DETAIL_MAX_CHARS = 1200;
+
+/**
+ * Normalize raw engine/platform output into the `detail` field: redact any
+ * credential material, drop blank lines, and cap the length.
+ *
+ * Returns null for empty input so `detail` is consistently `null | string`
+ * and never an empty string a caller has to special-case.
+ */
+function normalizeDetail(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const cleaned = redactText(raw)
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() !== '')
+    .join('\n')
+    .trim();
+  if (!cleaned) return null;
+  if (cleaned.length <= DETAIL_MAX_CHARS) return cleaned;
+  // Keep the TAIL, not the head. The engine prints progress lines first and
+  // the failure last, so the final characters are the diagnostic ones.
+  return '...(truncated)\n' + cleaned.slice(cleaned.length - DETAIL_MAX_CHARS);
 }
 
 // ── Binary-stderr classifier ────────────────────────────────
@@ -154,6 +210,7 @@ const CLASSIFIERS = [
       return makeError('RATE_LIMITED', {
         message: `Merlin paused this platform to keep your account safe. It will start working again on its own ${describeDuration(waitSec)}. You do not need to do anything.`,
         retry_after_sec: waitSec,
+        detail: s,
       });
     },
   },
@@ -168,6 +225,7 @@ const CLASSIFIERS = [
       return makeError('RATE_LIMITED', {
         message: `Pausing briefly to keep your account safe with the platform. Retrying in ~${retry || 30}s.`,
         retry_after_sec: retry || 30,
+        detail: s,
       });
     },
   },
@@ -178,55 +236,57 @@ const CLASSIFIERS = [
       const retry = parseRetryAfter(s);
       return makeError('RATE_LIMITED', {
         retry_after_sec: retry || 60,
+        detail: s,
       });
     },
   },
   // Token expiration
   {
     test: (s) => /token (has )?expired|invalid.?token|oauth.*expired|re-?auth(enticate|orize)/i.test(s),
-    classify: () => makeError('TOKEN_EXPIRED'),
+    classify: (s) => makeError('TOKEN_EXPIRED', { detail: s }),
   },
   // Not connected
   {
     test: (s) => /no (config|token|credentials)|not connected|no.*(access.?token|api.?key).* (found|set|configured)/i.test(s),
-    classify: () => makeError('NOT_CONNECTED'),
+    classify: (s) => makeError('NOT_CONNECTED', { detail: s }),
   },
   // Permission / auth failure
   {
     test: (s) => /\b401\b|\b403\b|unauthoriz(ed|e)|forbidden|access (denied|refused)|permission/i.test(s),
-    classify: () => makeError('PERMISSION_DENIED'),
+    classify: (s) => makeError('PERMISSION_DENIED', { detail: s }),
   },
   // Budget rejection
   {
     test: (s) => /budget.*(exceed|too high|over|cap|limit)|maxDailyAdBudget|monthly.?cap/i.test(s),
-    classify: () => makeError('BUDGET_REJECTED'),
+    classify: (s) => makeError('BUDGET_REJECTED', { detail: s }),
   },
   // Not found
   {
     test: (s) => /\b404\b|not found|does not exist|no such/i.test(s),
-    classify: () => makeError('NOT_FOUND'),
+    classify: (s) => makeError('NOT_FOUND', { detail: s }),
   },
   // Timeout / context deadline
   {
     test: (s) => /context deadline|deadline exceeded|timeout|timed out/i.test(s),
-    classify: () => makeError('TIMEOUT'),
+    classify: (s) => makeError('TIMEOUT', { detail: s }),
   },
   // Platform outage
   {
     test: (s) => /\b5\d\d\b|bad gateway|service unavailable|gateway timeout|temporarily unavailable/i.test(s),
-    classify: () => makeError('PLATFORM_DOWN', { retry_after_sec: 30 }),
+    classify: (s) => makeError('PLATFORM_DOWN', { retry_after_sec: 30, detail: s }),
   },
   // Precondition — e.g. Meta app in dev mode (subcode 1885183)
   {
     test: (s) => /\b1885183\b|development mode|app.*review.*pending/i.test(s),
-    classify: () => makeError('PRECONDITION_FAILED', {
-      message: 'Meta app is in development mode — ad creatives cannot be created until Meta approves the app.',
+    classify: (s) => makeError('PRECONDITION_FAILED', {
+      message: 'Meta app is in development mode - ad creatives cannot be created until Meta approves the app.',
+      detail: s,
     }),
   },
   // Missing input
   {
     test: (s) => /missing (required|field|parameter|argument)|required.*not.*provided|must be specified/i.test(s),
-    classify: () => makeError('INVALID_INPUT'),
+    classify: (s) => makeError('INVALID_INPUT', { detail: s }),
   },
 ];
 
@@ -294,14 +354,20 @@ function classifyBinaryError(text) {
 function classifyOrFallback(text, fallbackMessage) {
   const classified = classifyBinaryError(text);
   if (classified) return classified;
+  // The unclassified path is exactly where raw context matters most: no
+  // pattern matched, so `message` carries no information the caller did not
+  // already have. Always attach the evidence.
   return makeError('INTERNAL_ERROR', {
     message: fallbackMessage || 'Something went wrong inside Merlin.',
+    detail: text,
   });
 }
 
 module.exports = {
   CODES,
   makeError,
+  normalizeDetail,
+  DETAIL_MAX_CHARS,
   classifyBinaryError,
   classifyOrFallback,
   parseRetryAfter,
