@@ -9,16 +9,22 @@
 // approval decision (handleToolApproval in main.js) was wired only into the
 // Agent SDK's canUseTool.
 //
+// Amended 2026-10-04 (desktop-approval, Ryan operator decision): approval
+// for an authenticated external MCP call lives on the originating client
+// (Claude Desktop prompts per tool). The 2026-09-28 gate wiring stays, but a
+// card-tier decision on the 'ipc' surface now resolves to allow with
+// hostApproved:true instead of an in-app card.
+//
 // What this file locks:
-//   (a) a carded destructive action cannot run over IPC without approval
-//   (b) a spend action cannot run over IPC without approval
-//   (c) a caller-passed approved:true neither satisfies the gate nor reaches
-//       the handler
-//   (d) read-only actions still run, with no card
-//   (e) a human Allow on the card runs the action, and only then is the
-//       engine's `approved` flag set
-//   plus fail-closed behavior and source scans that pin the wiring, so a
-//   refactor of main.js or the endpoint cannot silently drop the gate.
+//   (a) a carded destructive action over IPC runs with no card, and the app
+//       (never the caller) sets the engine's `approved` flag
+//   (b) spend over IPC runs the same way, while deny rails still refuse
+//   (c) a caller-passed approved:true neither reaches the decision nor the
+//       handler
+//   (d) read-only actions still run, with no approved flag
+//   plus the auth check, fail-closed behavior, and source scans that pin the
+//   wiring, so a refactor of main.js or the endpoint cannot silently drop
+//   the deny rails or let tool input pick the approval surface.
 //
 // The approver used here models handleToolApproval's tier order with the
 // REAL policy sets from mcp-approval-policy.js (main.js itself cannot be
@@ -37,6 +43,8 @@ const path = require('path');
 
 const ipc = require('./mcp-ipc-endpoint');
 const policy = require('./mcp-approval-policy');
+const budgetCeiling = require('./budget-ceiling');
+const callOrigin = require('./mcp-call-origin');
 
 const SRC_ENDPOINT = fs.readFileSync(path.join(__dirname, 'mcp-ipc-endpoint.js'), 'utf8');
 const SRC_MAIN = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
@@ -60,8 +68,8 @@ function fakeTools() {
     description: name,
     inputSchema,
     annotations: {},
-    handler: async (args) => {
-      calls.push({ tool: name, args: Object.assign({}, args) });
+    handler: async (args, extra) => {
+      calls.push({ tool: name, args: Object.assign({}, args), external: callOrigin.isExternalOrigin(extra) });
       return { content: [{ type: 'text', text: 'ran ' + name }] };
     },
   });
@@ -75,12 +83,14 @@ function fakeTools() {
   };
 }
 
-// Models handleToolApproval's mcp__merlin__ branch using the real policy
-// sets. `card` decides what happens when a card is required:
-//   'allow' -> human clicked Allow (humanApproved:true, as main.js returns)
-//   'deny'  -> human clicked Deny
-//   'none'  -> no window to show a card on
-function policyApprover(card) {
+// Models handleToolApproval's mcp__merlin__ branch for the 'ipc' surface
+// using the real policy sets and the real budget deny rail:
+//   * deny rails first (the cents detector / absolute ceiling via
+//     budget-ceiling.denyReasonForBudget), exactly as main.js orders them;
+//   * where the in-app path would card, the IPC surface returns allow with
+//     hostApproved:true (REGRESSION GUARD 2026-10-04, desktop-approval):
+//     the MCP client already prompted, so no Merlin card and no wait.
+function policyApprover() {
   const seen = [];
   const approve = async (toolName, input) => {
     const { effectiveAction: action } = policy.resolveMerlinAction(toolName, input);
@@ -89,15 +99,11 @@ function policyApprover(card) {
     if (policy.READ_ONLY_ACTIONS.has(action) || !needsCard) {
       return { behavior: 'allow', updatedInput: input };
     }
-    if (card === 'allow') return { behavior: 'allow', updatedInput: input, humanApproved: true };
-    if (card === 'deny') {
-      return { behavior: 'deny', code: 'APPROVAL_DENIED', message: 'This action was declined in the Merlin app, so it was not run.' };
+    if (policy.SPEND_ACTIONS.has(action)) {
+      const denial = budgetCeiling.denyReasonForBudget(input.dailyBudget || 5, 0);
+      if (denial) return { behavior: 'deny', message: denial };
     }
-    return {
-      behavior: 'deny',
-      code: 'APPROVAL_REQUIRED',
-      message: 'This action needs your approval in the Merlin app, but the Merlin window is not open, so it was not run. Open Merlin and try again.',
-    };
+    return { behavior: 'allow', updatedInput: input, hostApproved: true };
   };
   return { approve, seen };
 }
@@ -120,116 +126,80 @@ test('policy: the incident action and the spend fixtures are gated tiers', () =>
   assert.ok(policy.READ_ONLY_ACTIONS.has('flows-list'));
 });
 
-test('policy: IPC approval deadline is below the shim request timeout', () => {
-  const m = SRC_SHIM.match(/const REQUEST_TIMEOUT_MS = ([^;]+);/);
-  assert.ok(m, 'shim REQUEST_TIMEOUT_MS not found');
-  // eslint-disable-next-line no-new-func
-  const shimTimeout = Function(`return (${m[1]});`)();
-  assert.ok(Number.isFinite(policy.IPC_APPROVAL_DEADLINE_MS) && policy.IPC_APPROVAL_DEADLINE_MS > 0);
-  assert.ok(policy.IPC_APPROVAL_DEADLINE_MS < shimTimeout,
-    `IPC_APPROVAL_DEADLINE_MS (${policy.IPC_APPROVAL_DEADLINE_MS}) must be < shim REQUEST_TIMEOUT_MS (${shimTimeout}); otherwise an Allow after the shim gave up runs an action the caller was told failed`);
-});
+// ── (a) carded destructive: approved at the originating client ──
 
-// ── (a) carded destructive ───────────────────────────────────
-
-test('(a) klaviyo flow-set-message-template over IPC does not run when no card can be shown', async () => {
+test('(a) klaviyo flow-set-message-template over IPC runs with no card and the app sets approved', async () => {
   const { tools, calls } = fakeTools();
-  const { approve, seen } = policyApprover('none');
+  const { approve, seen } = policyApprover();
   const resp = await call('klaviyo', Object.assign({}, FLOW_SET), { tools, approve });
-  assert.strictEqual(resp.ok, false);
-  assert.strictEqual(resp.error.code, 'APPROVAL_REQUIRED');
-  assert.match(resp.error.message, /approval/i);
-  assert.doesNotMatch(resp.error.message, /\bat \S+:\d+/, 'no stack frames in caller-facing text');
-  assert.strictEqual(calls.length, 0, 'handler must not run');
+  assert.strictEqual(resp.ok, true);
+  assert.strictEqual(calls.length, 1, 'handler runs without waiting on an in-app card');
+  assert.strictEqual(calls[0].args.approved, true, 'approved set exactly as after a click on Approve');
+  assert.strictEqual(calls[0].external, true, 'handler sees the transport-derived external origin');
   assert.strictEqual(seen.length, 1);
   assert.strictEqual(seen[0].toolName, 'mcp__merlin__klaviyo', 'decision must see the SDK-qualified tool name');
   assert.strictEqual(seen[0].carded, true);
 });
 
-test('(a) klaviyo flow-set-message-template over IPC does not run when the card is denied', async () => {
-  const { tools, calls } = fakeTools();
-  const { approve } = policyApprover('deny');
-  const resp = await call('klaviyo', Object.assign({}, FLOW_SET), { tools, approve });
-  assert.strictEqual(resp.ok, false);
-  assert.strictEqual(resp.error.code, 'APPROVAL_DENIED');
-  assert.strictEqual(calls.length, 0);
-});
-
 // ── (b) spend ────────────────────────────────────────────────
 
-test('(b) spend intent tool meta_launch_test_ad over IPC does not run without approval', async () => {
-  for (const card of ['none', 'deny']) {
-    const { tools, calls } = fakeTools();
-    const { approve, seen } = policyApprover(card);
-    const resp = await call('meta_launch_test_ad', { brand: 'vela', dailyBudget: 20, adImagePath: 'a.png' }, { tools, approve });
-    assert.strictEqual(resp.ok, false, `card=${card}`);
-    assert.strictEqual(calls.length, 0, `card=${card}: handler must not run`);
-    assert.strictEqual(seen[0].action, 'push');
-  }
+test('(b) spend intent tool meta_launch_test_ad over IPC runs; approved not injected into a schema that lacks it', async () => {
+  const { tools, calls } = fakeTools();
+  const { approve, seen } = policyApprover();
+  const resp = await call('meta_launch_test_ad', { brand: 'vela', dailyBudget: 20, adImagePath: 'a.png' }, { tools, approve });
+  assert.strictEqual(resp.ok, true);
+  assert.strictEqual(calls.length, 1);
+  assert.strictEqual(seen[0].action, 'push');
+  assert.ok(!('approved' in calls[0].args), 'defineTool strict schemas reject undeclared keys');
 });
 
-test('(b) legacy meta_ads push over IPC does not run without approval', async () => {
+test('(b) budget deny rail still refuses an external spend call (cents-scale budget)', async () => {
   const { tools, calls } = fakeTools();
-  const { approve } = policyApprover('none');
-  const resp = await call('meta_ads', { action: 'push', brand: 'vela', dailyBudget: 20 }, { tools, approve });
+  const { approve } = policyApprover();
+  const resp = await call('meta_ads', { action: 'push', brand: 'vela', dailyBudget: 250000 }, { tools, approve });
   assert.strictEqual(resp.ok, false);
+  assert.strictEqual(calls.length, 0, 'a deny rail is not a prompt; external origin never waives it');
+});
+
+test('(b) a deny decision of any kind keeps the handler from running', async () => {
+  const { tools, calls } = fakeTools();
+  const deny = async () => ({ behavior: 'deny', message: 'Merlin is not allowed to delete campaigns.' });
+  const resp = await call('klaviyo', Object.assign({}, FLOW_SET), { tools, approve: deny });
+  assert.strictEqual(resp.ok, false);
+  assert.match(resp.error.message, /not allowed/);
   assert.strictEqual(calls.length, 0);
 });
 
 // ── (c) caller-supplied approved flag ────────────────────────
 
-test('(c) caller-passed approved:true does not bypass the gate', async () => {
-  const { tools, calls } = fakeTools();
-  const { approve, seen } = policyApprover('none');
-  const resp = await call('klaviyo', Object.assign({ approved: true }, FLOW_SET), { tools, approve });
-  assert.strictEqual(resp.ok, false);
-  assert.strictEqual(resp.error.code, 'APPROVAL_REQUIRED');
-  assert.strictEqual(calls.length, 0);
+test('(c) caller-passed approved:true is stripped before the decision', async () => {
+  const { tools } = fakeTools();
+  const { approve, seen } = policyApprover();
+  await call('klaviyo', Object.assign({ approved: true }, FLOW_SET), { tools, approve });
   assert.ok(!('approved' in seen[0].input), 'the decision must never see a caller-supplied approved flag');
 });
 
-test('(c) caller-passed approved:true never reaches the handler on an auto-approved path', async () => {
-  // Even when the decision auto-approves (no human), a caller-set flag must
-  // not flow through to the engine's requireApproval() backstop.
+test('(c) caller-passed approved:true never reaches the handler on a non-host-approved path', async () => {
+  // A decision that allows WITHOUT hostApproved (long-tail auto-approve)
+  // must not let a caller-set flag flow through to requireApproval().
   const { tools, calls } = fakeTools();
   const autoAllow = async (_n, input) => ({ behavior: 'allow', updatedInput: Object.assign({}, input, { approved: true }) });
   const resp = await call('klaviyo', Object.assign({ approved: true }, FLOW_SET), { tools, approve: autoAllow });
   assert.strictEqual(resp.ok, true);
   assert.strictEqual(calls.length, 1);
-  assert.ok(!('approved' in calls[0].args), 'approved must only be set by a human Allow');
+  assert.ok(!('approved' in calls[0].args), 'approved is only ever set by the app');
 });
 
 // ── (d) read-only ────────────────────────────────────────────
 
-test('(d) read-only action runs over IPC with no card', async () => {
+test('(d) read-only action runs over IPC with no card and no approved flag', async () => {
   const { tools, calls } = fakeTools();
-  const { approve, seen } = policyApprover('none');
+  const { approve, seen } = policyApprover();
   const resp = await call('klaviyo', { action: 'flows-list', brand: 'vela' }, { tools, approve });
   assert.strictEqual(resp.ok, true);
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(seen[0].carded, false);
   assert.ok(!('approved' in calls[0].args));
-});
-
-// ── (e) approve in card ──────────────────────────────────────
-
-test('(e) human Allow runs the carded action and sets approved for the engine gate', async () => {
-  const { tools, calls } = fakeTools();
-  const { approve } = policyApprover('allow');
-  const resp = await call('klaviyo', Object.assign({}, FLOW_SET), { tools, approve });
-  assert.strictEqual(resp.ok, true);
-  assert.strictEqual(calls.length, 1);
-  assert.strictEqual(calls[0].args.approved, true);
-  assert.strictEqual(calls[0].args.action, 'flow-set-message-template');
-});
-
-test('(e) human Allow runs a spend tool; approved is not injected into a schema that lacks it', async () => {
-  const { tools, calls } = fakeTools();
-  const { approve } = policyApprover('allow');
-  const resp = await call('meta_launch_test_ad', { brand: 'vela', dailyBudget: 20, adImagePath: 'a.png' }, { tools, approve });
-  assert.strictEqual(resp.ok, true);
-  assert.strictEqual(calls.length, 1);
-  assert.ok(!('approved' in calls[0].args), 'defineTool strict schemas reject undeclared keys');
 });
 
 // ── Fail-closed ──────────────────────────────────────────────
@@ -260,29 +230,23 @@ test('fail-closed: start() refuses to boot without an approve function', () => {
 
 // ── End to end over the real socket / named pipe ─────────────
 
-test('e2e: the incident call over the live socket is refused and the handler never runs', async () => {
+test('e2e: an external call over the live socket runs with no card, caller approved stripped, app approved set', async () => {
   const d = tmpDir();
   const { tools, calls } = fakeTools();
-  const { approve } = policyApprover('none');
+  const { approve, seen } = policyApprover();
   const ep = ipc.start({ stateDir: d, tools, ctx: { appRoot: d }, approve });
   try {
     await new Promise((resolve) => {
       if (ep.server.listening) return resolve();
       ep.server.once('listening', resolve);
     });
-    const token = ep.token;
-    const resp = await new Promise((resolve, reject) => {
+    const send = (req) => new Promise((resolve, reject) => {
       const sock = net.createConnection(ep.socketPath);
       let buf = '';
       const timer = setTimeout(() => { sock.destroy(); reject(new Error('e2e timeout')); }, 3000);
       sock.setEncoding('utf8');
       sock.on('error', (e) => { clearTimeout(timer); reject(e); });
-      sock.on('connect', () => {
-        sock.write(JSON.stringify({
-          id: 'e2e', auth: token, method: 'tools/call',
-          params: { name: 'klaviyo', arguments: Object.assign({ approved: true }, FLOW_SET) },
-        }) + '\n');
-      });
+      sock.on('connect', () => { sock.write(JSON.stringify(req) + '\n'); });
       sock.on('data', (chunk) => {
         buf += chunk;
         const idx = buf.indexOf('\n');
@@ -293,9 +257,25 @@ test('e2e: the incident call over the live socket is refused and the handler nev
         }
       });
     });
-    assert.strictEqual(resp.ok, false);
-    assert.strictEqual(resp.error.code, 'APPROVAL_REQUIRED');
+    // Wrong token: refused before any decision or handler.
+    const bad = await send({
+      id: 'bad', auth: 'b'.repeat(32), method: 'tools/call',
+      params: { name: 'klaviyo', arguments: Object.assign({}, FLOW_SET) },
+    });
+    assert.strictEqual(bad.ok, false);
+    assert.strictEqual(bad.error.code, 'AUTH_FAILED');
     assert.strictEqual(calls.length, 0);
+    assert.strictEqual(seen.length, 0);
+
+    const resp = await send({
+      id: 'e2e', auth: ep.token, method: 'tools/call',
+      params: { name: 'klaviyo', arguments: Object.assign({ approved: true }, FLOW_SET) },
+    });
+    assert.strictEqual(resp.ok, true);
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].args.approved, true);
+    assert.strictEqual(calls[0].external, true);
+    assert.ok(!('approved' in seen[0].input));
   } finally {
     ep.stop();
     try { fs.rmSync(d, { recursive: true, force: true }); } catch {}
@@ -304,54 +284,74 @@ test('e2e: the incident call over the live socket is refused and the handler nev
 
 // ── Source scans: the wiring cannot be silently dropped ──────
 
-test('source: dispatchRequest strips approved, calls approve, and only then the handler', () => {
+test('source: dispatchRequest strips approved, calls approve, and only then the handler with external origin', () => {
   const start = SRC_ENDPOINT.indexOf('async function dispatchRequest(');
   const end = SRC_ENDPOINT.indexOf('\nfunction readActiveBrand(', start);
   assert.ok(start > 0 && end > start, 'dispatchRequest body not found');
   const body = SRC_ENDPOINT.slice(start, end);
   assert.match(body, /REGRESSION GUARD \(2026-09-28/);
+  assert.match(body, /REGRESSION GUARD \(2026-10-04, desktop-approval\)/);
+  const authIdx = body.indexOf('constantTimeEqual(reqJson.auth');
   const stripIdx = body.indexOf('stripCallerApproval(args)');
   const approveIdx = body.indexOf('await approve(MERLIN_TOOL_PREFIX + name');
   const handlerIdx = body.indexOf('tool.handler(');
-  assert.ok(stripIdx > 0, 'caller approved flag must be stripped');
+  assert.ok(authIdx > 0 && stripIdx > authIdx, 'caller approved flag stripped after the token check');
   assert.ok(approveIdx > stripIdx, 'approval decision must run on the stripped args');
   assert.ok(handlerIdx > approveIdx, 'handler must only be reached after the approval decision');
   assert.strictEqual(body.split('tool.handler(').length - 1, 1, 'exactly one handler call site, behind the gate');
-  assert.match(body, /decision\.humanApproved === true/);
+  assert.match(body, /tool\.handler\(finalArgs, callOrigin\.externalOriginExtra\(/);
+  assert.match(body, /decision\.hostApproved === true/);
+  assert.doesNotMatch(body, /humanApproved/, 'external calls no longer wait on a human click in Merlin');
   assert.strictEqual(ipc.MERLIN_TOOL_PREFIX, 'mcp__merlin__');
 });
 
-test('source: main.js passes handleToolApproval as the IPC approve decision', () => {
+test('source: main.js passes handleToolApproval with the ipc surface set from the transport', () => {
   const idx = SRC_MAIN.indexOf('_mcpIpcEndpoint = startMcpIpc({');
   assert.ok(idx > 0, 'startMcpIpc call site not found');
   const site = SRC_MAIN.slice(idx, SRC_MAIN.indexOf('});', idx));
   assert.match(site, /approve:\s*\(toolName, input\)\s*=>\s*handleToolApproval\(toolName, input, \{ merlinApprovalSurface: 'ipc' \}\)/);
   assert.match(site, /REGRESSION GUARD \(2026-09-28/);
+  assert.match(site, /REGRESSION GUARD \(2026-10-04, desktop-approval\)/);
+  // The surface flag is only ever set at that call site, never derived from input.
+  const code = SRC_MAIN.split(/\r?\n/).filter((l) => !/^\s*\/\//.test(l)).join('\n');
+  const setSites = code.split("merlinApprovalSurface: 'ipc'").length - 1;
+  assert.strictEqual(setSites, 1, 'merlinApprovalSurface must be set only at the startMcpIpc call site');
+  assert.doesNotMatch(SRC_MAIN, /input\.merlinApprovalSurface|input\[['"]merlinApprovalSurface/);
 });
 
-test('source: every card in the mcp__merlin__ branch goes through the IPC-aware helpers', () => {
+test('source: every card in the mcp__merlin__ branch resolves external origin before emitting, after the deny rails', () => {
   const start = SRC_MAIN.indexOf("if (toolName.startsWith('mcp__merlin__')) {");
   const end = SRC_MAIN.indexOf('All other MCP merlin tools: auto-approve', start);
   assert.ok(start > 0 && end > start, 'mcp__merlin__ branch not found');
   const branch = SRC_MAIN.slice(start, end);
-  const emissions = branch.split("win.webContents.send('approval-request', payload)").length - 1;
+  const emit = "win.webContents.send('approval-request', payload)";
+  const resolver = 'resolveExternalOriginCard(payload, toolName, input, opts)';
+  const emissions = branch.split(emit).length - 1;
   assert.ok(emissions >= 2, 'expected the spend and carded-destructive card sites');
-  assert.strictEqual(branch.split('prepareIpcApprovalCard(payload, opts)').length - 1, emissions,
-    'every card emission must first check whether an IPC caller can be shown a card');
-  assert.strictEqual(branch.split('return awaitApprovalDecision(toolUseID, input, opts)').length - 1, emissions,
-    'every card must resolve through awaitApprovalDecision (bounded deadline + humanApproved)');
-  assert.doesNotMatch(branch, /return new Promise\(/, 'an inline card Promise would skip the IPC deadline');
+  assert.strictEqual(branch.split(resolver).length - 1, emissions,
+    'every card emission must first hand external calls back to the originating client');
+  let from = 0;
+  for (let i = 0; i < emissions; i++) {
+    const r = branch.indexOf(resolver, from);
+    const e = branch.indexOf(emit, from);
+    assert.ok(r > 0 && r < e, 'resolver must run before the card is emitted');
+    from = e + emit.length;
+  }
+  const denyIdx = branch.indexOf('budgetCeiling.denyReasonForBudget(adBudget, capForComparison)');
+  assert.ok(denyIdx > 0 && denyIdx < branch.indexOf(resolver), 'budget deny rail must run before the external allow');
+  assert.ok(SRC_MAIN.indexOf('const deny = checkHardDeny(toolName, input);') < SRC_MAIN.indexOf("if (toolName.startsWith('mcp__merlin__')) {"),
+    'hard-deny runs before any allow');
+  assert.doesNotMatch(branch, /return new Promise\(/);
   assert.match(SRC_MAIN, /async function handleToolApproval\(toolName, input, opts\)/);
 });
 
-test('source: awaitApprovalDecision bounds IPC waits and marks human approval', () => {
-  const start = SRC_MAIN.indexOf('function awaitApprovalDecision(');
+test('source: resolveExternalOriginCard is a no-op off the ipc surface and never emits a card', () => {
+  const start = SRC_MAIN.indexOf('function resolveExternalOriginCard(');
   assert.ok(start > 0);
-  const body = SRC_MAIN.slice(start, SRC_MAIN.indexOf('\n}\n', start) > 0 ? SRC_MAIN.indexOf('\n}\n', start) : start + 3000);
-  assert.match(body, /IPC_APPROVAL_DEADLINE_MS/);
-  assert.match(body, /APPROVAL_TIMEOUT/);
-  assert.match(body, /humanApproved: true/);
-  assert.match(body, /pendingApprovals\.delete\(toolUseID\)/, 'the expired card must be withdrawn');
-  const guardIdx = SRC_MAIN.indexOf('REGRESSION GUARD (2026-09-28, ipc-approval-bypass): tools/call requests');
-  assert.ok(guardIdx > 0 && guardIdx < start, 'guard block must sit above the IPC helpers');
+  const body = SRC_MAIN.slice(start, SRC_MAIN.indexOf('\nfunction awaitApprovalDecision(', start));
+  assert.match(body, /if \(!isIpcApprovalSurface\(opts\)\) return null;/);
+  assert.match(body, /hostApproved: true/);
+  assert.doesNotMatch(body, /approval-request|setPendingApproval|nudgeForApproval/);
+  const guardIdx = SRC_MAIN.indexOf('REGRESSION GUARD (2026-10-04, desktop-approval): Ryan operator decision');
+  assert.ok(guardIdx > 0 && guardIdx < start, 'guard block must sit above the helper');
 });

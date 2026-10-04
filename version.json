@@ -66,6 +66,7 @@
     "app/mcp-tools.js",
     "app/universal-key-scope.js",
     "app/mcp-ipc-endpoint.js",
+    "app/mcp-call-origin.js",
     "app/merlin-mcp-shim.js",
     "app/claude-desktop-config.js",
     "app/codex-config.js",

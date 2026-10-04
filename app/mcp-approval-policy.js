@@ -509,21 +509,12 @@ function classifyLongTailApproval({ toolName, command, strictApprovals }) {
   return 'allow';
 }
 
-// ── IPC sidecar approval deadline ───────────────────────────────────
-//
-// REGRESSION GUARD (2026-09-28, ipc-approval-bypass): calls arriving over
-// the local IPC sidecar (mcp-ipc-endpoint.js, used by Claude Desktop and
-// external Claude Code sessions) run through the same handleToolApproval
-// decision as the in-app chat. When that decision needs a card, the IPC
-// caller waits at most this long. It MUST stay below the shim's
-// REQUEST_TIMEOUT_MS (5 min in merlin-mcp-shim.js): if the shim gave up
-// first, a later click on Allow would run the action after the caller had
-// already been told it failed. On expiry the pending card is withdrawn and
-// the caller gets a structured APPROVAL_TIMEOUT error.
-const IPC_APPROVAL_DEADLINE_MS = 4 * 60 * 1000;
+// The 2026-09-28 IPC_APPROVAL_DEADLINE_MS constant was removed on
+// 2026-10-04 (desktop-approval): external MCP calls no longer wait on an
+// in-app card at all, so there is no wait to bound. See the REGRESSION
+// GUARD above resolveExternalOriginCard in main.js.
 
 module.exports = {
-  IPC_APPROVAL_DEADLINE_MS,
   READ_ONLY_ACTIONS,
   SPEND_ACTIONS,
   CARDED_DESTRUCTIVE_ACTIONS,
