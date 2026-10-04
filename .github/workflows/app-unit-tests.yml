@@ -198,6 +198,12 @@ jobs:
       # same handleToolApproval decision as the in-app chat.
       - name: MCP IPC sidecar approval gate
         run: node --test app/mcp-ipc-approval-gate.test.js
+      # 2026-10-04 operator decision (desktop-approval): approval for an
+      # authenticated external MCP call lives on the originating client, so
+      # no in-app card; deny rails stay. Locks transport-only origin, the
+      # in-app card path, and the external tools/list MCP hints.
+      - name: MCP external-origin approval (desktop-approval)
+        run: node --test app/mcp-desktop-approval.test.js
       # Same failure class, GA4 surface. google-analytics-update-stream-settings
       # is the write half of a read that already shipped: audit-property has
       # long reported "Enhanced Measurement off" with no way to fix it from

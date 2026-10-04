@@ -68,6 +68,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const callOrigin = require('./mcp-call-origin');
 
 // Methods the endpoint will accept. Anything else gets METHOD_NOT_FOUND.
 // DO NOT add methods that read state (config/read, vault/get, etc.) —
@@ -240,10 +241,51 @@ function buildToolsListPayload(tools) {
       name: t.name,
       description: t.description || '',
       inputSchema: toJsonSchema(t.inputSchema),
-      annotations: t.annotations || {},
+      annotations: buildExternalAnnotations(t.name, t.annotations),
     });
   }
   return { tools: out };
+}
+
+// Tools whose every action only reads. The external MCP client uses
+// readOnlyHint to decide how loudly to prompt, so membership here is a
+// promise that the tool never mutates anything: a multiplexer that mixes
+// reads and writes (meta_ads, klaviyo, shopify, ...) must NOT be listed.
+// mcp-desktop-approval.test.js fails if a listed tool is destructive or
+// spend-impacting in the real registry, or no longer exists.
+const READ_ONLY_TOOL_NAMES = new Set([
+  'connection_status',
+  'meta_review_performance',
+  'meta_tofu',
+  'meta_research_competitor_ads',
+  'meta_audit',
+  'jobs_poll',
+  'jobs_list',
+]);
+
+// MCP standard tool annotations for the external tools/list (2026-10-04,
+// desktop-approval). The MCP client (Claude Desktop) owns the approval
+// prompt for these calls, so it must be told which tools write: per the
+// MCP spec an absent destructiveHint defaults to true and readOnlyHint to
+// false, but we state every hint explicitly rather than lean on defaults.
+//   destructiveHint: true for any destructive OR spend-impacting tool
+//   readOnlyHint:    true only for the curated READ_ONLY_TOOL_NAMES
+// Merlin's own annotation keys are kept (they are informational for the
+// client), minus function values such as blastRadius, which cannot cross
+// the wire and must never be serialized.
+function buildExternalAnnotations(name, merlinAnnotations) {
+  const a = (merlinAnnotations && typeof merlinAnnotations === 'object') ? merlinAnnotations : {};
+  const out = {};
+  for (const [k, v] of Object.entries(a)) {
+    if (typeof v === 'function' || typeof v === 'undefined') continue;
+    out[k] = v;
+  }
+  const writes = a.destructive === true || a.costImpact === 'spend';
+  out.readOnlyHint = !writes && READ_ONLY_TOOL_NAMES.has(name);
+  out.destructiveHint = writes;
+  out.idempotentHint = a.idempotent === true && !writes;
+  out.openWorldHint = a.costImpact === 'api' || a.costImpact === 'spend' || a.costImpact === 'generation';
+  return out;
 }
 
 // Tool names on this socket are bare ("klaviyo"); the host approval
@@ -327,14 +369,28 @@ async function dispatchRequest(reqJson, { tools, expectedToken, ctx, approve }) 
   //   2. A caller-supplied `approved` flag is stripped BEFORE the decision
   //      and BEFORE the handler. The engine's requireApproval() backstop
   //      trusts that flag, so a caller that can set it approves itself.
-  //      The flag is re-added only when a human clicked Allow on a card
-  //      (decision.humanApproved) and the tool schema declares it.
+  //      The flag is re-added only by the app: when the decision says the
+  //      approval lives on the originating host (decision.hostApproved, see
+  //      the 2026-10-04 guard below) and the tool schema declares it.
   //   3. Anything other than behavior 'allow' returns a structured error
-  //      (APPROVAL_REQUIRED / APPROVAL_DENIED / APPROVAL_TIMEOUT) with
-  //      friendly text, and the handler never runs.
+  //      with friendly text, and the handler never runs. The decision still
+  //      runs every deny rail (hard-deny list, cents detector, absolute
+  //      budget ceiling) for external calls.
   // The shim token is a local bearer credential; if it leaks, this gate is
   // what stops the holder from spending money or emailing customers.
-  // Tests: mcp-ipc-endpoint.test.js "IPC approval gate" block.
+  //
+  // REGRESSION GUARD (2026-10-04, desktop-approval): Ryan operator decision.
+  // Approval belongs on the originating surface. Claude Desktop (and every
+  // other MCP client reaching Merlin through merlin-mcp-shim.js) shows its
+  // own per-tool permission prompt, so a call that passed the token check
+  // above does NOT raise an in-app Merlin card and does NOT wait on one.
+  // handleToolApproval returns { behavior:'allow', hostApproved:true } at
+  // the point where it would have carded, after its deny rails ran. Origin
+  // comes from this authenticated transport ONLY: the handler receives
+  // callOrigin.externalOriginExtra(), a Symbol-keyed marker that no JSON
+  // tool argument can produce. Never derive origin from args. In-app chat
+  // calls never pass through this function and keep their cards.
+  // Tests: mcp-ipc-approval-gate.test.js, mcp-desktop-approval.test.js.
   if (typeof approve !== 'function') {
     return fail('APPROVAL_UNAVAILABLE',
       'Merlin could not check approval for this action, so it was not run. Restart Merlin and try again.');
@@ -350,23 +406,23 @@ async function dispatchRequest(reqJson, { tools, expectedToken, ctx, approve }) 
   if (!decision || decision.behavior !== 'allow') {
     const code = (decision && typeof decision.code === 'string' && decision.code) || 'APPROVAL_DENIED';
     const message = (decision && typeof decision.message === 'string' && decision.message) ||
-      'This action needs approval in the Merlin app and was not approved.';
+      'Merlin refused this action, so it was not run.';
     return fail(code, message);
   }
   const finalArgs = stripCallerApproval(
     (decision.updatedInput && typeof decision.updatedInput === 'object') ? decision.updatedInput : gatedArgs
   );
-  if (decision.humanApproved === true &&
+  if (decision.hostApproved === true &&
       tool.inputSchema && Object.prototype.hasOwnProperty.call(tool.inputSchema, 'approved')) {
     finalArgs.approved = true;
   }
   try {
-    // The handler is the wrapped one from mcp-define-tool — already runs
-    // brand-check, idempotency, preview gate, concurrency slot, redaction.
-    // Pass an empty `extra` since the SDK transport-specific extra object
-    // (signal, sessionId) is not meaningful here; the wrapped handler in
-    // mcp-define-tool ignores `extra` anyway.
-    const result = await tool.handler(finalArgs, {});
+    // The handler is the wrapped one from mcp-define-tool: brand-check,
+    // idempotency, preview gate, concurrency slot, redaction. `extra`
+    // carries the transport-derived external-origin marker (2026-10-04
+    // guard above); the wrapper uses it to set the engine approval flag on
+    // destructive / spend tools and to record the approval in result meta.
+    const result = await tool.handler(finalArgs, callOrigin.externalOriginExtra('mcp-client'));
     return { id, ok: true, result };
   } catch (e) {
     return fail('INTERNAL_ERROR', (e && e.message) || String(e));
@@ -586,6 +642,8 @@ module.exports = {
   atomicWrite,
   toJsonSchema,
   buildToolsListPayload,
+  buildExternalAnnotations,
+  READ_ONLY_TOOL_NAMES,
   dispatchRequest,
   stripCallerApproval,
   MERLIN_TOOL_PREFIX,

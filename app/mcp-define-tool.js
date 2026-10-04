@@ -21,6 +21,46 @@ const envelope = require('./mcp-envelope');
 const errors = require('./mcp-errors');
 const concurrency = require('./mcp-concurrency');
 const preview = require('./mcp-preview');
+const callOrigin = require('./mcp-call-origin');
+const budgetCeiling = require('./budget-ceiling');
+
+// Every dailyBudget a call carries: the top-level field plus each ads[]
+// entry (bulk-push / carousel shapes). Used only to echo the amount into an
+// external call's meta.approval record; validation lives in validateBudget.
+function collectDailyBudgets(args) {
+  const out = [];
+  if (!args || typeof args !== 'object') return out;
+  const top = Number(args.dailyBudget);
+  if (args.dailyBudget !== undefined && args.dailyBudget !== null && Number.isFinite(top)) out.push(top);
+  if (Array.isArray(args.ads)) {
+    for (const a of args.ads) {
+      if (!a || typeof a !== 'object' || a.dailyBudget === undefined || a.dailyBudget === null) continue;
+      const n = Number(a.dailyBudget);
+      if (Number.isFinite(n)) out.push(n);
+    }
+  }
+  return out;
+}
+
+// The approval record attached to an external-origin call that touches money
+// or live state. It replaces the in-app card, so it carries what the card
+// would have shown: which surface approved it and, for spend, the amount.
+function externalApprovalRecord(def, args, extra) {
+  const record = {
+    surface: 'mcp-client',
+    client: callOrigin.externalClientLabel(extra),
+    note: 'Approved through the MCP client\'s own tool permission prompt. Merlin showed no in-app card for this call.',
+  };
+  const budgets = collectDailyBudgets(args);
+  if (budgets.length) {
+    const max = Math.max(...budgets);
+    record.dailyBudget = max;
+    if (budgetCeiling.alwaysRequiresCard(max)) {
+      record.highMagnitudeBudget = `$${max}/day is at or above $${budgetCeiling.BUDGET_HARD_CEILING}/day. In-app this always shows a Merlin card; for this external call the MCP client's tool prompt was the human look.`;
+    }
+  }
+  return record;
+}
 
 // ── Validation ────────────────────────────────────────────────
 
@@ -204,10 +244,19 @@ function wrapHandler(def, ctx) {
     allowedKeys.add('confirm_token');
   }
 
-  return async (args) => {
+  // Whether this tool's schema declares the engine approval flag. Only those
+  // tools get it set on an external-origin call (zod would strip it anyway).
+  const declaresApprovedFlag = declaredInputKeys.includes('approved');
+  const touchesMoneyOrLiveState = def.destructive === true || def.costImpact === 'spend';
+
+  // `extra` is the transport's second argument. The in-app SDK passes its own
+  // object; the IPC endpoint passes callOrigin.externalOriginExtra() after the
+  // shim token check. Origin is read ONLY from `extra`, never from `args`.
+  return async (args, extra) => {
     const startedAt = Date.now();
     const brand = args && args.brand;
     const toolName = def.name;
+    const externalOrigin = callOrigin.isExternalOrigin(extra);
 
     // ── 0. Unknown-key check (D2.4 strict-mode equivalent) ────
     if (strictModeActive && args && typeof args === 'object') {
@@ -238,6 +287,32 @@ function wrapHandler(def, ctx) {
     // than today, so no other tool's behavior can regress).
     if (strictModeActive && args && typeof args === 'object') {
       args = coerceArgsToSchema(args, def.input);
+    }
+
+    // ── 0c. External-origin approval ──────────────────────────
+    // REGRESSION GUARD (2026-10-04, desktop-approval): Ryan's operator
+    // decision. A call from an authenticated external MCP client (Claude
+    // Desktop via merlin-mcp-shim.js) was already approved by that client's
+    // own per-tool permission prompt, so it is approved here exactly as an
+    // in-app call is after the operator clicks Approve on the Merlin card:
+    // the engine's `approved` flag is set by the app, and no in-app card is
+    // raised or awaited. In-app calls never reach this branch (their `extra`
+    // never carries the origin Symbol), so they keep the card from
+    // handleToolApproval in main.js unchanged. Origin is derived from the
+    // authenticated transport only; see the REGRESSION GUARD in
+    // mcp-call-origin.js before touching how `externalOrigin` is computed.
+    // An explicit `approved: false` from the caller is respected (it only
+    // makes the engine refuse). Every non-prompt rail still runs: budget
+    // validation in the handlers and engine, ceilings, caps, spend pause,
+    // rate limits, pixel/page gates, and the preview/confirm_token binding.
+    let externalApproval = null;
+    if (externalOrigin && touchesMoneyOrLiveState) {
+      if (declaresApprovedFlag && args && typeof args === 'object' && args.approved !== false) {
+        args = Object.assign({}, args, { approved: true });
+      }
+      // The audit-log entry is written by main.js resolveExternalOriginCard
+      // at decision time; this record travels with the result instead.
+      externalApproval = externalApprovalRecord(def, args, extra);
     }
 
     // ── 1. Brand check ────────────────────────────────────────
@@ -400,6 +475,10 @@ function wrapHandler(def, ctx) {
       resultEnvelope = await concurrency.withSlot(platformName, runHandler);
     } else {
       resultEnvelope = await runHandler();
+    }
+
+    if (externalApproval && resultEnvelope && typeof resultEnvelope === 'object') {
+      resultEnvelope.meta = Object.assign({}, resultEnvelope.meta || {}, { approval: externalApproval });
     }
 
     // ── 5. Idempotency store ─────────────────────────────────
