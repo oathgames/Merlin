@@ -140,7 +140,9 @@ function shellCanRewrite(raw) {
   return state !== '';
 }
 function lettersOnly(text) {
-  let s = String(text);
+  // Drop shell quotes first: a quote can split an escape (\u'00'66) and the
+  // shell rejoins it before Go decodes the JSON.
+  let s = String(text).replace(/['"]/g, '');
   for (let i = 0; i < 4; i++) {
     s = s
       .replace(/\\+u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
