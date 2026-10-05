@@ -112,10 +112,16 @@ function lastString(command, key) {
 //   - any $ or backtick, or any backslash-newline continuation;
 //   - any brace or glob character OUTSIDE quotes, or an unbalanced quote
 //     (a plain --cmd '{...}' keeps every brace inside single quotes);
-//   - the key re-appearing as `key:` (any case) once quotes and backslashes
-//     are deleted, with a value other than literal false (quote splicing).
+//   - a pipe or input redirect outside quotes, or xargs / --cmd-file
+//     anywhere: the JSON is then produced by another program (printf, cat)
+//     whose output the text does not show;
+//   - the key's letters appearing (any case, after decoding \uXXXX, \xXX and
+//     octal escapes at any backslash depth and dropping every non-letter)
+//     more often than the scan found it set to literal false. This covers
+//     quote splicing and nested escapes in one rule, at the cost of carding a
+//     Bash push whose copy merely contains the word.
 // All of these only ever ADD a card; a false positive costs one click.
-const SHELL_EXPANSION_RE = /[$`]|\\\r?\n/;
+const SHELL_EXPANSION_RE = /[$`]|\\\r?\n|--cmd-file|\bxargs\b/;
 function shellCanRewrite(raw) {
   if (SHELL_EXPANSION_RE.test(raw)) return true;
   let state = '';
@@ -129,23 +135,39 @@ function shellCanRewrite(raw) {
     }
     if (c === '\\') { i++; continue; }
     if (c === "'" || c === '"') { state = c; continue; }
-    if (c === '{' || c === '}' || c === '*' || c === '?' || c === '[') return true;
+    if (c === '{' || c === '}' || c === '*' || c === '?' || c === '[' || c === '|' || c === '<') return true;
   }
   return state !== '';
 }
+function lettersOnly(text) {
+  let s = String(text);
+  for (let i = 0; i < 4; i++) {
+    s = s
+      .replace(/\\+u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+x([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
+  }
+  return s.toLowerCase().replace(/[^a-z]/g, '');
+}
+function countOccurrences(hay, needle) {
+  if (!needle) return 0;
+  let n = 0;
+  for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + 1)) n++;
+  return n;
+}
 function requestsOverride(command, key) {
   const raw = String(command || '');
+  let falseHits = 0;
   for (const text of candidates(raw)) {
-    for (const h of scanKeys(text, key)) {
+    const hits = scanKeys(text, key);
+    for (const h of hits) {
       if (h.undecodable) return true;
       if (!/^false(?![A-Za-z0-9_])/.test(h.valueText)) return true;
     }
+    falseHits = Math.max(falseHits, hits.length);
   }
   if (shellCanRewrite(raw)) return true;
-  const spliced = raw.replace(/['"\\]/g, '');
-  const esc = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const re = new RegExp('(?:^|[^A-Za-z0-9_])' + esc + '\\s*:\\s*(?!false(?![A-Za-z0-9_]))', 'gi');
-  return re.test(spliced);
+  return countOccurrences(lettersOnly(raw), lettersOnly(key)) > falseHits;
 }
 
 module.exports = { parseAction, lastNumber, lastString, requestsOverride };

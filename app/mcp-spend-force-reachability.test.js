@@ -235,14 +235,21 @@ test('Bash force detector (bashMerlinAction.requestsOverride): every form Go rea
     `Merlin.exe --cmd '{"action":"meta-push","fo'{r,}'ce":true}'`,
     `Merlin.exe --cmd '{"action":"meta-push","fo'[r]'ce":true}'`,
     `Merlin.exe --cmd '{"action":"meta-push","force":true`,
+    `Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"dailyBudget${BS}":5,${BS}"${BS}${BS}u0066orce${BS}":true}"`,
+    `printf '{"action":"meta-push","dailyBudget":5,"%s":true}' force | xargs -0 Merlin.exe --config x --cmd`,
+    `printf '{"action":"meta-push","%sce":true}' for > c.json && Merlin.exe --cmd-file c.json`,
+    `Merlin.exe --cmd "$(printf '{\\"%sce\\":true}' for)"`,
+    `sh -c 'Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"fo${BS}"${BS}"rce${BS}":true}"'`,
+    // Copy that merely contains the word over-cards by design.
+    `Merlin.exe --cmd '{"action":"meta-push","adHeadline":"force of nature"}'`,
   ];
   for (const c of forced) assert.equal(requestsOverride(c, 'force'), true, `must detect force in: ${c}`);
   const plain = [
     `Merlin.exe --cmd '{"action":"meta-push","force":false}'`,
     `Merlin.exe --cmd '{"action":"meta-push"}'`,
-    `Merlin.exe --cmd '{"action":"meta-push","adHeadline":"force of nature"}'`,
     `cd /d/x && .claude/tools/Merlin.exe --config cfg.json --cmd '{"action":"meta-push","adBody":"Big {new} drop? [yes]*"}'`,
     `Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"dailyBudget${BS}":5}"`,
+    `cd /d/x && .claude/tools/Merlin.exe --config x --cmd '{"action":"meta-push","dailyBudget":5,"force":false}'`,
   ];
   for (const c of plain) assert.equal(requestsOverride(c, 'force'), false, `must not flag: ${c}`);
 });
