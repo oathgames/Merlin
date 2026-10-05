@@ -888,6 +888,70 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     ),
   }, tool, z, ctx));
 
+  // ── meta_set_url_tags ──────────────────────────────────────────────
+  //
+  // Rebuild LIVE ads' creatives with an EXPLICIT url_tags value, replacing
+  // the current tags, and swap each ad onto its new creative (see
+  // autocmo-core/meta_set_url_tags.go). Works on boosted Instagram posts and
+  // partnership ads: the Instagram media id, publishing identity, CTA link and
+  // partnership fields are carried over and verified on read-back, so the
+  // post's likes and comments stay attached. No other tool can change tags:
+  // every clone path copies the source creative's tags verbatim.
+  //
+  // costImpact 'spend' for the same reason as meta_refresh_creative_spec: no
+  // new spend, but it swaps the creative an already-spending ad serves (and
+  // resets that ad's learning), so it takes the always-cards path. The engine
+  // refuses without approved:true.
+  tools.push(defineTool({
+    name: 'meta_set_url_tags',
+    description: 'Replace the UTM / URL tags (url_tags) on one or more LIVE Meta ads. Each ad\'s creative is rebuilt with the new tags and everything else preserved: media, copy, CTA and destination link, the boosted Instagram post (same post, same likes and comments), the publishing identity, partnership ad fields, and enhancement settings. Every new creative is read back and verified before the ad is switched onto it. Use when ads are missing UTMs or carry the wrong ones, including boosted-post and partnership ads that no other tool can retag. Switching a creative resets that ad\'s learning, so ads that already carry exactly these tags are skipped unless force is set.',
+    destructive: true,
+    // Re-running with the same tags converges: matching ads are skipped.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      adIds: z.array(z.string()).optional().describe('The ads to retag (max 50). Use this or adId.'),
+      adId: z.string().optional().describe('A single ad to retag. Use this or adIds.'),
+      urlTags: z.string().describe('The FULL url_tags string to set, e.g. "utm_source=facebook&utm_medium=paidsocial&utm_campaign={{campaign.name}}". It REPLACES the current tags; it is not merged. No leading ? or &.'),
+      force: z.boolean().optional().describe('Rebuild even when an ad already carries exactly these tags. Off by default because switching a creative resets the ad\'s learning.'),
+      dryRun: z.boolean().optional().describe('Read-only preview: reads each ad\'s creative and shows the fields Meta returned plus the exact creative that WOULD be created, with no write of any kind and no approval needed. Run this first on boosted-post and partnership ads.'),
+      acknowledgePartnership: z.boolean().optional().describe('Set true only after the user confirms: rebuild an ad that looks like a partnership ad even though its partnership fields cannot all be read back (so their preservation cannot be verified). The engine refuses such ads without it.'),
+      approved: z.boolean().optional().describe('Approval flag for this write. The engine REFUSES to rebuild without it; set true only with explicit user approval. Not needed for dryRun.'),
+    },
+    handler: async (args) => {
+      const ids = [
+        ...(Array.isArray(args.adIds) ? args.adIds : []),
+        ...(args.adId ? [args.adId] : []),
+      ].map((s) => String(s).trim()).filter(Boolean);
+      if (ids.length === 0) {
+        return validationEnvelope('adIds (or adId) is required: name the ads to retag.');
+      }
+      if (ids.length > 50) {
+        return validationEnvelope(`At most 50 ads per call (got ${ids.length}). Split the list.`);
+      }
+      const tags = typeof args.urlTags === 'string' ? args.urlTags : '';
+      if (!tags.trim() || tags !== tags.trim() || /^[?&]/.test(tags) || /[\s#]/.test(tags) || !tags.includes('=')) {
+        return validationEnvelope(`urlTags must be key=value pairs joined by &, with no leading ? or &, no spaces and no # (got ${JSON.stringify(tags)}).`);
+      }
+      if (args.dryRun === true) {
+        // A preview never carries the write approval, so it can never be
+        // mistaken for (or upgraded into) the live rebuild.
+        const preview = { ...args };
+        delete preview.approved;
+        return toEnvelope(await runBinary(ctx, 'meta-set-url-tags', preview), {
+          nextSuggested: ['meta_set_url_tags'],
+        });
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-set-url-tags', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_set_existing_customers ────────────────────
   // Advertising Settings -> existing customers. ACCOUNT-LEVEL with REPLACE
   // semantics, which is why it cards despite spending nothing: a wrong list
