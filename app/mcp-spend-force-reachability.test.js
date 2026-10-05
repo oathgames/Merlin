@@ -242,6 +242,9 @@ test('Bash force detector (bashMerlinAction.requestsOverride): every form Go rea
     `sh -c 'Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"fo${BS}"${BS}"rce${BS}":true}"'`,
     `Merlin.exe --config x --cmd '{"action":"meta-push","dailyBudget":5,"${BS}u'00'66orce":true}'`,
     `Merlin.exe --cmd '{"action":"meta-push","${BS}u006'6'${BS}u006f${BS}u0072${BS}u0063${BS}u0065":true}'`,
+    // A literal false decoy must not mask a spliced or escaped true key.
+    `Merlin.exe --cmd '{"action":"meta-push","force":false,"fo''rce":true}'`,
+    `Merlin.exe --cmd '{"action":"meta-push","force":false,"${BS}u'00'66orce":true}'`,
     // Copy that merely contains the word over-cards by design.
     `Merlin.exe --cmd '{"action":"meta-push","adHeadline":"force of nature"}'`,
   ];
