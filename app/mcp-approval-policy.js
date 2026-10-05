@@ -74,6 +74,12 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   'export',
   // Google Ads per-ad Demand Gen video performance (GAQL reads only).
   'video-insights',
+  // TikTok GMV Max reads (tiktok_audit, 2026-10-05). GET-only in the engine
+  // (tiktok_gmv_max.go, AST call-graph test). Listed explicitly so they
+  // auto-approve as reads by name rather than via the catch-all.
+  'gmv-max-stores', 'gmv-max-campaigns', 'gmv-max-campaign-info',
+  'gmv-max-videos', 'gmv-max-report', 'gmv-max-shop-check',
+  'gmv-max-authorizations', 'gmv-max-ads',
 ]));
 
 // SPEND_ACTIONS gate the approval card. `push` is the only action eligible
@@ -108,6 +114,10 @@ const SPEND_ACTIONS = Object.freeze(new Set([
   // budget. Always cards (not in-cap eligible like 'push'), because it can
   // also add ads under an existing, possibly live, ad group.
   'demandgen-push',
+  // TikTok GMV Max ROI target (2026-10-05). Lowering a ROI target unlocks
+  // spend, so it is SPEND-class. Not 'push', so it is never eligible for the
+  // in-cap auto-approve: the card shows every time.
+  'roi-target',
 ]));
 
 // CARDED_DESTRUCTIVE_ACTIONS gate the generic confirmation card for
@@ -298,6 +308,7 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   'mcp__merlin__meta_setup_account':            'discover',
   'mcp__merlin__meta_review_performance':       'insights',
   'mcp__merlin__meta_audit':                    'audit',
+  'mcp__merlin__tiktok_audit':                  'audit',
   'mcp__merlin__meta_import_account_state':     'discover',
   'mcp__merlin__meta_research_competitor_ads':  'competitor-scan',
   'mcp__merlin__meta_build_lookalike':          'audit',  // costImpact 'api'; non-spend
@@ -373,6 +384,7 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // Uploading a customer list adds ad-account state and handles customer PII,
   // so it cards like the other audience writes even though it costs no spend.
   'mcp__merlin__meta_upload_customer_list': 'setup',
+  'mcp__merlin__tiktok_gmv_max_set_roi_target': 'roi-target',
   // meta_set_frequency_cap moves no money and can only reduce delivery, so it
   // is not a spend action. It does edit a live ad set's delivery settings and
   // capping impressions is a judgement call a human should see, so it cards
@@ -399,6 +411,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
   'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
   'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',
+  'mcp__merlin__tiktok_gmv_max_set_roi_target': 'Change a TikTok GMV Max ROI target (a lower target lets GMV Max spend more)',
   'mcp__merlin__meta_set_optimization_goal':    'Change what a live Meta ad set optimizes for',
   'mcp__merlin__meta_clone_adset':              'Clone a Meta ad set into a new PAUSED ad set',
   'mcp__merlin__meta_set_frequency_cap':        'Set a frequency cap on a Meta ad set',
