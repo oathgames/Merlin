@@ -230,12 +230,19 @@ test('Bash force detector (bashMerlinAction.requestsOverride): every form Go rea
     `Merlin.exe --cmd $'{"action":"meta-push","for${BS}x63e":true}'`,
     `F=force; Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"$F${BS}":true}"`,
     `Merlin.exe --cmd "$(cat cmd.json)"`,
+    `Merlin.exe --cmd '{"action":"meta-push","for'${BS}\n'ce":true}'`,
+    `Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"for${BS}\nce${BS}":true}"`,
+    `Merlin.exe --cmd '{"action":"meta-push","fo'{r,}'ce":true}'`,
+    `Merlin.exe --cmd '{"action":"meta-push","fo'[r]'ce":true}'`,
+    `Merlin.exe --cmd '{"action":"meta-push","force":true`,
   ];
   for (const c of forced) assert.equal(requestsOverride(c, 'force'), true, `must detect force in: ${c}`);
   const plain = [
     `Merlin.exe --cmd '{"action":"meta-push","force":false}'`,
     `Merlin.exe --cmd '{"action":"meta-push"}'`,
     `Merlin.exe --cmd '{"action":"meta-push","adHeadline":"force of nature"}'`,
+    `cd /d/x && .claude/tools/Merlin.exe --config cfg.json --cmd '{"action":"meta-push","adBody":"Big {new} drop? [yes]*"}'`,
+    `Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"dailyBudget${BS}":5}"`,
   ];
   for (const c of plain) assert.equal(requestsOverride(c, 'force'), false, `must not flag: ${c}`);
 });

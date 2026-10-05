@@ -104,15 +104,35 @@ function lastString(command, key) {
 // over-cards rather than slipping through (2026-10-05, google-budget-force).
 //
 // The JSON scan reads the literal command, but the shell rebuilds the --cmd
-// argument before Go sees it: quote splicing ('for''ce', "fo""rce"), ANSI-C
-// escapes ($'\x63'), and $VAR / $(...) / backtick expansion all yield a key
-// the scanner never saw. So two conservative fallbacks also return true:
-//   - the key re-appears as `key:` (any case) once quotes and backslashes are
-//     deleted, with a value other than literal false;
-//   - the command uses any shell expansion at all ($ or backtick), because
-//     then the final JSON cannot be known from the text.
-// Both only ever ADD a card; a false positive costs one approval click.
-const SHELL_EXPANSION_RE = /[$`]/;
+// argument before Go sees it: quote splicing ('for''ce', "fo""rce"), line
+// continuation (backslash-newline), brace expansion (fo{r,x}ce), globbing,
+// ANSI-C escapes ($'\x63') and $VAR / $(...) / backtick expansion all yield
+// a key the scanner never saw. Rather than chase each form, the fallbacks
+// return true (card) whenever the shell could rewrite the text at all:
+//   - any $ or backtick, or any backslash-newline continuation;
+//   - any brace or glob character OUTSIDE quotes, or an unbalanced quote
+//     (a plain --cmd '{...}' keeps every brace inside single quotes);
+//   - the key re-appearing as `key:` (any case) once quotes and backslashes
+//     are deleted, with a value other than literal false (quote splicing).
+// All of these only ever ADD a card; a false positive costs one click.
+const SHELL_EXPANSION_RE = /[$`]|\\\r?\n/;
+function shellCanRewrite(raw) {
+  if (SHELL_EXPANSION_RE.test(raw)) return true;
+  let state = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (state === "'") { if (c === "'") state = ''; continue; }
+    if (state === '"') {
+      if (c === '\\') { i++; continue; }
+      if (c === '"') state = '';
+      continue;
+    }
+    if (c === '\\') { i++; continue; }
+    if (c === "'" || c === '"') { state = c; continue; }
+    if (c === '{' || c === '}' || c === '*' || c === '?' || c === '[') return true;
+  }
+  return state !== '';
+}
 function requestsOverride(command, key) {
   const raw = String(command || '');
   for (const text of candidates(raw)) {
@@ -121,7 +141,7 @@ function requestsOverride(command, key) {
       if (!/^false(?![A-Za-z0-9_])/.test(h.valueText)) return true;
     }
   }
-  if (SHELL_EXPANSION_RE.test(raw)) return true;
+  if (shellCanRewrite(raw)) return true;
   const spliced = raw.replace(/['"\\]/g, '');
   const esc = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp('(?:^|[^A-Za-z0-9_])' + esc + '\\s*:\\s*(?!false(?![A-Za-z0-9_]))', 'gi');
