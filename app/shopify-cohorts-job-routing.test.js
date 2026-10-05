@@ -173,6 +173,24 @@ test('days survives the trip into the binary --cmd JSON', async () => {
   assert.doesNotMatch(window, /k === 'days'/);
 });
 
+// REGRESSION GUARD (2026-10-05, shopify-orders-days): days reached --cmd for
+// orders/analytics, but the engine read only batchCount there, so 14/30/60-day
+// requests silently returned the default window. The engine side is pinned by
+// autocmo-core/shopify_order_window_test.go; this pins the schema's promise so
+// the agent is told the real defaults and the 60-day read_orders horizon.
+test('days description states per-action defaults and the 60-day horizon', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
+  const start = src.indexOf("name: 'shopify',");
+  assert.ok(start > 0, 'shopify tool must exist');
+  const block = src.slice(start, start + 4000);
+  const line = block.split(/\r?\n/).find((l) => /^\s*days: z\./.test(l));
+  assert.ok(line, 'shopify must declare days');
+  assert.match(line, /orders defaults to 7/);
+  assert.match(line, /analytics to 30/);
+  assert.match(line, /60 days/);
+  assert.match(line, /clamped/);
+});
+
 // ── 5: graceful degradation ───────────────────────────────────────────
 
 test('shopify cohorts falls back to the inline path when no jobStore is present', async () => {
