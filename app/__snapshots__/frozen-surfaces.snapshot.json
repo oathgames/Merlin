@@ -200,6 +200,9 @@
       "gorgiasEmail",
       "heygenApiKey",
       "imageModel",
+      "impactAccountSid",
+      "impactAuthToken",
+      "impactProgramId",
       "klaviyoAccessToken",
       "klaviyoApiKey",
       "loopApiKey",
@@ -281,6 +284,9 @@
       "gorgiasDomain",
       "gorgiasEmail",
       "heygenApiKey",
+      "impactAccountSid",
+      "impactAuthToken",
+      "impactProgramId",
       "klaviyoAccessToken",
       "klaviyoApiKey",
       "klaviyoRefreshToken",
@@ -1961,6 +1967,108 @@
         }
       },
       "name": "gorgias"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
+        "concurrency": {
+          "platform": "impact"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "impact.com affiliate and partnership program reporting (read-only; formerly Impact Radius). Actions: status (connection check, no API call); connect (how to get the Account SID and Auth Token); setup / verify (validate the saved credentials, list programs); discover (company currency and timezone, programs, and the saved reports that can be exported over the API); insights (weekly scorecard for a window: revenue, actions, payout, total cost, ROAS, CPA, AOV, new vs returning customers, reversals, top partners, by program and by day; pass impactReportId of a partner performance report to add clicks); actions (conversion rows, newest first, filter with impactState); partners (partner roster, filter with status); clicks (clicks by partner and day for one program, at most 7 days, impact.com allows 10 day-exports per day); report (no impactReportId lists exportable reports; with one, exports it for the window; with impactJobId, collects a still-running export). Window: days (default 7) or startDate / endDate (YYYY-MM-DD, matched on the account-timezone event date, so a Sun-Sat week is exact). impactProgramId picks one program (default: the brand default, else every program). limit caps rows returned. Cannot change payouts, partners or actions.",
+      "input": {
+        "action": {
+          "description": "status → connection check (no API call). connect → how to get API credentials. setup/verify → validate credentials. discover → programs and exportable reports. insights → weekly affiliate scorecard. actions → conversion rows. partners → partner roster. clicks → clicks by partner and day. report → list, export or collect a saved report.",
+          "enum": [
+            "status",
+            "connect",
+            "setup",
+            "verify",
+            "discover",
+            "insights",
+            "actions",
+            "partners",
+            "clicks",
+            "report"
+          ],
+          "type": "string"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "days": {
+          "description": "Window length in days ending today (default 7; clicks default 1, max 7; others max 366). Ignored when startDate is set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "Window end, YYYY-MM-DD (inclusive). Defaults to today.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "impactJobId": {
+          "description": "Collect a still-running export by the jobId an earlier call returned (report action).",
+          "pattern": "^[A-Za-z0-9-]{1,64}$",
+          "type": "string"
+        },
+        "impactProgramId": {
+          "description": "impact.com program (campaign) id from discover. Defaults to the brand default, else every program.",
+          "pattern": "^\\d{1,12}$",
+          "type": "string"
+        },
+        "impactReportId": {
+          "description": "Saved report id or handle from discover. report exports it; insights uses it as the clicks source (a report with partner and Clicks columns).",
+          "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+          "type": "string"
+        },
+        "impactState": {
+          "description": "actions filter by action state (default all).",
+          "enum": [
+            "pending",
+            "approved",
+            "reversed",
+            "all"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max rows returned: top partners for insights (default 10), actions / partners / report rows (default 200). The results file always keeps every row.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "startDate": {
+          "description": "Window start, YYYY-MM-DD (inclusive, account timezone).",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "status": {
+          "description": "partners filter by partner state (default all).",
+          "enum": [
+            "active",
+            "pending",
+            "expired",
+            "declined",
+            "suspended",
+            "deactivated",
+            "closing",
+            "closed",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "name": "impact"
     },
     {
       "annotations": {
@@ -5953,8 +6061,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 25950,
-      "bodySha256": "ca845774a3111cf04c6e03ba40fd8e9bfc058cf2a808ef6e18aabfc28d68fc9d",
+      "bodyBytes": 27421,
+      "bodySha256": "fbdb1030c612fac25e56d19a80825134baa7f7873754f873ffa65f41442429a4",
       "bytes_justification": "GA4 read+write (2026-05-01) added 13-action surface + write-side approval-card flows alongside the existing dashboard / wisdom / calendar / Conversion Rubric / incrementality blocks. Splitting GA4 into its own SKILL would fragment the analytics-vs-attribution narrative the dashboard relies on.",
       "description": "Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach), plus Gorgias customer-support ticket analytics and de-identified support-corpus exports. Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.",
       "dir": "merlin-analytics",

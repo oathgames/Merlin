@@ -74,6 +74,13 @@ const BANNED_HOSTS = [
   // through rakuten.go (PreflightCheck + RecordSuccess).
   'ran-reporting.rakutenmarketing.com',
   'api.linksynergy.com',
+  // impact.com (affiliate / partnership platform, formerly Impact Radius)
+  // reporting, read-only. The Brand API authenticates with the brand's Account
+  // SID + Auth Token over Basic auth and honours a _method=PUT|DELETE override
+  // even on GET, so a direct curl/WebFetch could both leak the token and write.
+  // Every call MUST go through impact.go (PreflightCheck + RecordSuccess, GET
+  // only, _method refused).
+  'api.impact.com',
   // Foreplay — competitor ad intelligence. Routed through the binary so every
   // credit-burning call passes PreflightCheck + shows up in the audit log.
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and

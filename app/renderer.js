@@ -4281,6 +4281,7 @@ const PLATFORM_DISPLAY_NAMES = {
   openai_ads: 'OpenAI Ads',
   rokt: 'Rokt',
   rakuten: 'Rakuten Advertising',
+  impact: 'impact.com',
   clarity: 'Microsoft Clarity',
   posthog: 'PostHog',
   alia: 'Alia Popups',
@@ -4320,7 +4321,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'rakuten', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'rakuten', 'impact', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -7704,6 +7705,64 @@ function showRakutenConnectModal(activeBrand) {
   });
 }
 
+// impact.com connect modal: three chained steps (Account SID -> Auth Token ->
+// optional default program id). impact's Advertiser API uses HTTP Basic auth
+// with the Account SID as the username and the Auth Token as the password;
+// both are created self-serve in app.impact.com under Settings > API, where a
+// read-only token can be generated. Every field is vaulted
+// (VAULT_SENSITIVE_KEYS); the token is a secret. The SID and program patterns
+// mirror impactSIDRe / impactProgramRe in impact.go so a value the modal
+// accepts is one the engine accepts. See impact.go.
+function showImpactConnectModal(activeBrand) {
+  showModal({
+    title: 'impact.com: Account SID',
+    body: 'In impact.com open Settings, then API (app.impact.com > Settings > API). Copy the Account SID shown there and paste it here. Merlin only reads reports and never changes your program. (Step 1 of 3)',
+    inputPlaceholder: 'Account SID (starts with IR...)',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const sid = (v1 || '').trim();
+      if (!/^[A-Za-z0-9]{8,64}$/.test(sid)) { showModalError('Paste the Account SID from Settings > API. It is letters and numbers only.'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'impact.com: Auth Token',
+          body: 'On the same page, copy the Auth Token. A read-only token is enough and is the safer choice. It is stored encrypted and never shown again. (Step 2 of 3)',
+          inputPlaceholder: 'Auth Token',
+          confirmLabel: 'Next',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const token = (v2 || '').trim();
+            if (!token || /\s/.test(token)) { showModalError('Paste the Auth Token from Settings > API.'); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: 'impact.com: default program (optional)',
+                body: 'If your account runs more than one program, enter the program id to report on by default. Leave this blank to report across every program. (Step 3 of 3)',
+                inputPlaceholder: 'Optional: program id, for example 12345',
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v3) => {
+                  const program = (v3 || '').trim();
+                  if (program && !/^[0-9]{1,12}$/.test(program)) { showModalError('The program id is a number. Leave it blank to use every program.'); throw new Error('validation'); }
+                  const fields = [
+                    ['impactAccountSid', sid, 'the Account SID'],
+                    ['impactAuthToken', token, 'the Auth Token'],
+                  ];
+                  if (program) fields.push(['impactProgramId', program, 'the program id']);
+                  for (const [key, value, label] of fields) {
+                    const r = await merlin.saveConfigField(key, value, activeBrand);
+                    if (!r.success) { showModalError(friendlyErrorPlain(r.error || ('Failed to save ' + label), 'impact.com')); throw new Error('save'); }
+                  }
+                  loadConnections();
+                },
+              });
+            }, 0);
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
 // Shopify Payments connect — NOT a separate connection. It rides the
 // Shopify OAuth token (shopify_payments.go runs shopifyGraphQL against
 // cfg.ShopifyStore + cfg.ShopifyAccessToken), so "connecting" it means
@@ -7737,6 +7796,7 @@ function showShopifyPaymentsConnectModal(activeBrand) {
 const CUSTOM_CONNECT_HANDLERS = {
   rokt: showRoktConnectModal,
   rakuten: showRakutenConnectModal,
+  impact: showImpactConnectModal,
   posthog: showPosthogConnectModal,
   yotpo: showYotpoConnectModal,
   sesami: showSesamiConnectModal,
