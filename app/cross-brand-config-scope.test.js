@@ -29,7 +29,9 @@ function sliceAround(hay, needle, before, after) {
 // ── The MCP tool surface (runBinary) ────────────────────────────────────
 test('mcpCtx exports buildStrictBrandConfig so the MCP layer can resolve strict', () => {
   // The ctx object handed to createMerlinMcpServer must carry buildStrictBrandConfig.
-  const ctxBlock = sliceAround(MAIN, 'const mcpCtx = {', 0, 800);
+  // The literal lives in buildMcpCtx() since 2026-10-05 (ipc-boot), shared by
+  // app boot and every startSession.
+  const ctxBlock = sliceAround(MAIN, 'function buildMcpCtx(sdkModule) {', 0, 900);
   assert.ok(/buildStrictBrandConfig,/.test(ctxBlock),
     'mcpCtx must export buildStrictBrandConfig (runBinary keys on it)');
 });
