@@ -1573,6 +1573,35 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'tiktok-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── tiktok_gmv_max_set_roi_target ────────────────────────
+  // REGRESSION GUARD (2026-10-05, Hard-Won Rules 19 + 23): the ONE TikTok GMV
+  // Max write. Intent-style (no action field), so mcp-approval-policy.js maps
+  // it by NAME to 'roi-target', a SPEND action that is never eligible for the
+  // in-cap auto-approve: lowering a ROI target unlocks spend, so the human
+  // card shows every time. The engine refuses without approved:true and
+  // verifies by re-reading the campaign (tiktok_gmv_max_roi.go). The handler
+  // never sets `approved` itself; that would bypass the safety rail.
+  tools.push(defineTool({
+    name: 'tiktok_gmv_max_set_roi_target',
+    description: 'Use when the user explicitly asks to change the ROI target (roas_bid) of a TikTok GMV Max campaign, e.g. "set the GMV Max ROI target to 1.2". Changes ONLY the ROI target: never budget, status, schedule or product scope. A LOWER target lets GMV Max spend more aggressively, so this always shows an approval card. '
+      + 'Read the current target first with tiktok_audit gmv-max-campaign-info and tell the user the before and after values. '
+      + 'The engine re-reads the campaign after the change and fails loudly unless the new target landed and nothing else moved; it returns roasBidBefore / roasBidAfter. Setting the value it already has is a no-op. Refuses campaigns with no ROI target (max-delivery mode).',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'tiktok' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name for vault-scoped TikTok credentials.'),
+      campaignId: z.string().describe('GMV Max campaign id (from tiktok_audit gmv-max-campaigns).'),
+      roasBid: z.coerce.number().describe('New ROI target as a multiple of spend, e.g. 1.2 for 1.2x. Accepted range 0.1 to 50, at most two decimals.'),
+      tiktokAdvertiserId: z.string().optional().describe('Override the brand\'s TikTok ad account id.'),
+      approved: z.boolean().optional().describe('Approval flag. Set by the Merlin approval card flow; the engine REFUSES the change without it. Do not set true unless the user explicitly approved this exact ROI target change.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'tiktok-gmv-max-update-roi', args)),
+  }, tool, z, ctx));
+
   // ── google_ads ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'google_ads',

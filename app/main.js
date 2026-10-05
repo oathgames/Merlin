@@ -3224,6 +3224,10 @@ async function handleToolApproval(toolName, input, opts) {
         'duplicate': { label: 'Scale this winning ad', cost: 'Increases budget' },
         'setup': { label: 'Set up ad campaigns', cost: 'Free' },
         'setup-retargeting': { label: 'Set up retargeting audiences', cost: 'Free' },
+        'roi-target': {
+          label: 'Change TikTok GMV Max ROI target',
+          cost: `Campaign ${String(input.campaignId || '?').slice(0, 32)}: ROI target to ${Number.isFinite(Number(input.roasBid)) ? Number(input.roasBid) : '?'}. Lower target = more spend`,
+        },
       };
       const translated = translations[action] || { label: `Run ${action}`, cost: null };
       // Intent-tool labels override the generic action-based label so the

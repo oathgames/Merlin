@@ -271,6 +271,7 @@ Every action is a GET; nothing is created, changed, or spent. Pass `brand`; the 
 `gmv-max-campaign-info` (`campaignId`: ROI target `roas_bid`, budget, status, goal, product scope) · `gmv-max-campaigns` · `gmv-max-report` (`startDate`/`endDate`, `dimensions`, `metrics`, `campaignId`; per-video: `["campaign_id","item_id"]`) · `gmv-max-videos` (video pool incl. affiliate posts) · `gmv-max-authorizations` · `gmv-max-stores` · `gmv-max-shop-check` · `gmv-max-ads` (`campaignId`) · `campaigns` (all TikTok campaigns).
 
 - "why is GMV Max down" / "what's my GMV Max ROI target" → `gmv-max-campaign-info` then `gmv-max-report`; check the video pool with `gmv-max-videos`.
+- "set the GMV Max ROI target to X" → read the current target first, then `mcp__merlin__tiktok_gmv_max_set_roi_target` (`campaignId`, `roasBid`). The only GMV Max write: always cards (a lower target spends more), changes nothing but roas_bid, returns before/after verified by re-read.
 
 **TikTok-specific playbook:**
 - **Spark Ads** (boost organic posts with auth_code from the creator): these carry native engagement signal and typically beat cold creatives by 30–50% on CTR and CVR. Prefer Spark over standard dark posts whenever a creator partnership or organic post is available.

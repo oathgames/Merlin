@@ -147,6 +147,7 @@ test('tiktok_audit enum and engine GMV Max cases match in both directions', (t) 
   const src = fs.readFileSync(mainGo, 'utf8');
   const engine = new Set();
   for (const m of src.matchAll(/case\s+"(tiktok-(?:gmv-max-[a-z-]+|campaigns))"\s*:/g)) engine.add(m[1]);
+  engine.delete('tiktok-gmv-max-update-roi'); // the write: routed by tiktok_gmv_max_set_roi_target, asserted below
   assert.ok(engine.size >= 9, `expected the GMV Max engine cases, found ${[...engine].join(', ')}`);
   const routed = new Set(enumValues().map((v) => 'tiktok-' + v));
   for (const e of engine) assert.ok(routed.has(e), `engine action ${e} has no tiktok_audit route`);
@@ -206,4 +207,55 @@ test('needAuthCodeVideo:false is not dropped on the way to the engine', async ()
   const cmd = lastCmd();
   assert.equal(cmd.action, 'tiktok-gmv-max-videos');
   assert.equal(cmd.needAuthCodeVideo, false, 'an explicit false must reach the engine, or the default (true) silently wins');
+});
+
+// ── The ONE write: tiktok_gmv_max_set_roi_target ─────────────────────
+
+const roiTool = () => byName('tiktok_gmv_max_set_roi_target');
+
+test('ROI target write is destructive, spend-class, and has no action enum (intent-style)', () => {
+  const a = roiTool().options.annotations;
+  assert.equal(a.destructive, true);
+  assert.equal(a.costImpact, 'spend');
+  assert.equal(a.brandRequired, true);
+  assert.equal(a.preview, false);
+  assert.ok(!Object.prototype.hasOwnProperty.call(roiTool().schema, 'action'), 'intent tool must not carry an action field');
+});
+
+test('ROI target write ALWAYS cards: SPEND action, not push, labelled', () => {
+  const { effectiveAction, label } = policy.resolveMerlinAction('mcp__merlin__tiktok_gmv_max_set_roi_target', {
+    brand: 'apotheke', campaignId: '1874518629365218', roasBid: 1,
+  });
+  assert.equal(effectiveAction, 'roi-target');
+  assert.ok(policy.SPEND_ACTIONS.has('roi-target'), 'roi-target must be a SPEND action');
+  assert.notEqual(effectiveAction, 'push', 'push is the only in-cap auto-approve action; the ROI write must never use it');
+  assert.ok(!policy.READ_ONLY_ACTIONS.has('roi-target'));
+  assert.ok(label && /ROI target/.test(label), 'card must carry a specific label');
+});
+
+test('main.js in-cap auto-approve stays push-only, so roi-target can never skip the card', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  assert.match(src, /capForComparison > 0 && action === 'push' &&/, 'in-cap auto-approve must remain gated on push only');
+  assert.match(src, /'roi-target': \{/, 'roi-target needs its own card text');
+});
+
+test('ROI target write routes to tiktok-gmv-max-update-roi with campaignId and roasBid', async (t) => {
+  execFileCalls.length = 0;
+  await roiTool().handler({ brand: 'apotheke', campaignId: '1874518629365218', roasBid: 1 });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'tiktok-gmv-max-update-roi');
+  assert.equal(cmd.campaignId, '1874518629365218');
+  assert.equal(cmd.roasBid, 1);
+  assert.ok(!cmd.approved, 'the handler must never set approved itself');
+  const mainGo = findMainGo();
+  if (!mainGo) { t.skip('autocmo-core/main.go not present'); return; }
+  assert.match(fs.readFileSync(mainGo, 'utf8'), /case\s+"tiktok-gmv-max-update-roi"\s*:/, 'engine must handle tiktok-gmv-max-update-roi');
+});
+
+test('an approved flag passed by the caller reaches the engine unchanged (card flow)', async () => {
+  execFileCalls.length = 0;
+  await roiTool().handler({ brand: 'apotheke', campaignId: '1874518629365218', roasBid: 1.2, approved: true });
+  const cmd = lastCmd();
+  assert.equal(cmd.approved, true);
+  assert.equal(cmd.roasBid, 1.2);
 });

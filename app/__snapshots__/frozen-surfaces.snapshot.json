@@ -58,7 +58,8 @@
       "mcp__merlin__meta_scale_winner": "Scale this winning Meta ad",
       "mcp__merlin__meta_set_frequency_cap": "Set a frequency cap on a Meta ad set",
       "mcp__merlin__meta_set_optimization_goal": "Change what a live Meta ad set optimizes for",
-      "mcp__merlin__meta_upload_customer_list": "Upload a customer list as a Meta audience"
+      "mcp__merlin__meta_upload_customer_list": "Upload a customer list as a Meta audience",
+      "mcp__merlin__tiktok_gmv_max_set_roi_target": "Change a TikTok GMV Max ROI target (a lower target lets GMV Max spend more)"
     },
     "intentToolToAction": {
       "mcp__merlin__meta_activate_asset": "duplicate",
@@ -87,7 +88,8 @@
       "mcp__merlin__meta_set_optimization_goal": "duplicate",
       "mcp__merlin__meta_setup_account": "discover",
       "mcp__merlin__meta_upload_customer_list": "setup",
-      "mcp__merlin__tiktok_audit": "audit"
+      "mcp__merlin__tiktok_audit": "audit",
+      "mcp__merlin__tiktok_gmv_max_set_roi_target": "roi-target"
     },
     "readOnlyActions": [
       "accounts",
@@ -155,6 +157,7 @@
       "lockdown",
       "push",
       "retarget",
+      "roi-target",
       "setup",
       "setup-retargeting"
     ]
@@ -5445,6 +5448,47 @@
     },
     {
       "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "tiktok"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Use when the user explicitly asks to change the ROI target (roas_bid) of a TikTok GMV Max campaign, e.g. \"set the GMV Max ROI target to 1.2\". Changes ONLY the ROI target: never budget, status, schedule or product scope. A LOWER target lets GMV Max spend more aggressively, so this always shows an approval card. Read the current target first with tiktok_audit gmv-max-campaign-info and tell the user the before and after values. The engine re-reads the campaign after the change and fails loudly unless the new target landed and nothing else moved; it returns roasBidBefore / roasBidAfter. Setting the value it already has is a no-op. Refuses campaigns with no ROI target (max-delivery mode).",
+      "input": {
+        "approved": {
+          "description": "Approval flag. Set by the Merlin approval card flow; the engine REFUSES the change without it. Do not set true unless the user explicitly approved this exact ROI target change.",
+          "type": "boolean"
+        },
+        "brand": {
+          "description": "Brand name for vault-scoped TikTok credentials.",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "GMV Max campaign id (from tiktok_audit gmv-max-campaigns).",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "roasBid": {
+          "description": "New ROI target as a multiple of spend, e.g. 1.2 for 1.2x. Accepted range 0.1 to 50, at most two decimals.",
+          "type": "number"
+        },
+        "tiktokAdvertiserId": {
+          "description": "Override the brand's TikTok ad account id.",
+          "type": "string"
+        }
+      },
+      "name": "tiktok_gmv_max_set_roi_target"
+    },
+    {
+      "annotations": {
         "brandRequired": false,
         "concurrency": {
           "platform": "trendtrack"
@@ -5899,8 +5943,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 44307,
-      "bodySha256": "78a911c022e0dc61508e58eb780458f40a5d566503b9229908122e5c21c95ea2",
+      "bodyBytes": 44594,
+      "bodySha256": "a39c114a60d95478e44550d94a1972d8ba9dec510bee56c41db4a8d8c7c064a1",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",
