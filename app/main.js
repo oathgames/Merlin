@@ -2812,7 +2812,6 @@ function translateTool(toolName, input) {
     // Same reading Go applies (last key wins, case-insensitive, escapes
     // decoded). See bash-merlin-action.js REGRESSION GUARD (2026-10-04).
     const action = bashMerlinAction.parseAction(input.command).action || null;
-    const roundelDaily = bashMerlinAction.lastNumber(input.command, 'dailyBudget');
     const translations = {
       'meta-push':     { label: 'Publish this ad to Facebook', cost: '$5/day budget' },
       'meta-setup':    { label: 'Set up your ad campaigns on Facebook', cost: 'Free' },
@@ -2849,15 +2848,6 @@ function translateTool(toolName, input) {
       'rakuten-report':         { label: 'Pull Rakuten affiliate program performance', cost: 'Free' },
       'rakuten-publishers':     { label: 'List Rakuten affiliate publishers', cost: 'Free' },
       'rakuten-transactions':   { label: 'Pull Rakuten affiliate transactions', cost: 'Free' },
-      'roundel-setup':          { label: 'Verify your Roundel (Target) API connection', cost: 'Free' },
-      'roundel-verify':         { label: 'Verify your Roundel (Target) API connection', cost: 'Free' },
-      'roundel-discover':       { label: 'Find your Roundel retail media accounts', cost: 'Free' },
-      'roundel-campaigns':      { label: 'List your Roundel (Target) campaigns', cost: 'Free' },
-      'roundel-line-items':     { label: 'List your Roundel (Target) line items', cost: 'Free' },
-      'roundel-insights':       { label: 'Pull Roundel (Target) ad performance', cost: 'Free' },
-      'roundel-pause':          { label: 'Pause a Roundel (Target) line item', cost: 'Free, stops its spend' },
-      'roundel-activate':       { label: 'Turn on a Roundel (Target) line item', cost: 'Sets ad spend: resumes at its current budget' },
-      'roundel-budget':         { label: 'Change a Roundel (Target) line item daily budget', cost: roundelDaily != null ? `Sets ad spend: $${roundelDaily}/day` : 'Sets ad spend (daily amount not readable, check the command)' },
       'quickbooks-login':         { label: 'Connect QuickBooks (read-only accounting)', cost: 'Free' },
       'quickbooks-report':        { label: 'Pull QuickBooks accounting metrics', cost: 'Free' },
       'yotpo-verify':             { label: 'Verify your Yotpo credentials', cost: 'Free' },
@@ -3241,19 +3231,6 @@ async function handleToolApproval(toolName, input, opts) {
       // vs the legacy "Scale this winning ad"). See mcp-approval-policy.js
       // for the per-tool label registry.
       if (intentToolLabel) translated.label = intentToolLabel;
-      // Roundel's spend verbs share the generic 'activate' / 'budget' action
-      // names, which have no entry above and would card as "Run activate".
-      // Name the platform and what moves; activate carries no dailyBudget, so
-      // it must not show a dollar figure the engine never sends.
-      if (toolName === 'mcp__merlin__roundel') {
-        if (action === 'activate') {
-          translated.label = 'Turn on a Roundel (Target) line item';
-          translated.cost = 'Resumes ad spend at the line item current budget';
-        } else if (action === 'budget') {
-          translated.label = 'Change a Roundel (Target) line item daily budget';
-          translated.cost = `$${adBudget}/day`;
-        }
-      }
       let budgetDetail = null;
       if (budgetCtx && budgetCtx.dailyCap > 0 && (action === 'push' || action === 'duplicate')) {
         const overBudget = budgetCtx.remaining < adBudget;
@@ -3421,7 +3398,7 @@ async function handleToolApproval(toolName, input, opts) {
   if (toolName === 'Bash' && input.command && input.command.includes('Merlin')) {
     // REGRESSION GUARD (2026-10-04): the first-match regex used here carded
     // the FIRST "action" key while Go runs the LAST one, so
-    // {"action":"roundel-status","action":"roundel-budget","approved":true}
+    // {"action":"rokt-report","action":"meta-push","approved":true}
     // skipped the spend card. A command naming its action more than once, or
     // in a form Merlin cannot decode, is refused outright.
     const parsedBash = bashMerlinAction.parseAction(input.command);
@@ -3552,11 +3529,6 @@ async function handleToolApproval(toolName, input, opts) {
       // away from being skipped , and resume-all-spend re-arms every
       // spend-increasing action across every platform for the brand.
       'quiz-funnel-gen', 'resume-all-spend',
-      // Roundel spend verbs. The engine refuses both without approved:true
-      // (requireApproval); they card here rather than in BASH_SPEND because
-      // activate carries no dailyBudget, so BASH_SPEND's "$5/day" default
-      // would put a made-up number on the card.
-      'roundel-activate', 'roundel-budget',
     ]);
     if (BASH_CARDED_DESTRUCTIVE.has(bashAction)) {
       const toolUseID = newApprovalId();
@@ -9310,10 +9282,6 @@ const BRAND_KEYS = [
   // report keys + locale + network). Mirror of brandScopedKeys in
   // autocmo-core/vault.go.
   'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
-  // Roundel (Target retail media via the Criteo Retail Media API):
-  // brand-specific API app credentials + account. Mirror of brandScopedKeys
-  // in autocmo-core/vault.go.
-  'roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId',
   // Yotpo — brand-specific BYOK (App Key + Secret Key). Mirror of
   // brandScopedKeys in autocmo-core/vault.go.
   'yotpoAppKey', 'yotpoSecretKey',
@@ -10275,20 +10243,6 @@ function getConnections(brandName) {
         : !!rakutenToken;
       if (rakutenResolved) connected.push({ platform: 'rakuten', status: 'connected' });
     }
-    // Roundel (Criteo Retail Media API): connected when the app Client ID and
-    // Client Secret are present, with @@VAULT placeholder resolution on the
-    // secret. The account id is optional at connect time (discover runs on
-    // the app credentials alone and lists it; every account-scoped engine
-    // action names the missing id). Saved, not yet verified: roundel-verify
-    // is the live check.
-    const roundelClientId = brandName ? brandCfg.roundelClientId : globalCfg.roundelClientId;
-    const roundelSecret = brandName ? brandCfg.roundelClientSecret : globalCfg.roundelClientSecret;
-    if (roundelClientId && roundelSecret) {
-      const roundelResolved = typeof roundelSecret === 'string' && roundelSecret.startsWith('@@VAULT:')
-        ? !!vaultGet(brandName || '_global', 'roundelClientSecret')
-        : !!roundelSecret;
-      if (roundelResolved) connected.push({ platform: 'roundel', status: 'connected' });
-    }
     // Yotpo — brand-specific BYOK; connected when App Key + Secret Key are
     // present, with @@VAULT placeholder resolution on the secret.
     const yotpoAppKey = brandName ? brandCfg.yotpoAppKey : globalCfg.yotpoAppKey;
@@ -10519,10 +10473,6 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // disconnect. Mirror of platformVaultKeys["rakuten"] in
       // autocmo-core/oauth.go.
       rakuten: ['rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork'],
-      // Roundel: clear the Criteo API app credentials + account on
-      // disconnect. Mirror of platformVaultKeys["roundel"] in
-      // autocmo-core/oauth.go.
-      roundel: ['roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId'],
       // Yotpo — clear both BYOK creds on disconnect. Mirror of
       // platformVaultKeys["yotpo"] in autocmo-core/oauth.go.
       yotpo: ['yotpoAppKey', 'yotpoSecretKey'],
