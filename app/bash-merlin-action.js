@@ -4,11 +4,11 @@
 // command line the SAME way the Go engine will, so the approval gate cards
 // what actually runs.
 //
-// REGRESSION GUARD (2026-10-04, Roundel adversarial review, MEDIUM 6):
+// REGRESSION GUARD (2026-10-04, ad-connector adversarial review, MEDIUM 6):
 // handleToolApproval used to take the FIRST `"action":"..."` match, while
 // Go's encoding/json keeps the LAST duplicate key and matches keys
 // case-insensitively after decoding \u escapes. So
-//   {"action":"roundel-status","action":"roundel-budget","approved":true}
+//   {"action":"rokt-report","action":"meta-push","approved":true}
 // carded as a harmless read (or not at all) and then ran a spend write. The
 // same first-vs-last split let `"dailyBudget":5,"dailyBudget":5000` pass the
 // in-cap auto-approve at $5 and launch at $5000. Rules here:

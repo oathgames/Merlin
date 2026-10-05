@@ -4281,7 +4281,6 @@ const PLATFORM_DISPLAY_NAMES = {
   openai_ads: 'OpenAI Ads',
   rokt: 'Rokt',
   rakuten: 'Rakuten Advertising',
-  roundel: 'Roundel (Target)',
   clarity: 'Microsoft Clarity',
   posthog: 'PostHog',
   alia: 'Alia Popups',
@@ -4321,7 +4320,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'rakuten', 'roundel', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'rakuten', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -7661,84 +7660,6 @@ function parseRakutenReportUrl(raw) {
   if (!/^[0-9]{1,4}$/.test(network)) network = '1';
   return { locale: m[1], reportKey: m[2], token, network };
 }
-// Roundel (Target retail media) connect modal. Roundel has no API of its own;
-// its programmatic surface is the Criteo Retail Media API, which authenticates
-// with the BRAND'S OWN Criteo developer app (OAuth2 client credentials) once
-// an Admin of the brand's retail media account approves the app's consent
-// link. So the connection is four fields: Client ID, Client Secret, the retail
-// media Account ID (optional at connect time: discover runs on the app
-// credentials alone and lists it), and an optional Retailer ID (limits
-// reports to Target).
-// All four are saved via save-config-field and vaulted (VAULT_SENSITIVE_KEYS).
-// Like every API-key tile the dot lights on save; mcp__merlin__roundel action
-// "verify" is the live check, and "discover" lists the account + retailer ids
-// when the user does not know them. Ids are checked against the same pattern
-// roundel.go enforces so a pasted URL or stray space fails here, not later.
-const ROUNDEL_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-function showRoundelConnectModal(activeBrand) {
-  showModal({
-    title: 'Roundel (Target): Client ID',
-    body: 'Roundel campaigns are managed through the Criteo Retail Media API. At developers.criteo.com create an app with the Retail Media domain and campaign read and manage permissions, then have an Admin of your Roundel account approve the app\'s consent link. Paste the app\'s Client ID here. (Step 1 of 4)',
-    inputPlaceholder: 'Criteo app Client ID',
-    confirmLabel: 'Next',
-    cancelLabel: 'Cancel',
-    onConfirm: async (v1) => {
-      const clientId = (v1 || '').trim();
-      if (!clientId) { showModalError('Enter the Client ID'); throw new Error('validation'); }
-      setTimeout(() => {
-        showModal({
-          title: 'Roundel (Target): Client Secret',
-          body: 'Paste the app\'s Client Secret. It can change ad spend, so it is stored encrypted and never shown again. Never paste it in chat. (Step 2 of 4)',
-          inputPlaceholder: 'Criteo app Client Secret',
-          confirmLabel: 'Next',
-          cancelLabel: 'Cancel',
-          onConfirm: async (v2) => {
-            const clientSecret = (v2 || '').trim();
-            if (!clientSecret) { showModalError('Enter the Client Secret'); throw new Error('validation'); }
-            setTimeout(() => {
-              showModal({
-                title: 'Roundel (Target): Account ID',
-                body: 'Enter the retail media Account ID for this brand. If you do not know it, leave this blank and save, then ask Merlin to discover your Roundel accounts and reconnect with the id it finds. Reports and changes need the Account ID. On a reconnect, blank keeps the Account ID already saved. (Step 3 of 4)',
-                inputPlaceholder: 'Retail media Account ID (blank to discover it first)',
-                confirmLabel: 'Next',
-                cancelLabel: 'Cancel',
-                onConfirm: async (v3) => {
-                  const accountId = (v3 || '').trim();
-                  if (accountId && !ROUNDEL_ID_RE.test(accountId)) { showModalError('The Account ID should be letters, numbers, dashes or underscores only, or blank.'); throw new Error('validation'); }
-                  setTimeout(() => {
-                    showModal({
-                      title: 'Roundel (Target): Retailer ID (optional)',
-                      body: 'Optional: the Target retailer id on this account, which limits reports to Roundel when the account also runs on other retailers. Leave blank to include every retailer. On a reconnect, blank keeps any Retailer ID already saved. (Step 4 of 4)',
-                      inputPlaceholder: 'Optional: Retailer ID',
-                      confirmLabel: 'Save',
-                      cancelLabel: 'Cancel',
-                      onConfirm: async (v4) => {
-                        const retailerId = (v4 || '').trim();
-                        if (retailerId && !ROUNDEL_ID_RE.test(retailerId)) { showModalError('The Retailer ID should be letters, numbers, dashes or underscores only, or blank.'); throw new Error('validation'); }
-                        const fields = [
-                          ['roundelClientId', clientId, 'the Client ID'],
-                          ['roundelClientSecret', clientSecret, 'the Client Secret'],
-                        ];
-                        if (accountId) fields.push(['roundelAccountId', accountId, 'the Account ID']);
-                        if (retailerId) fields.push(['roundelRetailerId', retailerId, 'the Retailer ID']);
-                        for (const [key, value, label] of fields) {
-                          const r = await merlin.saveConfigField(key, value, activeBrand);
-                          if (!r.success) { showModalError(friendlyErrorPlain(r.error || ('Failed to save ' + label), 'Roundel')); throw new Error('save'); }
-                        }
-                        loadConnections();
-                      },
-                    });
-                  }, 0);
-                },
-              });
-            }, 0);
-          },
-        });
-      }, 0);
-    },
-  });
-}
-
 function showRakutenConnectModal(activeBrand) {
   showModal({
     title: 'Rakuten Advertising: performance report link',
@@ -7816,7 +7737,6 @@ function showShopifyPaymentsConnectModal(activeBrand) {
 const CUSTOM_CONNECT_HANDLERS = {
   rokt: showRoktConnectModal,
   rakuten: showRakutenConnectModal,
-  roundel: showRoundelConnectModal,
   posthog: showPosthogConnectModal,
   yotpo: showYotpoConnectModal,
   sesami: showSesamiConnectModal,
