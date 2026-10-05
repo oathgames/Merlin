@@ -111,6 +111,32 @@ const LABEL_FIELD_NAMES = new Set([
   // bought no readability and only widened the hole below.
 ]);
 
+// IDENTIFIER FIELDS (2026-10-05, impact report list returned "[REDACTED]" ids).
+// Platform-assigned identifiers of saved objects, never credentials. Live case
+// 2026-10-05 (forever21): `impact action=report` (list mode) returned about 20
+// of 54 saved impact.com report ids as "[REDACTED]", including "Performance by
+// Partner", "Performance by Day" and both "Partner Cost Breakdown" reports.
+// impact.com report ids are snake_case words ("adv_action_listing_pm_only"),
+// and any of 32+ characters tripped the whole-string isLikelyToken guess. A
+// masked id cannot be passed back as impactReportId, so those reports could
+// not be exported, and impact insights could not add clicks (it needs a
+// partner performance report id).
+//
+// Same shape of exemption as LABEL_FIELD_NAMES: it lifts only the whole-string
+// LENGTH guess. Every deterministic credential rule still runs, SENSITIVE_FIELD_NAMES
+// still wins, and opaque runs are still swept under the STRICTER
+// identifierRunLooksLikeCredential below (a 32-char all-letters run passes the
+// label predicate but not this one).
+//
+// `id` is far too generic to exempt everywhere, so it is exempt ONLY inside an
+// element of an array keyed by REPORT_LIST_CONTAINER_KEYS (`reports[].id`, the
+// impact report-list and discover shapes). The named fields are report-id
+// specific by name. `clicksSource` carries "report:<id>" from impact insights.
+const IDENTIFIER_FIELD_NAMES = new Set([
+  'reportId', 'report_id', 'impactReportId', 'clicksSource',
+]);
+const REPORT_LIST_CONTAINER_KEYS = new Set(['reports']);
+
 // Fields whose values should ALWAYS be redacted from JSON output,
 // regardless of what they contain.
 const SENSITIVE_FIELD_NAMES = new Set([
@@ -212,6 +238,24 @@ function labelRunLooksLikeCredential(run) {
   return !segments.every(labelSegmentIsHumanWord);
 }
 
+// Credential predicate for IDENTIFIER_FIELD_NAMES values. Stricter than the
+// label predicate: an identifier is short words, numbers and short mixed
+// tokens joined by separators, so a letters-only segment longer than 24
+// characters is treated as an opaque run (the label predicate accepts any
+// letters-only segment, which a letters-only secret would satisfy).
+function identifierSegmentIsWord(seg) {
+  if (/^\d+$/.test(seg)) return true;
+  if (seg.length <= 24 && /^[A-Za-z]+$/.test(seg)) return true;
+  if (seg.length <= 10 && /^[A-Za-z0-9]+$/.test(seg)) return true;
+  return false;
+}
+
+function identifierRunLooksLikeCredential(run) {
+  if (!isLikelyToken(run)) return false;
+  const segments = run.split(/[_\-+/]/).filter(Boolean);
+  return !segments.every(identifierSegmentIsWord);
+}
+
 // Apply redaction to a single string. Shared by object properties and array
 // elements so tokens inside JSON arrays (e.g. {"logs":["Bearer EAA..."]}) are
 // never emitted verbatim.
@@ -233,9 +277,10 @@ function labelRunLooksLikeCredential(run) {
 // both survived unredacted in `title` / `label` while the identical values
 // under `notes` were redacted. Structural and label are different exemptions
 // and must stay separate parameters , collapsing them again re-opens this.
-function redactStringValue(value, structural = false, label = false) {
+function redactStringValue(value, structural = false, label = false, identifier = false) {
   if (typeof value !== 'string') return value;
   if (structural) return applyCredentialPatterns(value);
+  if (identifier) return redactOpaqueRuns(applyCredentialPatterns(value), identifierRunLooksLikeCredential);
   if (label) return redactOpaqueRuns(applyCredentialPatterns(value), labelRunLooksLikeCredential);
   if (isLikelyToken(value)) return '[REDACTED]';
   // Sweep embedded runs here rather than relying on a later whole-text pass:
@@ -257,25 +302,30 @@ function redactStringValue(value, structural = false, label = false) {
  * URL condition inside a parsed rule object survives too. SENSITIVE_FIELD_NAMES
  * is still checked first and still wins at any depth.
  */
-function redactJsonObj(obj, structural = false) {
+function redactJsonObj(obj, structural = false, arrayKey = null) {
   if (obj === null || obj === undefined) return obj;
   if (typeof obj === 'string') return redactStringValue(obj, structural);
   if (typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) {
-    return obj.map(item => redactJsonObj(item, structural));
+    // `arrayKey` is the key this array sits under. It reaches the array's
+    // DIRECT element objects only (see the reports[].id exemption above) and
+    // is reset for anything nested deeper.
+    return obj.map(item => redactJsonObj(item, structural, Array.isArray(item) ? null : arrayKey));
   }
+  const inReportList = REPORT_LIST_CONTAINER_KEYS.has(arrayKey);
   for (const [key, value] of Object.entries(obj)) {
     const childStructural = structural || STRUCTURAL_FIELD_NAMES.has(key);
     if (typeof value === 'string') {
       if (SENSITIVE_FIELD_NAMES.has(key)) {
         obj[key] = '[REDACTED]';
       } else {
-        obj[key] = redactStringValue(value, childStructural, LABEL_FIELD_NAMES.has(key));
+        const identifier = IDENTIFIER_FIELD_NAMES.has(key) || (key === 'id' && inReportList);
+        obj[key] = redactStringValue(value, childStructural, LABEL_FIELD_NAMES.has(key), identifier);
       }
     } else if (typeof value === 'object' && value !== null) {
       // Reassign: Array.prototype.map returns a NEW array, so in-place
       // mutation of the parent is required for array children.
-      obj[key] = redactJsonObj(value, childStructural);
+      obj[key] = redactJsonObj(value, childStructural, Array.isArray(value) ? key : null);
     }
   }
   return obj;
