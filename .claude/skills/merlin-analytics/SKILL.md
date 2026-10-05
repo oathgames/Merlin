@@ -210,6 +210,22 @@ Use when the brand runs an affiliate program on Rakuten Advertising (formerly Li
 
 `rakutenDateType`: `transaction` (default, date of sale) or `process` (date Rakuten booked it, matches invoices). Column sets are whatever the brand's saved report contains, so if `verify` reports missing columns, ask the user to add them to that report in Rakuten. Read-only by construction: Merlin cannot change publishers, commissions or offers.
 
+## Affiliate reporting (`mcp__merlin__impact`): read-only
+
+Use when the brand runs an affiliate or partnership program on impact.com (formerly Impact Radius) and asks how partners are performing: affiliate revenue, payouts, reversals, top partners, affiliate ROAS or CPA, new vs returning customers. Connect on the impact.com tile with the Account SID and Auth Token from app.impact.com > Settings > API (a read-only token is enough), plus an optional default program id.
+
+| Action | Use |
+|---|---|
+| `status` / `verify` | Connection check; `verify` confirms the credentials and lists programs |
+| `discover` | Company (currency, timezone), programs and saved reports (ids for `impactReportId`) |
+| `insights` | Weekly-deck pull: totals (revenue, payout, cost, ROAS, CPA, AOV, reversals, new vs returning) by partner and by program, top partners. `startDate`/`endDate` or `days` (max 366). Add `impactReportId` for clicks |
+| `actions` | Conversion rows, filter `impactState` (pending/approved/reversed/all), `limit` |
+| `partners` | Partner roster, filter `status` |
+| `clicks` | Click totals for one program, max 7 days |
+| `report` | Export a saved report as a table (`impactReportId`); if it is still queued, retry with the returned `impactJobId` |
+
+Dates are in the account's timezone. Revenue excludes reversed actions. Clicks are omitted, not zeroed, when no click report is given. Read-only by construction: Merlin cannot change partners, contracts or payouts.
+
 ## Customer support (`mcp__merlin__gorgias`) — read-only, de-identified
 
 Use when the user asks what customers write to support: ticket volume, top complaint themes, CSAT, response and resolution times, or a support-ticket corpus for analysis. Merlin only reads from Gorgias. Every response is de-identified in the engine: emails, phones, cards, addresses, order and tracking numbers, and names become typed placeholders (`[EMAIL]`, `[ORDER_NUMBER]`, `[NAME]`, ...), people are per-export pseudonyms, attachments are dropped.

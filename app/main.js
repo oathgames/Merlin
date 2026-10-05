@@ -2849,6 +2849,14 @@ function translateTool(toolName, input) {
       'rakuten-report':         { label: 'Pull Rakuten affiliate program performance', cost: 'Free' },
       'rakuten-publishers':     { label: 'List Rakuten affiliate publishers', cost: 'Free' },
       'rakuten-transactions':   { label: 'Pull Rakuten affiliate transactions', cost: 'Free' },
+      'impact-setup':           { label: 'Verify your impact.com API credentials', cost: 'Free' },
+      'impact-verify':          { label: 'Verify your impact.com API credentials', cost: 'Free' },
+      'impact-discover':        { label: 'List impact.com programs and reports', cost: 'Free' },
+      'impact-insights':        { label: 'Pull impact.com affiliate program performance', cost: 'Free' },
+      'impact-actions':         { label: 'Pull impact.com affiliate conversions', cost: 'Free' },
+      'impact-partners':        { label: 'List impact.com partners', cost: 'Free' },
+      'impact-clicks':          { label: 'Pull impact.com affiliate clicks', cost: 'Free' },
+      'impact-report':          { label: 'Export an impact.com report', cost: 'Free' },
       'quickbooks-login':         { label: 'Connect QuickBooks (read-only accounting)', cost: 'Free' },
       'quickbooks-report':        { label: 'Pull QuickBooks accounting metrics', cost: 'Free' },
       'yotpo-verify':             { label: 'Verify your Yotpo credentials', cost: 'Free' },
@@ -9357,6 +9365,10 @@ const BRAND_KEYS = [
   // report keys + locale + network). Mirror of brandScopedKeys in
   // autocmo-core/vault.go.
   'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
+  // impact.com: brand-specific Brand API connection (Account SID + read-only
+  // Auth Token + optional default program). Mirror of brandScopedKeys in
+  // autocmo-core/vault.go.
+  'impactAccountSid', 'impactAuthToken', 'impactProgramId',
   // Yotpo — brand-specific BYOK (App Key + Secret Key). Mirror of
   // brandScopedKeys in autocmo-core/vault.go.
   'yotpoAppKey', 'yotpoSecretKey',
@@ -10318,6 +10330,16 @@ function getConnections(brandName) {
         : !!rakutenToken;
       if (rakutenResolved) connected.push({ platform: 'rakuten', status: 'connected' });
     }
+    // impact.com: brand-specific Brand API; connected when the Account SID +
+    // Auth Token are present, with @@VAULT placeholder resolution on the token.
+    const impactSid = brandName ? brandCfg.impactAccountSid : globalCfg.impactAccountSid;
+    const impactToken = brandName ? brandCfg.impactAuthToken : globalCfg.impactAuthToken;
+    if (impactSid && impactToken) {
+      const impactResolved = typeof impactToken === 'string' && impactToken.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'impactAuthToken')
+        : !!impactToken;
+      if (impactResolved) connected.push({ platform: 'impact', status: 'connected' });
+    }
     // Yotpo — brand-specific BYOK; connected when App Key + Secret Key are
     // present, with @@VAULT placeholder resolution on the secret.
     const yotpoAppKey = brandName ? brandCfg.yotpoAppKey : globalCfg.yotpoAppKey;
@@ -10548,6 +10570,9 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // disconnect. Mirror of platformVaultKeys["rakuten"] in
       // autocmo-core/oauth.go.
       rakuten: ['rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork'],
+      // impact.com: clear the whole Brand API connection on disconnect.
+      // Mirror of platformVaultKeys["impact"] in autocmo-core/oauth.go.
+      impact: ['impactAccountSid', 'impactAuthToken', 'impactProgramId'],
       // Yotpo — clear both BYOK creds on disconnect. Mirror of
       // platformVaultKeys["yotpo"] in autocmo-core/oauth.go.
       yotpo: ['yotpoAppKey', 'yotpoSecretKey'],

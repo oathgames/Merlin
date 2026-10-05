@@ -2903,6 +2903,59 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── impact ────────────────────────────────────────────────
+  // impact.com (affiliate / partnership platform, formerly Impact Radius)
+  // reporting, READ-ONLY. impact.go reads the Brand API (api.impact.com) with
+  // the brand's own Account SID + read-only Auth Token, so this tool can only
+  // READ program performance; it cannot change payouts, partners, contracts or
+  // actions (destructive:false, costImpact:'api', no approval card).
+  // Read-only by construction: impact.go has one GET-only request constructor
+  // that also refuses impact.com's _method verb override
+  // (TestImpactSourceIsReadOnly). Connect happens in the impact.com tile.
+  tools.push(defineTool({
+    name: 'impact',
+    description: 'impact.com affiliate and partnership program reporting (read-only; formerly Impact Radius). Actions: status (connection check, no API call); connect (how to get the Account SID and Auth Token); setup / verify (validate the saved credentials, list programs); discover (company currency and timezone, programs, and the saved reports that can be exported over the API); insights (weekly scorecard for a window: revenue, actions, payout, total cost, ROAS, CPA, AOV, new vs returning customers, reversals, top partners, by program and by day; pass impactReportId of a partner performance report to add clicks); actions (conversion rows, newest first, filter with impactState); partners (partner roster, filter with status); clicks (clicks by partner and day for one program, at most 7 days, impact.com allows 10 day-exports per day); report (no impactReportId lists exportable reports; with one, exports it for the window; with impactJobId, collects a still-running export). Window: days (default 7) or startDate / endDate (YYYY-MM-DD, matched on the account-timezone event date, so a Sun-Sat week is exact). impactProgramId picks one program (default: the brand default, else every program). limit caps rows returned. Cannot change payouts, partners or actions.',
+    destructive: false,
+    idempotent: true,
+    preview: false,
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'impact' },
+    input: {
+      action: z.enum(['status', 'connect', 'setup', 'verify', 'discover', 'insights', 'actions', 'partners', 'clicks', 'report']).describe('status → connection check (no API call). connect → how to get API credentials. setup/verify → validate credentials. discover → programs and exportable reports. insights → weekly affiliate scorecard. actions → conversion rows. partners → partner roster. clicks → clicks by partner and day. report → list, export or collect a saved report.'),
+      brand: brandSchema.optional(),
+      days: z.coerce.number().int().optional().describe('Window length in days ending today (default 7; clicks default 1, max 7; others max 366). Ignored when startDate is set.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window start, YYYY-MM-DD (inclusive, account timezone).'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window end, YYYY-MM-DD (inclusive). Defaults to today.'),
+      limit: z.coerce.number().int().optional().describe('Max rows returned: top partners for insights (default 10), actions / partners / report rows (default 200). The results file always keeps every row.'),
+      impactProgramId: z.string().regex(/^\d{1,12}$/).optional().describe('impact.com program (campaign) id from discover. Defaults to the brand default, else every program.'),
+      impactReportId: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional().describe('Saved report id or handle from discover. report exports it; insights uses it as the clicks source (a report with partner and Clicks columns).'),
+      impactJobId: z.string().regex(/^[A-Za-z0-9-]{1,64}$/).optional().describe('Collect a still-running export by the jobId an earlier call returned (report action).'),
+      impactState: z.enum(['pending', 'approved', 'reversed', 'all']).optional().describe('actions filter by action state (default all).'),
+      status: z.enum(['active', 'pending', 'expired', 'declined', 'suspended', 'deactivated', 'closing', 'closed', 'all']).optional().describe('partners filter by partner state (default all).'),
+    },
+    handler: async (args) => {
+      if (args.action === 'connect') {
+        return {
+          summary: 'Connect impact.com',
+          instructions: 'In app.impact.com open Settings, then API (under Technical). Copy the Account SID, then create a read-only Auth Token (or reveal an existing read-only one) and copy it. Open the impact.com tile in the Connections panel, paste both, and optionally a default program id, then run action "verify". Merlin reads reports only; it cannot change payouts, partners, contracts or actions.',
+        };
+      }
+      const actionMap = {
+        status: 'impact-status',
+        setup: 'impact-setup',
+        verify: 'impact-verify',
+        discover: 'impact-discover',
+        insights: 'impact-insights',
+        actions: 'impact-actions',
+        partners: 'impact-partners',
+        clicks: 'impact-clicks',
+        report: 'impact-report',
+      };
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
+    },
+  }, tool, z, ctx));
+
   // ── yotpo ─────────────────────────────────────────────────
   // Yotpo reviews + loyalty reporting (READ-ONLY — yotpo.go ships no write
   // verbs). BYOK: the brand's own App Key + Secret Key from Yotpo admin →

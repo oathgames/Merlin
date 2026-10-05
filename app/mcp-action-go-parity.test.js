@@ -193,6 +193,9 @@ const TOOL_ROUTING = [
   // setup/verify/status/report/publishers/transactions → rakuten-<action> 1:1;
   // connect is JS-only (returns instructions, no engine call).
   { name: 'rakuten', prefix: 'rakuten', exemptions: ['connect'] },
+  // status/setup/verify/discover/insights/actions/partners/clicks/report →
+  // impact-<action> 1:1; connect is JS-only (returns instructions).
+  { name: 'impact', prefix: 'impact', exemptions: ['connect'] },
   { name: 'rokt', prefix: 'rokt',
     // report → rokt-report, status → rokt-status, verify → rokt-verify map 1:1
     // via the prefix. connect is JS-only (returns instructions) → exempt.

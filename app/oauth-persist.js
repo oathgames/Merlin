@@ -122,6 +122,13 @@ const VAULT_SENSITIVE_KEYS = [
   'rakutenTransactionsReportKey',
   'rakutenReportLocale',
   'rakutenNetwork',
+  // impact.com Brand API connection, saved by the impact.com connect modal
+  // (renderer.js showImpactConnectModal). The Auth Token is the secret; the
+  // Account SID and default program are vaulted with it (same treatment as
+  // roktAccountId) so a brand's whole connection lives brand-scoped.
+  'impactAccountSid',
+  'impactAuthToken',
+  'impactProgramId',
   // Yotpo BYOK reporting credentials (App Key + Secret Key), saved by the
   // 2-step Yotpo connect modal (renderer.js showYotpoConnectModal).
   'yotpoAppKey',
@@ -212,6 +219,10 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // locale + network), saved by the Rakuten connect modal. All five mirrored
   // in VAULT_SENSITIVE_KEYS.
   'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
+  // impact.com Brand API connection (Account SID + Auth Token + optional
+  // default program), saved by the impact.com connect modal. All three
+  // mirrored in VAULT_SENSITIVE_KEYS.
+  'impactAccountSid', 'impactAuthToken', 'impactProgramId',
   // Yotpo / Sesami / Faire / ShipStation / Loop Returns / Cin7 BYOK
   // credentials, saved by the custom multi-step connect modals and the
   // masked API_KEY_PLATFORMS tiles (renderer.js). All mirrored in
