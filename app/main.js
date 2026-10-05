@@ -3810,66 +3810,17 @@ async function startSession(brandOverride) {
     }
   } catch {}
 
-  // REGRESSION GUARD (2026-04-27, sdk-token-silent-refresh):
-  // Two-tier credential resolution. Order matters — read this carefully
-  // before changing.
-  //
-  //   Tier 1 — File with refresh capability (preferred):
-  //     If ~/.claude/.credentials.json holds a blob with both accessToken
-  //     and refreshToken, Merlin DOES NOT inject CLAUDE_CODE_OAUTH_TOKEN
-  //     into the SDK subprocess env. The SDK reads the same file
-  //     directly and refreshes silently against
-  //     platform.claude.com/v1/oauth/token whenever the access token
-  //     hits 401 — no browser sign-in, no UI interruption, no replay.
-  //     This is the path that 99% of paying users hit; preserving it
-  //     is what fixes the 2026-04-27 forced re-auth incident.
-  //
-  //   Tier 2 — Fallback (no file or no refresh):
-  //     Mac Keychain probe / Win alt-paths / env-only / etc. Returns a
-  //     bare access-token string with no refresh capability. Inject it
-  //     via env. If/when this token expires, the SDK hits 401 and
-  //     Merlin's auth-error interceptor (for-await loop, line ~3140)
-  //     routes through requireAuth() — the correct UX for the no-refresh
-  //     case.
-  //
-  // DO NOT collapse this back to a single readCredentials() call that
-  // always env-injects. The SDK's env-fed code path explicitly returns
-  // {refreshToken:null}, defeating refresh — that's the exact bug we
-  // fixed here.
-  if (!sessionEnv.CLAUDE_CODE_OAUTH_TOKEN && !sessionEnv.ANTHROPIC_API_KEY) {
-    emitSessionPhase('cred-read', 'Authenticating…');
-    const fileCreds = readFileCredentialsForSession();
-    if (fileCreds) {
-      // Tier 1: file has refresh capability — let the SDK handle it.
-      // We deliberately do NOT set sessionEnv.CLAUDE_CODE_OAUTH_TOKEN
-      // here, so cli.js falls through to its file-reading path.
-      const expiryNote = fileCreds.expired
-        ? 'expired (SDK will refresh)'
-        : (typeof fileCreds.expiresAt === 'number'
-            ? `expires in ${Math.max(0, Math.floor((fileCreds.expiresAt - Date.now()) / 60000))}m`
-            : 'expiry unknown');
-      console.log(`[auth] File credentials with refresh capability detected (${expiryNote}) — skipping env injection`);
-    } else {
-      const token = await readCredentials();
-      if (token) {
-        sessionEnv.CLAUDE_CODE_OAUTH_TOKEN = token;
-        console.log('[auth] Injected OAuth token into session env (Tier 2: no refresh capability)');
-      } else {
-        // No credentials found. Fire the unified auth-required event; the
-        // renderer will auto-trigger login and replay the pending message
-        // after auth succeeds. We DO NOT clear pendingMessageQueue here —
-        // the renderer is responsible for replaying via a stashed copy,
-        // but we also leave the queue intact as belt-and-suspenders in case
-        // the renderer path breaks. The next startSession() call (after
-        // successful login) drains whatever's still in the queue.
-        console.warn('[auth] No credentials found — emitting auth-required');
-        _queueFrozenForAuth = true; // signal the finally block not to wipe
-        requireAuth('session start: no credentials');
-        return;
-      }
-    }
-  }
-
+  // REGRESSION GUARD (2026-10-05, ipc-sidecar-before-auth): the Merlin MCP
+  // server and the IPC sidecar endpoint are brought up BEFORE the Claude
+  // credential gate below, never after it. Live incident: a local-build
+  // relaunch hit a transient "Not logged in" at boot, the credential gate
+  // returned early via requireAuth(), and the sidecar never started, so
+  // Claude Desktop / Codex / the shim saw a stale mcp-shim-token pointing
+  // at a dead pipe until the user happened to send an in-app message.
+  // External MCP clients do not use Merlin's Claude session at all, so
+  // in-app Claude auth must not gate them. The subscription gate above
+  // still applies. Do not move this block below the credential gate.
+  // Guard: app/ipc-sidecar-before-auth.test.js.
   // Register the Merlin MCP server — all platform API calls route through
   // this in-process server. Credentials never enter Claude's context.
   let mcpConfig = {};
@@ -4083,6 +4034,66 @@ async function startSession(brandOverride) {
     }
   } catch (err) {
     console.error('[mcp] Failed to create Merlin MCP server:', err.message);
+  }
+
+  // REGRESSION GUARD (2026-04-27, sdk-token-silent-refresh):
+  // Two-tier credential resolution. Order matters — read this carefully
+  // before changing.
+  //
+  //   Tier 1 — File with refresh capability (preferred):
+  //     If ~/.claude/.credentials.json holds a blob with both accessToken
+  //     and refreshToken, Merlin DOES NOT inject CLAUDE_CODE_OAUTH_TOKEN
+  //     into the SDK subprocess env. The SDK reads the same file
+  //     directly and refreshes silently against
+  //     platform.claude.com/v1/oauth/token whenever the access token
+  //     hits 401 — no browser sign-in, no UI interruption, no replay.
+  //     This is the path that 99% of paying users hit; preserving it
+  //     is what fixes the 2026-04-27 forced re-auth incident.
+  //
+  //   Tier 2 — Fallback (no file or no refresh):
+  //     Mac Keychain probe / Win alt-paths / env-only / etc. Returns a
+  //     bare access-token string with no refresh capability. Inject it
+  //     via env. If/when this token expires, the SDK hits 401 and
+  //     Merlin's auth-error interceptor (for-await loop, line ~3140)
+  //     routes through requireAuth() — the correct UX for the no-refresh
+  //     case.
+  //
+  // DO NOT collapse this back to a single readCredentials() call that
+  // always env-injects. The SDK's env-fed code path explicitly returns
+  // {refreshToken:null}, defeating refresh — that's the exact bug we
+  // fixed here.
+  if (!sessionEnv.CLAUDE_CODE_OAUTH_TOKEN && !sessionEnv.ANTHROPIC_API_KEY) {
+    emitSessionPhase('cred-read', 'Authenticating…');
+    const fileCreds = readFileCredentialsForSession();
+    if (fileCreds) {
+      // Tier 1: file has refresh capability — let the SDK handle it.
+      // We deliberately do NOT set sessionEnv.CLAUDE_CODE_OAUTH_TOKEN
+      // here, so cli.js falls through to its file-reading path.
+      const expiryNote = fileCreds.expired
+        ? 'expired (SDK will refresh)'
+        : (typeof fileCreds.expiresAt === 'number'
+            ? `expires in ${Math.max(0, Math.floor((fileCreds.expiresAt - Date.now()) / 60000))}m`
+            : 'expiry unknown');
+      console.log(`[auth] File credentials with refresh capability detected (${expiryNote}) — skipping env injection`);
+    } else {
+      const token = await readCredentials();
+      if (token) {
+        sessionEnv.CLAUDE_CODE_OAUTH_TOKEN = token;
+        console.log('[auth] Injected OAuth token into session env (Tier 2: no refresh capability)');
+      } else {
+        // No credentials found. Fire the unified auth-required event; the
+        // renderer will auto-trigger login and replay the pending message
+        // after auth succeeds. We DO NOT clear pendingMessageQueue here —
+        // the renderer is responsible for replaying via a stashed copy,
+        // but we also leave the queue intact as belt-and-suspenders in case
+        // the renderer path breaks. The next startSession() call (after
+        // successful login) drains whatever's still in the queue.
+        console.warn('[auth] No credentials found — emitting auth-required');
+        _queueFrozenForAuth = true; // signal the finally block not to wipe
+        requireAuth('session start: no credentials');
+        return;
+      }
+    }
   }
 
   // Voice-output tag instruction. Opt-in by design: default is silent, and
