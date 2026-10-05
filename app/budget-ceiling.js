@@ -116,10 +116,62 @@ function alwaysRequiresCard(budget) {
   return typeof budget === 'number' && Number.isFinite(budget) && budget >= BUDGET_HARD_CEILING;
 }
 
+// Same allowlist as assertBrandSafe in main.js and BRAND_RE in preload.js:
+// a brand name composes filesystem paths, so it is validated before use.
+const CAP_BRAND_SAFE_RE = /^[a-z0-9_-]{1,100}$/i;
+
+/**
+ * The brand whose declared cap (maxDailyAdBudget) governs a spend call.
+ *
+ * REGRESSION GUARD (2026-10-05, google-budget-force): the host approval gate
+ * used to read the cap from readState().activeBrand, so a spend call naming a
+ * NON-active brand was checked against the WRONG brand's maxDailyAdBudget. A
+ * brand with a high cap could authorize another brand's spend, and a brand
+ * with a raised cap could be refused because the active brand's cap was low.
+ * The call's own brand wins; the active brand is only a fallback when the
+ * call names no brand at all.
+ *
+ * @param {*} inputBrand            The brand named by the tool call, if any.
+ * @param {() => string} readActiveBrand  Lazily reads the active brand.
+ * @returns {string|null} The brand to read ('' = no brand, use the global
+ *   config), or null when the call names a brand that is not a safe brand
+ *   name. On null the caller must read NO config: it then has no declared cap,
+ *   so the strict default backstop applies and in-cap auto-approve is off.
+ */
+function resolveCapBrand(inputBrand, readActiveBrand) {
+  if (inputBrand !== undefined && inputBrand !== null && inputBrand !== '') {
+    return (typeof inputBrand === 'string' && CAP_BRAND_SAFE_RE.test(inputBrand)) ? inputBrand : null;
+  }
+  let active = '';
+  try { active = (typeof readActiveBrand === 'function' && readActiveBrand()) || ''; } catch { active = ''; }
+  if (!active) return '';
+  return (typeof active === 'string' && CAP_BRAND_SAFE_RE.test(active)) ? active : null;
+}
+
+/**
+ * True when a spend call asks the engine to override a blocking spend guard.
+ *
+ * REGRESSION GUARD (2026-10-05, google-budget-force): `force` is declared on
+ * every ad tool so the engine's spend-anomaly guard remediation ("pass
+ * force=true") is reachable (Hard-Won Rules 23 + 25). It must never buy
+ * silence on the host side: a forced call is by definition one an engine
+ * guard flagged, so it is disqualified from in-cap auto-approve and always
+ * shows the approval card. Any value other than literal false or absent
+ * counts, so a malformed flag over-cards rather than slipping through.
+ *
+ * @param {object} input Tool call input.
+ * @returns {boolean}
+ */
+function requestsGuardOverride(input) {
+  return !!input && typeof input === 'object' && input.force !== undefined && input.force !== null && input.force !== false;
+}
+
 module.exports = {
   BUDGET_HARD_CEILING,
   BUDGET_ABSOLUTE_CEILING,
   BUDGET_RELATIVE_CENTS_RATIO,
   denyReasonForBudget,
   alwaysRequiresCard,
+  resolveCapBrand,
+  requestsGuardOverride,
 };

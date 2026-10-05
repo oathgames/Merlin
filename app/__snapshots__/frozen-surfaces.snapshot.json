@@ -487,6 +487,10 @@
         "dailyBudget": {
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -1484,6 +1488,10 @@
         "dailyBudget": {
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "geoTargetConstants": {
           "description": "demandgen-push: Google geo target ids for a NEW ad group, default [\"2840\"] (United States)",
           "items": {
@@ -2269,6 +2277,10 @@
           "description": "Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform's API. If the user says \"$10 a day\", pass 10. If unsure, ask the user.",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -2504,6 +2516,10 @@
           "description": "New daily budget in DOLLARS",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -2712,6 +2728,10 @@
         "dailyBudget": {
           "description": "Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform's API. If the user says \"$10 a day\", pass 10. If unsure, ask the user.",
           "type": "number"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -3476,6 +3496,10 @@
           "description": "Daily budget in DOLLARS (not cents). Pass 10 for $10/day.",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -3604,6 +3628,10 @@
         "ctaType": {
           "description": "Call-to-action BUTTON VERB for this push, e.g. 'SHOP_NOW', 'LEARN_MORE', 'GET_OFFER'. Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.",
           "type": "string"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -3970,6 +3998,10 @@
         "dailyBudget": {
           "description": "New daily budget in DOLLARS",
           "type": "number"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -4352,6 +4384,10 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "startDate": {
           "description": "Insights: exact window start, YYYY-MM-DD inclusive (ad account timezone). Give with endDate; overrides batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
@@ -4719,6 +4755,10 @@
           "description": "Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform's API. If the user says \"$10 a day\", pass 10. If unsure, ask the user.",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -4899,6 +4939,10 @@
           "description": "Insights: window end, YYYY-MM-DD inclusive. Defaults to today.",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "limit": {
           "description": "Max rows returned (campaigns, line-items, insights breakdowns). The results file always keeps every row.",
@@ -5353,6 +5397,10 @@
         },
         "dailyBudget": {
           "type": "number"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
