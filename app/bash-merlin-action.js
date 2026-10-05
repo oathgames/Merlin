@@ -96,4 +96,20 @@ function lastString(command, key) {
   return null;
 }
 
-module.exports = { parseAction, lastNumber, lastString };
+// requestsOverride -> boolean. True when ANY occurrence of `key` carries a
+// value other than literal false (or cannot be decoded). Same scanner as the
+// readers above, so escaped quotes (\"force\"), other letter case ("Force",
+// which Go's decoder still binds) and escaped key names are all seen. Any
+// occurrence counts rather than last-wins: a malformed or duplicated flag
+// over-cards rather than slipping through (2026-10-05, google-budget-force).
+function requestsOverride(command, key) {
+  for (const text of candidates(command)) {
+    for (const h of scanKeys(text, key)) {
+      if (h.undecodable) return true;
+      if (!/^false(?![A-Za-z0-9_])/.test(h.valueText)) return true;
+    }
+  }
+  return false;
+}
+
+module.exports = { parseAction, lastNumber, lastString, requestsOverride };

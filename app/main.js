@@ -3034,6 +3034,12 @@ function translateTool(toolName, input) {
 // declared cap applies, the strict default ceiling holds, and in-cap
 // auto-approve stays off. Pinned by app/mcp-spend-force-reachability.test.js
 // and budget-ceiling.test.js (resolveCapBrand).
+// Shown on every approval card for a forced spend call. `force` overrides the
+// engine's spend-anomaly guard AND the push quality gates (forbidden brand
+// words, unverified stats, landing grade), so the human must see that this
+// approval waives Merlin's own checks, not just a budget number.
+const FORCE_CARD_NOTE = '⚠ Overrides Merlin safety checks (large budget jump, ad quality checks)';
+
 function getBudgetContext(inputBrand) {
   try {
     const capBrand = budgetCeiling.resolveCapBrand(inputBrand, () => readState().activeBrand || '');
@@ -3260,6 +3266,7 @@ async function handleToolApproval(toolName, input, opts) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
+      if (forceRequested) budgetDetail = (budgetDetail ? budgetDetail + ' · ' : '') + FORCE_CARD_NOTE;
       const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       const external = resolveExternalOriginCard(payload, toolName, input, opts);
@@ -3470,9 +3477,9 @@ async function handleToolApproval(toolName, input, opts) {
       } catch (e) {
         console.warn('[spend-approval] bash config read failed, defaulting to require approval:', e && e.message);
       }
-      // 5. Forced override always cards (mirror of the MCP path). Any "force"
-      //    not literally false counts, so a malformed flag over-cards.
-      const bashForceRequested = /"force"\s*:\s*(?!false\b)/.test(input.command);
+      // 5. Forced override always cards (mirror of the MCP path); see
+      //    bashMerlinAction.requestsOverride for the escape/case handling.
+      const bashForceRequested = bashMerlinAction.requestsOverride(input.command, 'force');
       // 4. High-magnitude spend always cards (mirror of the MCP path above):
       //    a raised cap authorizes the amount, not the silence.
       if (!bashRequireSpendApproval && !bashForceRequested && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction) &&
@@ -3493,6 +3500,7 @@ async function handleToolApproval(toolName, input, opts) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
+      if (bashForceRequested) budgetDetail = (budgetDetail ? budgetDetail + ' · ' : '') + FORCE_CARD_NOTE;
       const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);

@@ -57,7 +57,8 @@ const BULK_AD_REUSE_AD_ID_DESC = 'Numeric id of an existing ad whose exact creat
 const SPEND_GUARD_FORCE_DESC = 'Override an engine spend guard whose refusal explicitly says "pass force=true" '
   + '(the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). '
   + 'Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. '
-  + 'It does not skip the approval card, the spend-pause flag, or the daily budget cap, and every forced override is logged.';
+  + 'It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. '
+  + 'It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.';
 
 function firstLine(text) {
   if (!text || typeof text !== 'string') return '';

@@ -199,17 +199,39 @@ const MAIN_SRC = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 test('main.js: forced spend calls are excluded from in-cap auto-approve on BOTH paths', () => {
   assert.match(MAIN_SRC, /const forceRequested = budgetCeiling\.requestsGuardOverride\(input\)/);
   assert.match(MAIN_SRC, /if \(!requireSpendApproval && !forceRequested && capForComparison > 0 && action === 'push'/);
-  assert.ok(MAIN_SRC.includes('const bashForceRequested = /"force"\\s*:\\s*(?!false\\b)/.test(input.command);'),
-    'Bash spend path must detect a forced command');
+  assert.match(MAIN_SRC, /const bashForceRequested = bashMerlinAction\.requestsOverride\(input\.command, 'force'\);/,
+    'Bash spend path must detect a forced command with the shared JSON key scanner');
   assert.match(MAIN_SRC, /if \(!bashRequireSpendApproval && !bashForceRequested && capForComparison > 0 && BASH_PUSH_ONLY\.has\(bashAction\)/);
 });
 
-test('Bash force detector: matches forced commands, ignores force:false', () => {
-  const re = /"force"\s*:\s*(?!false\b)/;
-  assert.ok(re.test('Merlin.exe --cmd \'{"action":"meta-push","force":true}\''));
-  assert.ok(re.test('{"force" : "yes"}'));
-  assert.ok(!re.test('{"action":"meta-push","force":false}'));
-  assert.ok(!re.test('{"action":"meta-push"}'));
+test('main.js: a forced spend call shows the override on the approval card (MCP and Bash)', () => {
+  assert.match(MAIN_SRC, /const FORCE_CARD_NOTE = '/);
+  assert.match(MAIN_SRC, /if \(forceRequested\) budgetDetail = \(budgetDetail \? budgetDetail \+ ' · ' : ''\) \+ FORCE_CARD_NOTE;/);
+  assert.match(MAIN_SRC, /if \(bashForceRequested\) budgetDetail = \(budgetDetail \? budgetDetail \+ ' · ' : ''\) \+ FORCE_CARD_NOTE;/);
+});
+
+// Exercises the REAL detector main.js uses. Go's encoding/json binds "Force"
+// and escaped key names to Command.Force, and a model commonly writes the
+// --cmd argument with escaped quotes, so all of those must count as forced.
+test('Bash force detector (bashMerlinAction.requestsOverride): every form Go reads as force cards', () => {
+  const { requestsOverride } = require('./bash-merlin-action');
+  const BS = '\\';
+  const forced = [
+    `Merlin.exe --cmd '{"action":"meta-push","force":true}'`,
+    `Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"force${BS}":true}"`,
+    `Merlin.exe --cmd '{"action":"meta-push","Force":true}'`,
+    `Merlin.exe --cmd '{"action":"meta-push","FORCE":true}'`,
+    `Merlin.exe --cmd '{"action":"meta-push","forc${BS}u0065":true}'`,
+    `Merlin.exe --cmd '{"force" : "yes"}'`,
+    `Merlin.exe --cmd '{"force":true,"force":false}'`,
+  ];
+  for (const c of forced) assert.equal(requestsOverride(c, 'force'), true, `must detect force in: ${c}`);
+  const plain = [
+    `Merlin.exe --cmd '{"action":"meta-push","force":false}'`,
+    `Merlin.exe --cmd '{"action":"meta-push"}'`,
+    `Merlin.exe --cmd '{"action":"meta-push","adHeadline":"force of nature"}'`,
+  ];
+  for (const c of plain) assert.equal(requestsOverride(c, 'force'), false, `must not flag: ${c}`);
 });
 
 test('main.js: the host cap is read for the brand the call names, not readState().activeBrand', () => {
