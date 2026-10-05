@@ -23,6 +23,9 @@ const path = require('node:path');
 
 const MAIN_JS = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
+// 2026-10-05 (ipc-boot): startSession reaches the endpoint through
+// ensureMcpIpcEndpoint(), which also serves the boot-time start, so the
+// sidecar anchor below is that call rather than the inline require.
 function startSessionBody() {
   const start = MAIN_JS.indexOf('async function startSession(');
   assert.ok(start > 0, 'startSession found');
@@ -33,7 +36,7 @@ function startSessionBody() {
 test('sidecar endpoint starts before the credential gate early return', () => {
   const body = startSessionBody();
   const mcpCreate = body.indexOf('await createMerlinMcpServer(');
-  const ipcStart = body.indexOf("require('./mcp-ipc-endpoint')");
+  const ipcStart = body.indexOf('ensureMcpIpcEndpoint(merlinMcp');
   const authReturn = body.indexOf("requireAuth('session start: no credentials')");
   assert.ok(mcpCreate > 0, 'createMerlinMcpServer call found in startSession');
   assert.ok(ipcStart > 0, 'IPC endpoint start found in startSession');
@@ -46,7 +49,7 @@ test('sidecar still sits behind the subscription gate and concurrent-session gua
   const body = startSessionBody();
   const subGate = body.indexOf('ensureSubscriptionAccess(');
   const dupGuard = body.indexOf('Session already active, skipping duplicate start');
-  const ipcStart = body.indexOf("require('./mcp-ipc-endpoint')");
+  const ipcStart = body.indexOf('ensureMcpIpcEndpoint(merlinMcp');
   assert.ok(subGate > 0 && dupGuard > 0, 'gates found');
   assert.ok(subGate < ipcStart, 'subscription gate must still precede the sidecar');
   assert.ok(dupGuard < ipcStart, 'duplicate-session guard must still precede the sidecar');
