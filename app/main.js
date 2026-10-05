@@ -1626,8 +1626,9 @@ const activeChildProcesses = new Set(); // track spawned Merlin.exe for cleanup
 let _lastMcpCtx = null;
 // Local MCP IPC endpoint (Unix socket / Windows named pipe) for the
 // Claude Desktop sidecar shim. Single instance for the lifetime of the
-// app process — created on the first successful startSession and
-// refreshed (setTools) on subsequent sessions. Stopped on before-quit.
+// app process: created at app boot by bootMcpIpcEndpoint (or by the first
+// startSession if boot could not) and refreshed (setTools) on every
+// session. Stopped on before-quit.
 // See app/mcp-ipc-endpoint.js for the full security boundary comment.
 let _mcpIpcEndpoint = null;
 let pendingMessageQueue = []; // Queue messages sent before SDK is ready
@@ -3660,6 +3661,257 @@ function emitSessionPhase(phase, label) {
   } catch {}
 }
 
+// ── MCP tool context + sidecar IPC endpoint lifecycle ──────────────────
+//
+// REGRESSION GUARD (2026-10-05, ipc-boot): the sidecar IPC endpoint (the
+// named pipe / Unix socket that Claude Desktop, Codex and Claude Code drive
+// Merlin's tools through, via app/merlin-mcp-shim.js and
+// <stateDir>/mcp-shim-token) MUST come up at app boot, NOT on the first
+// chat startSession. Live incident: the app restarted, nobody typed a chat
+// message, and mcp-shim-token kept pointing at a pipe owned by a process
+// that no longer existed. Every external tool call failed ENOENT until a
+// human opened the chat, i.e. Merlin silently blocked Claude from calling
+// its own tools. Fix: bootMcpIpcEndpoint() runs from app.whenReady (after
+// the vault migrations), builds the same ctx startSession builds
+// (buildMcpCtx), and starts the endpoint, which rewrites the token file
+// with a fresh random token once the pipe is listening. startSession now
+// only refreshes the registry (or starts the endpoint if boot could not).
+//
+// What did NOT change: what the endpoint authorizes. Every tools/call still
+// goes through handleToolApproval with merlinApprovalSurface 'ipc' (the
+// 2026-09-28 and 2026-10-04 guards), the token compare is still
+// constant-time, the transport is still pipe/socket only (Rule 11 spirit),
+// and boot is gated on the SAME ensureSubscriptionAccess check startSession
+// applies, so an expired trial gets no endpoint at boot either.
+// Guard: app/mcp-ipc-boot.test.js.
+
+// Builds the ctx object handed to createMerlinMcpServer. Pure function of
+// module-level state plus the SDK module, so app boot and every chat
+// session construct an identical tool surface. The JobStore is shared
+// across ctx instances: createMerlinMcpServer only creates one when
+// ctx.jobStore is unset, so reusing the live one keeps a single prune
+// timer per process (before-quit shuts down the one on _lastMcpCtx).
+function buildMcpCtx(sdkModule) {
+  const ctx = {
+    getBinaryPath,
+    readConfig,
+    readBrandConfig,
+    // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): the MCP tool
+    // surface (runBinary in mcp-tools.js) MUST resolve a brand's binary
+    // config through buildStrictBrandConfig, NOT readBrandConfig. readBrandConfig
+    // is global ⊕ brand overlay — plain legacy creds + non-sensitive BRAND_KEYS
+    // (metaAdAccountId, shopifyStore, …) in the global config merge into EVERY
+    // brand, so mcp__merlin__dashboard/meta_ads/etc. served another brand's ad
+    // account (same class as the Truesight IPC leak fixed the same day).
+    // buildStrictBrandConfig strips ALL BRAND_KEYS from the global base and
+    // overlays only the brand's own creds — no global fallback.
+    buildStrictBrandConfig,
+    writeConfig,
+    writeBrandTokens,
+    vaultGet,
+    vaultPut,
+    ensureBinaryLicenseToken: maybeHydrateBinaryLicenseToken,
+    runOAuthFlow,
+    getConnections,
+    // Revoked-grant tile signal (2026-07-11 audit fix): runBinary in
+    // mcp-tools.js reports the real auth outcome of every platform action
+    // here. TOKEN_EXPIRED flags the platform (per brand) so getConnections
+    // shows 'expired'; any success clears the flag. See auth-failures.js.
+    notePlatformAuthResult: (platform, brandName, outcome) => {
+      try {
+        if (outcome === 'token_expired') authFailureStore.mark(platform, brandName);
+        else if (outcome === 'success') authFailureStore.clear(platform, brandName);
+      } catch {}
+    },
+    appRoot,
+    // Installer-resolved Resources directory (where bundled voice tools
+    // live in a packaged build). Required by tools that resolve binaries
+    // via captions.js#findVoiceTools or the equivalent install-first /
+    // workspace-fallback pattern. Dev mode falls back to <appRoot>/..
+    // (same calculation as the appInstall constant up top).
+    appInstall,
+    activeChildProcesses,
+    appendAudit,
+    sdkModule,
+    // Startup version gate — same one refresh-perf awaits. Scheduled
+    // tasks and chat-driven MCP tool calls must also wait for this so
+    // they don't race past the version check on an old binary and
+    // write output to the wrong directory.
+    awaitStartupChecks: () => (_startupChecksPromise || Promise.resolve()),
+    isBinaryTooOld,
+    minBinaryVersion: MIN_BINARY_VERSION,
+    // §3.6 — progress emitter for long-running MCP tools (brand_scrape,
+    // image/video gen, etc.). Forwarded to the renderer via the
+    // `mcp-progress` IPC channel; preload exposes onMcpProgress(cb) so
+    // the magic tab can animate a live pill. No-op when the window is
+    // gone (scheduled runs, post-quit stragglers).
+    emitProgress: (payload) => {
+      try {
+        if (!win || win.isDestroyed() || !win.webContents) return;
+        win.webContents.send('mcp-progress', payload);
+      } catch (_) { /* telemetry path — never let an emit crash a tool call */ }
+    },
+    // Atomic brand activation — used by the merlin-setup skill IMMEDIATELY
+    // after writing brand.md so the rest of the onboarding conversation
+    // (autopilot spell creation, the WOW summary) is associated with the
+    // new brand thread. Unlike switch-brand IPC, this does NOT abort the
+    // current SDK turn or restart the session: the active turn is owned by
+    // setup itself, restarting mid-flight would orphan it. Future bubbles
+    // append to the new brand's thread (see appendBubble call sites that
+    // read activeBrand from state). The renderer refreshes its dropdown +
+    // peripherals via the brand-activated event without repainting chat.
+    // bulkUploadAssets — exposes the same pipeline the renderer's drag-drop /
+    // paste flow uses, so the new MCP `bulk_upload` tool (v1.19.2) can route
+    // 5+ files into product references/ on demand. Reuses runBulkUploadAssets
+    // (declared later in this file but hoisted as a function declaration).
+    // Single source of truth for SHA dedup, validation, matcher dispatch,
+    // and rename — see the long comment block on runBulkUploadAssets.
+    bulkUploadAssets: (args) => runBulkUploadAssets(args),
+    activateBrand: (brand, opts) => {
+      if (typeof brand !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(brand)) {
+        return { ok: false, code: 'VALIDATION', message: 'invalid brand format' };
+      }
+      const brandDir = path.join(appRoot, 'assets', 'brands', brand);
+      let created = false;
+      let exists = false;
+      try { exists = fs.statSync(brandDir).isDirectory(); } catch {}
+      if (!exists) {
+        // DROPDOWN-FIRST onboarding (zero-friction): when the caller passes
+        // displayName/url it is REGISTERING a new brand — scaffold a minimal
+        // switchable folder (stub brand.md + memory.md) so the brand lands in
+        // the dropdown BEFORE the website scrape + enrichment run. If setup is
+        // interrupted afterward, the brand is already saved + switchable and
+        // the user resumes instead of redoing everything.
+        //
+        // A bare activate (switch intent, no opts) keeps the old BRAND_MISSING
+        // guard so a typo'd slug on a SWITCH can't silently create an empty
+        // junk brand. Create-if-missing is gated on explicit registration
+        // intent (displayName or url present).
+        const wantsCreate = opts && (opts.url || opts.displayName);
+        if (!wantsCreate) {
+          return { ok: false, code: 'BRAND_MISSING', message: `assets/brands/${brand} does not exist` };
+        }
+        try {
+          const r = scaffoldBrandStub(path.join(appRoot, 'assets', 'brands'), brand, { displayName: opts.displayName, url: opts.url });
+          created = r.created;
+        } catch (e) {
+          return { ok: false, code: (e && e.code) || 'BRAND_CREATE_FAILED', message: `could not create brand: ${e && e.message ? e.message : e}` };
+        }
+      }
+      let prevBrand = '';
+      try { prevBrand = readState().activeBrand || ''; } catch {}
+      try { writeState({ activeBrand: brand }); } catch (e) {
+        return { ok: false, code: 'INTERNAL_ERROR', message: `state write failed: ${e.message}` };
+      }
+      try { threads.touch(appRoot, brand); } catch {}
+      // Auto-scaffold brand-manifest.json (live incident 2026-05-04,
+      // dpa-image-cards-render-broken-because-banana-pro-edit-has-
+      // no-canonical-asset-anchor). The binary's brand_manifest.go
+      // soft-warns when no manifest exists and proceeds without the
+      // composite-mode contract — banana-pro-edit then treats
+      // references/1.jpg as a style hint and re-renders the
+      // garment from scratch instead of preserving it. Scaffolder
+      // walks products/<slug>/references/ + logo/ and writes a
+      // minimal manifest so the binary's enforcement path can
+      // anchor on canonical assets. Idempotent (won't clobber a
+      // hand-curated manifest), best-effort (never blocks brand
+      // activation on a scaffolder failure). See
+      // app/brand-manifest-scaffolder.js for the producer-side
+      // contract that mirrors brand_manifest.go's consumer shape.
+      try {
+        const result = scaffoldBrandManifest(appRoot, brand);
+        if (result.action === 'created' || result.action === 'rebuilt') {
+          console.log(`[brand-manifest-scaffold] ${result.action} ${result.manifestPath} — ${result.products} product(s)${result.hadLogo ? ' + logo' : ''}`);
+        } else if (result.action === 'skipped-no-assets') {
+          console.log(`[brand-manifest-scaffold] skipped: no canonical assets yet under ${brandDir} — will retry on next brand_activate after references / logo land`);
+        } else if (!result.ok && result.error) {
+          console.warn(`[brand-manifest-scaffold] ${result.action}: ${result.error}`);
+        }
+      } catch (e) {
+        // Scaffolder must NEVER block brand activation. Any throw is
+        // logged but otherwise swallowed — the binary's no-manifest
+        // soft-warn path is the safety net.
+        try { console.warn(`[brand-manifest-scaffold] unexpected error: ${e.message}`); } catch {}
+      }
+      try {
+        if (win && !win.isDestroyed() && win.webContents) {
+          win.webContents.send('brand-activated', { brand, previousBrand: prevBrand });
+        }
+      } catch {}
+      return { ok: true, brand, previousBrand: prevBrand, created };
+    },
+  };
+  if (_lastMcpCtx && _lastMcpCtx.jobStore) ctx.jobStore = _lastMcpCtx.jobStore;
+  return ctx;
+}
+
+// Bring the sidecar IPC endpoint up, or refresh its tool registry when it
+// is already running. `refresh: false` (boot path) never replaces a
+// registry a chat session already installed. Failure is non-fatal: in-app
+// chat works without the sidecar, and the next startSession retries.
+function ensureMcpIpcEndpoint(merlinMcp, mcpCtx, opts = {}) {
+  try {
+    const allTools = (merlinMcp && merlinMcp._merlinTools) || [];
+    if (_mcpIpcEndpoint && typeof _mcpIpcEndpoint.setTools === 'function') {
+      if (opts.refresh) _mcpIpcEndpoint.setTools(allTools);
+      return _mcpIpcEndpoint;
+    }
+    if (!allTools.length) return null;
+    const { start: startMcpIpc } = require('./mcp-ipc-endpoint');
+    _mcpIpcEndpoint = startMcpIpc({
+      stateDir,
+      tools: allTools,
+      ctx: mcpCtx,
+      getCtx: () => _lastMcpCtx,
+      // REGRESSION GUARD (2026-09-28, ipc-approval-bypass): the sidecar
+      // MUST route every tools/call through the same host approval
+      // decision as the in-app chat. startMcpIpc throws without it.
+      // REGRESSION GUARD (2026-10-04, desktop-approval): the 'ipc'
+      // surface is what makes card-tier decisions resolve on the
+      // originating MCP client instead of an in-app card. It is set
+      // HERE, from the transport, never from tool input. See the guard
+      // above resolveExternalOriginCard.
+      approve: (toolName, input) =>
+        handleToolApproval(toolName, input, { merlinApprovalSurface: 'ipc' }),
+    });
+    console.log(`[mcp-ipc] sidecar endpoint listening (${_mcpIpcEndpoint.socketPath})`);
+    return _mcpIpcEndpoint;
+  } catch (ipcErr) {
+    console.error('[mcp-ipc] Failed to start IPC sidecar endpoint:', ipcErr && ipcErr.message);
+    return null;
+  }
+}
+
+// App-boot start of the sidecar endpoint. Idempotent and single-flight:
+// concurrent callers share one promise, and a chat session that won the
+// race is left untouched. Tool handlers resolve everything lazily through
+// the ctx, so a tools/call arriving before any chat session works.
+let _mcpIpcBootPromise = null;
+function bootMcpIpcEndpoint() {
+  if (_mcpIpcEndpoint) return Promise.resolve(_mcpIpcEndpoint);
+  if (_mcpIpcBootPromise) return _mcpIpcBootPromise;
+  _mcpIpcBootPromise = (async () => {
+    const access = await ensureSubscriptionAccess({ via: 'mcp-ipc-boot' });
+    if (!access || !access.allowed) {
+      console.log('[mcp-ipc] boot start skipped: subscription not active (startSession will retry)');
+      return null;
+    }
+    const sdkModule = await importClaudeAgentSdk();
+    if (_mcpIpcEndpoint) return _mcpIpcEndpoint;
+    const { createMerlinMcpServer } = require('./mcp-server');
+    const mcpCtx = buildMcpCtx(sdkModule);
+    const merlinMcp = await createMerlinMcpServer(mcpCtx);
+    if (_mcpIpcEndpoint) return _mcpIpcEndpoint;
+    if (!_lastMcpCtx) _lastMcpCtx = mcpCtx;
+    return ensureMcpIpcEndpoint(merlinMcp, mcpCtx, { refresh: false });
+  })().catch((err) => {
+    console.error('[mcp-ipc] boot start failed (startSession will retry):', err && err.message);
+    return null;
+  }).finally(() => { _mcpIpcBootPromise = null; });
+  return _mcpIpcBootPromise;
+}
+
+
 async function startSession(brandOverride) {
   // Arm the init barrier. Release is called in the finally block wrapping
   // the init phase below — every early-return AND the successful query
@@ -3830,208 +4082,16 @@ async function startSession(brandOverride) {
     // ctx.jobStore via _lastMcpCtx. createMerlinMcpServer mutates ctx
     // to set ctx.jobStore (see mcp-server.js:93), so holding the ctx
     // reference holds the JobStore reference.
-    const mcpCtx = {
-      getBinaryPath,
-      readConfig,
-      readBrandConfig,
-      // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): the MCP tool
-      // surface (runBinary in mcp-tools.js) MUST resolve a brand's binary
-      // config through buildStrictBrandConfig, NOT readBrandConfig. readBrandConfig
-      // is global ⊕ brand overlay — plain legacy creds + non-sensitive BRAND_KEYS
-      // (metaAdAccountId, shopifyStore, …) in the global config merge into EVERY
-      // brand, so mcp__merlin__dashboard/meta_ads/etc. served another brand's ad
-      // account (same class as the Truesight IPC leak fixed the same day).
-      // buildStrictBrandConfig strips ALL BRAND_KEYS from the global base and
-      // overlays only the brand's own creds — no global fallback.
-      buildStrictBrandConfig,
-      writeConfig,
-      writeBrandTokens,
-      vaultGet,
-      vaultPut,
-      ensureBinaryLicenseToken: maybeHydrateBinaryLicenseToken,
-      runOAuthFlow,
-      getConnections,
-      // Revoked-grant tile signal (2026-07-11 audit fix): runBinary in
-      // mcp-tools.js reports the real auth outcome of every platform action
-      // here. TOKEN_EXPIRED flags the platform (per brand) so getConnections
-      // shows 'expired'; any success clears the flag. See auth-failures.js.
-      notePlatformAuthResult: (platform, brandName, outcome) => {
-        try {
-          if (outcome === 'token_expired') authFailureStore.mark(platform, brandName);
-          else if (outcome === 'success') authFailureStore.clear(platform, brandName);
-        } catch {}
-      },
-      appRoot,
-      // Installer-resolved Resources directory (where bundled voice tools
-      // live in a packaged build). Required by tools that resolve binaries
-      // via captions.js#findVoiceTools or the equivalent install-first /
-      // workspace-fallback pattern. Dev mode falls back to <appRoot>/..
-      // (same calculation as the appInstall constant up top).
-      appInstall,
-      activeChildProcesses,
-      appendAudit,
-      sdkModule,
-      // Startup version gate — same one refresh-perf awaits. Scheduled
-      // tasks and chat-driven MCP tool calls must also wait for this so
-      // they don't race past the version check on an old binary and
-      // write output to the wrong directory.
-      awaitStartupChecks: () => (_startupChecksPromise || Promise.resolve()),
-      isBinaryTooOld,
-      minBinaryVersion: MIN_BINARY_VERSION,
-      // §3.6 — progress emitter for long-running MCP tools (brand_scrape,
-      // image/video gen, etc.). Forwarded to the renderer via the
-      // `mcp-progress` IPC channel; preload exposes onMcpProgress(cb) so
-      // the magic tab can animate a live pill. No-op when the window is
-      // gone (scheduled runs, post-quit stragglers).
-      emitProgress: (payload) => {
-        try {
-          if (!win || win.isDestroyed() || !win.webContents) return;
-          win.webContents.send('mcp-progress', payload);
-        } catch (_) { /* telemetry path — never let an emit crash a tool call */ }
-      },
-      // Atomic brand activation — used by the merlin-setup skill IMMEDIATELY
-      // after writing brand.md so the rest of the onboarding conversation
-      // (autopilot spell creation, the WOW summary) is associated with the
-      // new brand thread. Unlike switch-brand IPC, this does NOT abort the
-      // current SDK turn or restart the session: the active turn is owned by
-      // setup itself, restarting mid-flight would orphan it. Future bubbles
-      // append to the new brand's thread (see appendBubble call sites that
-      // read activeBrand from state). The renderer refreshes its dropdown +
-      // peripherals via the brand-activated event without repainting chat.
-      // bulkUploadAssets — exposes the same pipeline the renderer's drag-drop /
-      // paste flow uses, so the new MCP `bulk_upload` tool (v1.19.2) can route
-      // 5+ files into product references/ on demand. Reuses runBulkUploadAssets
-      // (declared later in this file but hoisted as a function declaration).
-      // Single source of truth for SHA dedup, validation, matcher dispatch,
-      // and rename — see the long comment block on runBulkUploadAssets.
-      bulkUploadAssets: (args) => runBulkUploadAssets(args),
-      activateBrand: (brand, opts) => {
-        if (typeof brand !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(brand)) {
-          return { ok: false, code: 'VALIDATION', message: 'invalid brand format' };
-        }
-        const brandDir = path.join(appRoot, 'assets', 'brands', brand);
-        let created = false;
-        let exists = false;
-        try { exists = fs.statSync(brandDir).isDirectory(); } catch {}
-        if (!exists) {
-          // DROPDOWN-FIRST onboarding (zero-friction): when the caller passes
-          // displayName/url it is REGISTERING a new brand — scaffold a minimal
-          // switchable folder (stub brand.md + memory.md) so the brand lands in
-          // the dropdown BEFORE the website scrape + enrichment run. If setup is
-          // interrupted afterward, the brand is already saved + switchable and
-          // the user resumes instead of redoing everything.
-          //
-          // A bare activate (switch intent, no opts) keeps the old BRAND_MISSING
-          // guard so a typo'd slug on a SWITCH can't silently create an empty
-          // junk brand. Create-if-missing is gated on explicit registration
-          // intent (displayName or url present).
-          const wantsCreate = opts && (opts.url || opts.displayName);
-          if (!wantsCreate) {
-            return { ok: false, code: 'BRAND_MISSING', message: `assets/brands/${brand} does not exist` };
-          }
-          try {
-            const r = scaffoldBrandStub(path.join(appRoot, 'assets', 'brands'), brand, { displayName: opts.displayName, url: opts.url });
-            created = r.created;
-          } catch (e) {
-            return { ok: false, code: (e && e.code) || 'BRAND_CREATE_FAILED', message: `could not create brand: ${e && e.message ? e.message : e}` };
-          }
-        }
-        let prevBrand = '';
-        try { prevBrand = readState().activeBrand || ''; } catch {}
-        try { writeState({ activeBrand: brand }); } catch (e) {
-          return { ok: false, code: 'INTERNAL_ERROR', message: `state write failed: ${e.message}` };
-        }
-        try { threads.touch(appRoot, brand); } catch {}
-        // Auto-scaffold brand-manifest.json (live incident 2026-05-04,
-        // dpa-image-cards-render-broken-because-banana-pro-edit-has-
-        // no-canonical-asset-anchor). The binary's brand_manifest.go
-        // soft-warns when no manifest exists and proceeds without the
-        // composite-mode contract — banana-pro-edit then treats
-        // references/1.jpg as a style hint and re-renders the
-        // garment from scratch instead of preserving it. Scaffolder
-        // walks products/<slug>/references/ + logo/ and writes a
-        // minimal manifest so the binary's enforcement path can
-        // anchor on canonical assets. Idempotent (won't clobber a
-        // hand-curated manifest), best-effort (never blocks brand
-        // activation on a scaffolder failure). See
-        // app/brand-manifest-scaffolder.js for the producer-side
-        // contract that mirrors brand_manifest.go's consumer shape.
-        try {
-          const result = scaffoldBrandManifest(appRoot, brand);
-          if (result.action === 'created' || result.action === 'rebuilt') {
-            console.log(`[brand-manifest-scaffold] ${result.action} ${result.manifestPath} — ${result.products} product(s)${result.hadLogo ? ' + logo' : ''}`);
-          } else if (result.action === 'skipped-no-assets') {
-            console.log(`[brand-manifest-scaffold] skipped: no canonical assets yet under ${brandDir} — will retry on next brand_activate after references / logo land`);
-          } else if (!result.ok && result.error) {
-            console.warn(`[brand-manifest-scaffold] ${result.action}: ${result.error}`);
-          }
-        } catch (e) {
-          // Scaffolder must NEVER block brand activation. Any throw is
-          // logged but otherwise swallowed — the binary's no-manifest
-          // soft-warn path is the safety net.
-          try { console.warn(`[brand-manifest-scaffold] unexpected error: ${e.message}`); } catch {}
-        }
-        try {
-          if (win && !win.isDestroyed() && win.webContents) {
-            win.webContents.send('brand-activated', { brand, previousBrand: prevBrand });
-          }
-        } catch {}
-        return { ok: true, brand, previousBrand: prevBrand, created };
-      },
-    };
+    const mcpCtx = buildMcpCtx(sdkModule);
     const merlinMcp = await createMerlinMcpServer(mcpCtx);
     _lastMcpCtx = mcpCtx;
     mcpConfig = { merlin: merlinMcp };
 
-    // ── Sidecar IPC endpoint (Claude Desktop / Codex / Cline / Cursor) ──
-    //
-    // Bring the local MCP IPC endpoint up (or refresh its tool registry
-    // if it's already running). Claude Desktop spawns
-    // app/merlin-mcp-shim.js, which reads <stateDir>/mcp-shim-token and
-    // connects to the Unix domain socket / Windows named pipe this
-    // endpoint listens on. The same wrapped tool array is passed to both
-    // consumers — credentials never cross the IPC boundary, only tool
-    // inputs and redacted outputs (Hard-Won Security Rule 2 spirit).
-    //
-    // Lifecycle:
-    //   * First successful startSession → endpoint comes up, token + socket
-    //     path written to <stateDir>/mcp-shim-token (mode 0o600).
-    //   * Subsequent startSession (e.g. brand switch) → setTools refreshes
-    //     the registry without rotating the token (the shim's open
-    //     connections stay valid).
-    //   * before-quit → stop() closes the socket, removes the file.
-    //
-    // Failure to bring the endpoint up MUST NOT block in-app chat; the
-    // catch below logs and continues.
-    try {
-      const allTools = (merlinMcp && merlinMcp._merlinTools) || [];
-      if (_mcpIpcEndpoint && typeof _mcpIpcEndpoint.setTools === 'function') {
-        _mcpIpcEndpoint.setTools(allTools);
-      } else if (allTools.length) {
-        const { start: startMcpIpc } = require('./mcp-ipc-endpoint');
-        _mcpIpcEndpoint = startMcpIpc({
-          stateDir,
-          tools: allTools,
-          ctx: mcpCtx,
-          getCtx: () => _lastMcpCtx,
-          // REGRESSION GUARD (2026-09-28, ipc-approval-bypass): the sidecar
-          // MUST route every tools/call through the same host approval
-          // decision as the in-app chat. startMcpIpc throws without it.
-          // REGRESSION GUARD (2026-10-04, desktop-approval): the 'ipc'
-          // surface is what makes card-tier decisions resolve on the
-          // originating MCP client instead of an in-app card. It is set
-          // HERE, from the transport, never from tool input. See the guard
-          // above resolveExternalOriginCard.
-          approve: (toolName, input) =>
-            handleToolApproval(toolName, input, { merlinApprovalSurface: 'ipc' }),
-        });
-        console.log(`[mcp-ipc] sidecar endpoint listening (${_mcpIpcEndpoint.socketPath})`);
-      }
-    } catch (ipcErr) {
-      // Endpoint failure is non-fatal — sidecar mode just won't work
-      // until the next session restart. In-app chat still functions.
-      console.error('[mcp-ipc] Failed to start IPC sidecar endpoint:', ipcErr && ipcErr.message);
-    }
+    // Sidecar IPC endpoint: normally already up from app boot
+    // (bootMcpIpcEndpoint). Refresh its registry with this session's
+    // tools, or start it here if boot could not (trial gate passed only
+    // now, boot import failed). See REGRESSION GUARD (2026-10-05).
+    ensureMcpIpcEndpoint(merlinMcp, mcpCtx, { refresh: true });
   } catch (err) {
     console.error('[mcp] Failed to create Merlin MCP server:', err.message);
   }
@@ -14922,6 +14982,11 @@ app.whenReady().then(async () => {
     // platform call, so the first TrendTrack/fal/Slack call of the session
     // resolves against a corrected _global rather than failing empty.
     try { migrateUniversalKeysToGlobal(); } catch (err) { console.error('[vault]', err.message); }
+    // Sidecar IPC endpoint at boot, AFTER the vault migrations so the first
+    // external tool call resolves against migrated credentials. Not gated on
+    // a chat session. REGRESSION GUARD (2026-10-05, ipc-boot) above
+    // buildMcpCtx.
+    bootMcpIpcEndpoint();
   }, 600);
 
   // Start the briefing watcher now that appRoot is guaranteed to exist and

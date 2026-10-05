@@ -141,6 +141,19 @@ function atomicWrite(filePath, data, mode) {
   fs.renameSync(tmp, filePath);
 }
 
+// Delete <stateDir>/mcp-shim-token only when it still carries `token`.
+// Missing or unparseable file: nothing of ours to remove.
+function removeTokenFileIfOwned(tokenPath, token) {
+  try {
+    const obj = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
+    if (!obj || typeof obj.token !== 'string' || !constantTimeEqual(obj.token, token)) return false;
+    fs.unlinkSync(tokenPath);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 // Convert a Zod inputSchema (the SDK's tool() output) to a JSON Schema
 // object suitable for the MCP tools/list response. Falls back to a
 // permissive `{ type: 'object' }` if conversion fails for any reason —
@@ -619,7 +632,10 @@ function start(opts) {
     if (process.platform !== 'win32') {
       try { fs.unlinkSync(socketPath); } catch {}
     }
-    try { fs.unlinkSync(tokenPath); } catch {}
+    // Only remove the handshake file if it is still OURS. A newer endpoint
+    // (a relaunched app racing this one's quit) may already have rewritten
+    // it; deleting that would strand every client until the next restart.
+    removeTokenFileIfOwned(tokenPath, token);
   }
 
   function setTools(newTools) {
@@ -640,6 +656,7 @@ module.exports = {
   generateAuthToken,
   constantTimeEqual,
   atomicWrite,
+  removeTokenFileIfOwned,
   toJsonSchema,
   buildToolsListPayload,
   buildExternalAnnotations,
