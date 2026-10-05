@@ -3214,7 +3214,7 @@ async function handleToolApproval(toolName, input, opts) {
       // remediation is reachable (Hard-Won Rules 23 + 25). A forced call is by
       // definition one an engine spend guard refused, so it never rides the
       // in-cap auto-approve path: the human looks at it every time.
-      const forceRequested = budgetCeiling.requestsGuardOverride(input);
+      const forceRequested = budgetCeiling.requestsGuardOverride(input, toolName);
       //
       // HIGH-MAGNITUDE SPEND ALWAYS CARDS (2026-08-13, budget-ceiling). A
       // declared cap authorizes the AMOUNT; it does not waive the human look

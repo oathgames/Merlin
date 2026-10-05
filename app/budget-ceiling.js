@@ -162,7 +162,14 @@ function resolveCapBrand(inputBrand, readActiveBrand) {
  * @param {object} input Tool call input.
  * @returns {boolean}
  */
-function requestsGuardOverride(input) {
+// Tools whose `force` param means something other than the spend-guard
+// override. meta_refresh_creative_spec's force means "rebuild even when the
+// ad already looks correct"; it is already carded via its duplicate mapping,
+// and labelling it a safety-check override would mislead the approver.
+const NON_GUARD_FORCE_TOOLS = new Set(['mcp__merlin__meta_refresh_creative_spec']);
+
+function requestsGuardOverride(input, toolName) {
+  if (toolName && NON_GUARD_FORCE_TOOLS.has(toolName)) return false;
   return !!input && typeof input === 'object' && input.force !== undefined && input.force !== null && input.force !== false;
 }
 

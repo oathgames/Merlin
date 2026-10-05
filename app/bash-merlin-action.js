@@ -102,14 +102,30 @@ function lastString(command, key) {
 // which Go's decoder still binds) and escaped key names are all seen. Any
 // occurrence counts rather than last-wins: a malformed or duplicated flag
 // over-cards rather than slipping through (2026-10-05, google-budget-force).
+//
+// The JSON scan reads the literal command, but the shell rebuilds the --cmd
+// argument before Go sees it: quote splicing ('for''ce', "fo""rce"), ANSI-C
+// escapes ($'\x63'), and $VAR / $(...) / backtick expansion all yield a key
+// the scanner never saw. So two conservative fallbacks also return true:
+//   - the key re-appears as `key:` (any case) once quotes and backslashes are
+//     deleted, with a value other than literal false;
+//   - the command uses any shell expansion at all ($ or backtick), because
+//     then the final JSON cannot be known from the text.
+// Both only ever ADD a card; a false positive costs one approval click.
+const SHELL_EXPANSION_RE = /[$`]/;
 function requestsOverride(command, key) {
-  for (const text of candidates(command)) {
+  const raw = String(command || '');
+  for (const text of candidates(raw)) {
     for (const h of scanKeys(text, key)) {
       if (h.undecodable) return true;
       if (!/^false(?![A-Za-z0-9_])/.test(h.valueText)) return true;
     }
   }
-  return false;
+  if (SHELL_EXPANSION_RE.test(raw)) return true;
+  const spliced = raw.replace(/['"\\]/g, '');
+  const esc = String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp('(?:^|[^A-Za-z0-9_])' + esc + '\\s*:\\s*(?!false(?![A-Za-z0-9_]))', 'gi');
+  return re.test(spliced);
 }
 
 module.exports = { parseAction, lastNumber, lastString, requestsOverride };

@@ -197,7 +197,7 @@ test('requestsGuardOverride: any non-false force counts', () => {
 const MAIN_SRC = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
 test('main.js: forced spend calls are excluded from in-cap auto-approve on BOTH paths', () => {
-  assert.match(MAIN_SRC, /const forceRequested = budgetCeiling\.requestsGuardOverride\(input\)/);
+  assert.match(MAIN_SRC, /const forceRequested = budgetCeiling\.requestsGuardOverride\(input, toolName\)/);
   assert.match(MAIN_SRC, /if \(!requireSpendApproval && !forceRequested && capForComparison > 0 && action === 'push'/);
   assert.match(MAIN_SRC, /const bashForceRequested = bashMerlinAction\.requestsOverride\(input\.command, 'force'\);/,
     'Bash spend path must detect a forced command with the shared JSON key scanner');
@@ -224,6 +224,12 @@ test('Bash force detector (bashMerlinAction.requestsOverride): every form Go rea
     `Merlin.exe --cmd '{"action":"meta-push","forc${BS}u0065":true}'`,
     `Merlin.exe --cmd '{"force" : "yes"}'`,
     `Merlin.exe --cmd '{"force":true,"force":false}'`,
+    // The shell rebuilds these into "force":true before Go sees them.
+    `Merlin.exe --cmd '{"action":"meta-push","dailyBudget":5,"for''ce":true}'`,
+    `Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"fo""rce${BS}":true}"`,
+    `Merlin.exe --cmd $'{"action":"meta-push","for${BS}x63e":true}'`,
+    `F=force; Merlin.exe --cmd "{${BS}"action${BS}":${BS}"meta-push${BS}",${BS}"$F${BS}":true}"`,
+    `Merlin.exe --cmd "$(cat cmd.json)"`,
   ];
   for (const c of forced) assert.equal(requestsOverride(c, 'force'), true, `must detect force in: ${c}`);
   const plain = [
@@ -232,6 +238,11 @@ test('Bash force detector (bashMerlinAction.requestsOverride): every form Go rea
     `Merlin.exe --cmd '{"action":"meta-push","adHeadline":"force of nature"}'`,
   ];
   for (const c of plain) assert.equal(requestsOverride(c, 'force'), false, `must not flag: ${c}`);
+});
+
+test('requestsGuardOverride: a tool whose force is not the guard override never gets the note', () => {
+  assert.equal(budgetCeiling.requestsGuardOverride({ force: true }, 'mcp__merlin__meta_refresh_creative_spec'), false);
+  assert.equal(budgetCeiling.requestsGuardOverride({ force: true }, 'mcp__merlin__google_ads'), true);
 });
 
 test('main.js: the host cap is read for the brand the call names, not readState().activeBrand', () => {
