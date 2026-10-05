@@ -86,7 +86,8 @@
       "mcp__merlin__meta_set_frequency_cap": "setup",
       "mcp__merlin__meta_set_optimization_goal": "duplicate",
       "mcp__merlin__meta_setup_account": "discover",
-      "mcp__merlin__meta_upload_customer_list": "setup"
+      "mcp__merlin__meta_upload_customer_list": "setup",
+      "mcp__merlin__tiktok_audit": "audit"
     },
     "readOnlyActions": [
       "accounts",
@@ -111,6 +112,14 @@
       "flow-get",
       "flows-list",
       "gaps",
+      "gmv-max-ads",
+      "gmv-max-authorizations",
+      "gmv-max-campaign-info",
+      "gmv-max-campaigns",
+      "gmv-max-report",
+      "gmv-max-shop-check",
+      "gmv-max-stores",
+      "gmv-max-videos",
       "insights",
       "keywords",
       "landing-audit",
@@ -5312,6 +5321,130 @@
     },
     {
       "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "tiktok"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Use when the user asks how TikTok GMV Max (TikTok Shop) is set up or performing: the ROI target, budget, which videos it can run, affiliate creative, or why GMV Max delivery or ROI moved. All actions are READ-ONLY GETs; nothing is created, changed, or spent. gmv-max-campaign-info reads ONE GMV Max campaign's settings (pass campaignId): ROI target (roas_bid), budget, status, optimization goal, product scope, affiliate-posts flag. gmv-max-campaigns lists GMV Max campaigns. gmv-max-report pulls GMV Max reporting (defaults: last 7 complete days by campaign_id + stat_time_day with cost/orders/gross_revenue/roi; pass startDate/endDate, dimensions, metrics, campaignId; per-video needs campaignId + dimensions like [\"campaign_id\",\"item_id\"]). gmv-max-videos lists the video pool GMV Max may run, including authorized affiliate posts. gmv-max-authorizations lists exclusive affiliate authorizations. gmv-max-stores lists the TikTok Shops and their Business Center. gmv-max-shop-check reports whether a Shop already runs GMV Max. gmv-max-ads lists ads inside a campaign (campaignId). campaigns lists every TikTok campaign with type, status and budget. The Shop (tiktokStoreId / tiktokBcId) is resolved automatically when the brand has one Shop.",
+      "input": {
+        "action": {
+          "description": "The read to perform. All read-only.",
+          "enum": [
+            "gmv-max-stores",
+            "gmv-max-campaigns",
+            "gmv-max-campaign-info",
+            "gmv-max-videos",
+            "gmv-max-report",
+            "gmv-max-shop-check",
+            "gmv-max-authorizations",
+            "gmv-max-ads",
+            "campaigns"
+          ],
+          "type": "string"
+        },
+        "brand": {
+          "description": "Brand name for vault-scoped TikTok credentials.",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "gmv-max-campaign-info / gmv-max-ads: required campaign id. gmv-max-report: scope to one campaign (required for item_id / item_group_id breakdowns). gmv-max-campaigns: filter to one id.",
+          "type": "string"
+        },
+        "customPostsEligible": {
+          "description": "gmv-max-videos: also surface affiliate posts eligible as custom posts.",
+          "type": "boolean"
+        },
+        "dimensions": {
+          "description": "gmv-max-report: e.g. [\"campaign_id\",\"stat_time_day\"] (default) or [\"campaign_id\",\"item_id\"] for per-video. TikTok returns the accepted names on error.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "endDate": {
+          "description": "gmv-max-report: window end YYYY-MM-DD, inclusive.",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "keyword": {
+          "description": "gmv-max-videos / gmv-max-stores: search keyword.",
+          "type": "string"
+        },
+        "metrics": {
+          "description": "gmv-max-report: e.g. [\"cost\",\"orders\",\"gross_revenue\",\"roi\"] (default adds cost_per_order).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "needAuthCodeVideo": {
+          "description": "gmv-max-videos: include auth-code (affiliate) videos. Default true; false shows only non-auth-code identities.",
+          "type": "boolean"
+        },
+        "page": {
+          "description": "Page number (1-based).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "pageSize": {
+          "description": "Rows per page.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "sortField": {
+          "description": "gmv-max-videos / gmv-max-report: sort field, e.g. \"cost\" or \"roi\".",
+          "type": "string"
+        },
+        "sortType": {
+          "description": "Sort direction.",
+          "enum": [
+            "ASC",
+            "DESC"
+          ],
+          "type": "string"
+        },
+        "spuIdList": {
+          "description": "gmv-max-videos: limit to these product (SPU) ids.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "startDate": {
+          "description": "gmv-max-report: window start YYYY-MM-DD. Pass both or neither; default is the last 7 complete days.",
+          "type": "string"
+        },
+        "tiktokAdvertiserId": {
+          "description": "Override the brand's TikTok ad account id for this read.",
+          "type": "string"
+        },
+        "tiktokBcId": {
+          "description": "Business Center authorized for the Shop. Optional: resolved with the Shop.",
+          "type": "string"
+        },
+        "tiktokFilters": {
+          "description": "Advanced: TikTok `filtering` JSON passed through verbatim (gmv-max-report, campaigns)."
+        },
+        "tiktokStoreId": {
+          "description": "TikTok Shop id. Optional: resolved from the store list when the brand has one Shop.",
+          "type": "string"
+        }
+      },
+      "name": "tiktok_audit"
+    },
+    {
+      "annotations": {
         "brandRequired": false,
         "concurrency": {
           "platform": "trendtrack"
@@ -5766,8 +5899,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 43532,
-      "bodySha256": "d28a456bd13a095317c95cfc0f8cd73ef18783e03c4a83f8b06734495fa29d3c",
+      "bodyBytes": 44307,
+      "bodySha256": "78a911c022e0dc61508e58eb780458f40a5d566503b9229908122e5c21c95ea2",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",

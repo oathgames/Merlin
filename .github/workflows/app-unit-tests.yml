@@ -228,6 +228,11 @@ jobs:
       # never declared, so a weekly deck could only ask for a trailing window.
       - name: MCP OpenAI Ads reachability (insights window params)
         run: node --test app/mcp-openai-ads-reachability.test.js
+      # TikTok GMV Max reads (2026-10-05): tiktok_audit must reach every
+      # tiktok-gmv-max-* engine case, land its params in --cmd, and stay a
+      # READ_ONLY policy action so a read can never fall into a spend path.
+      - name: MCP TikTok GMV Max reachability (tiktok_audit)
+        run: node --test app/mcp-tiktok-gmv-max-reachability.test.js
       # Frozen-surface parity — the before/after harness for large refactors.
       # Collects every externally visible contract the app owns (80 MCP tools
       # with their zod input schemas, the SKILL frontmatter + body hashes, the

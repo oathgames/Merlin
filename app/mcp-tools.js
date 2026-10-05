@@ -1515,6 +1515,64 @@ function buildTools(tool, z, ctx) {
     },
   }, tool, z, ctx));
 
+  // ── tiktok_audit ─────────────────────────────────────────
+  // REGRESSION GUARD (2026-10-05, Hard-Won Rule 23): TikTok GMV Max READ
+  // surface. The engine's GMV Max reads (autocmo-core/tiktok_gmv_max.go) are
+  // GET-only by construction and covered by a Go call-graph test, so this tool
+  // is destructive:false / costImpact:'api' and routes through
+  // INTENT_TOOL_TO_ACTION -> 'audit' (READ_ONLY) in mcp-approval-policy.js: a
+  // read never cards and can never fall into a SPEND path. Kept OUT of
+  // tiktok_ads on purpose: that tool is destructive / costImpact:'spend', so a
+  // read added to its enum would inherit the spend posture. Every action maps
+  // to 'tiktok-' + action; mcp-tiktok-gmv-max-reachability.test.js asserts both
+  // directions plus that each param lands in the --cmd JSON.
+  tools.push(defineTool({
+    name: 'tiktok_audit',
+    description: 'Use when the user asks how TikTok GMV Max (TikTok Shop) is set up or performing: the ROI target, budget, which videos it can run, affiliate creative, or why GMV Max delivery or ROI moved. All actions are READ-ONLY GETs; nothing is created, changed, or spent. '
+      + 'gmv-max-campaign-info reads ONE GMV Max campaign\'s settings (pass campaignId): ROI target (roas_bid), budget, status, optimization goal, product scope, affiliate-posts flag. '
+      + 'gmv-max-campaigns lists GMV Max campaigns. gmv-max-report pulls GMV Max reporting (defaults: last 7 complete days by campaign_id + stat_time_day with cost/orders/gross_revenue/roi; pass startDate/endDate, dimensions, metrics, campaignId; per-video needs campaignId + dimensions like ["campaign_id","item_id"]). '
+      + 'gmv-max-videos lists the video pool GMV Max may run, including authorized affiliate posts. gmv-max-authorizations lists exclusive affiliate authorizations. gmv-max-stores lists the TikTok Shops and their Business Center. gmv-max-shop-check reports whether a Shop already runs GMV Max. '
+      + 'gmv-max-ads lists ads inside a campaign (campaignId). campaigns lists every TikTok campaign with type, status and budget. The Shop (tiktokStoreId / tiktokBcId) is resolved automatically when the brand has one Shop.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'tiktok' },
+    preview: false,
+    input: {
+      action: z.enum([
+        'gmv-max-stores',
+        'gmv-max-campaigns',
+        'gmv-max-campaign-info',
+        'gmv-max-videos',
+        'gmv-max-report',
+        'gmv-max-shop-check',
+        'gmv-max-authorizations',
+        'gmv-max-ads',
+        'campaigns',
+      ]).describe('The read to perform. All read-only.'),
+      brand: brandSchema.describe('Brand name for vault-scoped TikTok credentials.'),
+      campaignId: z.string().optional().describe('gmv-max-campaign-info / gmv-max-ads: required campaign id. gmv-max-report: scope to one campaign (required for item_id / item_group_id breakdowns). gmv-max-campaigns: filter to one id.'),
+      startDate: z.string().optional().describe('gmv-max-report: window start YYYY-MM-DD. Pass both or neither; default is the last 7 complete days.'),
+      endDate: z.string().optional().describe('gmv-max-report: window end YYYY-MM-DD, inclusive.'),
+      dimensions: z.array(z.string()).optional().describe('gmv-max-report: e.g. ["campaign_id","stat_time_day"] (default) or ["campaign_id","item_id"] for per-video. TikTok returns the accepted names on error.'),
+      metrics: z.array(z.string()).optional().describe('gmv-max-report: e.g. ["cost","orders","gross_revenue","roi"] (default adds cost_per_order).'),
+      tiktokStoreId: z.string().optional().describe('TikTok Shop id. Optional: resolved from the store list when the brand has one Shop.'),
+      tiktokBcId: z.string().optional().describe('Business Center authorized for the Shop. Optional: resolved with the Shop.'),
+      tiktokAdvertiserId: z.string().optional().describe('Override the brand\'s TikTok ad account id for this read.'),
+      tiktokFilters: z.any().optional().describe('Advanced: TikTok `filtering` JSON passed through verbatim (gmv-max-report, campaigns).'),
+      page: z.coerce.number().int().optional().describe('Page number (1-based).'),
+      pageSize: z.coerce.number().int().optional().describe('Rows per page.'),
+      keyword: z.string().optional().describe('gmv-max-videos / gmv-max-stores: search keyword.'),
+      spuIdList: z.array(z.string()).optional().describe('gmv-max-videos: limit to these product (SPU) ids.'),
+      needAuthCodeVideo: z.boolean().optional().describe('gmv-max-videos: include auth-code (affiliate) videos. Default true; false shows only non-auth-code identities.'),
+      customPostsEligible: z.boolean().optional().describe('gmv-max-videos: also surface affiliate posts eligible as custom posts.'),
+      sortField: z.string().optional().describe('gmv-max-videos / gmv-max-report: sort field, e.g. "cost" or "roi".'),
+      sortType: z.enum(['ASC', 'DESC']).optional().describe('Sort direction.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'tiktok-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── google_ads ───────────────────────────────────────────
   tools.push(defineTool({
     name: 'google_ads',

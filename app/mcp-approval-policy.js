@@ -74,6 +74,12 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   'export',
   // Google Ads per-ad Demand Gen video performance (GAQL reads only).
   'video-insights',
+  // TikTok GMV Max reads (tiktok_audit, 2026-10-05). GET-only in the engine
+  // (tiktok_gmv_max.go, AST call-graph test). Listed explicitly so they
+  // auto-approve as reads by name rather than via the catch-all.
+  'gmv-max-stores', 'gmv-max-campaigns', 'gmv-max-campaign-info',
+  'gmv-max-videos', 'gmv-max-report', 'gmv-max-shop-check',
+  'gmv-max-authorizations', 'gmv-max-ads',
 ]));
 
 // SPEND_ACTIONS gate the approval card. `push` is the only action eligible
@@ -298,6 +304,7 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   'mcp__merlin__meta_setup_account':            'discover',
   'mcp__merlin__meta_review_performance':       'insights',
   'mcp__merlin__meta_audit':                    'audit',
+  'mcp__merlin__tiktok_audit':                  'audit',
   'mcp__merlin__meta_import_account_state':     'discover',
   'mcp__merlin__meta_research_competitor_ads':  'competitor-scan',
   'mcp__merlin__meta_build_lookalike':          'audit',  // costImpact 'api'; non-spend

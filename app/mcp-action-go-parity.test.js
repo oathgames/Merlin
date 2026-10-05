@@ -109,6 +109,7 @@ const TOOL_ROUTING = [
   // gtm-list-versions, gtm-install-ga4, gtm-create-version, gtm-publish.
   { name: 'google_tag_manager', prefix: 'gtm' },
   { name: 'tiktok_ads', prefix: 'tiktok' },
+  { name: 'tiktok_audit', prefix: 'tiktok' },
   // budget-status / brand-exclusion-preview are read aliases the handler
   // routes to the same engine actions in read / preview mode.
   { name: 'google_ads', prefix: 'google-ads',
