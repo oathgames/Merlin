@@ -5030,7 +5030,7 @@
           "type": "string"
         },
         "days": {
-          "description": "Lookback window in days. cohorts defaults to 365 (a full seasonal repeat curve); analytics/orders default to 30. Wins over batchCount when both are sent.",
+          "description": "Lookback window in days. orders defaults to 7, analytics to 30, cohorts to 365 (a full seasonal repeat curve). orders/analytics can see at most the last 60 days of orders (the app has no read_all_orders scope): a larger value is clamped to 60 and the output says so in a NOTE and window_note. Wins over batchCount when both are sent.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"

@@ -1671,7 +1671,7 @@ function buildTools(tool, z, ctx) {
       action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts', 'export']).describe('Operation — export → full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt (for data-procurement packages)'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (for analytics/orders) — legacy spelling of days'),
-      days: z.coerce.number().int().optional().describe('Lookback window in days. cohorts defaults to 365 (a full seasonal repeat curve); analytics/orders default to 30. Wins over batchCount when both are sent.'),
+      days: z.coerce.number().int().optional().describe('Lookback window in days. orders defaults to 7, analytics to 30, cohorts to 365 (a full seasonal repeat curve). orders/analytics can see at most the last 60 days of orders (the app has no read_all_orders scope): a larger value is clamped to 60 and the output says so in a NOTE and window_note. Wins over batchCount when both are sent.'),
     },
     handler: async (args) => {
       // export and cohorts are both GraphQL bulk-operation pulls: Shopify
