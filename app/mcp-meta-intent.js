@@ -43,6 +43,23 @@ const BULK_AD_REUSE_AD_ID_DESC = 'Numeric id of an existing ad whose exact creat
   + 'Keeps the social proof of the source post and, unlike postId, also works for Collection/catalog creatives. '
   + 'Wins over postId, videoId/videoPath and imagePath on the same ad (those are ignored). Refused with publishPageId.';
 
+// REGRESSION GUARD (2026-10-05, google-budget-force, Hard-Won Rules 23 + 25):
+// the engine's spend-anomaly guard (checkSpendAnomaly in
+// autocmo-core/spend_pause.go) refuses a large single-action budget jump and
+// tells the caller to "pass force=true to override". Live hit: a google_ads
+// budget change was refused this way, and the remediation was
+// unreachable because google_ads did not declare `force`, so defineTool's
+// strict check rejected it as an unknown field. Every MCP tool whose engine
+// action can reach that guard declares this exact key (Go json tag "force" on
+// Command.Force), and runBinary copies it into --cmd verbatim. Locked by
+// app/mcp-spend-force-reachability.test.js. `force` never touches the host
+// approval card: spend actions card regardless (see handleToolApproval).
+const SPEND_GUARD_FORCE_DESC = 'Override an engine spend guard whose refusal explicitly says "pass force=true" '
+  + '(the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). '
+  + 'Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. '
+  + 'It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. '
+  + 'It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.';
+
 function firstLine(text) {
   if (!text || typeof text !== 'string') return '';
   const idx = text.indexOf('\n');
@@ -239,6 +256,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         link: z.string().optional(),
       })).optional().describe('Carousel card data (2–10 cards)'),
       postId: z.string().optional().describe('Existing Meta post ID to reuse as creative (preserves social proof)'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -334,6 +352,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         + 'Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. '
         + 'Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -377,6 +396,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       dailyBudget: z.number().describe('New daily budget in DOLLARS'),
       previousBudget: z.number().optional().describe('Original daily budget — required for blast-radius math. If omitted, preview gate is skipped.'),
       campaignName: z.string().optional(),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -558,6 +578,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       adId: z.string().describe('Target ad ID'),
       dailyBudget: z.number().describe('New daily budget in DOLLARS'),
       previousBudget: z.number().optional().describe('Previous daily budget — required for blast-radius math. If omitted, preview gate is skipped.'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -1264,4 +1285,4 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   return tools;
 }
 
-module.exports = { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC };
+module.exports = { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC, SPEND_GUARD_FORCE_DESC };

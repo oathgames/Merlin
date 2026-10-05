@@ -25,7 +25,7 @@ const envelope = require('./mcp-envelope');
 const errors = require('./mcp-errors');
 const { defineTool } = require('./mcp-define-tool');
 const { DEFAULT_POLICIES } = require('./mcp-preview');
-const { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC } = require('./mcp-meta-intent');
+const { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC, SPEND_GUARD_FORCE_DESC } = require('./mcp-meta-intent');
 
 // Regex shared between the MCP zod tightening here and the main-process
 // assertBrandSafe() guard in main.js. Mirror of app/preload.js:BRAND_RE.
@@ -1079,6 +1079,7 @@ function buildTools(tool, z, ctx) {
       // NOT a launch-status control. The refusal lives in the handler below;
       // the engine only reads cmd.Status on meta-import.
       status: z.string().optional().describe('READ FILTER for action:"import" ONLY. One of active, paused, all. This does NOT set the status new ads launch with; passing status:"PAUSED" on push/bulk-push is refused rather than silently ignored. Launch status comes from the brand config key metaLaunchStatus (default ACTIVE).'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       // Cents-detection guard (defense-in-depth; binary has its own cap).
@@ -1505,6 +1506,7 @@ function buildTools(tool, z, ctx) {
       batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks'),
       limit: z.number().optional().describe('Max results to return'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'TikTok');
@@ -1577,6 +1579,7 @@ function buildTools(tool, z, ctx) {
       brandListName: z.string().optional().describe('brand-exclusion: brand list name to create or reuse, default "Brand Exclusions"'),
       campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign'),
       approved: z.boolean().optional().describe('Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     // Handler does NOT auto-set args.approved; the approval card does.
     handler: async (args) => {
@@ -1600,11 +1603,11 @@ function buildTools(tool, z, ctx) {
       // mode. The write-only fields are stripped so a read alias can never
       // carry a write through the READ_ONLY (uncarded) approval tier.
       if (args.action === 'budget-status') {
-        const { dailyBudget, approved, ...rest } = args;
+        const { dailyBudget, approved, force, ...rest } = args;
         return toEnvelope(await runBinary(ctx, 'google-ads-budget', rest));
       }
       if (args.action === 'brand-exclusion-preview') {
-        const { approved, ...rest } = args;
+        const { approved, force, ...rest } = args;
         return toEnvelope(await runBinary(ctx, 'google-ads-brand-exclusion', rest));
       }
       return toEnvelope(await runBinary(ctx, 'google-ads-' + args.action, args));
@@ -1628,6 +1631,7 @@ function buildTools(tool, z, ctx) {
       campaignId: z.string().optional(),
       dailyBudget: z.number().optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Amazon');
@@ -2852,6 +2856,7 @@ function buildTools(tool, z, ctx) {
       limit: z.coerce.number().int().optional().describe('Max rows returned (campaigns, line-items, insights breakdowns). The results file always keeps every row.'),
       roundelReportId: z.string().optional().describe('Insights: resume a pending report by the id a previous insights call returned, instead of creating a new one.'),
       approved: z.boolean().optional().describe('Approval flag for activate and budget. Set by the Electron approval card on user click; the engine REFUSES both without it. Do not set true unless the user explicitly approved the spend change.'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     // Handler does NOT auto-set args.approved; the approval card does.
     handler: async (args) => {
@@ -2885,7 +2890,7 @@ function buildTools(tool, z, ctx) {
         pass = rest;
       }
       if (args.action !== 'activate' && args.action !== 'budget') {
-        const { approved, ...rest } = pass;
+        const { approved, force, ...rest } = pass;
         pass = rest;
       }
       return toEnvelope(await runBinary(ctx, actionMap[args.action], pass));
@@ -3263,6 +3268,7 @@ function buildTools(tool, z, ctx) {
       // mcp-openai-ads-reachability.test.js.
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: exact window start, YYYY-MM-DD inclusive (ad account timezone). Give with endDate; overrides batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.'),
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: exact window end, YYYY-MM-DD inclusive. Give with startDate; must not be before startDate.'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
@@ -3430,6 +3436,7 @@ function buildTools(tool, z, ctx) {
       // unreachable failure mode, with no error anywhere.
       bid: z.number().optional().describe('CPM bid in USD (dollars, not cents, not micros) for create-ad — the price per thousand impressions, NOT a budget. Never derive it from dailyBudget; the two are unrelated. Omit for the platform default.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Reddit');
@@ -3460,6 +3467,7 @@ function buildTools(tool, z, ctx) {
       adLink: z.string().optional().describe('Destination URL'),
       adImagePath: z.string().optional().describe('Path to an image for a single-image sponsored creative (push). When set, Merlin uploads the image to the sponsoring organization, creates a Direct Sponsored Content post, and builds the creative from it. Requires an organization-backed ad account. Omit for a text/link creative.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'LinkedIn');

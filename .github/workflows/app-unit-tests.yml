@@ -191,6 +191,11 @@ jobs:
         run: node --test app/mcp-meta-param-reachability.test.js app/mcp-meta-action-reachability.test.js
       - name: MCP Google Demand Gen reachability (YouTube Shorts)
         run: node --test app/mcp-google-demandgen-reachability.test.js
+      # Spend-guard force override (Rules 23 + 25): the engine's spend-anomaly
+      # guard says "pass force=true"; this pins that force is declared on every
+      # ad tool, lands in --cmd, and never skips the approval card.
+      - name: MCP spend-guard force reachability
+        run: node --test app/mcp-spend-force-reachability.test.js
       # 2026-09-28 incident: the IPC sidecar (mcp-shim-token named pipe)
       # dispatched tools/call straight to the handler, so a klaviyo
       # flow-set-message-template call from an external session changed five

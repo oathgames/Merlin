@@ -3022,12 +3022,29 @@ function translateTool(toolName, input) {
   return { label: 'Merlin needs your permission to continue', cost: null };
 }
 
-// Calculate current budget usage for approval card context
-function getBudgetContext() {
+// Calculate current budget usage for approval card context.
+//
+// REGRESSION GUARD (2026-10-05, google-budget-force): the cap is read from the
+// brand the SPEND CALL names (`inputBrand`), not readState().activeBrand. The
+// old activeBrand read checked a spend call for brand B against brand A's
+// maxDailyAdBudget whenever A was the active brand, so A's raised cap could
+// authorize B's spend (and B's raised cap was ignored). activeBrand is only a
+// fallback when the call names no brand. A brand name that fails the brand
+// allowlist (path traversal, etc.) returns null: no config is read, so no
+// declared cap applies, the strict default ceiling holds, and in-cap
+// auto-approve stays off. Pinned by app/mcp-spend-force-reachability.test.js
+// and budget-ceiling.test.js (resolveCapBrand).
+// Shown on every approval card for a forced spend call. `force` overrides the
+// engine's spend-anomaly guard AND the push quality gates (forbidden brand
+// words, unverified stats, landing grade), so the human must see that this
+// approval waives Merlin's own checks, not just a budget number.
+const FORCE_CARD_NOTE = '⚠ Overrides Merlin safety checks (large budget jump, ad quality checks)';
+
+function getBudgetContext(inputBrand) {
   try {
-    let activeBrand = '';
-    try { activeBrand = readState().activeBrand || ''; } catch {}
-    const cfg = activeBrand ? readBrandConfig(activeBrand) : readConfig();
+    const capBrand = budgetCeiling.resolveCapBrand(inputBrand, () => readState().activeBrand || '');
+    if (capBrand === null) return null;
+    const cfg = capBrand ? readBrandConfig(capBrand) : readConfig();
     const dailyCap = cfg.maxDailyAdBudget || cfg.dailyAdBudget || 0;
     const monthlyCap = cfg.maxMonthlyAdSpend || cfg.monthlyAdSpend || 0;
     if (dailyCap === 0 && monthlyCap === 0) return null;
@@ -3131,7 +3148,7 @@ async function handleToolApproval(toolName, input, opts) {
 
     // Spend actions: show approval card with budget enforcement
     if (approvalPolicy.SPEND_ACTIONS.has(action)) {
-      const budgetCtx = getBudgetContext();
+      const budgetCtx = getBudgetContext(input.brand);
       const adBudget = input.dailyBudget || 5;
 
       // HARD DENY: catch Claude-passed-cents BEFORE showing the approval card.
@@ -3183,21 +3200,28 @@ async function handleToolApproval(toolName, input, opts) {
       // headroom to gate against — show the card rather than auto-approve.
       let requireSpendApproval = true;
       try {
-        const brandForCfg = input.brand || (() => {
-          try { return readState().activeBrand || ''; } catch { return ''; }
-        })();
-        const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
-        requireSpendApproval = !!cfg.requireSpendApproval;
+        const brandForCfg = budgetCeiling.resolveCapBrand(input.brand, () => readState().activeBrand || '');
+        if (brandForCfg !== null) {
+          const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
+          requireSpendApproval = !!cfg.requireSpendApproval;
+        }
       } catch (e) {
         console.warn('[spend-approval] config read failed, defaulting to require approval:', e && e.message);
       }
+      //
+      // FORCED OVERRIDE ALWAYS CARDS (2026-10-05, google-budget-force). `force`
+      // is declared on every ad tool so the engine's "pass force=true"
+      // remediation is reachable (Hard-Won Rules 23 + 25). A forced call is by
+      // definition one an engine spend guard refused, so it never rides the
+      // in-cap auto-approve path: the human looks at it every time.
+      const forceRequested = budgetCeiling.requestsGuardOverride(input, toolName);
       //
       // HIGH-MAGNITUDE SPEND ALWAYS CARDS (2026-08-13, budget-ceiling). A
       // declared cap authorizes the AMOUNT; it does not waive the human look
       // at this magnitude. Without this clause, an operator who raised
       // maxDailyAdBudget to 5000 for a single flash sale would have every
       // subsequent $5,000/day push fire silently.
-      if (!requireSpendApproval && capForComparison > 0 && action === 'push' &&
+      if (!requireSpendApproval && !forceRequested && capForComparison > 0 && action === 'push' &&
           !budgetCeiling.alwaysRequiresCard(adBudget)) {
         const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
         if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
@@ -3242,6 +3266,7 @@ async function handleToolApproval(toolName, input, opts) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
+      if (forceRequested) budgetDetail = (budgetDetail ? budgetDetail + ' · ' : '') + FORCE_CARD_NOTE;
       const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       const external = resolveExternalOriginCard(payload, toolName, input, opts);
@@ -3415,7 +3440,9 @@ async function handleToolApproval(toolName, input, opts) {
     // anything that touches account configuration stays out.
     const BASH_PUSH_ONLY = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad']);
     if (BASH_SPEND.has(bashAction)) {
-      const budgetCtx = getBudgetContext();
+      // Cap is read for the brand the engine will use: last "brand" wins, as in Go.
+      const bashInputBrand = bashMerlinAction.lastString(input.command, 'brand') || undefined;
+      const budgetCtx = getBudgetContext(bashInputBrand);
       const translated = translateTool(toolName, input);
       // Last occurrence wins, as in Go's encoding/json (see bash-merlin-action.js).
       const parsedBudget = bashMerlinAction.lastNumber(input.command, 'dailyBudget');
@@ -3442,18 +3469,20 @@ async function handleToolApproval(toolName, input, opts) {
       //    finite number; missing data ⇒ no auto-approve.
       let bashRequireSpendApproval = true;
       try {
-        const brandMatch = input.command.match(/"brand"\s*:\s*"([^"]+)"/);
-        const brandForCfg = brandMatch ? brandMatch[1] : (() => {
-          try { return readState().activeBrand || ''; } catch { return ''; }
-        })();
-        const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
-        bashRequireSpendApproval = !!cfg.requireSpendApproval;
+        const brandForCfg = budgetCeiling.resolveCapBrand(bashInputBrand, () => readState().activeBrand || '');
+        if (brandForCfg !== null) {
+          const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
+          bashRequireSpendApproval = !!cfg.requireSpendApproval;
+        }
       } catch (e) {
         console.warn('[spend-approval] bash config read failed, defaulting to require approval:', e && e.message);
       }
+      // 5. Forced override always cards (mirror of the MCP path); see
+      //    bashMerlinAction.requestsOverride for the escape/case handling.
+      const bashForceRequested = bashMerlinAction.requestsOverride(input.command, 'force');
       // 4. High-magnitude spend always cards (mirror of the MCP path above):
       //    a raised cap authorizes the amount, not the silence.
-      if (!bashRequireSpendApproval && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction) &&
+      if (!bashRequireSpendApproval && !bashForceRequested && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction) &&
           !budgetCeiling.alwaysRequiresCard(adBudget)) {
         const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
         if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
@@ -3471,6 +3500,7 @@ async function handleToolApproval(toolName, input, opts) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
+      if (bashForceRequested) budgetDetail = (budgetDetail ? budgetDetail + ' · ' : '') + FORCE_CARD_NOTE;
       const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);

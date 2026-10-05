@@ -96,4 +96,80 @@ function lastString(command, key) {
   return null;
 }
 
-module.exports = { parseAction, lastNumber, lastString };
+// requestsOverride -> boolean. True when ANY occurrence of `key` carries a
+// value other than literal false (or cannot be decoded). Same scanner as the
+// readers above, so escaped quotes (\"force\"), other letter case ("Force",
+// which Go's decoder still binds) and escaped key names are all seen. Any
+// occurrence counts rather than last-wins: a malformed or duplicated flag
+// over-cards rather than slipping through (2026-10-05, google-budget-force).
+//
+// The JSON scan reads the literal command, but the shell rebuilds the --cmd
+// argument before Go sees it: quote splicing ('for''ce', "fo""rce"), line
+// continuation (backslash-newline), brace expansion (fo{r,x}ce), globbing,
+// ANSI-C escapes ($'\x63') and $VAR / $(...) / backtick expansion all yield
+// a key the scanner never saw. Rather than chase each form, the fallbacks
+// return true (card) whenever the shell could rewrite the text at all:
+//   - any $ or backtick, or any backslash-newline continuation;
+//   - any brace or glob character OUTSIDE quotes, or an unbalanced quote
+//     (a plain --cmd '{...}' keeps every brace inside single quotes);
+//   - a pipe or input redirect outside quotes, or xargs / --cmd-file
+//     anywhere: the JSON is then produced by another program (printf, cat)
+//     whose output the text does not show;
+//   - the key's letters appearing (any case, after decoding \uXXXX, \xXX and
+//     octal escapes at any backslash depth and dropping every non-letter)
+//     more often than the scan found it set to literal false. This covers
+//     quote splicing and nested escapes in one rule, at the cost of carding a
+//     Bash push whose copy merely contains the word.
+// All of these only ever ADD a card; a false positive costs one click.
+const SHELL_EXPANSION_RE = /[$`]|\\\r?\n|--cmd-file|\bxargs\b/;
+function shellCanRewrite(raw) {
+  if (SHELL_EXPANSION_RE.test(raw)) return true;
+  let state = '';
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (state === "'") { if (c === "'") state = ''; continue; }
+    if (state === '"') {
+      if (c === '\\') { i++; continue; }
+      if (c === '"') state = '';
+      continue;
+    }
+    if (c === '\\') { i++; continue; }
+    if (c === "'" || c === '"') { state = c; continue; }
+    if (c === '{' || c === '}' || c === '*' || c === '?' || c === '[' || c === '|' || c === '<') return true;
+  }
+  return state !== '';
+}
+function lettersOnly(text) {
+  // Drop shell quotes first: a quote can split an escape (\u'00'66) and the
+  // shell rejoins it before Go decodes the JSON.
+  let s = String(text).replace(/['"]/g, '');
+  for (let i = 0; i < 4; i++) {
+    s = s
+      .replace(/\\+u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+x([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
+  }
+  return s.toLowerCase().replace(/[^a-z]/g, '');
+}
+function countOccurrences(hay, needle) {
+  if (!needle) return 0;
+  let n = 0;
+  for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + 1)) n++;
+  return n;
+}
+function requestsOverride(command, key) {
+  const raw = String(command || '');
+  let falseHits = 0;
+  for (const text of candidates(raw)) {
+    const hits = scanKeys(text, key);
+    for (const h of hits) {
+      if (h.undecodable) return true;
+      if (!/^false(?![A-Za-z0-9_])/.test(h.valueText)) return true;
+    }
+    falseHits = Math.max(falseHits, hits.length);
+  }
+  if (shellCanRewrite(raw)) return true;
+  return countOccurrences(lettersOnly(raw), lettersOnly(key)) > falseHits;
+}
+
+module.exports = { parseAction, lastNumber, lastString, requestsOverride };
