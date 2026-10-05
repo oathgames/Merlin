@@ -4165,6 +4165,10 @@
       },
       "description": "Replace the UTM / URL tags (url_tags) on one or more LIVE Meta ads. Each ad's creative is rebuilt with the new tags and everything else preserved: media, copy, CTA and destination link, the boosted Instagram post (same post, same likes and comments), the publishing identity, partnership ad fields, and enhancement settings. Every new creative is read back and verified before the ad is switched onto it. Use when ads are missing UTMs or carry the wrong ones, including boosted-post and partnership ads that no other tool can retag. Switching a creative resets that ad's learning, so ads that already carry exactly these tags are skipped unless force is set.",
       "input": {
+        "acknowledgePartnership": {
+          "description": "Set true only after the user confirms: rebuild an ad that looks like a partnership ad even though its partnership fields cannot all be read back (so their preservation cannot be verified). The engine refuses such ads without it.",
+          "type": "boolean"
+        },
         "adId": {
           "description": "A single ad to retag. Use this or adIds.",
           "type": "string"
@@ -4177,13 +4181,17 @@
           "type": "array"
         },
         "approved": {
-          "description": "Approval flag for this write. The engine REFUSES to rebuild without it; set true only with explicit user approval.",
+          "description": "Approval flag for this write. The engine REFUSES to rebuild without it; set true only with explicit user approval. Not needed for dryRun.",
           "type": "boolean"
         },
         "brand": {
           "description": "Brand name",
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
+        },
+        "dryRun": {
+          "description": "Read-only preview: reads each ad's creative and shows the fields Meta returned plus the exact creative that WOULD be created, with no write of any kind and no approval needed. Run this first on boosted-post and partnership ads.",
+          "type": "boolean"
         },
         "force": {
           "description": "Rebuild even when an ad already carries exactly these tags. Off by default because switching a creative resets the ad's learning.",

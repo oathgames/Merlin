@@ -989,6 +989,44 @@ test('meta_set_url_tags routes to an always-cards action', () => {
     "swaps the creative live spend serves; 'push' would make it eligible for in-cap auto-approve.");
 });
 
+test('meta_set_url_tags dryRun reaches the engine as dryRun and never carries approval', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_url_tags').handler({
+    brand: 'acme', adId: '120210000000000001', urlTags: 'utm_source=fb',
+    dryRun: true, acknowledgePartnership: true, approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-set-url-tags');
+  assert.equal(cmd.dryRun, true, 'Command.URLTagsDryRun is json "dryRun"; dropping it turns a preview into a write attempt.');
+  assert.equal(cmd.acknowledgePartnership, true, 'Command.AcknowledgePartnership is json "acknowledgePartnership".');
+  assert.ok(!('approved' in cmd), 'a preview must never carry the write approval to the binary.');
+});
+
+test('meta_set_url_tags acknowledgePartnership reaches a live (non-dry) run', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_url_tags').handler({
+    brand: 'acme', adId: '120210000000000001', urlTags: 'utm_source=fb',
+    acknowledgePartnership: true, approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.acknowledgePartnership, true);
+  assert.equal(cmd.approved, true);
+  assert.ok(!cmd.dryRun);
+});
+
+test('meta_set_url_tags cards unless dryRun is literally true', () => {
+  const policy = require('./mcp-approval-policy');
+  const name = 'mcp__merlin__meta_set_url_tags';
+  const dry = policy.resolveMerlinAction(name, { dryRun: true });
+  assert.equal(dry.effectiveAction, 'dry-run');
+  assert.ok(policy.READ_ONLY_ACTIONS.has('dry-run'), 'the engine dry run is a pure read');
+  for (const input of [{}, { dryRun: false }, { dryRun: 'true' }, { dryRun: 1 }, { approved: true }]) {
+    const out = policy.resolveMerlinAction(name, input);
+    assert.equal(out.effectiveAction, 'duplicate', `must card for ${JSON.stringify(input)}`);
+    assert.ok(!policy.READ_ONLY_ACTIONS.has(out.effectiveAction));
+  }
+});
+
 // ── 6. Extraction sanity ─────────────────────────────────────────────
 
 test('extraction found enough to be trustworthy', { skip: SKIP_NO_ENGINE }, () => {
