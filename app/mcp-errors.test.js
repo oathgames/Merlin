@@ -186,3 +186,61 @@ test('describeDuration reads like plain English at every magnitude', () => {
   assert.equal(errors.describeDuration(0), 'soon');
   assert.equal(errors.describeDuration(NaN), 'soon');
 });
+
+// ── REGRESSION GUARD (2026-10-05): billing / quota outranks 401/403 ─────────
+
+test('classification table: billing signals map to QUOTA_EXCEEDED, plain auth failures stay PERMISSION_DENIED', () => {
+  const table = [
+    ['fal.ai API error 403: {"detail":"User is locked. Reason: Exhausted balance. Top up your balance at fal.ai/dashboard/billing."}', 'QUOTA_EXCEEDED'],
+    ['[ERROR] No images were generated. Last image error: fal 403 Forbidden: Exhausted balance', 'QUOTA_EXCEEDED'],
+    ['HTTP 402 Payment Required', 'QUOTA_EXCEEDED'],
+    ['elevenlabs 401: quota exceeded for this billing period', 'QUOTA_EXCEEDED'],
+    ['heygen: insufficient credits to render video', 'QUOTA_EXCEEDED'],
+    ['openai 403: You exceeded your current quota, please check your plan', 'QUOTA_EXCEEDED'],
+    ['HTTP 403 Forbidden', 'PERMISSION_DENIED'],
+    ['Meta API error 403: (#200) Requires ads_management permission', 'PERMISSION_DENIED'],
+    ['unauthorized request', 'PERMISSION_DENIED'],
+    ['Your account is locked for security reasons (403)', 'PERMISSION_DENIED'],
+    ['429 Too Many Requests: quota exceeded, retry after 30', 'RATE_LIMITED'],
+  ];
+  for (const [raw, code] of table) {
+    assert.equal(errors.classifyBinaryError(raw).code, code, raw);
+  }
+});
+
+test('QUOTA_EXCEEDED names the provider when detectable and tells the agent to top up', () => {
+  const fal = errors.classifyBinaryError('fal.ai 403: User is locked. Reason: Exhausted balance.');
+  assert.equal(fal.code, 'QUOTA_EXCEEDED');
+  assert.equal(fal.next_action, 'top_up_provider_account');
+  assert.match(fal.message, /fal\.ai/);
+  assert.match(fal.message, /Top up/);
+  assert.match(fal.detail, /Exhausted balance/);
+
+  const unnamed = errors.classifyBinaryError('HTTP 402 Payment Required');
+  assert.equal(unnamed.code, 'QUOTA_EXCEEDED');
+  assert.doesNotMatch(unnamed.message, /fal|ElevenLabs|HeyGen|OpenAI/);
+  assert.equal(errors.detectProvider('HTTP 402 Payment Required'), null);
+  assert.equal(errors.detectProvider('ElevenLabs quota'), 'ElevenLabs');
+  assert.equal(errors.CODES.QUOTA_EXCEEDED.next_action, 'top_up_provider_account');
+});
+
+test('classified detail redacts token-like strings and caps length; summary hint is capped at 300', () => {
+  const envelope = require('./mcp-envelope');
+  const raw = 'fal.ai 403 Exhausted balance. Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345 '
+    + 'token sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ and EAAB' + 'x'.repeat(40) + '\n' + 'filler line\n'.repeat(400);
+  const e = errors.classifyBinaryError(raw);
+  assert.equal(e.code, 'QUOTA_EXCEEDED');
+  assert.doesNotMatch(e.detail, /abcdefghijklmnopqrstuvwxyz012345/);
+  assert.doesNotMatch(e.detail, /sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ/);
+  assert.doesNotMatch(e.detail, /EAABx{20}/);
+  assert.ok(e.detail.length <= errors.DETAIL_MAX_CHARS + 20, `detail length ${e.detail.length}`);
+
+  const shortRaw = 'fal.ai 403 Exhausted balance. Bearer abcdefghijklmnopqrstuvwxyz012345 ' + 'y'.repeat(600);
+  const env = envelope.fail(errors.classifyBinaryError(shortRaw));
+  const rendered = envelope.render(env);
+  const summary = rendered.content[0].text.split('\n')[0];
+  assert.match(summary, /Exhausted balance/);
+  assert.doesNotMatch(summary, /abcdefghijklmnopqrstuvwxyz012345/);
+  // message + " (" + <=300-char hint + ")"
+  assert.ok(summary.length <= env.error.message.length + 300 + 3, `summary length ${summary.length}`);
+});
