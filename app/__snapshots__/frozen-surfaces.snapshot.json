@@ -58,6 +58,7 @@
       "mcp__merlin__meta_scale_winner": "Scale this winning Meta ad",
       "mcp__merlin__meta_set_frequency_cap": "Set a frequency cap on a Meta ad set",
       "mcp__merlin__meta_set_optimization_goal": "Change what a live Meta ad set optimizes for",
+      "mcp__merlin__meta_set_url_tags": "Replace the UTM tags on live Meta ads",
       "mcp__merlin__meta_upload_customer_list": "Upload a customer list as a Meta audience"
     },
     "intentToolToAction": {
@@ -85,6 +86,7 @@
       "mcp__merlin__meta_scale_winner": "duplicate",
       "mcp__merlin__meta_set_frequency_cap": "setup",
       "mcp__merlin__meta_set_optimization_goal": "duplicate",
+      "mcp__merlin__meta_set_url_tags": "duplicate",
       "mcp__merlin__meta_setup_account": "discover",
       "mcp__merlin__meta_upload_customer_list": "setup"
     },
@@ -4149,6 +4151,54 @@
         }
       },
       "name": "meta_set_optimization_goal"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "meta"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Replace the UTM / URL tags (url_tags) on one or more LIVE Meta ads. Each ad's creative is rebuilt with the new tags and everything else preserved: media, copy, CTA and destination link, the boosted Instagram post (same post, same likes and comments), the publishing identity, partnership ad fields, and enhancement settings. Every new creative is read back and verified before the ad is switched onto it. Use when ads are missing UTMs or carry the wrong ones, including boosted-post and partnership ads that no other tool can retag. Switching a creative resets that ad's learning, so ads that already carry exactly these tags are skipped unless force is set.",
+      "input": {
+        "adId": {
+          "description": "A single ad to retag. Use this or adIds.",
+          "type": "string"
+        },
+        "adIds": {
+          "description": "The ads to retag (max 50). Use this or adId.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "approved": {
+          "description": "Approval flag for this write. The engine REFUSES to rebuild without it; set true only with explicit user approval.",
+          "type": "boolean"
+        },
+        "brand": {
+          "description": "Brand name",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "force": {
+          "description": "Rebuild even when an ad already carries exactly these tags. Off by default because switching a creative resets the ad's learning.",
+          "type": "boolean"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "urlTags": {
+          "description": "The FULL url_tags string to set, e.g. \"utm_source=facebook&utm_medium=paidsocial&utm_campaign={{campaign.name}}\". It REPLACES the current tags; it is not merged. No leading ? or &.",
+          "type": "string"
+        }
+      },
+      "name": "meta_set_url_tags"
     },
     {
       "annotations": {

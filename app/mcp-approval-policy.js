@@ -353,6 +353,10 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // against budget that is already flowing, and the host cannot verify the
   // resulting creative renders correctly. Always cards.
   'mcp__merlin__meta_refresh_creative_spec':    'duplicate',
+  // meta_set_url_tags swaps LIVE ads onto rebuilt creatives with new tags.
+  // Same shape as meta_refresh_creative_spec: no new spend, but it changes
+  // what already-flowing budget serves and resets learning. Always cards.
+  'mcp__merlin__meta_set_url_tags':             'duplicate',
   // meta_set_optimization_goal changes what an ALREADY-SPENDING ad set bids
   // for. Same shape as edit_ad_link: no new spend, but every dollar after the
   // edit buys something different, and the host cannot verify the new goal is
@@ -400,6 +404,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_dpa_setup':                'Set up Meta DPA catalog retargeting (PAUSED on create)',
   'mcp__merlin__meta_edit_ad_link':             'Change a live Meta ad\'s destination URL',
   'mcp__merlin__meta_refresh_creative_spec':    'Rebuild a live Meta ad\'s creative enhancement settings',
+  'mcp__merlin__meta_set_url_tags':             'Replace the UTM tags on live Meta ads',
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
   'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
   'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',

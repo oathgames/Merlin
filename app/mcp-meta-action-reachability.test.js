@@ -930,6 +930,65 @@ test('the spend-shaped ad-set writes route to an always-cards action', () => {
     'the frequency cap moves no money but still edits live delivery, so it cards as ad-account state.');
 });
 
+// ── 5d. url_tags rebuild (2026-10-05) ────────────────────────────────
+//
+// meta-set-url-tags is the only path that can CHANGE an ad's url_tags: every
+// clone path copies the source tags verbatim by design. It is an approval-
+// gated WRITE that swaps live ads' creatives, so it is an intent tool and it
+// routes through INTENT_TOOL_TO_ACTION per Hard-Won Rule 19.
+
+test('meta_set_url_tags is reachable and sends adIds, urlTags and approved', async () => {
+  assert.ok(INTENT_ACTIONS.has('meta-set-url-tags'), 'no intent tool routes to meta-set-url-tags');
+  execFileCalls.length = 0;
+  await tool('meta_set_url_tags').handler({
+    brand: 'acme',
+    adIds: ['120210000000000001', '120210000000000002'],
+    urlTags: 'utm_source=facebook&utm_medium=paidsocial&utm_content={{ad.id}}',
+    force: true,
+    approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-set-url-tags');
+  assert.deepEqual(cmd.adIds, ['120210000000000001', '120210000000000002'],
+    'runMetaSetURLTags reads cmd.AdIDs; dropping the array leaves the engine with no ads.');
+  assert.equal(cmd.urlTags, 'utm_source=facebook&utm_medium=paidsocial&utm_content={{ad.id}}',
+    'the tags are the whole point of the action and must arrive byte-identical.');
+  assert.equal(cmd.force, true);
+  assert.equal(cmd.approved, true,
+    'the engine requireApproval() gate refuses the rebuild unless approved reaches it as true.');
+});
+
+test('meta_set_url_tags accepts a single adId and does NOT invent approval', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_url_tags').handler({
+    brand: 'acme', adId: '120210000000000001', urlTags: 'utm_source=fb',
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.adId, '120210000000000001');
+  assert.ok(!('approved' in cmd) || cmd.approved !== true,
+    'the handler must never auto-set approved.');
+});
+
+test('meta_set_url_tags refuses malformed input before hitting the binary', async () => {
+  for (const args of [
+    { brand: 'acme', urlTags: 'utm_source=fb' },
+    { brand: 'acme', adId: '1', urlTags: '?utm_source=fb' },
+    { brand: 'acme', adId: '1', urlTags: 'utm source=fb' },
+    { brand: 'acme', adId: '1', urlTags: 'nokeyvalue' },
+    { brand: 'acme', adIds: Array.from({ length: 51 }, (_, i) => String(i + 1)), urlTags: 'a=b' },
+  ]) {
+    execFileCalls.length = 0;
+    await tool('meta_set_url_tags').handler({ ...args, approved: true });
+    assert.equal(execFileCalls.length, 0, `must refuse locally: ${JSON.stringify(args).slice(0, 80)}`);
+  }
+});
+
+test('meta_set_url_tags routes to an always-cards action', () => {
+  const policySrc = fs.readFileSync(path.join(APP_DIR, 'mcp-approval-policy.js'), 'utf8');
+  assert.match(policySrc, /'mcp__merlin__meta_set_url_tags':\s*'duplicate'/,
+    "swaps the creative live spend serves; 'push' would make it eligible for in-cap auto-approve.");
+});
+
 // ── 6. Extraction sanity ─────────────────────────────────────────────
 
 test('extraction found enough to be trustworthy', { skip: SKIP_NO_ENGINE }, () => {
