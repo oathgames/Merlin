@@ -9389,6 +9389,12 @@ const BRAND_KEYS = [
   // Gorgias helpdesk — brand-specific BYOK (subdomain + account email + API
   // key). Mirror of brandScopedKeys in autocmo-core/vault.go.
   'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
+  // metaProspectingExclusions (2026-10-07): per-brand customer audience ids
+  // that every new prospecting ad set must exclude. Not a secret, but a value
+  // in the global config would bleed into every brand (wrong account ids, a
+  // 400 on ad-set create, or another brand customers excluded). Mirror of
+  // brandScopedKeys in autocmo-core/vault.go.
+  'metaProspectingExclusions',
 ];
 
 // Universal credentials — shared across every brand on a single user's
