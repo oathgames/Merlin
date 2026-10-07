@@ -4744,10 +4744,10 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first). Window: days (default 30, transactions default 7, max 365) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.",
+      "description": "Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first); export (full historical raw pull to JSONL in the brand results folder: every column of the performance report and of the order report, plus a publisher roster and daily totals, with a manifest of counts and date coverage; runs as a background job, resumable, default 365 days, up to 3660 days). report also splits orders into new vs returning customers when the order report carries a new-customer column. Window: days (default 30, transactions default 7, max 365; export max 3660) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.",
       "input": {
         "action": {
-          "description": "status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day. publishers → publishers ranked by sales. transactions → order-level rows.",
+          "description": "status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day, plus new vs returning when available. publishers → publishers ranked by sales. transactions → order-level rows. export → full raw JSONL pull with a manifest (background job, resumable).",
           "enum": [
             "status",
             "connect",
@@ -4755,7 +4755,8 @@
             "verify",
             "report",
             "publishers",
-            "transactions"
+            "transactions",
+            "export"
           ],
           "type": "string"
         },
@@ -4764,7 +4765,7 @@
           "type": "string"
         },
         "days": {
-          "description": "Window length in days ending today (default 30; transactions default 7; max 365). Ignored when startDate is set.",
+          "description": "Window length in days ending today (default 30; transactions default 7; max 365; export default 365, max 3660). Ignored when startDate is set.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -6078,8 +6079,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 29300,
-      "bodySha256": "d64768c6501b6af5d540b677881aa84d5193d46fe0726242542da9bce35d3605",
+      "bodyBytes": 29639,
+      "bodySha256": "c4da4b41a5c6e42764d1e4109cc27095083cd4f4e57c9611351526dae7fe3a98",
       "bytes_justification": "GA4 read+write (2026-05-01) added 13-action surface + write-side approval-card flows alongside the existing dashboard / wisdom / calendar / Conversion Rubric / incrementality blocks. Splitting GA4 into its own SKILL would fragment the analytics-vs-attribution narrative the dashboard relies on.",
       "description": "Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach), plus Gorgias customer-support ticket analytics and de-identified support-corpus exports. Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.",
       "dir": "merlin-analytics",

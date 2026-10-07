@@ -190,7 +190,7 @@ const TOOL_ROUTING = [
     // openai-ads-*. connect is JS-only (returns instructions) → exempt.
     exemptions: ['connect'],
   },
-  // setup/verify/status/report/publishers/transactions → rakuten-<action> 1:1;
+  // setup/verify/status/report/publishers/transactions/export → rakuten-<action> 1:1;
   // connect is JS-only (returns instructions, no engine call).
   { name: 'rakuten', prefix: 'rakuten', exemptions: ['connect'] },
   // status/setup/verify/discover/insights/actions/partners/clicks/report →
