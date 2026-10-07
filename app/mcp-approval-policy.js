@@ -35,6 +35,11 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   // before routing them to google-ads-budget / google-ads-brand-exclusion,
   // so they can only ever run the engine's read / preview mode.
   'budget-status', 'brand-exclusion-preview',
+  // google_ads 'audiences' (engine google-ads-audiences) lists user lists and
+  // campaign audience exclusions. The engine action has no write path, and
+  // the handler strips approved / force anyway. Mailchimp's 'audiences' is
+  // also a read, so the global name is safe.
+  'audiences',
   // Google Tag Manager reads. 'discover' and 'audit' are already here
   // from other connectors; 'list-versions' only shows which container
   // version is live and the change history, which mutates nothing.
@@ -167,6 +172,11 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // live campaigns bid on, so a human looks first. The engine also refuses
   // it without approved:true (requireApproval).
   'brand-exclusion',
+  // google_ads customer exclusion: attaches a user list as a negative
+  // audience to live Search / Display campaigns. No dollars move, but it
+  // changes who live campaigns reach, so a human looks first. The engine
+  // refuses it without approved:true (requireApproval).
+  'exclude-audience',
   // Google Tag Manager writes. These do not move ad dollars, so they are
   // costImpact 'api' and would otherwise land on the catch-all
   // auto-approve at step 4 — the same fallthrough that let Mailchimp

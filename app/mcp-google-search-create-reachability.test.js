@@ -90,7 +90,7 @@ const fs = require('node:fs');
 
 const SEARCH_KEYS = ['campaignName', 'adSetName', 'dailyBudget', 'adLink', 'keywords', 'negativeKeywords',
   'headlines', 'descriptions', 'path1', 'path2', 'targetRoas', 'finalUrlExpansion', 'brandExclusion',
-  'brandListName', 'brandEntityIds', 'brandQuery', 'geoTargetConstants', 'force'];
+  'brandListName', 'brandEntityIds', 'brandQuery', 'geoTargetConstants', 'excludeUserListIds', 'force'];
 
 test('google_ads exposes the search-create action', () => {
   assert.ok(googleAds().schema.action.__enum.includes('search-create'), 'google_ads action enum is missing search-create');

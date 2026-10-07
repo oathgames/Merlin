@@ -23,6 +23,7 @@
       "create-custom-metric",
       "create-key-event",
       "create-version",
+      "exclude-audience",
       "export-raw",
       "flow-delete",
       "flow-set-message-template",
@@ -96,6 +97,7 @@
       "adgroups",
       "ads",
       "analytics",
+      "audiences",
       "audit",
       "automation-emails",
       "automations-list",
@@ -1338,7 +1340,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days), budget-status (read one campaign's daily budget, bidding strategy, and whether the budget is shared; pass campaignId), budget (change one campaign's daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google's brand directory and shows the list + campaigns that would change), brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card), search-create (AI Max for Search: builds one PAUSED Search campaign in a single all-or-nothing request, with AI Max on, maximize conversion value bidding (optional targetRoas), Google Search only, one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). Always shows an approval card; start it later with activate).",
+      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days), budget-status (read one campaign's daily budget, bidding strategy, and whether the budget is shared; pass campaignId), budget (change one campaign's daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google's brand directory and shows the list + campaigns that would change), brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card), search-create (AI Max for Search: builds one PAUSED Search campaign in a single all-or-nothing request, with AI Max on, maximize conversion value bidding (optional targetRoas), Google Search only, one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). excludeUserListIds = user list ids (from audiences) excluded as negative audiences in the same request. Always shows an approval card; start it later with activate), audiences (read only: every user list / Customer Match list with size for Search and Display, membership status, eligibility and match rate, plus the excluded lists of each ENABLED campaign and customer acquisition goal mode; flags prospecting campaigns that exclude no customers), exclude-audience (attach userListId as a negative audience to campaignIds, SEARCH and DISPLAY campaigns only, in one all-or-nothing request; skips campaigns that already exclude it; refuses Performance Max, which needs the \"new customers only\" customer acquisition goal instead; shows an approval card).",
       "input": {
         "action": {
           "description": "Operation",
@@ -1356,7 +1358,9 @@
             "budget",
             "brand-exclusion-preview",
             "brand-exclusion",
-            "search-create"
+            "search-create",
+            "audiences",
+            "exclude-audience"
           ],
           "type": "string"
         },
@@ -1421,7 +1425,7 @@
           "type": "array"
         },
         "approved": {
-          "description": "Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.",
+          "description": "Approval flag for activate, budget, brand-exclusion and exclude-audience. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.",
           "type": "boolean"
         },
         "batchCount": {
@@ -1471,7 +1475,7 @@
           "type": "string"
         },
         "campaignIds": {
-          "description": "brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign",
+          "description": "brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign. exclude-audience: required, the SEARCH / DISPLAY campaign ids to exclude userListId from",
           "items": {
             "type": "string"
           },
@@ -1505,6 +1509,13 @@
         },
         "descriptions": {
           "description": "search-create: responsive search ad descriptions, 2 to 4, max 90 characters each",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "excludeUserListIds": {
+          "description": "search-create: numeric user list ids to exclude from the new campaign as negative audiences",
           "items": {
             "type": "string"
           },
@@ -1581,6 +1592,10 @@
         "targetRoas": {
           "description": "search-create: target ROAS as a ratio (4 = 400%); omit for plain maximize conversion value",
           "type": "number"
+        },
+        "userListId": {
+          "description": "exclude-audience: numeric user list id to exclude (from the audiences action), e.g. a Customer Match purchaser list",
+          "type": "string"
         },
         "youtubeChannelId": {
           "description": "demandgen-push: upload mp4s to this YouTube channel (must be linked to the Google Ads account). Omit to upload unlisted to the Google-managed channel.",

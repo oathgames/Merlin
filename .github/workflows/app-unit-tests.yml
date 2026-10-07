@@ -195,6 +195,8 @@ jobs:
       # in --cmd and the action must always card (never in-cap auto-approve).
       - name: MCP Google AI Max Search reachability
         run: node --test app/mcp-google-search-create-reachability.test.js
+      - name: MCP Google audiences reachability
+        run: node --test app/mcp-google-audiences-reachability.test.js
       # Spend-guard force override (Rules 23 + 25): the engine's spend-anomaly
       # guard says "pass force=true"; this pins that force is declared on every
       # ad tool, lands in --cmd, and never skips the approval card.

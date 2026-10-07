@@ -1622,7 +1622,12 @@ function buildTools(tool, z, ctx) {
       + 'one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. '
       + 'Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), '
       + 'finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). '
-      + 'Always shows an approval card; start it later with activate).',
+      + 'excludeUserListIds = user list ids (from audiences) excluded as negative audiences in the same request. '
+      + 'Always shows an approval card; start it later with activate), '
+      + 'audiences (read only: every user list / Customer Match list with size for Search and Display, membership status, eligibility and match rate, '
+      + 'plus the excluded lists of each ENABLED campaign and customer acquisition goal mode; flags prospecting campaigns that exclude no customers), '
+      + 'exclude-audience (attach userListId as a negative audience to campaignIds, SEARCH and DISPLAY campaigns only, in one all-or-nothing request; '
+      + 'skips campaigns that already exclude it; refuses Performance Max, which needs the "new customers only" customer acquisition goal instead; shows an approval card).',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -1630,7 +1635,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'google' },
     preview: false,
     input: {
-      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion', 'search-create']).describe('Operation'),
+      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion', 'search-create', 'audiences', 'exclude-audience']).describe('Operation'),
       brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
@@ -1669,7 +1674,7 @@ function buildTools(tool, z, ctx) {
       brandQuery: z.string().optional().describe('brand-exclusion: brand name to look up in Google\'s brand directory, e.g. "Apotheke"'),
       brandEntityIds: z.array(z.string()).optional().describe('brand-exclusion: brand entity ids from the preview\'s suggestions; required when the preview says needsBrandChoice'),
       brandListName: z.string().optional().describe('brand-exclusion: brand list name to create or reuse, default "Brand Exclusions"'),
-      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign'),
+      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign. exclude-audience: required, the SEARCH / DISPLAY campaign ids to exclude userListId from'),
       // AI Max for Search (engine google-ads-search-create). Keys match the
       // engine Command json tags verbatim; campaignName, adSetName, dailyBudget,
       // adLink, geoTargetConstants and the brand* keys above are shared.
@@ -1682,7 +1687,12 @@ function buildTools(tool, z, ctx) {
       targetRoas: z.number().optional().describe('search-create: target ROAS as a ratio (4 = 400%); omit for plain maximize conversion value'),
       finalUrlExpansion: z.boolean().optional().describe('search-create: let AI Max send traffic to other pages on the site (default true); false keeps every click on adLink'),
       brandExclusion: z.boolean().optional().describe('search-create: attach a negative brand list to the new campaign'),
-      approved: z.boolean().optional().describe('Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
+      // Customer exclusions (engine google-ads-audiences /
+      // google-ads-exclude-audience, googleads_audiences.go). Keys match the
+      // Go Command json tags; see TestExcludeAudience_WireTags.
+      userListId: z.string().optional().describe('exclude-audience: numeric user list id to exclude (from the audiences action), e.g. a Customer Match purchaser list'),
+      excludeUserListIds: z.array(z.string()).optional().describe('search-create: numeric user list ids to exclude from the new campaign as negative audiences'),
+      approved: z.boolean().optional().describe('Approval flag for activate, budget, brand-exclusion and exclude-audience. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
       force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     // Handler does NOT auto-set args.approved; the approval card does.
@@ -1713,6 +1723,10 @@ function buildTools(tool, z, ctx) {
       if (args.action === 'brand-exclusion-preview') {
         const { approved, force, ...rest } = args;
         return toEnvelope(await runBinary(ctx, 'google-ads-brand-exclusion', rest));
+      }
+      if (args.action === 'audiences') {
+        const { approved, force, ...rest } = args;
+        return toEnvelope(await runBinary(ctx, 'google-ads-audiences', rest));
       }
       return toEnvelope(await runBinary(ctx, 'google-ads-' + args.action, args));
     },
