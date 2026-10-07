@@ -114,6 +114,11 @@ const SPEND_ACTIONS = Object.freeze(new Set([
   // budget. Always cards (not in-cap eligible like 'push'), because it can
   // also add ads under an existing, possibly live, ad group.
   'demandgen-push',
+  // Google Ads AI Max for Search (2026-10-07): creates a new Search campaign
+  // with its own daily budget. Created PAUSED, but it commits a budget and
+  // the copy that will serve, so it always cards. Not 'push', so it is never
+  // eligible for the in-cap auto-approve.
+  'search-create',
   // TikTok GMV Max ROI target (2026-10-05). Lowering a ROI target unlocks
   // spend, so it is SPEND-class. Not 'push', so it is never eligible for the
   // in-cap auto-approve: the card shows every time.

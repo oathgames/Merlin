@@ -158,6 +158,7 @@
       "push",
       "retarget",
       "roi-target",
+      "search-create",
       "setup",
       "setup-retargeting"
     ]
@@ -1337,7 +1338,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days), budget-status (read one campaign's daily budget, bidding strategy, and whether the budget is shared; pass campaignId), budget (change one campaign's daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google's brand directory and shows the list + campaigns that would change), brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card).",
+      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days), budget-status (read one campaign's daily budget, bidding strategy, and whether the budget is shared; pass campaignId), budget (change one campaign's daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google's brand directory and shows the list + campaigns that would change), brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card), search-create (AI Max for Search: builds one PAUSED Search campaign in a single all-or-nothing request, with AI Max on, maximize conversion value bidding (optional targetRoas), Google Search only, one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). Always shows an approval card; start it later with activate).",
       "input": {
         "action": {
           "description": "Operation",
@@ -1354,7 +1355,8 @@
             "budget-status",
             "budget",
             "brand-exclusion-preview",
-            "brand-exclusion"
+            "brand-exclusion",
+            "search-create"
           ],
           "type": "string"
         },
@@ -1449,6 +1451,10 @@
           },
           "type": "array"
         },
+        "brandExclusion": {
+          "description": "search-create: attach a negative brand list to the new campaign",
+          "type": "boolean"
+        },
         "brandListName": {
           "description": "brand-exclusion: brand list name to create or reuse, default \"Brand Exclusions\"",
           "type": "string"
@@ -1497,6 +1503,17 @@
         "dailyBudget": {
           "type": "number"
         },
+        "descriptions": {
+          "description": "search-create: responsive search ad descriptions, 2 to 4, max 90 characters each",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "finalUrlExpansion": {
+          "description": "search-create: let AI Max send traffic to other pages on the site (default true); false keeps every click on adLink",
+          "type": "boolean"
+        },
         "force": {
           "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
           "type": "boolean"
@@ -1508,9 +1525,23 @@
           },
           "type": "array"
         },
+        "headlines": {
+          "description": "search-create: responsive search ad headlines, 3 to 15, max 30 characters each, all distinct",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
+        },
+        "keywords": {
+          "description": "search-create: ad group keywords, added as BROAD match (max 80 chars / 10 words each)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "limit": {
           "description": "Max results to return",
@@ -1518,6 +1549,21 @@
         },
         "logoPath": {
           "description": "demandgen-push: absolute path to a square logo image (at least 128x128)",
+          "type": "string"
+        },
+        "negativeKeywords": {
+          "description": "search-create: campaign-level negative keywords",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path1": {
+          "description": "search-create: display URL path 1, max 15 characters",
+          "type": "string"
+        },
+        "path2": {
+          "description": "search-create: display URL path 2, max 15 characters, needs path1",
           "type": "string"
         },
         "sortBy": {
@@ -1530,6 +1576,10 @@
         },
         "targetCpa": {
           "description": "demandgen-push: target cost per acquisition in dollars, with bidStrategy TARGET_CPA",
+          "type": "number"
+        },
+        "targetRoas": {
+          "description": "search-create: target ROAS as a ratio (4 = 400%); omit for plain maximize conversion value",
           "type": "number"
         },
         "youtubeChannelId": {

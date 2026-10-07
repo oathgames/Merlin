@@ -3231,6 +3231,7 @@ async function handleToolApproval(toolName, input, opts) {
 
       const translations = {
         'push': { label: 'Publish this ad', cost: `$${adBudget}/day budget` },
+        'search-create': { label: 'Create a Google AI Max Search campaign (starts paused)', cost: `$${adBudget}/day budget` },
         'duplicate': { label: 'Scale this winning ad', cost: 'Increases budget' },
         'setup': { label: 'Set up ad campaigns', cost: 'Free' },
         'setup-retargeting': { label: 'Set up retargeting audiences', cost: 'Free' },

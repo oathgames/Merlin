@@ -1617,7 +1617,12 @@ function buildTools(tool, z, ctx) {
       + 'budget-status (read one campaign\'s daily budget, bidding strategy, and whether the budget is shared; pass campaignId), '
       + 'budget (change one campaign\'s daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), '
       + 'brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google\'s brand directory and shows the list + campaigns that would change), '
-      + 'brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card).',
+      + 'brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card), '
+      + 'search-create (AI Max for Search: builds one PAUSED Search campaign in a single all-or-nothing request, with AI Max on, maximize conversion value bidding (optional targetRoas), Google Search only, '
+      + 'one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. '
+      + 'Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), '
+      + 'finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). '
+      + 'Always shows an approval card; start it later with activate).',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -1625,7 +1630,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'google' },
     preview: false,
     input: {
-      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion']).describe('Operation'),
+      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion', 'search-create']).describe('Operation'),
       brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
@@ -1665,6 +1670,18 @@ function buildTools(tool, z, ctx) {
       brandEntityIds: z.array(z.string()).optional().describe('brand-exclusion: brand entity ids from the preview\'s suggestions; required when the preview says needsBrandChoice'),
       brandListName: z.string().optional().describe('brand-exclusion: brand list name to create or reuse, default "Brand Exclusions"'),
       campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign'),
+      // AI Max for Search (engine google-ads-search-create). Keys match the
+      // engine Command json tags verbatim; campaignName, adSetName, dailyBudget,
+      // adLink, geoTargetConstants and the brand* keys above are shared.
+      keywords: z.array(z.string()).optional().describe('search-create: ad group keywords, added as BROAD match (max 80 chars / 10 words each)'),
+      negativeKeywords: z.array(z.string()).optional().describe('search-create: campaign-level negative keywords'),
+      headlines: z.array(z.string()).optional().describe('search-create: responsive search ad headlines, 3 to 15, max 30 characters each, all distinct'),
+      descriptions: z.array(z.string()).optional().describe('search-create: responsive search ad descriptions, 2 to 4, max 90 characters each'),
+      path1: z.string().optional().describe('search-create: display URL path 1, max 15 characters'),
+      path2: z.string().optional().describe('search-create: display URL path 2, max 15 characters, needs path1'),
+      targetRoas: z.number().optional().describe('search-create: target ROAS as a ratio (4 = 400%); omit for plain maximize conversion value'),
+      finalUrlExpansion: z.boolean().optional().describe('search-create: let AI Max send traffic to other pages on the site (default true); false keeps every click on adLink'),
+      brandExclusion: z.boolean().optional().describe('search-create: attach a negative brand list to the new campaign'),
       approved: z.boolean().optional().describe('Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
       force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
