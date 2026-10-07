@@ -7515,8 +7515,8 @@ function showSesamiConnectModal(activeBrand) {
 // fields are vaulted (VAULT_SENSITIVE_KEYS). See shipstation.go.
 function showShipStationConnectModal(activeBrand) {
   showModal({
-    title: 'ShipStation — API Key',
-    body: 'Enter your ShipStation API Key (ShipStation → Account → API Settings → Generate New API Keys). (Step 1 of 2)',
+    title: 'ShipStation: API Key',
+    body: 'In ShipStation open Settings, Account, API Settings, pick API Version V1 and generate API keys. Paste the API Key here. V1 API access needs the Gold plan or higher (US and Canada) or Scale or higher (UK, AU, NZ, EU). (Step 1 of 2)',
     inputPlaceholder: 'ShipStation API Key',
     confirmLabel: 'Next',
     cancelLabel: 'Cancel',

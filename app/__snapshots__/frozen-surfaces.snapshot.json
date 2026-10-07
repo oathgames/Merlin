@@ -5086,12 +5086,13 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "ShipStation shipping reporting (read-only). Pulls shipments, carriers, and fulfillment stats into the dashboard. Actions: report (pull shipments/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Connect by entering your API Key + Secret from ShipStation → Account → API Settings into the ShipStation tile.",
+      "description": "ShipStation shipping data (read-only, ShipStation API V1). Actions: report (weekly-reporting summary for a Pacific-day window: orders placed by status, revenue, units, AOV, labels shipped, label cost and cost per label, voids and return labels, carrier / service / store mix, fulfillments marked shipped outside ShipStation, and order-to-ship time with same-day / within-2-days / on-time %; window = startDate+endDate, or days, default 30, max 366); export (full raw pull of orders, shipments, fulfillments plus stores, carriers, warehouses and products to JSONL with a manifest of counts and date coverage, runs as a background job you poll with jobs_poll, resumable, window = startDate+endDate or days, default 30, back to 2011); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Needs V1 API keys from ShipStation Settings > Account > API Settings, which ShipStation only issues on the Gold plan or higher (US/Canada) or Scale or higher (UK, AU, NZ, EU).",
       "input": {
         "action": {
-          "description": "report → pull shipments/metrics for the window. status → check connection (no API call). connect → how to get ShipStation API credentials. verify → validate the saved credentials.",
+          "description": "report: weekly-reporting summary for the window. export: full raw JSONL export as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get ShipStation API credentials. verify: validate the saved credentials.",
           "enum": [
             "report",
+            "export",
             "status",
             "connect",
             "verify"
@@ -5099,7 +5100,7 @@
           "type": "string"
         },
         "batchCount": {
-          "description": "Days of data for report (default 30).",
+          "description": "Legacy alias for days on report.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -5108,8 +5109,24 @@
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
         },
+        "days": {
+          "description": "report / export: days ending today (Pacific). report default 30, max 366; export default 30. Values above the max are clamped; 0 or less uses the default. Ignored when startDate is given.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "report / export: exact window end, YYYY-MM-DD inclusive, Pacific time. Default today.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "report / export: exact window start, YYYY-MM-DD inclusive, Pacific time (ShipStation reports every date in Pacific). For a full-history export pass the account start, e.g. 2018-01-01.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         }
       },
@@ -6061,8 +6078,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 27421,
-      "bodySha256": "fbdb1030c612fac25e56d19a80825134baa7f7873754f873ffa65f41442429a4",
+      "bodyBytes": 29300,
+      "bodySha256": "d64768c6501b6af5d540b677881aa84d5193d46fe0726242542da9bce35d3605",
       "bytes_justification": "GA4 read+write (2026-05-01) added 13-action surface + write-side approval-card flows alongside the existing dashboard / wisdom / calendar / Conversion Rubric / incrementality blocks. Splitting GA4 into its own SKILL would fragment the analytics-vs-attribution narrative the dashboard relies on.",
       "description": "Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach), plus Gorgias customer-support ticket analytics and de-identified support-corpus exports. Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.",
       "dir": "merlin-analytics",

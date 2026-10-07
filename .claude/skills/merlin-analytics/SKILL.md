@@ -226,6 +226,18 @@ Use when the brand runs an affiliate or partnership program on impact.com (forme
 
 Dates are in the account's timezone. Revenue excludes reversed actions. Clicks are omitted, not zeroed, when no click report is given. Read-only by construction: Merlin cannot change partners, contracts or payouts.
 
+## Shipping and fulfillment (`mcp__merlin__shipstation`): read-only
+
+Use when the brand ships through ShipStation and asks about orders, shipping volume, label or postage cost, cost per label, carrier or service mix, ship speed (same day, within 2 days, on time), or wants a raw ShipStation history export. Connect on the ShipStation tile with the V1 API Key and API Secret from ShipStation Settings > Account > API Settings. ShipStation only issues V1 keys on the Gold plan or higher (US/Canada) or Scale or higher (UK, AU, NZ, EU); a 401/403 on verify usually means the plan, not a typo.
+
+| Action | Use |
+|---|---|
+| `status` / `verify` | Connection check; `verify` confirms the keys and counts stores |
+| `report` | Weekly-deck pull for `startDate`/`endDate` or `days` (default 30, max 366): orders by status, revenue, units, AOV, labels, label cost and cost per label, voids and return labels, carrier / service / store mix, fulfillments marked shipped elsewhere, order-to-ship time |
+| `export` | Background job (poll `jobs_poll`): orders, shipments, fulfillments, stores, carriers, warehouses and products as JSONL plus `manifest.json` (counts, first/last dates, per-month counts, sha256). Resumable. Full history: pass `startDate` at the account start |
+
+Dates are Pacific (ShipStation's own timezone). Orders window on order date, labels and fulfillments on ship date; revenue, units and ship time exclude cancelled orders. Shipments only include labels bought in ShipStation. The export holds customer names and addresses, so it stays on local disk. Read-only by construction: Merlin cannot buy labels or change orders.
+
 ## Customer support (`mcp__merlin__gorgias`) — read-only, de-identified
 
 Use when the user asks what customers write to support: ticket volume, top complaint themes, CSAT, response and resolution times, or a support-ticket corpus for analysis. Merlin only reads from Gorgias. Every response is de-identified in the engine: emails, phones, cards, addresses, order and tracking numbers, and names become typed placeholders (`[EMAIL]`, `[ORDER_NUMBER]`, `[NAME]`, ...), people are per-export pseudonyms, attachments are dropped.
@@ -257,6 +269,8 @@ Cross-link: deeper email strategy / flow taxonomy / RFM segmentation / deliverab
 - "numbers" / "how we doing" / "performance" / "dashboard" → `dashboard({action: "dashboard"})`
 - "what are customers complaining about" / "support ticket volume" / "gorgias" / "CSAT" → `gorgias({action: "stats"})`, then `tags`
 - "export our support tickets" / "support corpus" → `gorgias({action: "export"})`
+- "shipping costs" / "cost per label" / "how fast are we shipping" / "shipstation" → `shipstation({action: "report"})`
+- "export our shipstation data" / "all our order and shipment history" → `shipstation({action: "export", startDate: "..."})`
 - "how are my flows doing" / "recovered revenue" / "klaviyo flow ROI" → `klaviyo({action: "flow-performance"})`
 - "which subject line is winning" / "best email in my flow" → `klaviyo({action: "flow-message-performance"})`
 - "how many checkouts last week" / "aggregate site events" → `klaviyo({action: "metric-aggregate"})`

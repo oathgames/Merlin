@@ -2867,6 +2867,7 @@ function translateTool(toolName, input) {
       'faire-report':             { label: 'Pull Faire wholesale orders', cost: 'Free' },
       'shipstation-verify':       { label: 'Verify your ShipStation credentials', cost: 'Free' },
       'shipstation-report':       { label: 'Pull ShipStation shipping metrics', cost: 'Free' },
+      'shipstation-export':       { label: 'Export ShipStation orders and shipments to a local file', cost: 'Free' },
       'loop-verify':              { label: 'Verify your Loop Returns API key', cost: 'Free' },
       'loop-report':              { label: 'Pull Loop Returns metrics', cost: 'Free' },
       'cin7-verify':              { label: 'Verify your Cin7 credentials', cost: 'Free' },
