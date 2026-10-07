@@ -3231,6 +3231,7 @@ async function handleToolApproval(toolName, input, opts) {
 
       const translations = {
         'push': { label: 'Publish this ad', cost: `$${adBudget}/day budget` },
+        'search-create': { label: 'Create a Google AI Max Search campaign (starts paused)', cost: `$${adBudget}/day budget` },
         'duplicate': { label: 'Scale this winning ad', cost: 'Increases budget' },
         'setup': { label: 'Set up ad campaigns', cost: 'Free' },
         'setup-retargeting': { label: 'Set up retargeting audiences', cost: 'Free' },
@@ -9388,6 +9389,12 @@ const BRAND_KEYS = [
   // Gorgias helpdesk — brand-specific BYOK (subdomain + account email + API
   // key). Mirror of brandScopedKeys in autocmo-core/vault.go.
   'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
+  // metaProspectingExclusions (2026-10-07): per-brand customer audience ids
+  // that every new prospecting ad set must exclude. Not a secret, but a value
+  // in the global config would bleed into every brand (wrong account ids, a
+  // 400 on ad-set create, or another brand customers excluded). Mirror of
+  // brandScopedKeys in autocmo-core/vault.go.
+  'metaProspectingExclusions',
 ];
 
 // Universal credentials — shared across every brand on a single user's

@@ -1,5 +1,5 @@
 {
-  "version": "1.41.0",
+  "version": "1.42.0",
   "updatable": [
     "CLAUDE.md",
     "README.txt",
@@ -130,10 +130,10 @@
     "_doc": "Runtime feature flags read at Electron startup. Do NOT rely on these for security-critical defaults — a stale version.json on an offline client stays at the shipped values. Security-critical changes must land as code pushes with a version bump.",
     "factBinding": true
   },
-  "notes": "Minor: read-only Gorgias helpdesk and Rakuten Advertising affiliate connectors. Google Ads gains YouTube Shorts via Demand Gen, campaign budget edits, and PMax brand exclusions. Meta now surfaces ad rejection reasons, supports a per-push publishing page override, and refuses writes on inactive ad accounts before any side effect. Klaviyo flow email content updates, Shopify cohort exports as background jobs, and fixes for Triple Whale, OpenAI Ads, and Google Ads insights reporting windows.",
+  "notes": "Minor: Google Ads can now build a PAUSED AI Max for Search campaign, list remarketing audiences, and exclude existing customers from Search campaigns. Every new Meta prospecting ad set now excludes the brand's declared customer audiences automatically, and the retargeting audit reports prospecting ad sets missing those exclusions. Also ships the unpublished 1.41.0 work: read-only impact.com, ShipStation, Gorgias and Rakuten connectors, YouTube Shorts via Demand Gen, Google Ads budget edits, PMax brand exclusions, Klaviyo flow email edits, and clearer Meta rejection reasons.",
   "whatsNew": [
-    "New: edit Klaviyo flow emails, change Google Ads campaign budgets, and keep your brand terms out of Performance Max.",
-    "New: run YouTube Shorts ads through Google Ads, and connect Gorgias and Rakuten for read-only support and affiliate reporting.",
-    "Improved: Merlin now explains why Meta rejected an ad, and reporting windows for Triple Whale, Google Ads, and OpenAI Ads are more accurate."
+    "New: launch Google AI Max for Search campaigns (created paused) and keep existing customers out of them with audience exclusions.",
+    "Improved: new Meta prospecting ad sets always exclude your existing customers, and the audit flags live ones that do not.",
+    "New: read-only impact.com, ShipStation, Gorgias and Rakuten reporting, plus YouTube Shorts ads, budget edits and brand exclusions in Google Ads."
   ]
 }

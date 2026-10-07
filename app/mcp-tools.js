@@ -1182,6 +1182,10 @@ function buildTools(tool, z, ctx) {
   //                              custom_audiences ∪ excluded_custom_audiences,
   //                              flags the classic "include site visitors,
   //                              forget to exclude purchasers" leak.
+  //                              Also flags PROSPECTING ad sets (no included
+  //                              audience) that exclude nothing or miss any
+  //                              of the brand metaProspectingExclusions
+  //                              (REGRESSION GUARD 2026-10-07).
   //   list-conversions        — every custom conversion + when each last fired.
   //   audit-pixel             — pixel health: last_fired_time, automatic
   //                              matching status, top events over 7d, plus
@@ -1231,7 +1235,7 @@ function buildTools(tool, z, ctx) {
   // without a confirmation card.
   tools.push(defineTool({
     name: 'meta_audit',
-    description: 'Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the "forgot to exclude purchasers" leak, run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog\'s review status. Also the account INVENTORY surface: list-adsets returns every ad set with its parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link (pass status:"paused" to find staged drafts, status:"all" for everything) — this is how you verify a campaign really was staged PAUSED before anyone activates it; list-ads returns the ads inside one ad set with their creative format, per-placement image hashes, and — the fields a destination or attribution audit needs — every distinct destination URL the ad points at (links[] plus linkCount, which counts placement-customized / Advantage+ creatives correctly; a linkCount of 0 means the ad has NO readable destination and a linkCount above 1 means its placements point at different pages) and the ad\'s urlTags (the UTM string Meta appends to every click; an empty urlTags means clicks land untagged and Triple Whale attribution is broken for that ad); inspect-adset dumps one ad set\'s full settings plus a sample creative\'s toggles so a new ad set can be built to match a proven winner; list-videos lists videos already uploaded to the ad account; list-catalog-sets lists a catalog\'s product sets and feeds (this is where the productSetId for DPA setup comes from); resolve-geo checks that US state names resolve to Meta region keys before a geo-targeted build; aware-audience returns the tiered warm/addressable audience pool (the retargeting-readiness leading indicator); ad-rejections lists EVERY disapproved or with-issues ad in the account with the actual policy reason (failedDeliveryChecks, issues, reviewFeedback, plus a flattened reasons[] list and noReasonReturned when Meta gave none), which is the action to use for "why was my ad rejected". All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says "why was my ad rejected", "which ads are disapproved", "audit my retargeting", "what\'s my pixel match quality", "audit my events setup", "check my EMQ", "list my custom audiences", "what ad sets do I have", "are those campaigns actually paused", "show me the ads in that ad set", "what videos are uploaded", "what product sets exist", or "is my catalog healthy". export-creatives downloads EVERY currently ACTIVE ad\'s creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a "what creatives are we running right now" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable.',
+    description: 'Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the "forgot to exclude purchasers" leak (audit-retargeting-cascade also flags every PROSPECTING ad set that excludes no custom audiences or is missing any of the brand\'s declared metaProspectingExclusions customer audiences, with per-ad-set prospecting / missingProspectingExclusions fields and account rollup counts), run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog\'s review status. Also the account INVENTORY surface: list-adsets returns every ad set with its parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link (pass status:"paused" to find staged drafts, status:"all" for everything) — this is how you verify a campaign really was staged PAUSED before anyone activates it; list-ads returns the ads inside one ad set with their creative format, per-placement image hashes, and — the fields a destination or attribution audit needs — every distinct destination URL the ad points at (links[] plus linkCount, which counts placement-customized / Advantage+ creatives correctly; a linkCount of 0 means the ad has NO readable destination and a linkCount above 1 means its placements point at different pages) and the ad\'s urlTags (the UTM string Meta appends to every click; an empty urlTags means clicks land untagged and Triple Whale attribution is broken for that ad); inspect-adset dumps one ad set\'s full settings plus a sample creative\'s toggles so a new ad set can be built to match a proven winner; list-videos lists videos already uploaded to the ad account; list-catalog-sets lists a catalog\'s product sets and feeds (this is where the productSetId for DPA setup comes from); resolve-geo checks that US state names resolve to Meta region keys before a geo-targeted build; aware-audience returns the tiered warm/addressable audience pool (the retargeting-readiness leading indicator); ad-rejections lists EVERY disapproved or with-issues ad in the account with the actual policy reason (failedDeliveryChecks, issues, reviewFeedback, plus a flattened reasons[] list and noReasonReturned when Meta gave none), which is the action to use for "why was my ad rejected". All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says "why was my ad rejected", "which ads are disapproved", "audit my retargeting", "are my prospecting ad sets excluding customers", "what\'s my pixel match quality", "audit my events setup", "check my EMQ", "list my custom audiences", "what ad sets do I have", "are those campaigns actually paused", "show me the ads in that ad set", "what videos are uploaded", "what product sets exist", or "is my catalog healthy". export-creatives downloads EVERY currently ACTIVE ad\'s creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a "what creatives are we running right now" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -1617,7 +1621,17 @@ function buildTools(tool, z, ctx) {
       + 'budget-status (read one campaign\'s daily budget, bidding strategy, and whether the budget is shared; pass campaignId), '
       + 'budget (change one campaign\'s daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), '
       + 'brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google\'s brand directory and shows the list + campaigns that would change), '
-      + 'brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card).',
+      + 'brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card), '
+      + 'search-create (AI Max for Search: builds one PAUSED Search campaign in a single all-or-nothing request, with AI Max on, maximize conversion value bidding (optional targetRoas), Google Search only, '
+      + 'one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. '
+      + 'Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), '
+      + 'finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). '
+      + 'excludeUserListIds = user list ids (from audiences) excluded as negative audiences in the same request. '
+      + 'Always shows an approval card; start it later with activate), '
+      + 'audiences (read only: every user list / Customer Match list with size for Search and Display, membership status, eligibility and match rate, '
+      + 'plus the excluded lists of each ENABLED campaign and customer acquisition goal mode; flags prospecting campaigns that exclude no customers), '
+      + 'exclude-audience (attach userListId as a negative audience to campaignIds, SEARCH and DISPLAY campaigns only, in one all-or-nothing request; '
+      + 'skips campaigns that already exclude it; refuses Performance Max, which needs the "new customers only" customer acquisition goal instead; shows an approval card).',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -1625,7 +1639,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'google' },
     preview: false,
     input: {
-      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion']).describe('Operation'),
+      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion', 'search-create', 'audiences', 'exclude-audience']).describe('Operation'),
       brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
@@ -1664,8 +1678,25 @@ function buildTools(tool, z, ctx) {
       brandQuery: z.string().optional().describe('brand-exclusion: brand name to look up in Google\'s brand directory, e.g. "Apotheke"'),
       brandEntityIds: z.array(z.string()).optional().describe('brand-exclusion: brand entity ids from the preview\'s suggestions; required when the preview says needsBrandChoice'),
       brandListName: z.string().optional().describe('brand-exclusion: brand list name to create or reuse, default "Brand Exclusions"'),
-      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign'),
-      approved: z.boolean().optional().describe('Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
+      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign. exclude-audience: required, the SEARCH / DISPLAY campaign ids to exclude userListId from'),
+      // AI Max for Search (engine google-ads-search-create). Keys match the
+      // engine Command json tags verbatim; campaignName, adSetName, dailyBudget,
+      // adLink, geoTargetConstants and the brand* keys above are shared.
+      keywords: z.array(z.string()).optional().describe('search-create: ad group keywords, added as BROAD match (max 80 chars / 10 words each)'),
+      negativeKeywords: z.array(z.string()).optional().describe('search-create: campaign-level negative keywords'),
+      headlines: z.array(z.string()).optional().describe('search-create: responsive search ad headlines, 3 to 15, max 30 characters each, all distinct'),
+      descriptions: z.array(z.string()).optional().describe('search-create: responsive search ad descriptions, 2 to 4, max 90 characters each'),
+      path1: z.string().optional().describe('search-create: display URL path 1, max 15 characters'),
+      path2: z.string().optional().describe('search-create: display URL path 2, max 15 characters, needs path1'),
+      targetRoas: z.number().optional().describe('search-create: target ROAS as a ratio (4 = 400%); omit for plain maximize conversion value'),
+      finalUrlExpansion: z.boolean().optional().describe('search-create: let AI Max send traffic to other pages on the site (default true); false keeps every click on adLink'),
+      brandExclusion: z.boolean().optional().describe('search-create: attach a negative brand list to the new campaign'),
+      // Customer exclusions (engine google-ads-audiences /
+      // google-ads-exclude-audience, googleads_audiences.go). Keys match the
+      // Go Command json tags; see TestExcludeAudience_WireTags.
+      userListId: z.string().optional().describe('exclude-audience: numeric user list id to exclude (from the audiences action), e.g. a Customer Match purchaser list'),
+      excludeUserListIds: z.array(z.string()).optional().describe('search-create: numeric user list ids to exclude from the new campaign as negative audiences'),
+      approved: z.boolean().optional().describe('Approval flag for activate, budget, brand-exclusion and exclude-audience. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
       force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     // Handler does NOT auto-set args.approved; the approval card does.
@@ -1696,6 +1727,10 @@ function buildTools(tool, z, ctx) {
       if (args.action === 'brand-exclusion-preview') {
         const { approved, force, ...rest } = args;
         return toEnvelope(await runBinary(ctx, 'google-ads-brand-exclusion', rest));
+      }
+      if (args.action === 'audiences') {
+        const { approved, force, ...rest } = args;
+        return toEnvelope(await runBinary(ctx, 'google-ads-audiences', rest));
       }
       return toEnvelope(await runBinary(ctx, 'google-ads-' + args.action, args));
     },
