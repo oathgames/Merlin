@@ -204,9 +204,10 @@ Use when the brand runs an affiliate program on Rakuten Advertising (formerly Li
 | Action | Use |
 |---|---|
 | `status` / `verify` | Connection check; `verify` pulls 2 days and lists any expected columns the saved report lacks |
-| `report` | Totals (sales, orders, clicks, commission, AOV, effective rate, ROAS on commission), top publishers, daily trend. `days` (default 30, max 365) or `startDate`/`endDate` |
+| `report` | Totals (sales, orders, clicks, commission, AOV, effective rate, ROAS on commission), top publishers, daily trend, and `newVsReturning` (orders and sales) when the order report has a new-customer column. `days` (default 30, max 365) or `startDate`/`endDate` |
 | `publishers` | Publisher leaderboard by sales, `limit` up to 1000 |
 | `transactions` | Order-level rows, newest first; needs the transactions report link |
+| `export` | Full raw history to JSONL (every report column, plus publishers and daily files and a manifest of counts and date coverage). Background job: poll `jobs_poll`. Default 365 days, up to 3660. Resumable: re-run the same window to continue |
 
 `rakutenDateType`: `transaction` (default, date of sale) or `process` (date Rakuten booked it, matches invoices). Column sets are whatever the brand's saved report contains, so if `verify` reports missing columns, ask the user to add them to that report in Rakuten. Read-only by construction: Merlin cannot change publishers, commissions or offers.
 

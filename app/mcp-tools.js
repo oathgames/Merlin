@@ -718,7 +718,7 @@ const EXPORT_JOB_MAX_ATTEMPTS = 48;         // ~24h of hour-cap pauses
 //     checkpoint. google-ads-demandgen-push is excluded because it spends.
 const EXPORT_JOB_STALL_MS = 15 * 60 * 1000;
 const EXPORT_PROGRESS_PREFIX = 'MERLIN_PROGRESS ';
-const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export', 'shipstation-export']);
+const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export', 'shipstation-export', 'rakuten-export']);
 
 // Parse one MERLIN_PROGRESS line into { stage, counts } or null.
 function parseExportProgressLine(line) {
@@ -2868,7 +2868,7 @@ function buildTools(tool, z, ctx) {
   // tile, which splits the report's "Get API" link into vaulted brand keys.
   tools.push(defineTool({
     name: 'rakuten',
-    description: 'Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first). Window: days (default 30, transactions default 7, max 365) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.',
+    description: 'Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first); export (full historical raw pull to JSONL in the brand results folder: every column of the performance report and of the order report, plus a publisher roster and daily totals, with a manifest of counts and date coverage; runs as a background job, resumable, default 365 days, up to 3660 days). report also splits orders into new vs returning customers when the order report carries a new-customer column. Window: days (default 30, transactions default 7, max 365; export max 3660) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -2876,9 +2876,9 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'rakuten' },
     input: {
-      action: z.enum(['status', 'connect', 'setup', 'verify', 'report', 'publishers', 'transactions']).describe('status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day. publishers → publishers ranked by sales. transactions → order-level rows.'),
+      action: z.enum(['status', 'connect', 'setup', 'verify', 'report', 'publishers', 'transactions', 'export']).describe('status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day, plus new vs returning when available. publishers → publishers ranked by sales. transactions → order-level rows. export → full raw JSONL pull with a manifest (background job, resumable).'),
       brand: brandSchema.optional(),
-      days: z.coerce.number().int().optional().describe('Window length in days ending today (default 30; transactions default 7; max 365). Ignored when startDate is set.'),
+      days: z.coerce.number().int().optional().describe('Window length in days ending today (default 30; transactions default 7; max 365; export default 365, max 3660). Ignored when startDate is set.'),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window start, YYYY-MM-DD (inclusive).'),
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window end, YYYY-MM-DD (inclusive). Defaults to today.'),
       limit: z.coerce.number().int().optional().describe('Max rows returned: top publishers for report (default 25), publishers (default 50), transactions (default 200). The results file always keeps every row.'),
@@ -2898,7 +2898,22 @@ function buildTools(tool, z, ctx) {
         report: 'rakuten-report',
         publishers: 'rakuten-publishers',
         transactions: 'rakuten-transactions',
+        export: 'rakuten-export',
       };
+      // export can span years of 28-day chunks fetched one at a time, which
+      // does not fit the MCP call boundary, so it runs as a background job
+      // (jobs_poll for status). The engine checkpoints every chunk in its
+      // manifest, so a retry or an app restart resumes rather than restarts.
+      if (args.action === 'export' && ctx.jobStore) {
+        const job = startExportJob(ctx, 'rakuten', 'rakuten-export', args);
+        return envelope.ok({
+          data: {
+            summary: 'Rakuten Advertising export started in the background.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the export folder and manifest.`,
+          },
+        });
+      }
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
     },
   }, tool, z, ctx));
