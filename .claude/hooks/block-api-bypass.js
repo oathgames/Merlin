@@ -81,6 +81,14 @@ const BANNED_HOSTS = [
   // Every call MUST go through impact.go (PreflightCheck + RecordSuccess, GET
   // only, _method refused).
   'api.impact.com',
+  // ShipStation: shipping reporting + raw export, read-only. V1 authenticates
+  // with the brand's API Key + Secret over Basic auth and V2 with an API-Key
+  // header; both APIs also expose label-buying and order-mutating writes, so a
+  // direct curl/WebFetch could both leak the credentials and spend postage.
+  // Every call MUST go through shipstation.go (PreflightCheck + the
+  // X-Rate-Limit-Reset gate, GET only, path allowlist).
+  'ssapi.shipstation.com',
+  'api.shipstation.com',
   // Foreplay — competitor ad intelligence. Routed through the binary so every
   // credit-burning call passes PreflightCheck + shows up in the audit log.
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and

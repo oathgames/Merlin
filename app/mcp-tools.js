@@ -718,7 +718,7 @@ const EXPORT_JOB_MAX_ATTEMPTS = 48;         // ~24h of hour-cap pauses
 //     checkpoint. google-ads-demandgen-push is excluded because it spends.
 const EXPORT_JOB_STALL_MS = 15 * 60 * 1000;
 const EXPORT_PROGRESS_PREFIX = 'MERLIN_PROGRESS ';
-const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export']);
+const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export', 'shipstation-export']);
 
 // Parse one MERLIN_PROGRESS line into { stage, counts } or null.
 function parseExportProgressLine(line) {
@@ -3047,12 +3047,16 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── shipstation ───────────────────────────────────────────
-  // ShipStation shipping/3PL reporting (READ-ONLY — shipstation.go ships no
-  // write verbs). BYOK: API Key + Secret from ShipStation → Account → API
-  // Settings, entered on the ShipStation tile.
+  // ShipStation shipping reporting and raw export (READ-ONLY: shipstation.go
+  // and shipstation_export.go have one GET-only request constructor and a
+  // source-scan test that fails on write verbs). BYOK: V1 API Key + Secret
+  // from ShipStation Settings > Account > API Settings, entered on the
+  // ShipStation tile. V1 needs the Gold plan or higher (US/CA) or Scale or
+  // higher (UK/AU/NZ/EU). export is a resumable background job, like
+  // gorgias-export: it writes the brand's own data to local disk only.
   tools.push(defineTool({
     name: 'shipstation',
-    description: 'ShipStation shipping reporting (read-only). Pulls shipments, carriers, and fulfillment stats into the dashboard. Actions: report (pull shipments/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Connect by entering your API Key + Secret from ShipStation → Account → API Settings into the ShipStation tile.',
+    description: 'ShipStation shipping data (read-only, ShipStation API V1). Actions: report (weekly-reporting summary for a Pacific-day window: orders placed by status, revenue, units, AOV, labels shipped, label cost and cost per label, voids and return labels, carrier / service / store mix, fulfillments marked shipped outside ShipStation, and order-to-ship time with same-day / within-2-days / on-time %; window = startDate+endDate, or days, default 30, max 366); export (full raw pull of orders, shipments, fulfillments plus stores, carriers, warehouses and products to JSONL with a manifest of counts and date coverage, runs as a background job you poll with jobs_poll, resumable, window = startDate+endDate or days, default 30, back to 2011); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Needs V1 API keys from ShipStation Settings > Account > API Settings, which ShipStation only issues on the Gold plan or higher (US/Canada) or Scale or higher (UK, AU, NZ, EU).',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -3060,16 +3064,36 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'shipstation' },
     input: {
-      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull shipments/metrics for the window. status → check connection (no API call). connect → how to get ShipStation API credentials. verify → validate the saved credentials.'),
+      action: z.enum(['report', 'export', 'status', 'connect', 'verify']).describe('report: weekly-reporting summary for the window. export: full raw JSONL export as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get ShipStation API credentials. verify: validate the saved credentials.'),
       brand: brandSchema.optional(),
-      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+      days: z.coerce.number().int().optional().describe('report / export: days ending today (Pacific). report default 30, max 366; export default 30. Values above the max are clamped; 0 or less uses the default. Ignored when startDate is given.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('report / export: exact window start, YYYY-MM-DD inclusive, Pacific time (ShipStation reports every date in Pacific). For a full-history export pass the account start, e.g. 2018-01-01.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('report / export: exact window end, YYYY-MM-DD inclusive, Pacific time. Default today.'),
+      batchCount: z.coerce.number().int().optional().describe('Legacy alias for days on report.'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
         return {
           summary: 'Connect ShipStation',
-          instructions: 'Open the ShipStation tile in the Connections panel and enter your API Key + Secret (ShipStation → Account → API Settings).',
+          instructions: 'In ShipStation open Settings > Account > API Settings, choose API Version V1 and generate API keys (the secret is shown once). V1 API access needs the Gold plan or higher in the US and Canada, or Scale or higher in the UK, AU, NZ and EU. Then open the ShipStation tile in the Connections panel, enter the API Key and API Secret, and run action "verify".',
         };
+      }
+      // export is a multi-year pull that cannot finish inside the MCP call
+      // boundary, so it runs as a background job (jobs_poll for status). The
+      // engine checkpoints every month slice, so a retry resumes rather than
+      // restarts.
+      if (args.action === 'export') {
+        if (ctx.jobStore) {
+          const job = startExportJob(ctx, 'shipstation', 'shipstation-export', args);
+          return envelope.ok({
+            data: {
+              summary: 'ShipStation raw export started in the background.',
+              jobId: job.jobId,
+              next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path. The files contain customer names and addresses: keep them where customer data is allowed.`,
+            },
+          });
+        }
+        return toEnvelope(await runBinary(ctx, 'shipstation-export', args));
       }
       const actionMap = { report: 'shipstation-report', status: 'shipstation-status', verify: 'shipstation-verify' };
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
@@ -3779,7 +3803,7 @@ function buildTools(tool, z, ctx) {
       if (args.platform === 'shipstation') {
         return {
           summary: 'ShipStation connects via API credentials',
-          instructions: 'Click the ShipStation tile in the Connections panel and enter your API Key + Secret (ShipStation → Account → API Settings). Alternatively call mcp__merlin__shipstation with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+          instructions: 'Click the ShipStation tile in the Connections panel and enter your V1 API Key + Secret (ShipStation Settings > Account > API Settings; V1 needs the Gold plan or higher in the US/Canada, Scale or higher elsewhere). Alternatively call mcp__merlin__shipstation with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
         };
       }
       if (args.platform === 'loop_returns') {
