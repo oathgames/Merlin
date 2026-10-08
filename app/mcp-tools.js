@@ -1615,7 +1615,7 @@ function buildTools(tool, z, ctx) {
       + 'Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand\'s organic Shorts, no upload) '
       + 'OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). '
       + 'Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), '
-      + 'and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), '
+      + 'and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Optional excludeUserListIds (user list ids from audiences) excludes those customers on the ad group. Re-running is idempotent: existing ads are skipped by name.), '
       + 'activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), '
       + 'video-insights (per-ad Demand Gen video performance; batchCount = days), '
       + 'budget-status (read one campaign\'s daily budget, bidding strategy, and whether the budget is shared; pass campaignId), '
@@ -1629,9 +1629,9 @@ function buildTools(tool, z, ctx) {
       + 'excludeUserListIds = user list ids (from audiences) excluded as negative audiences in the same request. '
       + 'Always shows an approval card; start it later with activate), '
       + 'audiences (read only: every user list / Customer Match list with size for Search and Display, membership status, eligibility and match rate, '
-      + 'plus the excluded lists of each ENABLED campaign and customer acquisition goal mode; flags prospecting campaigns that exclude no customers), '
-      + 'exclude-audience (attach userListId as a negative audience to campaignIds, SEARCH and DISPLAY campaigns only, in one all-or-nothing request; '
-      + 'skips campaigns that already exclude it; refuses Performance Max, which needs the "new customers only" customer acquisition goal instead; shows an approval card).',
+      + 'plus the excluded lists of each ENABLED campaign (for Demand Gen, per ad group) and customer acquisition goal mode; flags prospecting campaigns and Demand Gen ad groups that exclude no customers), '
+      + 'exclude-audience (attach userListId as a negative audience to campaignIds in one all-or-nothing request: SEARCH and DISPLAY at campaign level, DEMAND_GEN on every ad group of the campaign; '
+      + 'do not mix DEMAND_GEN with SEARCH/DISPLAY in one call; skips campaigns and ad groups that already exclude it; refuses Performance Max, which needs the "new customers only" customer acquisition goal instead; shows an approval card).',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -1678,7 +1678,7 @@ function buildTools(tool, z, ctx) {
       brandQuery: z.string().optional().describe('brand-exclusion: brand name to look up in Google\'s brand directory, e.g. "Apotheke"'),
       brandEntityIds: z.array(z.string()).optional().describe('brand-exclusion: brand entity ids from the preview\'s suggestions; required when the preview says needsBrandChoice'),
       brandListName: z.string().optional().describe('brand-exclusion: brand list name to create or reuse, default "Brand Exclusions"'),
-      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign. exclude-audience: required, the SEARCH / DISPLAY campaign ids to exclude userListId from'),
+      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign. exclude-audience: required, the SEARCH / DISPLAY or DEMAND_GEN campaign ids to exclude userListId from'),
       // AI Max for Search (engine google-ads-search-create). Keys match the
       // engine Command json tags verbatim; campaignName, adSetName, dailyBudget,
       // adLink, geoTargetConstants and the brand* keys above are shared.
@@ -1695,7 +1695,7 @@ function buildTools(tool, z, ctx) {
       // google-ads-exclude-audience, googleads_audiences.go). Keys match the
       // Go Command json tags; see TestExcludeAudience_WireTags.
       userListId: z.string().optional().describe('exclude-audience: numeric user list id to exclude (from the audiences action), e.g. a Customer Match purchaser list'),
-      excludeUserListIds: z.array(z.string()).optional().describe('search-create: numeric user list ids to exclude from the new campaign as negative audiences'),
+      excludeUserListIds: z.array(z.string()).optional().describe('search-create: numeric user list ids to exclude from the new campaign as negative audiences. demandgen-push: user list ids excluded on the ad group (new or existing), verified on read-back'),
       approved: z.boolean().optional().describe('Approval flag for activate, budget, brand-exclusion and exclude-audience. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
       force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
