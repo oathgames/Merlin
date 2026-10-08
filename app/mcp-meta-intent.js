@@ -277,7 +277,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   // gets its own ad set with dailyBudget.
   tools.push(defineTool({
     name: 'meta_launch_test_batch',
-    description: 'Launch a batch of Meta test ads (up to 50). Each ad gets its own ad set and daily budget. Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.',
+    description: 'Launch a batch of Meta test ads (up to 50). By default each ad gets its own ad set and daily budget; with sharedAdSet:true every ad goes into ONE ad set whose budget is the top-level dailyBudget (required when that ad set is new). Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -339,6 +339,14 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       partnerPageId: z.string().optional().describe("Publish this push from a CREATOR page instead of the brand page (allowlisted / partnership ads). Numeric Meta page id. The ad account must already hold posting permission on that page, granted by the creator. Verified live: the RIPIT partnership ad set publishes from page 117203078065824 while brand ads use 902808256258024. NOTE: the resulting ad is served from the creator handle but carries no Paid-partnership label, so confirm the creator agreement covers it."),
       partnerInstagramUserId: z.string().optional().describe("Instagram user id to publish from alongside partnerPageId (allowlisted / partnership ads). Numeric. Requires partnerPageId, because an Instagram-only override would publish from the BRAND page on Facebook placements and the creator on Instagram; the engine refuses that split identity."),
       campaignDailyBudget: z.number().optional().describe('Campaign-level daily budget in DOLLARS. Read only under campaignBudgetMode \'cbo\', where it is the real spend governor and is validated against maxDailyAdBudget - an over-cap value is refused, never silently clamped.'),
+      // REGRESSION GUARD (2026-10-08, bulkpush-shared-adset-budget, Rules 1 + 23 + 25):
+      // the top-level budget was never declared here, so zod stripped it and a
+      // NEW shared ad set was silently created at the engine's $5 default (live
+      // Forever 21 push needed $50). Read by Command.DailyBudget in
+      // runMetaBulkPush; validated by validateBudget below and by the engine's
+      // validateDailyBudget on the final number. The engine now refuses a new
+      // shared ad set without it (meta_shared_adset_budget.go).
+      dailyBudget: z.number().optional().describe('Daily budget in DOLLARS (not cents): pass 50 for $50/day. With sharedAdSet:true this is the budget of the ONE ad set the batch creates, and it is REQUIRED for a new shared ad set (the engine refuses rather than default to $5). Not needed with targetAdSetId (existing ad set, budget untouched) or campaignBudgetMode "cbo". Without sharedAdSet it is the batch-wide default for ads that set no ads[].dailyBudget.'),
       sharedAdSet: z.boolean().optional().describe('Put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
       adSetName: z.string().optional().describe('Shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
       targetAdSetId: z.string().optional().describe('Shared-ad-set mode only: add every ad to this EXISTING ad set instead of creating a new one. '

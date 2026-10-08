@@ -208,7 +208,15 @@ const { denyReasonForBudget, BUDGET_HARD_CEILING } = require('./budget-ceiling')
 
 function validateBudget(ctx, args, platform) {
 	const budget = args.dailyBudget;
-	if (budget === undefined || budget === null) return null;
+	const hasTop = !(budget === undefined || budget === null);
+	const hasNested = Array.isArray(args.ads) && args.ads.some((a) => a && typeof a === 'object'
+		&& a.dailyBudget !== undefined && a.dailyBudget !== null && a.dailyBudget !== 0);
+	// REGRESSION GUARD (2026-10-08, bulkpush-shared-adset-budget): this used to
+	// return early whenever the TOP-LEVEL budget was absent, which skipped the
+	// nested ads[] check below entirely. meta_launch_test_batch declared no
+	// top-level budget at all, so its per-ad budgets were never cents-checked
+	// at the MCP layer. Only skip when there is nothing to check.
+	if (!hasTop && !hasNested) return null;
 
 	// Read the user's declared cap. It both authorizes (up to itself) and
 	// triggers the relative cents detector (beyond 10x).

@@ -153,7 +153,10 @@ const byName = (n) => {
 // for multi-identity accounts (meta_publish_identity.go). verticalImagePath had
 // been read by the engine since placement pairing shipped but was never
 // declared on ads[]; portraitImagePath is the new 4x5 feed asset.
-const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId', 'publishPageId', 'publishInstagramId'];
+// dailyBudget (2026-10-08): meta_ads always declared it, but meta_launch_test_batch
+// did not, so a NEW shared ad set created through the intent tool silently fell
+// back to the engine's $5 default (live Forever 21 push needed $50).
+const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId', 'publishPageId', 'publishInstagramId', 'dailyBudget'];
 // videoId / reuseAdId (2026-09-29): read by runMetaBulkPush for months (pre-
 // uploaded video, winner-creative reuse) and declared on neither surface.
 // Section 4 below now derives this contract from the Go struct itself.
@@ -593,4 +596,45 @@ test('meta_launch_test_batch handler carries videoId and reuseAdId to meta-bulk-
   assert.equal(cmd.action, 'meta-bulk-push');
   assert.equal(cmd.ads[0].reuseAdId, '120240000000000001');
   assert.equal(cmd.ads[1].videoId, '1180000000000002');
+});
+
+// REGRESSION GUARD (2026-10-08, bulkpush-shared-adset-budget, Rules 1 + 23 + 25):
+// the shared ad set budget has to travel through the TOOL HANDLER (the surface a
+// caller reaches), past validateBudget, into Command.DailyBudget. Before this
+// the key was stripped and the engine minted the ad set at $5/day.
+test('meta_launch_test_batch carries a top-level shared ad set dailyBudget into the --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_batch').handler({
+    brand: 'forever21',
+    sharedAdSet: true,
+    adSetName: 'F21_Promo_Shared',
+    dailyBudget: 50,
+    ads: [{ imagePath: '/tmp/a.jpg', name: 'F21_A' }, { imagePath: '/tmp/b.jpg', name: 'F21_B' }],
+  });
+  assert.ok(!(res && res.isError), `handler must not refuse a valid $50 budget: ${JSON.stringify(res)}`);
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-bulk-push');
+  assert.equal(cmd.sharedAdSet, true);
+  assert.equal(cmd.dailyBudget, 50, 'top-level dailyBudget must reach Command.DailyBudget in DOLLARS, unconverted');
+  assert.equal(cmd.adSetName, 'F21_Promo_Shared');
+});
+
+test('meta_launch_test_batch refuses a cents-shaped shared budget before spawning the engine', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_batch').handler({
+    brand: 'forever21', sharedAdSet: true, dailyBudget: 5000, ads: [{ imagePath: '/tmp/a.jpg' }],
+  });
+  assert.equal(execFileCalls.length, 0, 'a refused budget must never reach the engine');
+  assert.match(JSON.stringify(res), /dailyBudget=5000/);
+});
+
+// validateBudget used to return early when the TOP-LEVEL budget was absent,
+// so per-ad budgets on a surface with no top-level key were never checked.
+test('meta_launch_test_batch cents-checks per-ad budgets even with no top-level dailyBudget', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_batch').handler({
+    brand: 'forever21', ads: [{ imagePath: '/tmp/a.jpg', dailyBudget: 5000 }],
+  });
+  assert.equal(execFileCalls.length, 0, 'a refused per-ad budget must never reach the engine');
+  assert.match(JSON.stringify(res), /ads\[0\]\.dailyBudget=5000/);
 });
