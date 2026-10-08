@@ -3721,7 +3721,7 @@
         "idempotent": true,
         "preview": true
       },
-      "description": "Launch a batch of Meta test ads (up to 50). Each ad gets its own ad set and daily budget. Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.",
+      "description": "Launch a batch of Meta test ads (up to 50). By default each ad gets its own ad set and daily budget; with sharedAdSet:true every ad goes into ONE ad set whose budget is the top-level dailyBudget (required when that ad set is new). Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.",
       "input": {
         "adDescription": {
           "description": "Batch-wide DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from the headline: an offer, a spec, or a provenance line. A per-ad ads[].description wins over it. Omit and video ads reuse the headline (their historical behavior) while image ads carry no description at all.",
@@ -3818,6 +3818,10 @@
         "ctaType": {
           "description": "Call-to-action BUTTON VERB for this push, e.g. 'SHOP_NOW', 'LEARN_MORE', 'GET_OFFER'. Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.",
           "type": "string"
+        },
+        "dailyBudget": {
+          "description": "Daily budget in DOLLARS (not cents): pass 50 for $50/day. With sharedAdSet:true this is the budget of the ONE ad set the batch creates, and it is REQUIRED for a new shared ad set (the engine refuses rather than default to $5). Not needed with targetAdSetId (existing ad set, budget untouched) or campaignBudgetMode \"cbo\". Without sharedAdSet it is the batch-wide default for ads that set no ads[].dailyBudget.",
+          "type": "number"
         },
         "force": {
           "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
