@@ -2821,7 +2821,7 @@ function handleStreamEvent(msg) {
           label = action === 'audit' ? 'Auditing site' : 'Researching keywords';
         } else if (tool === 'dashboard') {
           label = 'Reading performance';
-        } else if (tool === 'meta_ads' || tool === 'tiktok_ads' || tool === 'google_ads' || tool === 'amazon_ads' || tool === 'reddit_ads') {
+        } else if (tool === 'meta_ads' || tool === 'tiktok_ads' || tool === 'google_ads' || tool === 'amazon_ads' || tool === 'reddit_ads' || tool === 'pinterest_ads') {
           const platform = tool.replace('_ads', '').replace(/^./, function (c) { return c.toUpperCase(); });
           if (action === 'push') label = 'Publishing ' + platform + ' ad';
           else if (action === 'kill') label = 'Pausing ' + platform + ' ad';

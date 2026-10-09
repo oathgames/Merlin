@@ -497,7 +497,7 @@ test('platform_login routes klaviyo to its API-key tile (not OAuth, not "coming 
 // but absent from ACTIVE_PLATFORMS, so the JS layer routes them to the
 // coming-soon branch BEFORE spawning the binary — otherwise the user sees a
 // raw fatal log line in the chat. Locking that surface in.
-test('platform_login routes pinterest / snapchat / twitter to coming-soon (no binary fatal)', async () => {
+test('platform_login routes snapchat / twitter to coming-soon (no binary fatal)', async () => {
   const { tool, registry } = makeFakeTool();
   let oauthInvoked = false;
   const ctx = makeCtx({
@@ -505,12 +505,28 @@ test('platform_login routes pinterest / snapchat / twitter to coming-soon (no bi
   });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'platform_login');
-  for (const platform of ['pinterest', 'snapchat', 'twitter']) {
+  for (const platform of ['snapchat', 'twitter']) {
     oauthInvoked = false;
     const out = await entry.handler({ platform, brand: 'brightco' });
     assert.match(out.content[0].text, /coming soon/, `${platform} should be gated`);
     assert.equal(oauthInvoked, false, `${platform} must not invoke OAuth while still TODO`);
   }
+});
+
+// Pinterest graduated in 2026-10 (pinterest.go): platform_login must reach
+// runOAuthFlow, never the coming-soon envelope. Until the BFF carries
+// PINTEREST_CLIENT_ID the binary refuses with a friendly message instead.
+test('platform_login dispatches pinterest through runOAuthFlow', async () => {
+  const { tool, registry } = makeFakeTool();
+  let invokedWith = null;
+  const ctx = makeCtx({
+    runOAuthFlow: async (platform) => { invokedWith = platform; return { success: true }; },
+  });
+  buildTools(tool, makeFakeZ(), ctx);
+  const entry = registry.find(t => t.name === 'platform_login');
+  const out = await entry.handler({ platform: 'pinterest', brand: 'brightco' });
+  assert.equal(invokedWith, 'pinterest');
+  assert.doesNotMatch(out.content[0].text, /coming soon/);
 });
 
 // Stripe and LinkedIn ARE production-ready (in ACTIVE_PLATFORMS). The MCP
@@ -1104,11 +1120,12 @@ test('BRAND_OPTIONAL_ACTIONS contains zero spend-fire actions (D001)', () => {
 });
 
 // ── A004: pruned login actions are gone from BRAND_OPTIONAL_ACTIONS ────
-test('BRAND_OPTIONAL_ACTIONS no longer lists pinterest/snapchat/twitter login (A004)', () => {
+test('BRAND_OPTIONAL_ACTIONS no longer lists snapchat/twitter login (A004)', () => {
   const m = SRC_TOOLS.match(/const BRAND_OPTIONAL_ACTIONS\s*=\s*new Set\(\[([\s\S]*?)\]\);/);
   assert.ok(m);
   const setBody = m[1];
-  for (const stale of ['pinterest-login', 'snapchat-login', 'twitter-login']) {
+  // pinterest-login graduated back in 2026-10 (pinterest.go) and is listed again.
+  for (const stale of ['snapchat-login', 'twitter-login']) {
     assert.ok(
       !setBody.includes(`'${stale}'`),
       `Stale entry '${stale}' must be dropped from BRAND_OPTIONAL_ACTIONS — its case statement was removed from main.go in v1.22.0 RSI cleanup.`

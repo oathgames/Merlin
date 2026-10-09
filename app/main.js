@@ -2681,7 +2681,7 @@ const BANNED_API_HOSTS = [
   'advertising-api-fe.amazon.com', 'sellingpartnerapi-na.amazon.com',
   'sellingpartnerapi-eu.amazon.com', 'sellingpartnerapi-fe.amazon.com',
   'api.klaviyo.com', 'a.klaviyo.com',
-  'adsapi.snapchat.com', 'ads-api.pinterest.com',
+  'adsapi.snapchat.com', 'ads-api.pinterest.com', 'api.pinterest.com',
   // Stripe — read-only reporting via the binary only (same reasoning as
   // block-api-bypass.js). Defense in depth: hook blocks first, canUseTool blocks second.
   'api.stripe.com', 'connect.stripe.com',
@@ -2896,6 +2896,9 @@ function translateTool(toolName, input) {
       'reddit-create-campaign': { label: 'Create a Reddit ad campaign', cost: 'Sets daily budget' },
       'reddit-create-ad': { label: 'Create a Reddit ad', cost: 'Sets bid' },
       'reddit-kill':   { label: 'Pause a Reddit campaign or ad', cost: 'Free' },
+      'pinterest-login':    { label: 'Connect to your Pinterest Ads account', cost: 'Free' },
+      'pinterest-kill':     { label: 'Pause Pinterest campaigns, ad groups, or ads', cost: 'Free' },
+      'pinterest-activate': { label: 'Resume Pinterest campaigns, ad groups, or ads', cost: 'Resumes ad spend' },
       'etsy-shop':     { label: 'Check your Etsy shop details', cost: 'Free' },
       'etsy-products': { label: 'View your Etsy listings', cost: 'Free' },
       'etsy-orders':   { label: 'Check your Etsy orders', cost: 'Free' },
@@ -9340,7 +9343,9 @@ const BRAND_KEYS = [
   'stripeAccessToken', 'stripeAccountId',
   'klaviyoAccessToken', 'klaviyoApiKey',
   'mailchimpApiKey',
-  'pinterestAccessToken',
+  // Pinterest Ads: brand-specific OAuth token pair + expiry + ad account.
+  // Mirror of brandScopedKeys in autocmo-core/vault.go.
+  'pinterestAccessToken', 'pinterestRefreshToken', 'pinterestTokenExpiresAt', 'pinterestAdAccountId',
   'slackBotToken', 'slackWebhookUrl',
   'applovinMaxReportKey', 'applovinAdReportKey',
   'postscriptApiKey',
@@ -10532,7 +10537,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       stripe: ['stripeAccessToken', 'stripeAccountId', 'revenueSourcePreference'],
       klaviyo: ['klaviyoAccessToken', 'klaviyoApiKey', 'klaviyoRefreshToken'],
       mailchimp: ['mailchimpApiKey'],
-      pinterest: ['pinterestAccessToken', 'pinterestRefreshToken'],
+      pinterest: ['pinterestAccessToken', 'pinterestRefreshToken', 'pinterestTokenExpiresAt', 'pinterestAdAccountId'],
       amazon: ['amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId'],
       etsy: ['etsyAccessToken', 'etsyRefreshToken', 'etsyShopId', 'etsyKeystring'],
       reddit: ['redditAccessToken', 'redditRefreshToken', 'redditAdAccountId'],

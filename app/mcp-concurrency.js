@@ -44,6 +44,7 @@ const DEFAULT_CAPS = Object.freeze({
   reddit_ads: 2,       // ~1 QPS budget, 2 concurrent with spacing = safe
   reddit_organic: 2,   // ban risk is high — be extra careful
   linkedin: 3,         // undocumented; LI analytics api is strict
+  pinterest: 2,        // Trial tier is 1000 calls/day per app; keep fan-out narrow
   stripe: 5,           // 100/sec read. Concurrency cap prevents CPU spike
   foreplay: 3,         // credits are the real limit, not concurrency
 
