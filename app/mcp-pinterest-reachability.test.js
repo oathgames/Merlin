@@ -18,6 +18,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const fs = require('node:fs');
 
 // ── execFile capture ─────────────────────────────────────────────────
 //
@@ -169,4 +170,16 @@ test('pinterest_ads insights window and level reach the engine', async () => {
   assert.equal(cmd.startDate, '2026-09-27');
   assert.equal(cmd.endDate, '2026-10-03');
   assert.equal(cmd.status, 'active');
+});
+
+// Same gate as snapchat / quickbooks: the tile is live only once the
+// BFF-delivered client_id is in the vault, otherwise it explains itself.
+test('pinterest tile is gated on the BFF client_id, not hard-stubbed', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  const tile = html.match(/<button[^>]*data-platform="pinterest"[^>]*>/);
+  assert.ok(tile, 'pinterest tile must exist');
+  assert.match(tile[0], /data-needs-client-id="true"/);
+  assert.doesNotMatch(tile[0], /data-stubbed/);
+  const mainJs = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  assert.match(mainJs, /NEEDS_CLIENT_ID_PROVIDERS\s*=\s*\[[^\]]*'pinterest'/);
 });

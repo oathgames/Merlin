@@ -141,6 +141,8 @@ contextBridge.exposeInMainWorld('merlin', {
   getAccountInfo: () => ipcRenderer.invoke('get-account-info'),
   getCredits: (brand) => ipcRenderer.invoke('get-credits', assertBrand(brand)),
   getConnectedPlatforms: (brand) => ipcRenderer.invoke('get-connected-platforms', assertBrand(brand)),
+  // { [provider]: boolean } for tiles gated on a BFF-delivered client_id.
+  getOAuthAvailability: () => ipcRenderer.invoke('get-oauth-availability'),
   getBrands: () => ipcRenderer.invoke('get-brands'),
 
   // Brand context threads — each brand has its own SDK session + bubble log.

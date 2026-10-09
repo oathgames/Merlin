@@ -92,6 +92,7 @@ const DEFAULT_CAPS = Object.freeze({
   gorgias:      2, // 40 req/20s per account (API key); export fans out 3 inside the engine
   rakuten:      1, // Advertiser Reporting API allows ONE report request in flight per account; engine fetches chunks serially
   impact:       2, // 1,000 req/hr per account; engine fans programs x windows out at concurrency 2
+  snapchat:     2, // Snap: 20 req/s per app, 10 req/s per token; 2 concurrent is anti-thunder
 
   // Default for any platform not explicitly listed — err on the side of
   // safety. 2 concurrent forces callers to queue instead of fan out wide.

@@ -246,6 +246,7 @@ const TOOL_ROUTING = [
   { name: 'reddit_ads', prefix: 'reddit' },
   { name: 'linkedin_ads', prefix: 'linkedin' },
   { name: 'pinterest_ads', prefix: 'pinterest' },
+  { name: 'snapchat', prefix: 'snapchat' },
   { name: 'etsy', prefix: 'etsy' },
   { name: 'config', prefix: '' },          // pass-through: action verbatim
   { name: 'competitor_spy', prefix: 'foreplay' },

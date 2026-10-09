@@ -258,6 +258,8 @@ const PROVIDERS = {
   // ACTIVE_PLATFORMS. runOAuthFlow('pinterest') takes the legacy
   // binary-login path, where getPinterestOAuth (oauth.go) pulls the clientId
   // from the BFF the moment the PINTEREST_CLIENT_ID Worker secret is set.
+  // The tile stays in the "isn't available yet" state until main.js
+  // getOAuthAvailability sees that id in the vault (same gate as snapchat).
   // Pinterest does not support PKCE; the secret stays in the Worker (Basic
   // auth on the token call). scopes MUST stay identical to
   // pinterestOAuthScopes in autocmo-core/oauth.go. To graduate to fast-open
@@ -273,14 +275,22 @@ const PROVIDERS = {
     usesPKCE: false,
     extraParams: {},
   },
+  // Snapchat Marketing API (snapchat.go, 2026-10-09). clientId is empty on
+  // purpose: the canonical id is delivered by the BFF (oauth_creds, Hard-Won
+  // Rule 17), so snapchat is NOT in ACTIVE_PLATFORMS and runOAuthFlow takes
+  // the legacy binary-login path (snapchat-login), where getSnapchatOAuth
+  // reads cfg.OAuthSnapchat.ClientID. The tile stays in the "isn't available
+  // yet" state until main.js getOAuthAvailability sees that id. Snap's
+  // confidential-client code flow carries no PKCE; the secret stays in the
+  // Worker (Rule 2). scopes MUST match getSnapchatOAuth in oauth.go.
   snapchat: {
     displayName: 'Snapchat Ads',
     providerKey: 'snapchat',
     authUrl: 'https://accounts.snapchat.com/login/oauth2/authorize',
-    clientId: '',
+    clientId: '', // injected via BFF once SNAPCHAT_CLIENT_ID is set
     scopes: 'snapchat-marketing-api',
-    redirectUri: '',
-    usesPKCE: true,
+    redirectUri: 'https://merlingotme.com/auth/callback',
+    usesPKCE: false,
     extraParams: {},
   },
   twitter: {

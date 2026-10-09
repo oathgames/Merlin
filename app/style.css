@@ -1818,7 +1818,8 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .tile-cancel:hover,.tile-cancel:focus{color:var(--danger);border-color:currentColor;outline:none}
 
 .magic-tile.unavailable,
-.magic-tile[data-stubbed]{
+.magic-tile[data-stubbed],
+.magic-tile[data-needs-client-id="true"]:not([data-client-id-ready="true"]){
   opacity:.38;
   cursor:not-allowed;
   pointer-events:auto; /* keep the tooltip reachable on hover */
@@ -1826,7 +1827,8 @@ body{transition:padding-right var(--dur-med) var(--ease)}
   border-color:var(--hover-4);
 }
 .magic-tile.unavailable:hover,
-.magic-tile[data-stubbed]:hover{
+.magic-tile[data-stubbed]:hover,
+.magic-tile[data-needs-client-id="true"]:not([data-client-id-ready="true"]):hover{
   /* Override the generic hover rule so dark gray stays dark gray. */
   border-color:var(--hover-4);
   background:var(--hover-1);
