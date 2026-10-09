@@ -93,6 +93,7 @@ const DEFAULT_CAPS = Object.freeze({
   rakuten:      1, // Advertiser Reporting API allows ONE report request in flight per account; engine fetches chunks serially
   impact:       2, // 1,000 req/hr per account; engine fans programs x windows out at concurrency 2
   snapchat:     2, // Snap: 20 req/s per app, 10 req/s per token; 2 concurrent is anti-thunder
+  twitter:      2, // X Ads: 250 req/15 min per account+token, and every call also round-trips the Worker signer
 
   // Default for any platform not explicitly listed — err on the side of
   // safety. 2 concurrent forces callers to queue instead of fan out wide.

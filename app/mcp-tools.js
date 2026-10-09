@@ -351,8 +351,8 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   // OAuth login flows — user may connect globally or per-brand; the binary
   // writes to the correct scope based on whether brand was passed.
   // REGRESSION GUARD (2026-05-10, A004): pinterest-login, snapchat-login,
-  // and twitter-login were dropped (snapchat-login returned 2026-10-09 with
-  // a real handler; see below) because their case statements were
+  // and twitter-login were dropped (all three returned in 2026-10 with
+  // real handlers; see below) because their case statements were
   // also removed from main.go's action router during the v1.22.0 RSI
   // cleanup. Leaving them in this allowlist would silently let an LLM
   // call an unreachable action with no brand and get a generic "unknown
@@ -375,6 +375,9 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   // as quickbooks-login: runSnapchatLogin vaults under cmd.Brand when one
   // is passed and the global scope otherwise.
   'snapchat-login',
+  // X Ads OAuth 1.0a (2026-10-09, twitter_ads.go). Same brand-OPTIONAL
+  // shape: runTwitterLogin vaults under cmd.Brand when one is passed.
+  'twitter-login',
   // AppLovin + Postscript are API-key connectors (no OAuth). The *-login
   // actions in the binary just verify the key and persist it — no brand
   // context needed for the global-scoped case.
@@ -3664,6 +3667,42 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'snapchat-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── x_ads ────────────────────────────────────────────────
+  // X (Twitter) Ads API (twitter_ads.go, engine actions twitter-*). The tool
+  // is named x_ads for the product's current name; the engine keeps the
+  // twitter- prefix because Config/vault keys and the OAuth provider key
+  // (getTwitterOAuth, bootstrapProviderKeys) already use it. Reads plus the
+  // two status flips, which the binary gates on cmd.Approved
+  // (requireApproval) and the host gates on the approval card
+  // (SPEND_ACTIONS has kill + activate, Hard-Won Rule 19). There is
+  // deliberately NO creation push.
+  tools.push(defineTool({
+    name: 'x_ads',
+    description: 'X (Twitter) Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/engagements/clicks/purchases/ROAS for campaigns, line items or promoted posts over a date range, and pause (kill) or resume (activate) a campaign. Creating new X campaigns is not supported yet.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'twitter' },
+    preview: false,
+    input: {
+      action: z.enum(['status', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate']).describe('status = connection + selected ad account. ad-accounts = list accounts the login can see (pass twitterAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign.'),
+      brand: brandSchema,
+      campaignId: z.string().optional().describe('X campaign id for kill, activate, or campaign-level insights scoped to one campaign'),
+      twitterAdAccountId: z.string().optional().describe('X ad account id to switch to (ad-accounts only)'),
+      level: z.enum(['campaign', 'line_item', 'promoted_tweet']).optional().describe('Insights breakdown level (default campaign). line_item = ad group, promoted_tweet = individual promoted post.'),
+      batchCount: z.coerce.number().int().optional().describe('Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.'),
+      startDate: z.string().optional().describe('Insights window start, YYYY-MM-DD (ad account timezone)'),
+      endDate: z.string().optional().describe('Insights window end, YYYY-MM-DD inclusive (ad account timezone)'),
+      status: z.enum(['active', 'paused', 'all']).optional().describe('Campaign status filter for campaigns (default all)'),
+      approved: z.boolean().optional().describe('Approval flag for kill and activate. Pass true only when the user asked for the pause or resume; the Merlin approval card still asks them to confirm before it runs.'),
+    },
+    // Handler does NOT auto-set args.approved; the binary refuses kill and
+    // activate without it (requireApproval in twitter_ads.go), and the host
+    // approval card gates the call (SPEND_ACTIONS has kill + activate).
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'twitter-' + args.action, args)),
+  }, tool, z, ctx));
+
   // ── pinterest_ads ────────────────────────────────────────
   // Pinterest Ads (API v5, engine pinterest.go). Reads plus pause/activate
   // ONLY: there is deliberately no campaign creation or budget write yet.
@@ -3807,10 +3846,11 @@ function buildTools(tool, z, ctx) {
       // snapchat graduated 2026-10-09 (snapchat.go): it falls through to
       // ctx.runOAuthFlow like quickbooks, and the binary refuses with a
       // plain-English "isn't available yet" until the BFF has delivered its
-      // client_id (Rule 17).
+      // client_id (Rule 17). twitter (X Ads) graduated the same day
+      // (twitter_ads.go) on the same terms.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'pinterest', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'snapchat', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'pinterest', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'snapchat', 'twitter', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -3855,7 +3895,7 @@ function buildTools(tool, z, ctx) {
       // today — but if a future refactor accidentally removes that branch,
       // klaviyo falls through to a generic "coming soon" message instead
       // of a binary fatal, preserving the friendly-error contract.
-      const comingSoon = ['twitter', 'klaviyo'];
+      const comingSoon = ['klaviyo'];
       if (comingSoon.includes(args.platform)) {
         return {
           summary: `${args.platform} integration is coming soon`,

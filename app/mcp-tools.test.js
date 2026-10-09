@@ -497,20 +497,20 @@ test('platform_login routes klaviyo to its API-key tile (not OAuth, not "coming 
 // but absent from ACTIVE_PLATFORMS, so the JS layer routes them to the
 // coming-soon branch BEFORE spawning the binary — otherwise the user sees a
 // raw fatal log line in the chat. Locking that surface in.
-test('platform_login routes twitter to coming-soon (no binary fatal)', async () => {
+// twitter (X Ads) graduated 2026-10-09 (twitter_ads.go), so the dormant
+// list is now klaviyo alone, and klaviyo is caught earlier by its API-key
+// branch. The coming-soon contract is still asserted for klaviyo below.
+test('platform_login dispatches twitter (X Ads) through runOAuthFlow, not coming-soon', async () => {
   const { tool, registry } = makeFakeTool();
-  let oauthInvoked = false;
+  const seen = [];
   const ctx = makeCtx({
-    runOAuthFlow: async () => { oauthInvoked = true; return { success: true }; },
+    runOAuthFlow: async (platform) => { seen.push(platform); return { success: true }; },
   });
   buildTools(tool, makeFakeZ(), ctx);
   const entry = registry.find(t => t.name === 'platform_login');
-  for (const platform of ['twitter']) {
-    oauthInvoked = false;
-    const out = await entry.handler({ platform, brand: 'brightco' });
-    assert.match(out.content[0].text, /coming soon/, `${platform} should be gated`);
-    assert.equal(oauthInvoked, false, `${platform} must not invoke OAuth while still TODO`);
-  }
+  const out = await entry.handler({ platform: 'twitter', brand: 'brightco' });
+  assert.doesNotMatch(out.content[0].text, /coming soon/);
+  assert.deepEqual(seen, ['twitter']);
 });
 
 // Pinterest graduated in 2026-10 (pinterest.go): platform_login must reach
@@ -1136,16 +1136,15 @@ test('BRAND_OPTIONAL_ACTIONS contains zero spend-fire actions (D001)', () => {
 });
 
 // ── A004: pruned login actions are gone from BRAND_OPTIONAL_ACTIONS ────
-test('BRAND_OPTIONAL_ACTIONS no longer lists twitter login (A004)', () => {
+// The three logins pruned in v1.22.0 all graduated in 2026-10 with real
+// engine handlers (engine routing is asserted by the per-provider
+// reachability tests), so A004 now asserts the reverse: each is listed.
+test('BRAND_OPTIONAL_ACTIONS lists the graduated logins (A004)', () => {
   const m = SRC_TOOLS.match(/const BRAND_OPTIONAL_ACTIONS\s*=\s*new Set\(\[([\s\S]*?)\]\);/);
   assert.ok(m);
   const setBody = m[1];
-  // pinterest-login and snapchat-login graduated in 2026-10 and are listed again.
-  for (const stale of ['twitter-login']) {
-    assert.ok(
-      !setBody.includes(`'${stale}'`),
-      `Stale entry '${stale}' must be dropped from BRAND_OPTIONAL_ACTIONS — its case statement was removed from main.go in v1.22.0 RSI cleanup.`
-    );
+  for (const login of ['pinterest-login', 'snapchat-login', 'twitter-login']) {
+    assert.ok(setBody.includes(`'${login}'`), `'${login}' must be brand-optional`);
   }
 });
 

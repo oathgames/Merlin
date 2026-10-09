@@ -2682,6 +2682,9 @@ const BANNED_API_HOSTS = [
   'sellingpartnerapi-eu.amazon.com', 'sellingpartnerapi-fe.amazon.com',
   'api.klaviyo.com', 'a.klaviyo.com',
   'adsapi.snapchat.com', 'ads-api.pinterest.com', 'api.pinterest.com',
+  // X Ads API (twitter_ads.go). Every call is OAuth 1.0a signed by the
+  // landing Worker and must run through the binary's preflight + approval.
+  'ads-api.x.com', 'ads-api.twitter.com',
   // Stripe — read-only reporting via the binary only (same reasoning as
   // block-api-bypass.js). Defense in depth: hook blocks first, canUseTool blocks second.
   'api.stripe.com', 'connect.stripe.com',
@@ -9396,6 +9399,10 @@ const BRAND_KEYS = [
   // selected ad account and its organization. Mirror of brandScopedKeys in
   // autocmo-core/vault.go (snapchat-brand-keys parity test).
   'snapchatAccessToken', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatAdAccountId', 'snapchatOrganizationId',
+  // X Ads API: OAuth 1.0a token pair + selected ad account + X user id.
+  // Mirror of brandScopedKeys in autocmo-core/vault.go (x-brand-keys
+  // parity test in mcp-x-reachability.test.js).
+  'twitterAccessToken', 'twitterAccessTokenSecret', 'twitterAdAccountId', 'twitterUserId',
   // ShipStation — brand-specific BYOK (API Key + Secret).
   'shipStationApiKey', 'shipStationApiSecret',
   // Loop Returns — brand-specific BYOK (API key).
@@ -10417,6 +10424,14 @@ function getConnections(brandName) {
     if (snapResolves(snapToken, 'snapchatAccessToken') || snapResolves(snapRefresh, 'snapchatRefreshToken')) {
       connected.push({ platform: 'snapchat', status: 'connected' });
     }
+    // X Ads API: OAuth 1.0a tokens do not expire, so the connection is live
+    // only when BOTH halves of the token pair resolve (every request is
+    // signed with the pair; one half alone cannot sign).
+    const xToken = brandName ? brandCfg.twitterAccessToken : globalCfg.twitterAccessToken;
+    const xSecret = brandName ? brandCfg.twitterAccessTokenSecret : globalCfg.twitterAccessTokenSecret;
+    if (snapResolves(xToken, 'twitterAccessToken') && snapResolves(xSecret, 'twitterAccessTokenSecret')) {
+      connected.push({ platform: 'twitter', status: 'connected' });
+    }
     // ShipStation — brand-specific BYOK; connected when API Key + Secret are
     // present, with @@VAULT placeholder resolution on the secret.
     const ssKey = brandName ? brandCfg.shipStationApiKey : globalCfg.shipStationApiKey;
@@ -10529,7 +10544,7 @@ ipcMain.handle('get-connected-platforms', (_, brandName) => {
 // exists a click cannot open a working sign-in, so the renderer shows the
 // tile as "isn't available yet" instead of a dead click. Returns booleans
 // only, never the id itself.
-const NEEDS_CLIENT_ID_PROVIDERS = ['snapchat', 'quickbooks', 'pinterest'];
+const NEEDS_CLIENT_ID_PROVIDERS = ['snapchat', 'quickbooks', 'pinterest', 'twitter'];
 function getOAuthAvailability() {
   const out = {};
   for (const p of NEEDS_CLIENT_ID_PROVIDERS) {
@@ -10644,6 +10659,9 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // Snapchat Marketing API: token pair + expiry + selected account ids.
       // Mirror of platformVaultKeys["snapchat"] in autocmo-core/oauth.go.
       snapchat: ['snapchatAccessToken', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatAdAccountId', 'snapchatOrganizationId'],
+      // X Ads API: OAuth 1.0a token pair + selected account + user id.
+      // Mirror of platformVaultKeys["twitter"] in autocmo-core/oauth.go.
+      twitter: ['twitterAccessToken', 'twitterAccessTokenSecret', 'twitterAdAccountId', 'twitterUserId'],
       // ShipStation — API Key + Secret. Mirror of
       // platformVaultKeys["shipstation"] in autocmo-core/oauth.go.
       shipstation: ['shipStationApiKey', 'shipStationApiSecret'],

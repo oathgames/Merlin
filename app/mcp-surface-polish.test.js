@@ -10,7 +10,9 @@
 //     platform reasoning visible in source.
 // (3) D5.3 — pinterest, snapchat, twitter dropped from platform_login zod
 //     enum. Pre-fix they were in the enum AND the comingSoon list, so the
-//     agent could call them and get a no-op envelope.
+//     agent could call them and get a no-op envelope. All three graduated
+//     in 2026-10 with real handlers, so the guard now asserts the inverse
+//     half: a graduated provider is in the enum and NOT in comingSoon.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -124,22 +126,27 @@ test('D2.7: every platform in autocmo-core/ratelimit_preflight.go has a DEFAULT_
 
 // ── (3) D5.3 dormant-OAuth providers dropped from platform_login enum ──
 
-test('D5.3: platform_login zod enum excludes twitter', () => {
+test('D5.3: platform_login zod enum carries graduated providers, none of them coming-soon', () => {
   const src = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
   // Find the platform_login z.enum line.
   const enumMatch = src.match(/platform:\s*z\.enum\(\[([^\]]+)\]\)\.describe\('Platform to connect'\)/);
   assert.ok(enumMatch, 'could not find platform_login zod enum in mcp-tools.js');
   const enumBody = enumMatch[1];
-  // pinterest (2026-10) and snapchat (2026-10-09) graduated and are live enum values.
-  for (const dormant of ['twitter']) {
+  // pinterest (2026-10), snapchat and twitter (2026-10-09) graduated and are
+  // live enum values. A graduated provider left in comingSoon would answer
+  // "not yet available" for a connector that works, the original D5.3 bug
+  // in reverse.
+  const cs = src.match(/const\s+comingSoon\s*=\s*\[([^\]]+)\]/);
+  assert.ok(cs, 'comingSoon list not found in mcp-tools.js');
+  for (const graduated of ['pinterest', 'snapchat', 'twitter']) {
     assert.doesNotMatch(
-      enumBody,
-      new RegExp(`['"]${dormant}['"]`),
-      `REGRESSION: platform_login enum re-grew "${dormant}" — dormant OAuth providers must stay out of the agent surface until ACTIVE`,
+      cs[1],
+      new RegExp(`['"]${graduated}['"]`),
+      `REGRESSION: "${graduated}" is live but still in comingSoon`,
     );
   }
   // Sanity: the live providers must still be present.
-  for (const live of ['meta', 'tiktok', 'google', 'shopify', 'amazon', 'reddit', 'linkedin', 'pinterest', 'etsy', 'stripe', 'snapchat']) {
+  for (const live of ['meta', 'tiktok', 'google', 'shopify', 'amazon', 'reddit', 'linkedin', 'pinterest', 'etsy', 'stripe', 'snapchat', 'twitter']) {
     assert.match(
       enumBody,
       new RegExp(`['"]${live}['"]`),

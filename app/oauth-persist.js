@@ -35,6 +35,13 @@ const VAULT_SENSITIVE_KEYS = [
   'threadsAccessToken',
   'twitterAccessToken',
   'twitterRefreshToken',
+  // X Ads API (OAuth 1.0a, binary twitter-login path): the token secret
+  // signs every request alongside the token, and the selected ad account
+  // and X user id are vaulted brand-scoped by the Go side, so a disconnect
+  // must vaultDelete them or the entries are orphaned.
+  'twitterAccessTokenSecret',
+  'twitterAdAccountId',
+  'twitterUserId',
   'etsyAccessToken',
   'etsyRefreshToken',
   'redditAccessToken',
@@ -252,6 +259,9 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // refresh of Snap's 1-hour access tokens.
   'snapchatAccessToken', 'snapchatRefreshToken',
   'snapchatAdAccountId', 'snapchatOrganizationId', 'snapchatTokenExpiresAt',
+  // X Ads API: OAuth 1.0a token pair + selected ad account + user id, all
+  // vaulted (VAULT_SENSITIVE_KEYS).
+  'twitterAccessToken', 'twitterAccessTokenSecret', 'twitterAdAccountId', 'twitterUserId',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',

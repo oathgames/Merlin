@@ -44,6 +44,12 @@ const BANNED_HOSTS = [
   // binary (pinterest.go) so rate-limit preflight and the approval gate on
   // pinterest-kill / pinterest-activate run.
   'api.pinterest.com',
+  // X Ads API (current and legacy hosts). Every X call must route through
+  // the binary (twitter_ads.go) so the Worker-side OAuth 1.0a signing,
+  // rate-limit preflight and the approval gate on twitter-kill /
+  // twitter-activate run.
+  'ads-api.x.com',
+  'ads-api.twitter.com',
   // Stripe — read-only reporting via the binary. Direct `curl api.stripe.com`
   // from Claude would bypass the binary's read-only enforcement (stripeGet)
   // and the rate-limit preflight. All Stripe access must go through the binary.
