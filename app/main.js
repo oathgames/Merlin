@@ -10524,7 +10524,7 @@ ipcMain.handle('get-connected-platforms', (_, brandName) => {
 // exists a click cannot open a working sign-in, so the renderer shows the
 // tile as "isn't available yet" instead of a dead click. Returns booleans
 // only, never the id itself.
-const NEEDS_CLIENT_ID_PROVIDERS = ['snapchat'];
+const NEEDS_CLIENT_ID_PROVIDERS = ['snapchat', 'quickbooks'];
 function getOAuthAvailability() {
   const out = {};
   for (const p of NEEDS_CLIENT_ID_PROVIDERS) {

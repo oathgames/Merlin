@@ -230,6 +230,16 @@ test('snapchat tile is gated on the BFF client_id, not hard-stubbed', () => {
   assert.match(preload, /getOAuthAvailability:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('get-oauth-availability'\)/);
 });
 
+// QuickBooks has the same shape (empty hardcoded ClientID, BFF-delivered id),
+// so it gets the same gate.
+test('quickbooks tile shares the client_id availability gate', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8');
+  const tile = html.match(/<button[^>]*data-platform="quickbooks"[^>]*>/);
+  assert.ok(tile, 'quickbooks tile must exist');
+  assert.match(tile[0], /data-needs-client-id="true"/);
+  assert.match(MAIN_JS, /NEEDS_CLIENT_ID_PROVIDERS\s*=\s*\[[^\]]*'quickbooks'/);
+});
+
 test('availability IPC returns booleans only, never the client_id', () => {
   const m = MAIN_JS.match(/function getOAuthAvailability\(\)\s*\{([\s\S]*?)\n\}/);
   assert.ok(m, 'getOAuthAvailability must exist in main.js');
