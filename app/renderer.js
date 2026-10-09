@@ -6078,7 +6078,30 @@ const MANUAL_KEY_PLATFORMS = new Set(['meta', 'shopify', 'applovin']);
 // returns false on null / undefined so calling it on a missing element
 // never falsely silences a legitimate click.
 function isStubbedTile(tile) {
-  return !!(tile && tile.dataset && tile.dataset.stubbed === 'true');
+  return !!(tile && tile.dataset && (tile.dataset.stubbed === 'true' || isAwaitingClientId(tile)));
+}
+
+// Tiles marked `data-needs-client-id="true"` belong to OAuth providers that
+// ship no hardcoded client_id: the canonical id arrives from the BFF
+// (Hard-Won Rule 17) and main.js reports its presence through
+// getOAuthAvailability. Until that IPC confirms it, the tile is treated as
+// unavailable everywhere isStubbedTile is consulted, and a click explains
+// why instead of silently doing nothing.
+function isAwaitingClientId(tile) {
+  return !!(tile && tile.dataset && tile.dataset.needsClientId === 'true' && tile.dataset.clientIdReady !== 'true');
+}
+
+function clientIdUnavailableMessage(tile) {
+  const name = tile.querySelector('.tile-name')?.textContent || platformDisplayName(tile.dataset.platform);
+  return `${name} isn't available yet`;
+}
+
+// Applies the { provider: boolean } map from merlin.getOAuthAvailability to
+// every needs-client-id tile. Unknown or missing entries stay unavailable.
+function applyOAuthAvailability(avail) {
+  document.querySelectorAll('.magic-tile[data-needs-client-id="true"]').forEach((t) => {
+    t.dataset.clientIdReady = (avail && avail[t.dataset.platform] === true) ? 'true' : 'false';
+  });
 }
 
 function loadConnections() {
@@ -6116,7 +6139,11 @@ function loadConnections() {
   // every tile with the .loading wait cursor forever. Race the IPC
   // against a 10s deadline; on timeout we restore last-known visual
   // state (drop .loading) and surface a recoverable toast.
-  const fetchPromise = merlin.getConnectedPlatforms(brand);
+  const availabilityPromise = (typeof merlin.getOAuthAvailability === 'function')
+    ? Promise.resolve(merlin.getOAuthAvailability()).catch(() => ({}))
+    : Promise.resolve({});
+  const fetchPromise = Promise.all([merlin.getConnectedPlatforms(brand), availabilityPromise])
+    .then(([conns, avail]) => { applyOAuthAvailability(avail); return conns; });
   const timeoutPromise = new Promise((_, rej) => setTimeout(
     () => rej(new Error('connection-status-timeout')),
     10000,
@@ -6139,6 +6166,7 @@ function loadConnections() {
       if (!t.dataset.baseTip && t.dataset.tip) t.dataset.baseTip = t.dataset.tip;
       if (isStubbedTile(t)) {
         t.classList.add('unavailable');
+        if (isAwaitingClientId(t)) t.dataset.tip = clientIdUnavailableMessage(t);
       } else {
         t.classList.remove('unavailable');
         t.dataset.tip = t.dataset.baseTip || t.dataset.tip;
@@ -6484,7 +6512,7 @@ document.addEventListener('click', (e) => {
 // users saw a "LinkedIn" tile that did nothing on click.
 // The new source-scan test in oauth-persist.test.js cross-checks
 // every connector_id in oauth-provider-config.js against this Set.
-const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads', 'quickbooks']);
+const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads', 'quickbooks', 'snapchat']);
 const API_KEY_PLATFORMS = {
   fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx…', url: 'https://fal.ai/dashboard/keys' },
   elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx…', url: 'https://elevenlabs.io/app/settings/api-keys' },
@@ -6731,6 +6759,11 @@ function clearOAuthTileWaiting(platform) {
 document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
+  if (isAwaitingClientId(tile)) {
+    // Not a dead click: say plainly why nothing opens.
+    showToast(`${clientIdUnavailableMessage(tile)}. It turns on automatically once sign-in is ready, no update needed.`, { variant: 'info' });
+    return;
+  }
   if (isStubbedTile(tile)) return;
   const platform = tile.dataset.platform;
   const activeBrand = getActiveBrandSelection();

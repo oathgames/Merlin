@@ -245,6 +245,7 @@ const TOOL_ROUTING = [
   { name: 'trendtrack', prefix: 'trendtrack' },
   { name: 'reddit_ads', prefix: 'reddit' },
   { name: 'linkedin_ads', prefix: 'linkedin' },
+  { name: 'snapchat', prefix: 'snapchat' },
   { name: 'etsy', prefix: 'etsy' },
   { name: 'config', prefix: '' },          // pass-through: action verbatim
   { name: 'competitor_spy', prefix: 'foreplay' },

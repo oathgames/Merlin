@@ -149,6 +149,12 @@ const VAULT_SENSITIVE_KEYS = [
   'quickbooksAccessToken',
   'quickbooksRefreshToken',
   'quickbooksRealmId',
+  // Snapchat Marketing API (binary snapchat-login path). The ad account and
+  // organization ids are vaulted brand-scoped by the Go side (same treatment
+  // as quickbooksRealmId), so they are listed here for the same reason: a
+  // disconnect must vaultDelete them or the entries are orphaned.
+  'snapchatAdAccountId',
+  'snapchatOrganizationId',
   // ShipStation BYOK credentials (API Key + API Secret — HTTP Basic pair),
   // saved by the 2-step ShipStation connect modal.
   'shipStationApiKey',
@@ -241,6 +247,11 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // path accept them.
   'quickbooksAccessToken', 'quickbooksRefreshToken',
   'quickbooksRealmId', 'quickbooksTokenExpiresAt', 'quickbooksUseSandbox',
+  // Snapchat Marketing API: tokens + ids are vaulted (VAULT_SENSITIVE_KEYS);
+  // tokenExpiresAt is a non-secret plaintext field that drives the proactive
+  // refresh of Snap's 1-hour access tokens.
+  'snapchatAccessToken', 'snapchatRefreshToken',
+  'snapchatAdAccountId', 'snapchatOrganizationId', 'snapchatTokenExpiresAt',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',
