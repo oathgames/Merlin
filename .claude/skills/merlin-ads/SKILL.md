@@ -1,6 +1,6 @@
 ---
 name: merlin-ads
-description: Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).
+description: Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Pinterest, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).
 owner: ryan
 bytes_justification: ~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.
 ---
@@ -329,6 +329,10 @@ Connector OAuth via `platform_login({platform: "etsy"})`. Same listing/insights 
 ### LinkedIn (`mcp__merlin__linkedin_ads`)
 
 Connect + campaign ops. **Budget validation runs on the final scaled value** — if the code scales budget (e.g. 3× for LinkedIn scaling), `validateDailyBudget(cfg, scaledBudget, "linkedin")` must run on the scaled number. This is a regression guard — see `linkedin.go`.
+
+### Pinterest (`mcp__merlin__pinterest_ads`)
+
+Connect via `platform_login({platform: "pinterest"})`. Reads: `status`, `verify`, `ad-accounts`, `campaigns` (`status` filter), `insights` (`level` campaign/adgroup/ad/account; `days`, or `startDate` + `endDate` as YYYY-MM-DD; Pinterest caps windows at 90 days back). Writes: `kill` / `activate` on a `campaignId`, `adGroupId` or `adId`; both show an approval card, and `activate` resumes spend. No campaign creation yet: build new campaigns in Pinterest Ads Manager. Spend also lands in the dashboard. See `pinterest.go`.
 
 ### OpenAI / ChatGPT Ads (`mcp__merlin__openai_ads`)
 

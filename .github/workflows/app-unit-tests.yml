@@ -234,6 +234,10 @@ jobs:
       # never declared, so a weekly deck could only ask for a trailing window.
       - name: MCP OpenAI Ads reachability (insights window params)
         run: node --test app/mcp-openai-ads-reachability.test.js
+      # Pinterest Ads connector (2026-10-09): adGroupId must land as
+      # targetAdSetId, and every engine param must survive zod.
+      - name: MCP Pinterest Ads reachability
+        run: node --test app/mcp-pinterest-reachability.test.js
       # TikTok GMV Max reads (2026-10-05): tiktok_audit must reach every
       # tiktok-gmv-max-* engine case, land its params in --cmd, and stay a
       # READ_ONLY policy action so a read can never fall into a spend path.

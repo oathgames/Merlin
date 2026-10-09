@@ -253,14 +253,26 @@ const PROVIDERS = {
     usesPKCE: true,
     extraParams: {},
   },
+  // Pinterest Ads (API v5). Pending: clientId is empty until Merlin's
+  // Pinterest developer app is approved, so it is intentionally NOT in
+  // ACTIVE_PLATFORMS. runOAuthFlow('pinterest') takes the legacy
+  // binary-login path, where getPinterestOAuth (oauth.go) pulls the clientId
+  // from the BFF the moment the PINTEREST_CLIENT_ID Worker secret is set.
+  // The tile stays in the "isn't available yet" state until main.js
+  // getOAuthAvailability sees that id in the vault (same gate as snapchat).
+  // Pinterest does not support PKCE; the secret stays in the Worker (Basic
+  // auth on the token call). scopes MUST stay identical to
+  // pinterestOAuthScopes in autocmo-core/oauth.go. To graduate to fast-open
+  // later: paste the public clientId here AND add 'pinterest' to
+  // ACTIVE_PLATFORMS.
   pinterest: {
     displayName: 'Pinterest Ads',
     providerKey: 'pinterest',
     authUrl: 'https://www.pinterest.com/oauth/',
-    clientId: '',
-    scopes: 'ads:read,ads:write,boards:read,pins:read',
-    redirectUri: '',
-    usesPKCE: true,
+    clientId: '', // pending Pinterest app approval, injected via BFF
+    scopes: 'ads:read,ads:write,boards:read,pins:read,user_accounts:read,catalogs:read',
+    redirectUri: 'https://merlingotme.com/auth/callback',
+    usesPKCE: false,
     extraParams: {},
   },
   // Snapchat Marketing API (snapchat.go, 2026-10-09). clientId is empty on

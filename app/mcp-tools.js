@@ -361,6 +361,9 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   'meta-login', 'tiktok-login', 'google-login', 'amazon-login',
   'shopify-login', 'klaviyo-login', 'etsy-login', 'reddit-login',
   'linkedin-login',
+  // pinterest-login graduated 2026-10 (pinterest.go): brand-optional like
+  // linkedin-login, routed in main.go again.
+  'pinterest-login',
   'stripe-login',
   // QuickBooks Online — OAuth login (Intuit). Brand-OPTIONAL, not
   // brand-agnostic: the binary vaults under cmd.Brand's scope, so callers
@@ -3661,6 +3664,44 @@ function buildTools(tool, z, ctx) {
     handler: async (args) => toEnvelope(await runBinary(ctx, 'snapchat-' + args.action, args)),
   }, tool, z, ctx));
 
+  // ── pinterest_ads ────────────────────────────────────────
+  // Pinterest Ads (API v5, engine pinterest.go). Reads plus pause/activate
+  // ONLY: there is deliberately no campaign creation or budget write yet.
+  // kill and activate are in mcp-approval-policy.js SPEND_ACTIONS, so both
+  // always card; the engine also refuses either without approved:true
+  // (requireApproval), and activate honours the brand's master spend pause.
+  // adGroupId maps to the engine's targetAdSetId explicitly (Rule 23: an
+  // undeclared or unmapped param is a silently unreachable capability).
+  tools.push(defineTool({
+    name: 'pinterest_ads',
+    description: 'Pinterest Ads: check the connection, list ad accounts and campaigns, pull performance (campaign, ad group, or ad level over a date range), and pause or resume campaigns, ad groups, or ads. Cannot create campaigns or change budgets.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'pinterest' },
+    preview: false,
+    input: {
+      action: z.enum(['status', 'verify', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate']).describe('status/verify → connection check (verify makes a live call). ad-accounts → list ad accounts this login can manage. campaigns → list campaigns. insights → performance report. kill → pause campaigns/ad groups/ads (approval card). activate → resume them (approval card, respects the spend pause).'),
+      brand: brandSchema,
+      campaignId: z.string().optional().describe('Pinterest campaign id, or several comma-separated (kill/activate).'),
+      adGroupId: z.string().optional().describe('Pinterest ad group id, or several comma-separated (kill/activate).'),
+      adId: z.string().optional().describe('Pinterest ad id, or several comma-separated (kill/activate).'),
+      level: z.enum(['campaign', 'adgroup', 'ad', 'account']).optional().describe('insights: reporting level (default campaign).'),
+      days: z.coerce.number().int().optional().describe('insights: last N complete days (default 7, max 90).'),
+      startDate: z.string().optional().describe('insights: YYYY-MM-DD, within the last 90 days. Pass with endDate instead of days.'),
+      endDate: z.string().optional().describe('insights: YYYY-MM-DD, at most 90 days after startDate.'),
+      status: z.enum(['active', 'paused', 'archived', 'all']).optional().describe('campaigns/insights: filter by delivery status (campaigns default active+paused, insights default all).'),
+      approved: z.boolean().optional().describe('Approval flag for kill/activate. Set by the Merlin approval card on user click; the engine REFUSES the change without it. Do not set true unless the user explicitly approved pausing or resuming these exact ids.'),
+    },
+    handler: async (args) => {
+      const { adGroupId, ...rest } = args;
+      const mapped = { ...rest };
+      if (adGroupId) mapped.targetAdSetId = adGroupId;
+      return toEnvelope(await runBinary(ctx, 'pinterest-' + args.action, mapped));
+    },
+  }, tool, z, ctx));
+
   // ── etsy ─────────────────────────────────────────────────
   tools.push(defineTool({
     name: 'etsy',
@@ -3769,7 +3810,7 @@ function buildTools(tool, z, ctx) {
       // client_id (Rule 17).
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'snapchat', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'pinterest', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'snapchat', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -3814,7 +3855,7 @@ function buildTools(tool, z, ctx) {
       // today — but if a future refactor accidentally removes that branch,
       // klaviyo falls through to a generic "coming soon" message instead
       // of a binary fatal, preserving the friendly-error contract.
-      const comingSoon = ['pinterest', 'twitter', 'klaviyo'];
+      const comingSoon = ['twitter', 'klaviyo'];
       if (comingSoon.includes(args.platform)) {
         return {
           summary: `${args.platform} integration is coming soon`,
