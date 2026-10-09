@@ -293,14 +293,25 @@ const PROVIDERS = {
     usesPKCE: false,
     extraParams: {},
   },
+  // X Ads API (twitter_ads.go). The Ads API accepts ONLY OAuth 1.0a user
+  // context, so this is not a code+PKCE flow: the binary asks the landing
+  // Worker for a request token (/api/oauth/x/request-token), opens
+  // api.x.com/oauth/authorize?oauth_token=..., and every Ads API call is
+  // signed by the Worker (/api/oauth/x/sign) so the consumer secret never
+  // leaves it (Rule 2). clientId is the consumer key, delivered via the BFF
+  // once TWITTER_CONSUMER_KEY is set (Rule 17); until then twitter is NOT
+  // in ACTIVE_PLATFORMS, runOAuthFlow takes the legacy binary-login path
+  // (twitter-login) and the tile stays in the "isn't available yet" state.
+  // OAuth 1.0a has no scopes: access level is the X app's permission
+  // setting (Read and Write), so scopes is empty.
   twitter: {
-    displayName: 'X (Twitter) Ads',
+    displayName: 'X Ads',
     providerKey: 'twitter',
-    authUrl: 'https://twitter.com/i/oauth2/authorize',
-    clientId: '',
-    scopes: 'tweet.read tweet.write users.read ads.read ads.write offline.access',
-    redirectUri: '',
-    usesPKCE: true,
+    authUrl: 'https://api.x.com/oauth/authorize',
+    clientId: '', // injected via BFF once TWITTER_CONSUMER_KEY is set
+    scopes: '',
+    redirectUri: 'https://merlingotme.com/auth/callback',
+    usesPKCE: false,
     extraParams: {},
   },
   // Triple Whale — brand-specific analytics (NC-ROAS, NCPA, MER). TODO/pending:

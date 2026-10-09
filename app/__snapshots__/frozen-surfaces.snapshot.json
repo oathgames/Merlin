@@ -263,6 +263,10 @@
       "tiktokPixelId",
       "trendtrackApiKey",
       "triplewhaleApiKey",
+      "twitterAccessToken",
+      "twitterAccessTokenSecret",
+      "twitterAdAccountId",
+      "twitterUserId",
       "vertical",
       "yotpoAppKey",
       "yotpoSecretKey"
@@ -342,7 +346,10 @@
       "triplewhaleApiKey",
       "triplewhaleRefreshToken",
       "twitterAccessToken",
+      "twitterAccessTokenSecret",
+      "twitterAdAccountId",
       "twitterRefreshToken",
+      "twitterUserId",
       "yotpoAppKey",
       "yotpoSecretKey"
     ]
@@ -4726,6 +4733,7 @@
             "threads",
             "quickbooks",
             "snapchat",
+            "twitter",
             "yotpo",
             "sesami",
             "faire",
@@ -6273,6 +6281,86 @@
     },
     {
       "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "twitter"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "X (Twitter) Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/engagements/clicks/purchases/ROAS for campaigns, line items or promoted posts over a date range, and pause (kill) or resume (activate) a campaign. Creating new X campaigns is not supported yet.",
+      "input": {
+        "action": {
+          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass twitterAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign.",
+          "enum": [
+            "status",
+            "ad-accounts",
+            "campaigns",
+            "insights",
+            "kill",
+            "activate"
+          ],
+          "type": "string"
+        },
+        "approved": {
+          "description": "Approval flag for kill and activate. Pass true only when the user asked for the pause or resume; the Merlin approval card still asks them to confirm before it runs.",
+          "type": "boolean"
+        },
+        "batchCount": {
+          "description": "Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "X campaign id for kill, activate, or campaign-level insights scoped to one campaign",
+          "type": "string"
+        },
+        "endDate": {
+          "description": "Insights window end, YYYY-MM-DD inclusive (ad account timezone)",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "level": {
+          "description": "Insights breakdown level (default campaign). line_item = ad group, promoted_tweet = individual promoted post.",
+          "enum": [
+            "campaign",
+            "line_item",
+            "promoted_tweet"
+          ],
+          "type": "string"
+        },
+        "startDate": {
+          "description": "Insights window start, YYYY-MM-DD (ad account timezone)",
+          "type": "string"
+        },
+        "status": {
+          "description": "Campaign status filter for campaigns (default all)",
+          "enum": [
+            "active",
+            "paused",
+            "all"
+          ],
+          "type": "string"
+        },
+        "twitterAdAccountId": {
+          "description": "X ad account id to switch to (ad-accounts only)",
+          "type": "string"
+        }
+      },
+      "name": "x_ads"
+    },
+    {
+      "annotations": {
         "brandRequired": false,
         "concurrency": {
           "platform": "yotpo"
@@ -6328,8 +6416,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 45164,
-      "bodySha256": "94f7cc2b4a07a1856b886e3e7a8923f3723a6f787c0dfee4f2c1681cd7ef75d4",
+      "bodyBytes": 45668,
+      "bodySha256": "70a2eee4f8c421f72c7bd35a9566f11e10d776701627e829f1cdfbc54bd29c00",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Pinterest, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",

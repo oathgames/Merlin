@@ -247,6 +247,8 @@ const TOOL_ROUTING = [
   { name: 'linkedin_ads', prefix: 'linkedin' },
   { name: 'pinterest_ads', prefix: 'pinterest' },
   { name: 'snapchat', prefix: 'snapchat' },
+  // x_ads keeps the engine's twitter- prefix (Config/vault/provider keys).
+  { name: 'x_ads', prefix: 'twitter' },
   { name: 'etsy', prefix: 'etsy' },
   { name: 'config', prefix: '' },          // pass-through: action verbatim
   { name: 'competitor_spy', prefix: 'foreplay' },

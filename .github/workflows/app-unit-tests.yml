@@ -238,6 +238,10 @@ jobs:
       # targetAdSetId, and every engine param must survive zod.
       - name: MCP Pinterest Ads reachability
         run: node --test app/mcp-pinterest-reachability.test.js
+      # X Ads connector (2026-10-09): the x_ads tool fronts the engine's
+      # twitter-* actions, so the name seam is checked in both directions.
+      - name: MCP X Ads reachability
+        run: node --test app/mcp-x-reachability.test.js
       # TikTok GMV Max reads (2026-10-05): tiktok_audit must reach every
       # tiktok-gmv-max-* engine case, land its params in --cmd, and stay a
       # READ_ONLY policy action so a read can never fall into a spend path.

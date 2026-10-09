@@ -6512,7 +6512,7 @@ document.addEventListener('click', (e) => {
 // users saw a "LinkedIn" tile that did nothing on click.
 // The new source-scan test in oauth-persist.test.js cross-checks
 // every connector_id in oauth-provider-config.js against this Set.
-const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads', 'quickbooks', 'snapchat']);
+const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads', 'quickbooks', 'snapchat', 'twitter']);
 const API_KEY_PLATFORMS = {
   fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx…', url: 'https://fal.ai/dashboard/keys' },
   elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx…', url: 'https://elevenlabs.io/app/settings/api-keys' },
