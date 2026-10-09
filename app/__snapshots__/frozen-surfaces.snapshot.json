@@ -6416,8 +6416,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 45164,
-      "bodySha256": "94f7cc2b4a07a1856b886e3e7a8923f3723a6f787c0dfee4f2c1681cd7ef75d4",
+      "bodyBytes": 45668,
+      "bodySha256": "70a2eee4f8c421f72c7bd35a9566f11e10d776701627e829f1cdfbc54bd29c00",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Pinterest, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",
