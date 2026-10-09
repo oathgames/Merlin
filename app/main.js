@@ -2859,6 +2859,13 @@ function translateTool(toolName, input) {
       'impact-report':          { label: 'Export an impact.com report', cost: 'Free' },
       'quickbooks-login':         { label: 'Connect QuickBooks (read-only accounting)', cost: 'Free' },
       'quickbooks-report':        { label: 'Pull QuickBooks accounting metrics', cost: 'Free' },
+      'snapchat-login':           { label: 'Connect Snapchat Ads', cost: 'Free' },
+      'snapchat-status':          { label: 'Check the Snapchat Ads connection', cost: 'Free' },
+      'snapchat-ad-accounts':     { label: 'List Snapchat ad accounts', cost: 'Free' },
+      'snapchat-campaigns':       { label: 'List Snapchat campaigns', cost: 'Free' },
+      'snapchat-insights':        { label: 'Pull Snapchat Ads performance', cost: 'Free' },
+      'snapchat-kill':            { label: 'Pause a Snapchat campaign', cost: 'Free' },
+      'snapchat-activate':        { label: 'Turn a Snapchat campaign back on', cost: 'Resumes ad spend' },
       'yotpo-verify':             { label: 'Verify your Yotpo credentials', cost: 'Free' },
       'yotpo-report':             { label: 'Pull Yotpo reviews and loyalty metrics', cost: 'Free' },
       'sesami-verify':            { label: 'Verify your Sesami credentials', cost: 'Free' },
@@ -9380,6 +9387,10 @@ const BRAND_KEYS = [
   'faireApiToken',
   // QuickBooks Online — brand-specific OAuth token pair + expiry + realm id.
   'quickbooksAccessToken', 'quickbooksRefreshToken', 'quickbooksTokenExpiresAt', 'quickbooksRealmId',
+  // Snapchat Marketing API: brand-specific OAuth token pair + expiry + the
+  // selected ad account and its organization. Mirror of brandScopedKeys in
+  // autocmo-core/vault.go (snapchat-brand-keys parity test).
+  'snapchatAccessToken', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatAdAccountId', 'snapchatOrganizationId',
   // ShipStation — brand-specific BYOK (API Key + Secret).
   'shipStationApiKey', 'shipStationApiSecret',
   // Loop Returns — brand-specific BYOK (API key).
@@ -10389,6 +10400,18 @@ function getConnections(brandName) {
         : !!qbToken;
       if (qbResolved) connected.push({ platform: 'quickbooks', status: 'connected' });
     }
+    // Snapchat Marketing API: brand-specific OAuth; connected when the
+    // access or refresh token resolves (snapchat.go refreshes the 1-hour
+    // access token itself, so an expired access token with a live refresh
+    // token is still a working connection).
+    const snapToken = brandName ? brandCfg.snapchatAccessToken : globalCfg.snapchatAccessToken;
+    const snapRefresh = brandName ? brandCfg.snapchatRefreshToken : globalCfg.snapchatRefreshToken;
+    const snapResolves = (v, key) => typeof v === 'string' && v.startsWith('@@VAULT:')
+      ? !!vaultGet(brandName || '_global', key)
+      : !!v;
+    if (snapResolves(snapToken, 'snapchatAccessToken') || snapResolves(snapRefresh, 'snapchatRefreshToken')) {
+      connected.push({ platform: 'snapchat', status: 'connected' });
+    }
     // ShipStation — brand-specific BYOK; connected when API Key + Secret are
     // present, with @@VAULT placeholder resolution on the secret.
     const ssKey = brandName ? brandCfg.shipStationApiKey : globalCfg.shipStationApiKey;
@@ -10493,6 +10516,26 @@ ipcMain.handle('get-connected-platforms', (_, brandName) => {
   return getConnections(brandName);
 });
 
+// OAuth availability for tiles whose provider app is still pending review.
+// These providers ship NO hardcoded client_id: the canonical one arrives
+// from the BFF's oauth_creds map on an OAuth exchange (Hard-Won Rule 17)
+// and the binary stores it in the global vault under
+// `_oauthcreds_<provider>_clientID` (oauth_bootstrap.go). Until that entry
+// exists a click cannot open a working sign-in, so the renderer shows the
+// tile as "isn't available yet" instead of a dead click. Returns booleans
+// only, never the id itself.
+const NEEDS_CLIENT_ID_PROVIDERS = ['snapchat'];
+function getOAuthAvailability() {
+  const out = {};
+  for (const p of NEEDS_CLIENT_ID_PROVIDERS) {
+    out[p] = !!vaultGet('_global', '_oauthcreds_' + p + '_clientID');
+  }
+  return out;
+}
+ipcMain.handle('get-oauth-availability', () => {
+  try { return getOAuthAvailability(); } catch { return {}; }
+});
+
 // ── Disconnect Platform ────────────────────────────────────
 // Clears all stored credentials for a platform. Platform tokens now live in
 // the plaintext brand config at .merlin-config-{brand}.json (migrated from
@@ -10593,6 +10636,9 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // QuickBooks Online — OAuth token pair + expiry + realm id. Mirror of
       // platformVaultKeys["quickbooks"] in autocmo-core/oauth.go.
       quickbooks: ['quickbooksAccessToken', 'quickbooksRefreshToken', 'quickbooksTokenExpiresAt', 'quickbooksRealmId'],
+      // Snapchat Marketing API: token pair + expiry + selected account ids.
+      // Mirror of platformVaultKeys["snapchat"] in autocmo-core/oauth.go.
+      snapchat: ['snapchatAccessToken', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatAdAccountId', 'snapchatOrganizationId'],
       // ShipStation — API Key + Secret. Mirror of
       // platformVaultKeys["shipstation"] in autocmo-core/oauth.go.
       shipstation: ['shipStationApiKey', 'shipStationApiSecret'],

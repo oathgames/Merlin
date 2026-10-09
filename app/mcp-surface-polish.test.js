@@ -124,13 +124,13 @@ test('D2.7: every platform in autocmo-core/ratelimit_preflight.go has a DEFAULT_
 
 // ── (3) D5.3 dormant-OAuth providers dropped from platform_login enum ──
 
-test('D5.3: platform_login zod enum excludes pinterest/snapchat/twitter', () => {
+test('D5.3: platform_login zod enum excludes pinterest/twitter', () => {
   const src = fs.readFileSync(path.join(__dirname, 'mcp-tools.js'), 'utf8');
   // Find the platform_login z.enum line.
   const enumMatch = src.match(/platform:\s*z\.enum\(\[([^\]]+)\]\)\.describe\('Platform to connect'\)/);
   assert.ok(enumMatch, 'could not find platform_login zod enum in mcp-tools.js');
   const enumBody = enumMatch[1];
-  for (const dormant of ['pinterest', 'snapchat', 'twitter']) {
+  for (const dormant of ['pinterest', 'twitter']) {
     assert.doesNotMatch(
       enumBody,
       new RegExp(`['"]${dormant}['"]`),
@@ -138,7 +138,7 @@ test('D5.3: platform_login zod enum excludes pinterest/snapchat/twitter', () => 
     );
   }
   // Sanity: the live providers must still be present.
-  for (const live of ['meta', 'tiktok', 'google', 'shopify', 'amazon', 'reddit', 'linkedin', 'etsy', 'stripe']) {
+  for (const live of ['meta', 'tiktok', 'google', 'shopify', 'amazon', 'reddit', 'linkedin', 'etsy', 'stripe', 'snapchat']) {
     assert.match(
       enumBody,
       new RegExp(`['"]${live}['"]`),
