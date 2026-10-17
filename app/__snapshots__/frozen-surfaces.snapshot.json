@@ -6560,6 +6560,7 @@
       "app/binary-paths.js",
       "app/engine-install.js",
       "app/brand-config-sweep.js",
+      "app/platform-disconnect.js",
       "app/brand-dirs.js",
       "app/budget-ceiling.js",
       "app/bash-merlin-action.js",

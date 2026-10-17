@@ -189,6 +189,8 @@ jobs:
       # failure produces a type error, a 404, or a log line on its own.
       - name: MCP Meta reachability (params + actions)
         run: node --test app/mcp-meta-param-reachability.test.js app/mcp-meta-action-reachability.test.js
+      - name: Tile disconnect (every tile, brand-scoped)
+        run: node --test app/tile-disconnect.test.js
       - name: MCP Google Demand Gen reachability (YouTube Shorts)
         run: node --test app/mcp-google-demandgen-reachability.test.js
       # Google AI Max for Search (Rules 19 + 23): search-create args must land
