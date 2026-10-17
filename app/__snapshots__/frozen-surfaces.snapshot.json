@@ -3110,6 +3110,10 @@
           "description": "For angle-performance: skip after-the-fact classification of older ads whose names carry no angle marker, restricting the report to explicitly tagged ads plus anything already cached. Classification is ON by default because most accounts predate the angle naming convention (a real account had 0 of 263 ads tagged), so skipping it usually returns an empty ranking. Pass true to avoid the LLM call entirely.",
           "type": "boolean"
         },
+        "skipThumbnails": {
+          "description": "For list-ads: skip the creative-thumbnail enrichment (up to 4 extra Meta reads per run). Rows then carry no imageUrl. Pass true for destination or UTM audits, or when the Meta read budget is tight.",
+          "type": "boolean"
+        },
         "startDate": {
           "description": "For attribution-compare: exact window start, YYYY-MM-DD. Both startDate and endDate or neither. Takes precedence over batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week a deck covers.",
           "type": "string"
@@ -4152,6 +4156,10 @@
         "limit": {
           "description": "Max results (e.g. 5 for top 5)",
           "type": "number"
+        },
+        "skipThumbnails": {
+          "description": "Skip the creative-thumbnail enrichment (up to 4 extra Meta reads per run). Rows then carry no image URL. Pass true for numbers-only pulls, or when the Meta read budget is tight.",
+          "type": "boolean"
         },
         "sortBy": {
           "description": "Sort by: spend, roas, ctr, clicks, impressions, cpc, purchases",

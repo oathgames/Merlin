@@ -1308,6 +1308,9 @@ function buildTools(tool, z, ctx) {
       limit: z.number().optional().describe('Max records to return per page. Defaults: list-audiences=250, list-conversions=100, audit-catalog=200, list-videos=25. Hard caps: 500 (list-videos: 200).'),
       windowDays: z.number().optional().describe('For audit-change-history and audit-delivery-breakdown: lookback window in days. Default 7. Use e.g. 30 to trace a change further back.'),
       skipClassify: z.boolean().optional().describe('For angle-performance: skip after-the-fact classification of older ads whose names carry no angle marker, restricting the report to explicitly tagged ads plus anything already cached. Classification is ON by default because most accounts predate the angle naming convention (a real account had 0 of 263 ads tagged), so skipping it usually returns an empty ranking. Pass true to avoid the LLM call entirely.'),
+      // Hard-Won Rule 23: the engine reads cmd.SkipThumbnails on meta-list-ads
+      // (autocmo-core meta.go); without this line zod strips it.
+      skipThumbnails: z.boolean().optional().describe('For list-ads: skip the creative-thumbnail enrichment (up to 4 extra Meta reads per run). Rows then carry no imageUrl. Pass true for destination or UTM audits, or when the Meta read budget is tight.'),
       timeIncrement: z.number().optional().describe('For audit-delivery-breakdown: insights bucket size in days. 1 = daily (default, to see WHICH day delivery moved). Pass -1 for a single aggregate window.'),
       breakdowns: z.string().optional().describe('For audit-delivery-breakdown: comma-separated dimensions to slice by (allow-listed): publisher_platform, platform_position, device_platform, impression_device, age, gender, country, region, dma. Unknown values are dropped.'),
       level: z.enum(['account', 'campaign', 'adset', 'ad']).optional().describe('For audit-delivery-breakdown: aggregation level. Default account.'),
