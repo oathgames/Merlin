@@ -2869,6 +2869,14 @@ function translateTool(toolName, input) {
       'snapchat-insights':        { label: 'Pull Snapchat Ads performance', cost: 'Free' },
       'snapchat-kill':            { label: 'Pause a Snapchat campaign', cost: 'Free' },
       'snapchat-activate':        { label: 'Turn a Snapchat campaign back on', cost: 'Resumes ad spend' },
+      'snapchat-pixels':          { label: 'List Snapchat pixels', cost: 'Free' },
+      'snapchat-audiences':       { label: 'List Snapchat audiences', cost: 'Free' },
+      'snapchat-ad-squads':       { label: 'List Snapchat ad squads', cost: 'Free' },
+      'snapchat-ads':             { label: 'List Snapchat ads', cost: 'Free' },
+      'snapchat-create-audience': { label: 'Create a Snapchat audience', cost: 'Free' },
+      'snapchat-create-campaign': { label: 'Create a paused Snapchat campaign', cost: 'No spend until activated' },
+      'snapchat-create-ad-squad': { label: 'Create a paused Snapchat ad squad', cost: 'No spend until activated' },
+      'snapchat-build-architecture': { label: 'Build Snapchat prospecting and retargeting campaigns (paused)', cost: 'No spend until activated' },
       'twitter-login':            { label: 'Connect X Ads', cost: 'Free' },
       'twitter-status':           { label: 'Check the X Ads connection', cost: 'Free' },
       'twitter-ad-accounts':      { label: 'List X ad accounts', cost: 'Free' },
@@ -9428,6 +9436,10 @@ const BRAND_KEYS = [
   // selected ad account and its organization. Mirror of brandScopedKeys in
   // autocmo-core/vault.go (snapchat-brand-keys parity test).
   'snapchatAccessToken', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatAdAccountId', 'snapchatOrganizationId',
+  // snapchatProspectingExclusions (2026-10-17): per-brand customer audience ids
+  // every new Snapchat prospecting ad squad must exclude (snapchat_build.go
+  // chokepoint). Brand-scoped so customer ids never cross brands.
+  'snapchatProspectingExclusions',
   // X Ads API: OAuth 1.0a token pair + selected ad account + X user id.
   // Mirror of brandScopedKeys in autocmo-core/vault.go (x-brand-keys
   // parity test in mcp-x-reachability.test.js).

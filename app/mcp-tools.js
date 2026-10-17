@@ -3635,14 +3635,19 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── snapchat ─────────────────────────────────────────────
-  // Snapchat Marketing API (snapchat.go). Read surface (status, ad-accounts,
-  // campaigns, insights) plus the two status flips (kill = pause, activate =
-  // resume) which the binary gates on cmd.Approved via requireApproval and
-  // the host gates on the approval card (SPEND_ACTIONS has kill/activate,
-  // Hard-Won Rule 19). There is deliberately NO creation push yet.
+  // Snapchat Marketing API (snapchat.go + snapchat_build.go). Read surface
+  // (status, ad-accounts, campaigns, insights, pixels, audiences, ad-squads,
+  // ads), the two status flips (kill = pause, activate = resume), and the
+  // build surface (create-audience, create-campaign, create-ad-squad,
+  // build-architecture). Every write is gated on cmd.Approved by
+  // requireApproval in the binary AND on the host approval card
+  // (mcp-approval-policy.js resolveMerlinAction, Hard-Won Rule 19).
+  // build-architecture defaults to a dry run (zero writes); only an explicit
+  // dryRun:false routes to the carded SPEND path. Everything is created
+  // PAUSED. Ads and creatives are not built here yet.
   tools.push(defineTool({
     name: 'snapchat',
-    description: 'Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, and pause (kill) or resume (activate) a campaign. Creating new Snapchat campaigns is not supported yet.',
+    description: 'Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads and creatives are not created by this tool.',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -3650,20 +3655,41 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'snapchat' },
     preview: false,
     input: {
-      action: z.enum(['status', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate']).describe('status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign.'),
+      action: z.enum(['status', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate', 'pixels', 'audiences', 'ad-squads', 'ads', 'create-audience', 'create-campaign', 'create-ad-squad', 'build-architecture']).describe('status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure.'),
       brand: brandSchema,
-      campaignId: z.string().optional().describe('Snapchat campaign id (UUID) for kill, activate, or campaign-level insights scoped to one campaign'),
+      campaignId: z.string().optional().describe('Snapchat campaign id (UUID) for kill, activate, campaign-level insights, ad-squads (scope to one campaign), or create-ad-squad (the parent campaign)'),
+      dryRun: z.boolean().optional().describe('build-architecture only. Defaults to true: returns the full plan and payloads and writes nothing. Pass false (with approved:true) only when the user has reviewed the plan and asked to build it.'),
+      snapchatPixelId: z.string().optional().describe('Pixel id to use for pixel audiences and PIXEL_* optimization. Required only when the account has several pixels and none clearly fires the most.'),
+      audienceType: z.enum(['pixel', 'customer-list', 'lookalike']).optional().describe('create-audience: pixel = website visitors by event; customer-list = upload a CSV of emails and phones (hashed locally before upload); lookalike = expand a customer-list seed'),
+      audienceName: z.string().optional().describe('create-audience: explicit audience name (required)'),
+      audienceEvent: z.enum(['PAGE_VIEW', 'VIEW_CONTENT', 'ADD_CART', 'START_CHECKOUT', 'PURCHASE', 'SIGN_UP', 'ADD_BILLING', 'SEARCH', 'SUBSCRIBE', 'START_TRIAL', 'ADD_TO_WISHLIST', 'LIST_VIEW']).optional().describe('create-audience pixel: the event that qualifies a visitor (default PAGE_VIEW)'),
+      audienceDescription: z.string().optional().describe('create-audience customer-list: optional audience description'),
+      audienceRetentionDays: z.coerce.number().int().optional().describe('create-audience pixel: lookback window in days (1 to 395, default 30)'),
+      inputPath: z.string().optional().describe('create-audience customer-list: path to the CSV (email in column 1, phone in column 2; a raw Shopify customer export works)'),
+      sourceAudienceId: z.string().optional().describe('create-audience lookalike: the customer-list seed audience id. build-architecture: optional customer-list seed; when set, the plan adds a lookalike prospecting ad squad and excludes the seed from prospecting.'),
+      lookalikeCountry: z.string().optional().describe('Lookalike country code (default us)'),
+      lookalikeType: z.enum(['BALANCE', 'SIMILARITY', 'REACH']).optional().describe('Lookalike type (default BALANCE)'),
+      campaignName: z.string().optional().describe('create-campaign: explicit campaign name (required)'),
+      adSetName: z.string().optional().describe('create-ad-squad: explicit ad squad name (required)'),
+      dailyBudget: z.coerce.number().optional().describe('Daily budget in dollars per ad squad (create-ad-squad, build-architecture; minimum 5, default 5 for the build). Validated against maxDailyAdBudget.'),
+      optimizationGoal: z.enum(['PIXEL_PURCHASE', 'PIXEL_ADD_TO_CART', 'PIXEL_PAGE_VIEW', 'PIXEL_SIGNUP', 'SWIPES', 'IMPRESSIONS']).optional().describe('create-ad-squad: what the ad squad optimizes for (default PIXEL_PURCHASE)'),
+      bidStrategy: z.enum(['AUTO_BID']).optional().describe('create-ad-squad: bid strategy (AUTO_BID only)'),
+      minAge: z.coerce.number().int().optional().describe('create-ad-squad / build-architecture: minimum age (13 to 49, default 18)'),
+      includeAudienceIds: z.array(z.string()).optional().describe('create-ad-squad: audience ids to target. Omit for a broad prospecting ad squad.'),
+      excludeAudienceIds: z.array(z.string()).optional().describe('create-ad-squad / build-architecture: audience ids to exclude. Prospecting ad squads always also exclude the brand snapchatProspectingExclusions.'),
+      targetAdSetId: z.string().optional().describe('ads: scope to one ad squad id'),
       snapchatAdAccountId: z.string().optional().describe('Ad account id (UUID) to switch to (ad-accounts only)'),
       level: z.enum(['campaign', 'adsquad', 'ad']).optional().describe('Insights breakdown level (default campaign)'),
       batchCount: z.coerce.number().int().optional().describe('Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.'),
       startDate: z.string().optional().describe('Insights window start, YYYY-MM-DD (account timezone)'),
       endDate: z.string().optional().describe('Insights window end, YYYY-MM-DD inclusive (account timezone)'),
-      status: z.enum(['active', 'paused', 'all']).optional().describe('Campaign status filter for campaigns (default all)'),
-      approved: z.boolean().optional().describe('Approval flag for kill and activate. Pass true only when the user asked for the pause or resume; the Merlin approval card still asks them to confirm before it runs.'),
+      status: z.enum(['active', 'paused', 'all']).optional().describe('Status filter for campaigns, ad-squads and ads (default all)'),
+      approved: z.boolean().optional().describe('Approval flag for kill, activate, the create actions, and a real (dryRun:false) build. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.'),
     },
-    // Handler does NOT auto-set args.approved; the binary refuses kill and
-    // activate without it (requireApproval in snapchat.go), and the host
-    // approval card gates the call (SPEND_ACTIONS has kill + activate).
+    // Handler does NOT auto-set args.approved; the binary refuses every write
+    // without it (requireApproval in snapchat.go / snapchat_build.go), and the
+    // host approval card gates the call (resolveMerlinAction maps the snapchat
+    // writes to SPEND actions; a dry-run build maps to 'dry-run').
     handler: async (args) => toEnvelope(await runBinary(ctx, 'snapchat-' + args.action, args)),
   }, tool, z, ctx));
 

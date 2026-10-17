@@ -5449,23 +5449,76 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, and pause (kill) or resume (activate) a campaign. Creating new Snapchat campaigns is not supported yet.",
+      "description": "Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads and creatives are not created by this tool.",
       "input": {
         "action": {
-          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign.",
+          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure.",
           "enum": [
             "status",
             "ad-accounts",
             "campaigns",
             "insights",
             "kill",
-            "activate"
+            "activate",
+            "pixels",
+            "audiences",
+            "ad-squads",
+            "ads",
+            "create-audience",
+            "create-campaign",
+            "create-ad-squad",
+            "build-architecture"
           ],
           "type": "string"
         },
+        "adSetName": {
+          "description": "create-ad-squad: explicit ad squad name (required)",
+          "type": "string"
+        },
         "approved": {
-          "description": "Approval flag for kill and activate. Pass true only when the user asked for the pause or resume; the Merlin approval card still asks them to confirm before it runs.",
+          "description": "Approval flag for kill, activate, the create actions, and a real (dryRun:false) build. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.",
           "type": "boolean"
+        },
+        "audienceDescription": {
+          "description": "create-audience customer-list: optional audience description",
+          "type": "string"
+        },
+        "audienceEvent": {
+          "description": "create-audience pixel: the event that qualifies a visitor (default PAGE_VIEW)",
+          "enum": [
+            "PAGE_VIEW",
+            "VIEW_CONTENT",
+            "ADD_CART",
+            "START_CHECKOUT",
+            "PURCHASE",
+            "SIGN_UP",
+            "ADD_BILLING",
+            "SEARCH",
+            "SUBSCRIBE",
+            "START_TRIAL",
+            "ADD_TO_WISHLIST",
+            "LIST_VIEW"
+          ],
+          "type": "string"
+        },
+        "audienceName": {
+          "description": "create-audience: explicit audience name (required)",
+          "type": "string"
+        },
+        "audienceRetentionDays": {
+          "description": "create-audience pixel: lookback window in days (1 to 395, default 30)",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "audienceType": {
+          "description": "create-audience: pixel = website visitors by event; customer-list = upload a CSV of emails and phones (hashed locally before upload); lookalike = expand a customer-list seed",
+          "enum": [
+            "pixel",
+            "customer-list",
+            "lookalike"
+          ],
+          "type": "string"
         },
         "batchCount": {
           "description": "Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.",
@@ -5473,20 +5526,57 @@
           "minimum": -9007199254740991,
           "type": "integer"
         },
+        "bidStrategy": {
+          "description": "create-ad-squad: bid strategy (AUTO_BID only)",
+          "enum": [
+            "AUTO_BID"
+          ],
+          "type": "string"
+        },
         "brand": {
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
         },
         "campaignId": {
-          "description": "Snapchat campaign id (UUID) for kill, activate, or campaign-level insights scoped to one campaign",
+          "description": "Snapchat campaign id (UUID) for kill, activate, campaign-level insights, ad-squads (scope to one campaign), or create-ad-squad (the parent campaign)",
           "type": "string"
+        },
+        "campaignName": {
+          "description": "create-campaign: explicit campaign name (required)",
+          "type": "string"
+        },
+        "dailyBudget": {
+          "description": "Daily budget in dollars per ad squad (create-ad-squad, build-architecture; minimum 5, default 5 for the build). Validated against maxDailyAdBudget.",
+          "type": "number"
+        },
+        "dryRun": {
+          "description": "build-architecture only. Defaults to true: returns the full plan and payloads and writes nothing. Pass false (with approved:true) only when the user has reviewed the plan and asked to build it.",
+          "type": "boolean"
         },
         "endDate": {
           "description": "Insights window end, YYYY-MM-DD inclusive (account timezone)",
           "type": "string"
         },
+        "excludeAudienceIds": {
+          "description": "create-ad-squad / build-architecture: audience ids to exclude. Prospecting ad squads always also exclude the brand snapchatProspectingExclusions.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "includeAudienceIds": {
+          "description": "create-ad-squad: audience ids to target. Omit for a broad prospecting ad squad.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "inputPath": {
+          "description": "create-audience customer-list: path to the CSV (email in column 1, phone in column 2; a raw Shopify customer export works)",
           "type": "string"
         },
         "level": {
@@ -5498,8 +5588,47 @@
           ],
           "type": "string"
         },
+        "lookalikeCountry": {
+          "description": "Lookalike country code (default us)",
+          "type": "string"
+        },
+        "lookalikeType": {
+          "description": "Lookalike type (default BALANCE)",
+          "enum": [
+            "BALANCE",
+            "SIMILARITY",
+            "REACH"
+          ],
+          "type": "string"
+        },
+        "minAge": {
+          "description": "create-ad-squad / build-architecture: minimum age (13 to 49, default 18)",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "optimizationGoal": {
+          "description": "create-ad-squad: what the ad squad optimizes for (default PIXEL_PURCHASE)",
+          "enum": [
+            "PIXEL_PURCHASE",
+            "PIXEL_ADD_TO_CART",
+            "PIXEL_PAGE_VIEW",
+            "PIXEL_SIGNUP",
+            "SWIPES",
+            "IMPRESSIONS"
+          ],
+          "type": "string"
+        },
         "snapchatAdAccountId": {
           "description": "Ad account id (UUID) to switch to (ad-accounts only)",
+          "type": "string"
+        },
+        "snapchatPixelId": {
+          "description": "Pixel id to use for pixel audiences and PIXEL_* optimization. Required only when the account has several pixels and none clearly fires the most.",
+          "type": "string"
+        },
+        "sourceAudienceId": {
+          "description": "create-audience lookalike: the customer-list seed audience id. build-architecture: optional customer-list seed; when set, the plan adds a lookalike prospecting ad squad and excludes the seed from prospecting.",
           "type": "string"
         },
         "startDate": {
@@ -5507,12 +5636,16 @@
           "type": "string"
         },
         "status": {
-          "description": "Campaign status filter for campaigns (default all)",
+          "description": "Status filter for campaigns, ad-squads and ads (default all)",
           "enum": [
             "active",
             "paused",
             "all"
           ],
+          "type": "string"
+        },
+        "targetAdSetId": {
+          "description": "ads: scope to one ad squad id",
           "type": "string"
         }
       },
