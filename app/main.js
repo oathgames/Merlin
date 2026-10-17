@@ -9295,20 +9295,23 @@ function vaultDelete(brand, key) {
 // Delete several keys from ONE vault namespace with a single load/save.
 // Returns how many entries were actually present and removed. Used by
 // disconnect-platform (see platform-disconnect.js for the scoping rules).
+const { deleteVaultEntries, remainingVaultKeys } = require('./platform-disconnect');
+// REGRESSION GUARD (2026-10-17, snapchat-apotheke-still-connected): this
+// THROWS on a vault load or save failure. It used to log and return 0, and the
+// disconnect handler then reported success while every token stayed in the
+// vault for the engine to keep using. It also matches the brand namespace the
+// way the engine resolves it (case and slug equivalent, never _global for a
+// brand); see platform-disconnect.js deleteVaultEntries.
 function vaultDeleteMany(scope, keys) {
-  try {
-    const m = vaultLoad();
-    let removed = 0;
-    for (const key of keys) {
-      const k = scope + '/' + key;
-      if (Object.prototype.hasOwnProperty.call(m, k)) { delete m[k]; removed++; }
-    }
-    if (removed > 0) vaultSave(m);
-    return removed;
-  } catch (e) {
-    console.error('[vault] delete failed:', e.message);
-    return 0;
-  }
+  const m = vaultLoad();
+  const removed = deleteVaultEntries(m, scope, keys);
+  if (removed > 0) vaultSave(m);
+  return removed;
+}
+
+// Re-read the vault from disk and report which of keys still exist for scope.
+function vaultRemainingMany(scope, keys) {
+  return remainingVaultKeys(vaultLoad(), scope, keys);
 }
 
 // OAuth persistence — VAULT_SENSITIVE_KEYS, isVaultRedactionMarker, and the
@@ -10771,6 +10774,8 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
         }
       },
       vaultDeleteKeys: (scope, ks) => vaultDeleteMany(scope, ks),
+      vaultRemainingKeys: (scope, ks) => vaultRemainingMany(scope, ks),
+      hasBrands: () => listBrandDirs(path.join(appRoot, 'assets', 'brands')).length > 0,
       clearAuthFailure: (p, b) => authFailureStore.clear(p, b),
     });
 

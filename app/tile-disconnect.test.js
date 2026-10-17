@@ -25,7 +25,10 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 
-const { applyDisconnect, disconnectScope, stripKeys } = require('./platform-disconnect');
+const {
+  applyDisconnect, disconnectScope, stripKeys,
+  vaultScopeMatches, deleteVaultEntries, remainingVaultKeys, VAULT_NOT_CLEARED_MSG, NO_BRAND_MSG,
+} = require('./platform-disconnect');
 
 const APP_DIR = __dirname;
 const read = (f) => fs.readFileSync(path.join(APP_DIR, f), 'utf8').replace(/\r\n/g, '\n');
@@ -193,14 +196,7 @@ function makeWorld() {
     writeGlobalConfig: (c) => { world.global = c; },
     readBrandConfig: (b) => (world.brands[b] ? JSON.parse(JSON.stringify(world.brands[b])) : null),
     writeBrandConfig: (b, c) => { world.brands[b] = c; },
-    vaultDeleteKeys: (scope, keys) => {
-      let n = 0;
-      for (const k of keys) {
-        const id = `${scope}/${k}`;
-        if (Object.prototype.hasOwnProperty.call(world.vault, id)) { delete world.vault[id]; n++; }
-      }
-      return n;
-    },
+    vaultDeleteKeys: (scope, keys) => deleteVaultEntries(world.vault, scope, keys),
     scrubLegacyTokens: (b, keys) => world.legacyScrubbed.push([b, keys]),
     clearAuthFailure: (p, b) => world.authCleared.push([p, b]),
   };
@@ -294,6 +290,178 @@ test('scope helpers and guards', () => {
   assert.equal(disconnectScope({ brandName: '', isGlobalPlatform: false }), 'legacy-global');
   assert.throws(() => applyDisconnect({ platform: 'snapchat', brandName: 'a', keys: [] }, {}));
   assert.equal(stripKeys(null, ['a'], 'p'), false);
+});
+
+// ── 2b. Real vault: the engine-visible state, not the UI state ────────────
+//
+// REGRESSION GUARD (2026-10-17, snapchat-apotheke-still-connected): Snapchat
+// was disconnected from APOTHEKE in the app and `snapchat-status --brand
+// apotheke` still reported the same ad account and org. These tests run the
+// REAL main.js vault code (AES-256-GCM, same file format the Go engine reads)
+// against a throwaway directory, drive applyDisconnect through the same
+// adapters the IPC handler uses, then decrypt the vault from disk and assert
+// the brand's entries are really gone. They never touch a real vault: the vm
+// context gets a fake APPDATA and a fake home directory.
+
+const os = require('os');
+const { execFileSync } = require('child_process');
+
+function loadRealVault() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'merlin-disconnect-vault-'));
+  const code = sliceBetween(MAIN_JS, "const _vaultCrypto = require('crypto');", '\n// OAuth persistence');
+  const fakeOs = { ...os, homedir: () => dir };
+  const fakeProcess = { platform: process.platform, env: { APPDATA: dir } };
+  const ctx = {
+    require: (m) => (m === './platform-disconnect' ? require('./platform-disconnect') : require(m)),
+    process: fakeProcess, Buffer, console, os: fakeOs, fs, path,
+  };
+  vm.createContext(ctx);
+  vm.runInContext(code + '\n;this.V = { vaultLoad, vaultSave, vaultPut, vaultDeleteMany, vaultRemainingMany, _vaultFilePath };', ctx);
+  const V = ctx.V;
+  assert.ok(V._vaultFilePath().startsWith(dir), 'vault path escaped the sandbox');
+  return { V, dir };
+}
+
+const SNAP_VAULT_KEYS = ['snapchatAccessToken', 'snapchatRefreshToken', 'snapchatAdAccountId', 'snapchatOrganizationId'];
+
+function seedSnap(V, brand, tag) {
+  for (const k of SNAP_VAULT_KEYS) V.vaultPut(brand, k, `${tag}-${k}`);
+}
+
+function realIo(V, brandCfgs) {
+  return {
+    readGlobalConfig: () => ({}),
+    writeGlobalConfig: () => {},
+    readBrandConfig: (b) => brandCfgs[b] || null,
+    writeBrandConfig: (b, c) => { brandCfgs[b] = c; },
+    vaultDeleteKeys: (scope, ks) => V.vaultDeleteMany(scope, ks),
+    vaultRemainingKeys: (scope, ks) => V.vaultRemainingMany(scope, ks),
+    hasBrands: () => true,
+  };
+}
+
+test('real vault: disconnecting Snapchat from APOTHEKE removes its entries on disk, Forever 21 keeps its own', () => {
+  const { V } = loadRealVault();
+  seedSnap(V, 'apotheke', 'A');
+  seedSnap(V, 'forever21', 'F');
+  V.vaultPut('apotheke', 'metaAccessToken', 'A-meta');
+  const res = applyDisconnect({ platform: 'snapchat', brandName: 'apotheke', keys: KEY_MAP.snapchat, isGlobalPlatform: false }, realIo(V, {}));
+  assert.equal(res.scope, 'brand');
+  assert.equal(res.vaultCleared, SNAP_VAULT_KEYS.length);
+  const after = V.vaultLoad();
+  for (const k of SNAP_VAULT_KEYS) {
+    assert.equal(after[`apotheke/${k}`], undefined, `apotheke/${k} survived the disconnect`);
+    assert.equal(after[`forever21/${k}`], `F-${k}`, `forever21/${k} was touched`);
+  }
+  assert.equal(after['apotheke/metaAccessToken'], 'A-meta');
+});
+
+test('real vault: a case-variant brand namespace is cleared too (engine resolves brands case-insensitively)', () => {
+  const { V } = loadRealVault();
+  seedSnap(V, 'APOTHEKE', 'A');
+  seedSnap(V, 'forever21', 'F');
+  V.vaultPut('_global', 'snapchatAccessToken', 'g');
+  applyDisconnect({ platform: 'snapchat', brandName: 'apotheke', keys: KEY_MAP.snapchat, isGlobalPlatform: false }, realIo(V, {}));
+  const after = V.vaultLoad();
+  for (const k of SNAP_VAULT_KEYS) assert.equal(after[`APOTHEKE/${k}`], undefined);
+  assert.equal(after['forever21/snapchatAccessToken'], 'F-snapchatAccessToken');
+  assert.equal(after['_global/snapchatAccessToken'], 'g', 'a brand disconnect must never reach _global');
+});
+
+test('real vault: an unreadable vault fails the disconnect instead of reporting success', () => {
+  const { V } = loadRealVault();
+  seedSnap(V, 'apotheke', 'A');
+  fs.writeFileSync(V._vaultFilePath(), '{not json');
+  const cfgs = { apotheke: { snapchatAccessToken: '@@VAULT:snapchatAccessToken@@' } };
+  assert.throws(() => applyDisconnect({ platform: 'snapchat', brandName: 'apotheke', keys: KEY_MAP.snapchat, isGlobalPlatform: false }, realIo(V, cfgs)));
+  assert.equal(cfgs.apotheke.snapchatAccessToken, '@@VAULT:snapchatAccessToken@@', 'config must not change when the vault delete failed');
+});
+
+test('verify-after-delete: entries still in the vault block success with a plain-English error', () => {
+  const io = {
+    readBrandConfig: () => null, writeBrandConfig: () => {},
+    vaultDeleteKeys: () => 0,
+    vaultRemainingKeys: () => ['snapchatAccessToken'],
+  };
+  assert.throws(() => applyDisconnect({ platform: 'snapchat', brandName: 'apotheke', keys: KEY_MAP.snapchat, isGlobalPlatform: false }, io),
+    (e) => e.message === VAULT_NOT_CLEARED_MSG);
+});
+
+test('no brand selected on an install with brands is refused, never falls through to _global', () => {
+  const { V } = loadRealVault();
+  seedSnap(V, 'apotheke', 'A');
+  V.vaultPut('_global', 'snapchatAccessToken', 'g');
+  assert.throws(() => applyDisconnect({ platform: 'snapchat', brandName: '', keys: KEY_MAP.snapchat, isGlobalPlatform: false }, realIo(V, {})),
+    (e) => e.message === NO_BRAND_MSG);
+  const after = V.vaultLoad();
+  assert.equal(after['_global/snapchatAccessToken'], 'g');
+  assert.equal(after['apotheke/snapchatAccessToken'], 'A-snapchatAccessToken');
+});
+
+test('vault scope matching is one brand wide and never crosses _global', () => {
+  assert.equal(vaultScopeMatches('apotheke', 'apotheke'), true);
+  assert.equal(vaultScopeMatches('APOTHEKE', 'apotheke'), true);
+  assert.equal(vaultScopeMatches('forever21', 'apotheke'), false);
+  assert.equal(vaultScopeMatches('_global', 'apotheke'), false);
+  assert.equal(vaultScopeMatches('apotheke', '_global'), false);
+  assert.equal(vaultScopeMatches('_global', '_global'), true);
+  const m = { 'Apotheke/a': 1, 'apotheke/b': 2, 'forever21/a': 3, '_global/a': 4, 'apotheke/a': 5 };
+  assert.equal(deleteVaultEntries(m, 'apotheke', ['a']), 2);
+  assert.deepEqual(Object.keys(m).sort(), ['_global/a', 'apotheke/b', 'forever21/a']);
+  assert.deepEqual(remainingVaultKeys(m, 'apotheke', ['a', 'b']), ['b']);
+});
+
+test('main.js vaultDeleteMany fails closed (no swallowed vault error)', () => {
+  const fn = sliceBetween(MAIN_JS, 'function vaultDeleteMany(', '\n}\n');
+  assert.doesNotMatch(fn, /catch/, 'vaultDeleteMany must let vault errors reach the disconnect handler');
+  assert.match(fn, /deleteVaultEntries\(/);
+  const handlerSrc = sliceBetween(MAIN_JS, "ipcMain.handle('disconnect-platform'", '\n});\n');
+  assert.match(handlerSrc, /vaultRemainingKeys:[^\n]*vaultRemainingMany/);
+  assert.match(handlerSrc, /hasBrands:[^\n]*listBrandDirs/);
+});
+
+// End to end against the real engine, opt-in: MERLIN_ENGINE_BIN=<path to
+// Merlin.exe>. Runs entirely in a temp project plus temp APPDATA and HOME.
+test('engine e2e: snapchat-status reports APOTHEKE not connected after disconnect, Forever 21 still connected', (t) => {
+  const bin = process.env.MERLIN_ENGINE_BIN;
+  if (!bin || !fs.existsSync(bin)) { t.skip('set MERLIN_ENGINE_BIN to run against a built engine'); return; }
+  const { V, dir } = loadRealVault();
+  const proj = path.join(dir, 'proj');
+  const tools = path.join(proj, '.claude', 'tools');
+  fs.mkdirSync(tools, { recursive: true });
+  for (const b of ['apotheke', 'forever21']) {
+    fs.mkdirSync(path.join(proj, 'assets', 'brands', b), { recursive: true });
+    fs.writeFileSync(path.join(proj, 'assets', 'brands', b, 'brand.md'), `# ${b}\n`);
+  }
+  fs.writeFileSync(path.join(tools, 'merlin-config.json'), JSON.stringify({ productName: 'x' }));
+  const cfgs = {};
+  for (const [b, tag] of [['apotheke', 'A'], ['forever21', 'F']]) {
+    seedSnap(V, b, tag);
+    const c = { snapchatTokenExpiresAt: Math.floor(Date.now() / 1000) + 3600 };
+    for (const k of SNAP_VAULT_KEYS) c[k] = `@@VAULT:${k}@@`;
+    cfgs[b] = c;
+    fs.writeFileSync(path.join(tools, `.merlin-config-${b}.json`), JSON.stringify(c));
+  }
+  const env = { ...process.env, APPDATA: dir, HOME: dir };
+  const status = (brand) => {
+    let out;
+    try {
+      out = execFileSync(bin, ['--config', path.join(tools, 'merlin-config.json'), '--brand', brand,
+        '--cmd', JSON.stringify({ action: 'snapchat-status', brand })],
+      { cwd: proj, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000 });
+    } catch (e) { out = String(e.stdout || '') + String(e.stderr || ''); }
+    return (out.split('\n').find((l) => l.includes('Snapchat:')) || out).trim();
+  };
+  const before = status('apotheke');
+  assert.match(before, /Snapchat:/, 'engine did not report a Snapchat status line');
+  assert.doesNotMatch(before, /not connected/i, 'seeded apotheke should start connected');
+  const io = {
+    ...realIo(V, cfgs),
+    writeBrandConfig: (b, c) => { cfgs[b] = c; fs.writeFileSync(path.join(tools, `.merlin-config-${b}.json`), JSON.stringify(c)); },
+  };
+  applyDisconnect({ platform: 'snapchat', brandName: 'apotheke', keys: KEY_MAP.snapchat, isGlobalPlatform: false }, io);
+  assert.match(status('apotheke'), /not connected/i);
+  assert.doesNotMatch(status('forever21'), /not connected/i);
 });
 
 // ── 3. Renderer ────────────────────────────────────────────────────────────
