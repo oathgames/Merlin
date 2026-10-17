@@ -111,7 +111,7 @@ function lastCmd() {
   return JSON.parse(call.args[i + 1]);
 }
 
-const PINTEREST_KEYS = ['campaignId', 'adGroupId', 'adId', 'level', 'days', 'startDate', 'endDate', 'status', 'approved'];
+const PINTEREST_KEYS = ['campaignId', 'adGroupId', 'adId', 'level', 'days', 'startDate', 'endDate', 'status', 'approved', 'pinterestAdAccountId'];
 
 test('pinterest_ads declares every param the engine reads', () => {
   const schema = byName('pinterest_ads').schema;
@@ -143,6 +143,65 @@ test('pinterest_ads kill remaps adGroupId to targetAdSetId and forwards approval
   assert.equal(cmd.targetAdSetId, '2680000000001,2680000000002', 'adGroupId must land as targetAdSetId');
   assert.ok(!('adGroupId' in cmd), 'the engine has no adGroupId field; it must not be sent raw');
   assert.equal(cmd.approved, true, 'approval flag must reach the engine');
+});
+
+// REGRESSION GUARD (2026-10-17, ad-account pick): the login note tells the
+// user to switch with "the Pinterest ad-accounts action with
+// pinterestAdAccountId <id>". That instruction only works if the param
+// reaches the engine's Command.PinterestAdAccountID (Rules 23 + 25).
+test('pinterest_ads ad-accounts forwards pinterestAdAccountId for the switch', async () => {
+  execFileCalls.length = 0;
+  await byName('pinterest_ads').handler({ action: 'ad-accounts', brand: 'apotheke', pinterestAdAccountId: '549755885175' });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'pinterest-ad-accounts');
+  assert.equal(cmd.pinterestAdAccountId, '549755885175');
+});
+
+// platform_login must relay the engine's ad-account selection note so the
+// agent tells the user when Merlin may have picked another business's
+// account (Snapchat / X / Pinterest logins).
+// The registered handler returns the MCP text content: a summary line, a
+// blank line, then the JSON envelope. Pull the envelope's data back out.
+function unwrap(res) {
+  const text = res.content[0].text;
+  return JSON.parse(text.slice(text.indexOf('{'))).data;
+}
+
+test('platform_login relays the ad-account selection note', async () => {
+  const entries = [];
+  const tool = (name, description, schema, handler) => { entries.push({ name, handler }); return { name }; };
+  const note = 'Merlin selected Snapchat ad account "Soothe" (s1) because its name matches this brand. This login can also see: "Unique" (u1): no campaigns.';
+  buildTools(tool, makeRecordingZ(), makeCtx({
+    runOAuthFlow: async () => ({ success: true, platform: 'snapchat', accountNote: note, accountVerified: false }),
+  }));
+  const login = entries.find((e) => e.name === 'platform_login');
+  const res = unwrap(await login.handler({ platform: 'snapchat', brand: 'apotheke' }));
+  assert.equal(res.success, true);
+  assert.equal(res.accountVerified, false);
+  assert.equal(res.accountNote, note);
+  assert.ok(res.summary.includes(note), 'the note must be in the summary the agent reads');
+  assert.ok(/switch/i.test(res.instructions), 'the agent must be told to offer the switch');
+
+  const quiet = entries.length;
+  buildTools(tool, makeRecordingZ(), makeCtx({ runOAuthFlow: async () => ({ success: true, platform: 'snapchat', accountVerified: true }) }));
+  const res2 = unwrap(await entries.slice(quiet).find((e) => e.name === 'platform_login').handler({ platform: 'snapchat', brand: 'apotheke' }));
+  assert.equal(res2.summary, 'Connected snapchat');
+  assert.ok(!('accountNote' in res2));
+});
+
+// main.js must strip the selection fields before applyExchangeResult writes
+// the login result into the brand config.
+test('runOAuthFlow strips accountSelection fields before persisting', () => {
+  const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8').replace(/\r\n/g, '\n');
+  const start = main.indexOf('async function runOAuthFlow(');
+  assert.ok(start > 0);
+  const end = main.indexOf('\n}\n', start);
+  const body = main.slice(start, end);
+  const applies = body.split('applyExchangeResult(').length - 1;
+  const takes = body.split('takeAccountSelection(').length - 1;
+  assert.ok(applies >= 3, 'expected the fast-open and both legacy persist sites');
+  assert.equal(takes, applies, 'every applyExchangeResult in runOAuthFlow must be preceded by takeAccountSelection');
+  assert.ok(/delete parsed\.accountSelectionNote/.test(main) && /delete parsed\.accountSelectionVerified/.test(main));
 });
 
 test('pinterest_ads activate forwards campaignId and adId', async () => {

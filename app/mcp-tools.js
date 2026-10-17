@@ -3713,7 +3713,7 @@ function buildTools(tool, z, ctx) {
   // undeclared or unmapped param is a silently unreachable capability).
   tools.push(defineTool({
     name: 'pinterest_ads',
-    description: 'Pinterest Ads: check the connection, list ad accounts and campaigns, pull performance (campaign, ad group, or ad level over a date range), and pause or resume campaigns, ad groups, or ads. Cannot create campaigns or change budgets.',
+    description: 'Pinterest Ads: check the connection, list or switch ad accounts, list campaigns, pull performance (campaign, ad group, or ad level over a date range), and pause or resume campaigns, ad groups, or ads. Cannot create campaigns or change budgets.',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -3721,11 +3721,12 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'pinterest' },
     preview: false,
     input: {
-      action: z.enum(['status', 'verify', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate']).describe('status/verify → connection check (verify makes a live call). ad-accounts → list ad accounts this login can manage. campaigns → list campaigns. insights → performance report. kill → pause campaigns/ad groups/ads (approval card). activate → resume them (approval card, respects the spend pause).'),
+      action: z.enum(['status', 'verify', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate']).describe('status/verify → connection check (verify makes a live call). ad-accounts → list ad accounts this login can manage (pass pinterestAdAccountId to switch). campaigns → list campaigns. insights → performance report. kill → pause campaigns/ad groups/ads (approval card). activate → resume them (approval card, respects the spend pause).'),
       brand: brandSchema,
       campaignId: z.string().optional().describe('Pinterest campaign id, or several comma-separated (kill/activate).'),
       adGroupId: z.string().optional().describe('Pinterest ad group id, or several comma-separated (kill/activate).'),
       adId: z.string().optional().describe('Pinterest ad id, or several comma-separated (kill/activate).'),
+      pinterestAdAccountId: z.string().optional().describe('Pinterest ad account id (digits) to switch this brand to (ad-accounts only).'),
       level: z.enum(['campaign', 'adgroup', 'ad', 'account']).optional().describe('insights: reporting level (default campaign).'),
       days: z.coerce.number().int().optional().describe('insights: last N complete days (default 7, max 90).'),
       startDate: z.string().optional().describe('insights: YYYY-MM-DD, within the last 90 days. Pass with endDate instead of days.'),
@@ -4019,8 +4020,19 @@ function buildTools(tool, z, ctx) {
             message: `Connection failed: ${redactOutput(result.error, '')}`,
           }));
         }
-        // NEVER return tokens. Only success status.
-        return { summary: `Connected ${args.platform}`, success: true, platform: args.platform };
+        // NEVER return tokens. Only success status, plus the engine's
+        // plain-English ad-account selection note when the login could see
+        // more than one plausible account (Snapchat / X / Pinterest). The
+        // note is the only signal the user gets that Merlin may have picked
+        // another business's account, so the agent must relay it.
+        const out = { summary: `Connected ${args.platform}`, success: true, platform: args.platform };
+        if (typeof result.accountVerified === 'boolean') out.accountVerified = result.accountVerified;
+        if (typeof result.accountNote === 'string' && result.accountNote) {
+          out.accountNote = redactOutput(result.accountNote, '');
+          out.summary += `. Ad account check: ${out.accountNote}`;
+          out.instructions = 'Tell the user which ad account was selected and why, list the other accounts from accountNote, and offer to switch if it is the wrong business.';
+        }
+        return out;
       } catch (e) {
         return envelope.fail(errors.makeError('INTERNAL_ERROR', {
           message: `Connection error: ${redactOutput(e.message, '')}`,

@@ -5592,6 +5592,27 @@ function applyExchangeResult(platform, brandName, isGlobalPlatform, parsed) {
 //   /connect/shopify handler.
 const SHOPIFY_CONNECT_URL = 'https://merlingotme.com/connect/shopify';
 
+// takeAccountSelection pulls the engine's ad-account selection explanation
+// (accountSelectionNote / accountSelectionVerified, emitted by the Snapchat,
+// X and Pinterest logins) OUT of a login result before it is persisted.
+// applyExchangeResult writes every non-vault key into the brand config, so
+// leaving these in would store a transient sentence as brand data. Returns
+// the fields to hand back to the caller (platform_login relays the note to
+// the user). REGRESSION GUARD (2026-10-17, Snapchat wrong-account pick).
+function takeAccountSelection(parsed) {
+  const out = {};
+  if (!parsed || typeof parsed !== 'object') return out;
+  if (typeof parsed.accountSelectionNote === 'string' && parsed.accountSelectionNote.trim()) {
+    out.accountNote = parsed.accountSelectionNote.trim();
+  }
+  if (typeof parsed.accountSelectionVerified === 'boolean') {
+    out.accountVerified = parsed.accountSelectionVerified;
+  }
+  delete parsed.accountSelectionNote;
+  delete parsed.accountSelectionVerified;
+  return out;
+}
+
 // Direct OAuth — bypasses SDK entirely, runs the binary from main process
 // Standalone OAuth flow — callable from both the IPC handler (UI clicks)
 // and the MCP platform_login tool. Returns { success, platform } or { error }.
@@ -5683,8 +5704,9 @@ async function runOAuthFlow(platform, brandName, extra) {
       if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
       return { success: true, platform };
     }
+    const selection = takeAccountSelection(parsed);
     applyExchangeResult(platform, brandName, isGlobalPlatform, parsed);
-    return { success: true, platform };
+    return { success: true, platform, ...selection };
   }
 
   // Legacy binary-login fallback. Spawns Merlin.exe <platform>-login which
@@ -5722,8 +5744,9 @@ async function runOAuthFlow(platform, brandName, extra) {
         if (!jsonStr) throw new Error('No JSON in output');
         const result = JSON.parse(jsonStr);
         if (!result || Object.keys(result).length === 0) throw new Error('Empty JSON result');
+        const selection = takeAccountSelection(result);
         applyExchangeResult(platform, brandName, isGlobalPlatform, result);
-        resolve({ success: true, platform });
+        resolve({ success: true, platform, ...selection });
       } catch (parseErr) {
         console.error(`[oauth] JSON parse failed:`, parseErr.message);
         // Fallback: try line-by-line JSON.parse in case binary emitted a
@@ -5733,8 +5756,9 @@ async function runOAuthFlow(platform, brandName, extra) {
           try {
             const maybe = JSON.parse(line.trim());
             if (maybe && typeof maybe === 'object') {
+              const selection = takeAccountSelection(maybe);
               applyExchangeResult(platform, brandName, isGlobalPlatform, maybe);
-              return resolve({ success: true, platform });
+              return resolve({ success: true, platform, ...selection });
             }
           } catch { /* ignore — keep scanning */ }
         }

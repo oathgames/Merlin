@@ -4615,10 +4615,10 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Pinterest Ads: check the connection, list ad accounts and campaigns, pull performance (campaign, ad group, or ad level over a date range), and pause or resume campaigns, ad groups, or ads. Cannot create campaigns or change budgets.",
+      "description": "Pinterest Ads: check the connection, list or switch ad accounts, list campaigns, pull performance (campaign, ad group, or ad level over a date range), and pause or resume campaigns, ad groups, or ads. Cannot create campaigns or change budgets.",
       "input": {
         "action": {
-          "description": "status/verify → connection check (verify makes a live call). ad-accounts → list ad accounts this login can manage. campaigns → list campaigns. insights → performance report. kill → pause campaigns/ad groups/ads (approval card). activate → resume them (approval card, respects the spend pause).",
+          "description": "status/verify → connection check (verify makes a live call). ad-accounts → list ad accounts this login can manage (pass pinterestAdAccountId to switch). campaigns → list campaigns. insights → performance report. kill → pause campaigns/ad groups/ads (approval card). activate → resume them (approval card, respects the spend pause).",
           "enum": [
             "status",
             "verify",
@@ -4672,6 +4672,10 @@
             "ad",
             "account"
           ],
+          "type": "string"
+        },
+        "pinterestAdAccountId": {
+          "description": "Pinterest ad account id (digits) to switch this brand to (ad-accounts only).",
           "type": "string"
         },
         "startDate": {
