@@ -453,6 +453,24 @@ function resolveMerlinAction(toolName, input) {
       input && input.raw !== undefined && input.raw !== false) {
     return { effectiveAction: 'export-raw', label: null };
   }
+  // REGRESSION GUARD (2026-10-17, snap-architecture): the snapchat tool's
+  // build surface. build-architecture is a dry run unless dryRun is literally
+  // false, so only that exact value routes to the carded 'duplicate' (always
+  // cards, never in-cap auto-approve: one build commits several ad squads'
+  // budgets at once). Any other value over-protects by planning only, which
+  // the engine also enforces (dryRun nil or true makes zero writes).
+  // create-ad-squad commits a budget, so it routes to 'duplicate' too;
+  // create-audience changes account state (and may upload a hashed customer
+  // list), so it routes to the always-carded 'setup'. create-campaign is
+  // already in SPEND_ACTIONS by name. The new reads are named explicitly.
+  if (toolName === 'mcp__merlin__snapchat') {
+    if (rawAction === 'build-architecture') {
+      return { effectiveAction: (input && input.dryRun === false) ? 'duplicate' : 'dry-run', label: null };
+    }
+    if (rawAction === 'create-ad-squad') return { effectiveAction: 'duplicate', label: null };
+    if (rawAction === 'create-audience') return { effectiveAction: 'setup', label: null };
+    if (rawAction === 'pixels' || rawAction === 'ad-squads') return { effectiveAction: 'list', label: null };
+  }
   if (rawAction) return { effectiveAction: rawAction, label: null };
   const mapped = INTENT_TOOL_TO_ACTION[toolName];
   if (mapped) {
