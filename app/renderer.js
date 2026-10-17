@@ -6163,6 +6163,10 @@ function loadConnections() {
     // shipped yet.
     allTiles.forEach(t => {
       t.classList.remove('connected', 'expired', 'needs-brand');
+      // connStatus is what the tile context menu reads to decide whether to
+      // offer Disconnect. Reset with the classes so a stale value can never
+      // outlive the brand it was painted for.
+      delete t.dataset.connStatus;
       if (!t.dataset.baseTip && t.dataset.tip) t.dataset.baseTip = t.dataset.tip;
       if (isStubbedTile(t)) {
         t.classList.add('unavailable');
@@ -6194,10 +6198,20 @@ function loadConnections() {
     allTiles.forEach(tile => {
       const platform = tile.dataset.platform;
       if (!platform) return;
-      if (isStubbedTile(tile)) return; // unavailable wins
       if (tile.classList.contains('needs-brand')) return;
+      // A tile still waiting on its OAuth client id paints unavailable, but
+      // if the brand already holds a grant for it the user must still be
+      // able to disconnect that grant (a sign-in to the wrong brand is
+      // exactly the case that needs it). Record the status for the context
+      // menu without painting the tile connected. Coming Soon stubs
+      // (data-stubbed) can never hold a grant and are skipped outright.
+      if (isStubbedTile(tile)) {
+        if (tile.dataset.stubbed !== 'true' && state.get(platform)) tile.dataset.connStatus = state.get(platform);
+        return; // unavailable wins visually
+      }
       const status = state.get(platform);
       if (!status) return;
+      tile.dataset.connStatus = status;
       tile.classList.add('connected');
       const name = tile.querySelector('.tile-name')?.textContent || platformDisplayName(platform);
       if (status === 'expired') {
@@ -6208,33 +6222,8 @@ function loadConnections() {
       }
     });
 
-    // Re-attach (once) the right-click → disconnect handler. We use
-    // event delegation so the handler stays attached across rerenders.
-    const panel = document.getElementById('magic-panel');
-    if (panel && !panel.dataset.disconnectHandlerAttached) {
-      panel.dataset.disconnectHandlerAttached = '1';
-      panel.addEventListener('contextmenu', (e) => {
-        const tile = e.target.closest('.magic-tile');
-        if (!tile || !tile.classList.contains('connected')) return;
-        e.preventDefault();
-        const platform = tile.dataset.platform;
-        const name = tile.querySelector('.tile-name')?.textContent || platform;
-        showContextMenu(e, [
-          { label: 'Disconnect', danger: true, action: () => {
-            showModal({
-              title: `Disconnect ${name}?`,
-              body: 'You can reconnect anytime from the sidebar.',
-              confirmLabel: 'Disconnect',
-              cancelLabel: 'Keep',
-              onConfirm: async () => {
-                await merlin.disconnectPlatform(platform, document.getElementById('brand-select')?.value || '');
-                loadConnections();
-              },
-            });
-          }},
-        ]);
-      });
-    }
+    // Right-click / keyboard Disconnect lives in openTileContextMenu (one
+    // document-level handler for every tile; see the REGRESSION GUARD there).
   }).catch((err) => {
     // REGRESSION GUARD (2026-05-10, BUG-F003): on timeout (or any IPC
     // rejection), drop the .loading wait cursor so the tiles return
@@ -7854,55 +7843,221 @@ const MANUAL_KEY_HANDLERS = {
   applovin: showApplovinApiKeyModal,
 };
 
-// Tile context menu — right-click to use a manual API key instead of OAuth.
-// Review-friendly escape hatch for users with an existing access token.
+// ── Tile context menu: right-click, the ContextMenu key, or Shift+F10 ──────
+//
+// REGRESSION GUARD (2026-10-17, tile-disconnect): ONE document-level handler
+// owns the context menu for every connection tile. Before this there were two:
+// a document listener for the manual-API-key escape hatch, and a magic-panel
+// listener for Disconnect that was only attached after the first
+// loadConnections() that found a connection (an install with zero connections
+// never got it), opened a second menu on top of the first for Meta, sent
+// whatever brand was selected at CONFIRM time rather than the brand the user
+// was looking at, and swallowed IPC failures silently. Rules this handler
+// keeps, each one locked by tile-disconnect.test.js:
+//   * The menu item names the platform AND the scope it applies to
+//     ("Disconnect Snapchat from Forever 21", or "(all brands)" for the
+//     universal tiles), and the brand is captured when the menu OPENS, so a
+//     brand switch while the confirm is showing can never redirect it.
+//   * Connection state comes from tile.dataset.connStatus (set by
+//     loadConnections), which is recorded even for a tile that paints
+//     unavailable while its OAuth client id is pending, so a grant made to
+//     the wrong brand can always be removed.
+//   * Failures go through friendlyErrorPlain (Hard-Won Rule 6); every label
+//     is set with textContent, never innerHTML.
+//   * Keyboard: the ContextMenu key and Shift+F10 open the same menu anchored
+//     to the focused tile; arrows move, Enter/Space activate, Escape closes
+//     and returns focus to the tile.
 let activeTileMenuCleanup = null;
-function closeTileContextMenu() {
+function closeTileContextMenu(restoreFocus) {
   if (activeTileMenuCleanup) {
-    activeTileMenuCleanup();
+    const cleanup = activeTileMenuCleanup;
     activeTileMenuCleanup = null;
+    cleanup(restoreFocus);
   }
 }
-document.addEventListener('contextmenu', (e) => {
-  const tile = e.target.closest('.magic-tile');
-  if (!tile) return;
-  if (isStubbedTile(tile)) return;
+
+function getActiveBrandLabel(brandValue) {
+  const sel = document.getElementById('brand-select');
+  const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+  if (opt && opt.value === brandValue) {
+    const label = String(opt.textContent || '').trim();
+    if (label) return label;
+  }
+  return brandValue;
+}
+
+function tileDisplayName(tile) {
+  return tile.querySelector('.tile-name')?.textContent || platformDisplayName(tile.dataset.platform);
+}
+
+// Flip a tile to disconnected immediately after a successful disconnect,
+// before the loadConnections() round-trip repaints the panel.
+function markTileDisconnected(tile) {
+  tile.classList.remove('connected', 'expired');
+  delete tile.dataset.connStatus;
+  if (tile.dataset.baseTip) tile.dataset.tip = tile.dataset.baseTip;
+}
+
+function confirmTileDisconnect(tile, platform, name, brand, brandLabel, isUniversal) {
+  const where = isUniversal ? 'for every brand on this computer' : `for ${brandLabel} only`;
+  const others = isUniversal ? '' : ' Your other brands and other connections stay as they are.';
+  showModal({
+    title: isUniversal ? `Disconnect ${name}?` : `Disconnect ${name} from ${brandLabel}?`,
+    body: `Merlin will forget the ${name} sign-in ${where}.${others} To undo it, click the ${name} tile and connect again.`,
+    confirmLabel: 'Disconnect',
+    cancelLabel: 'Keep connected',
+    onConfirm: async () => {
+      let res;
+      try {
+        res = await merlin.disconnectPlatform(platform, isUniversal ? '' : brand);
+      } catch (err) {
+        res = { success: false, error: (err && err.message) || '' };
+      }
+      if (!res || res.success === false) {
+        const raw = (res && res.error) || `Could not disconnect ${name}. Try again in a moment.`;
+        showToast(friendlyErrorPlain(raw, name), { kind: 'error', duration: 6000 });
+        return;
+      }
+      // Only repaint the tile now if the panel is still showing the brand the
+      // disconnect applied to. loadConnections() below repaints regardless.
+      if (isUniversal || getActiveBrandSelection() === brand) markTileDisconnected(tile);
+      showToast(isUniversal ? `${name} disconnected.` : `${name} disconnected from ${brandLabel}.`, { kind: 'success' });
+      loadConnections();
+    },
+  });
+}
+
+// Build the menu items for a tile. Reads only the tile and the brand
+// selector; returns [] when there is nothing to offer.
+function buildTileMenuItems(tile) {
   const platform = tile.dataset.platform;
+  if (!platform || tile.dataset.stubbed === 'true') return [];
+  const name = tileDisplayName(tile);
+  const isUniversal = tile.dataset.scope === 'universal';
+  const brand = getActiveBrandSelection();
+  const items = [];
+  const status = tile.dataset.connStatus;
+  if (status && (isUniversal || brand)) {
+    const brandLabel = isUniversal ? '' : getActiveBrandLabel(brand);
+    if (platform === 'shopify_payments') {
+      items.push({ label: 'Shopify Payments uses your Shopify connection', disabled: true });
+    } else {
+      items.push({
+        label: isUniversal ? `Disconnect ${name} (all brands)` : `Disconnect ${name} from ${brandLabel}`,
+        danger: true,
+        action: () => confirmTileDisconnect(tile, platform, name, brand, brandLabel, isUniversal),
+      });
+    }
+  }
   const handler = MANUAL_KEY_HANDLERS[platform];
-  if (!handler) return;
-  e.preventDefault();
-  const activeBrand = getActiveBrandSelection();
+  if (handler && !isStubbedTile(tile)) {
+    items.push({ label: 'Use my API key', action: () => handler(brand) });
+  }
+  return items;
+}
+
+function openTileContextMenu(tile, x, y, fromKeyboard) {
+  const items = buildTileMenuItems(tile);
+  if (items.length === 0) return false;
   closeTileContextMenu();
+  document.querySelectorAll('.merlin-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
-  menu.className = 'tile-context-menu';
-  menu.style.cssText = 'position:fixed;z-index:400;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);font-size:13px';
-  menu.style.top = Math.min(e.clientY, window.innerHeight - 60) + 'px';
-  menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
-  const btn = document.createElement('button');
-  btn.textContent = 'Use my API key';
-  btn.style.cssText = 'display:block;width:100%;padding:8px 14px;border:none;background:transparent;color:var(--text);text-align:left;cursor:pointer;border-radius:4px;font-size:13px';
-  btn.onmouseenter = () => { btn.style.background = 'var(--accent-bg)'; };
-  btn.onmouseleave = () => { btn.style.background = 'transparent'; };
-  btn.onclick = () => {
-    closeTileContextMenu();
-    handler(activeBrand);
-  };
-  menu.appendChild(btn);
+  // tile-context-menu keeps the magic panel's outside-click guard from
+  // closing the panel when an item is clicked.
+  menu.className = 'merlin-context-menu tile-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', `${tileDisplayName(tile)} options`);
+  const buttons = [];
+  items.forEach(item => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'context-menu-item';
+    el.setAttribute('role', 'menuitem');
+    el.textContent = item.label;
+    if (item.danger) el.classList.add('context-menu-item-danger');
+    if (item.disabled) {
+      el.disabled = true;
+      el.setAttribute('aria-disabled', 'true');
+    } else {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeTileContextMenu(false);
+        item.action();
+      });
+      buttons.push(el);
+    }
+    menu.appendChild(el);
+  });
+  menu.style.left = '-9999px';
+  menu.style.top = '-9999px';
   document.body.appendChild(menu);
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - mw - 8)) + 'px';
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - mh - 8)) + 'px';
+
+  const onKey = (ev) => {
+    const i = buttons.indexOf(document.activeElement);
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeTileContextMenu(true);
+    } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (buttons.length === 0) return;
+      const next = ev.key === 'ArrowDown' ? (i + 1) % buttons.length : (i - 1 + buttons.length) % buttons.length;
+      buttons[next].focus();
+    } else if (ev.key === 'Tab') {
+      closeTileContextMenu(false);
+    }
+  };
+  menu.addEventListener('keydown', onKey);
   const dismiss = (ev) => {
     if (menu.contains(ev.target)) return;
-    closeTileContextMenu();
+    closeTileContextMenu(false);
   };
   const timer = setTimeout(() => {
     document.addEventListener('click', dismiss);
     document.addEventListener('contextmenu', dismiss);
   }, 10);
-  activeTileMenuCleanup = () => {
+  activeTileMenuCleanup = (restoreFocus) => {
     clearTimeout(timer);
     document.removeEventListener('click', dismiss);
     document.removeEventListener('contextmenu', dismiss);
+    menu.removeEventListener('keydown', onKey);
     menu.remove();
+    if (restoreFocus && tile.isConnected) { try { tile.focus(); } catch { /* detached */ } }
   };
+  if (fromKeyboard && buttons.length) buttons[0].focus();
+  return true;
+}
+
+document.addEventListener('contextmenu', (e) => {
+  const tile = e.target.closest('.magic-tile');
+  if (!tile) return;
+  // A keyboard-originated contextmenu event (ContextMenu key) arrives with
+  // zero coordinates; anchor the menu to the tile instead of the corner.
+  let x = e.clientX;
+  let y = e.clientY;
+  const fromKeyboard = (x === 0 && y === 0);
+  if (fromKeyboard) {
+    const r = tile.getBoundingClientRect();
+    x = r.left + 8;
+    y = r.bottom - 4;
+  }
+  if (openTileContextMenu(tile, x, y, fromKeyboard)) e.preventDefault();
+});
+
+// Shift+F10 / ContextMenu key on a focused tile. Chromium usually also fires a
+// contextmenu event for these; openTileContextMenu replaces any open menu, so
+// whichever arrives second is a harmless re-open at the same anchor.
+document.addEventListener('keydown', (e) => {
+  if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+  const active = document.activeElement;
+  const tile = active && typeof active.closest === 'function' ? active.closest('.magic-tile') : null;
+  if (!tile) return;
+  const r = tile.getBoundingClientRect();
+  if (openTileContextMenu(tile, r.left + 8, r.bottom - 4, true)) e.preventDefault();
 });
 
 // Request a platform

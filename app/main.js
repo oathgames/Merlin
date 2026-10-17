@@ -9292,6 +9292,28 @@ function vaultDelete(brand, key) {
   }
 }
 
+// Delete several keys from ONE vault namespace with a single load/save.
+// Returns how many entries were actually present and removed. Used by
+// disconnect-platform (see platform-disconnect.js for the scoping rules).
+const { deleteVaultEntries, remainingVaultKeys } = require('./platform-disconnect');
+// REGRESSION GUARD (2026-10-17, snapchat-apotheke-still-connected): this
+// THROWS on a vault load or save failure. It used to log and return 0, and the
+// disconnect handler then reported success while every token stayed in the
+// vault for the engine to keep using. It also matches the brand namespace the
+// way the engine resolves it (case and slug equivalent, never _global for a
+// brand); see platform-disconnect.js deleteVaultEntries.
+function vaultDeleteMany(scope, keys) {
+  const m = vaultLoad();
+  const removed = deleteVaultEntries(m, scope, keys);
+  if (removed > 0) vaultSave(m);
+  return removed;
+}
+
+// Re-read the vault from disk and report which of keys still exist for scope.
+function vaultRemainingMany(scope, keys) {
+  return remainingVaultKeys(vaultLoad(), scope, keys);
+}
+
 // OAuth persistence — VAULT_SENSITIVE_KEYS, isVaultRedactionMarker, and the
 // splitOAuthPersistFields logic live in ./oauth-persist.js so they can be
 // unit-tested without booting Electron. See that file for the REGRESSION
@@ -9438,8 +9460,8 @@ const BRAND_KEYS = [
 // return null and the placeholder stays unresolved. Falling back to
 // _global is what caused Magic-panel tiles to show one brand's
 // connections under another brand's tile. Keep this list in sync with
-// `brandScopedKeys` in autocmo-core/vault.go and with GLOBAL_KEYS_SET
-// in disconnect-platform.
+// `brandScopedKeys` in autocmo-core/vault.go. disconnect-platform derives
+// its universal-vs-brand scope decision from this set too.
 const UNIVERSAL_KEYS = new Set([
   'falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'arcadsApiKey',
   'foreplayApiKey', 'trendtrackApiKey', 'googleApiKey',
@@ -10569,6 +10591,9 @@ ipcMain.handle('get-oauth-availability', () => {
 // the old encrypted .merlin-tokens-{brand} format). API keys for service
 // providers (fal, elevenlabs, heygen) and workspace-global integrations
 // (slack, discord) live in the global merlin-config.json instead.
+const { applyDisconnect } = require('./platform-disconnect');
+// Legacy keys that are global but are not UNIVERSAL_KEYS credentials.
+const DISCONNECT_EXTRA_GLOBAL_KEYS = new Set(['discordBotToken']);
 ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
   // Defense-in-depth: brandName reaches path.join for .merlin-config-{brand}.json
   // + .merlin-tokens-{brand} writes below. assertBrandSafe returns silently on
@@ -10585,10 +10610,16 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // leaving it behind on disconnect means a reconnect to a DIFFERENT
       // Meta account inherits the old account's IG identity and every
       // creative POST is refused with 200/1815199.
-      meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaInstagramUserId'],
-      tiktok: ['tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId'],
-      google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsDeveloperToken', 'googleAdsCustomerId', 'googleAnalyticsPropertyId'],
-      shopify: ['shopifyAccessToken', 'shopifyStore'],
+      // adAccountName / pageName / pixelName are the display labels of those
+      // ids (BRAND_KEYS, 2026-08-13); a label left behind after a disconnect
+      // would describe an account the brand is no longer connected to.
+      meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaInstagramUserId', 'adAccountName', 'pageName', 'pixelName'],
+      tiktok: ['tiktokAccessToken', 'tiktokRefreshToken', 'tiktokTokenExpiresAt', 'tiktokAdvertiserId', 'tiktokPixelId'],
+      // The GA4 measurement id and the GTM account/container/workspace ids are
+      // selections made under this Google grant (brandScopedKeys in
+      // autocmo-core/vault.go), so a reconnect must re-discover them.
+      google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleTokenExpiresAt', 'googleAdsDeveloperToken', 'googleAdsCustomerId', 'googleAnalyticsPropertyId', 'googleAnalyticsMeasurementId', 'gtmAccountId', 'gtmContainerId', 'gtmWorkspaceId'],
+      shopify: ['shopifyAccessToken', 'shopifyRefreshToken', 'shopifyStore'],
       // revenueSourcePreference is cleared with Stripe so a reconnect picks
       // up a fresh disambiguation prompt instead of silently honoring stale
       // preference from a prior account.
@@ -10603,22 +10634,27 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       klaviyo: ['klaviyoAccessToken', 'klaviyoApiKey', 'klaviyoRefreshToken'],
       mailchimp: ['mailchimpApiKey'],
       pinterest: ['pinterestAccessToken', 'pinterestRefreshToken', 'pinterestTokenExpiresAt', 'pinterestAdAccountId'],
-      amazon: ['amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId'],
-      etsy: ['etsyAccessToken', 'etsyRefreshToken', 'etsyShopId', 'etsyKeystring'],
-      reddit: ['redditAccessToken', 'redditRefreshToken', 'redditAdAccountId'],
+      // amazonSellerId is the selected seller account; the amazon*Client*
+      // app credentials are deliberately kept (they identify the app, not
+      // the connected account).
+      amazon: ['amazonAccessToken', 'amazonRefreshToken', 'amazonTokenExpiresAt', 'amazonProfileId', 'amazonSellerId'],
+      etsy: ['etsyAccessToken', 'etsyRefreshToken', 'etsyTokenExpiresAt', 'etsyShopId', 'etsyKeystring'],
+      reddit: ['redditAccessToken', 'redditRefreshToken', 'redditTokenExpiresAt', 'redditAdAccountId'],
       // LinkedIn was missing for v1.18.0–v1.18.9: OAuth registered in Go
       // but no disconnect path on the Electron side. RSI integration
       // audit caught it (2026-04-27). Cross-checked by the new
       // `every OAUTH_PLATFORMS entry has a disconnect keyMap` test in
       // oauth-persist.test.js.
-      linkedin: ['linkedinAccessToken', 'linkedinRefreshToken', 'linkedinAdAccountId'],
+      linkedin: ['linkedinAccessToken', 'linkedinRefreshToken', 'linkedinTokenExpiresAt', 'linkedinAdAccountId'],
       // Threads inherits from the Meta OAuth grant — disconnecting Meta
       // also clears threadsAccessToken. This entry exists so a
       // standalone Threads disconnect (when/if Threads gets its own
       // OAuth grant) wipes correctly without cross-impact on Meta.
       threads: ['threadsAccessToken'],
       slack: ['slackBotToken', 'slackWebhookUrl', 'slackChannel'],
-      discord: ['discordGuildId', 'discordChannelId'],
+      // discordBotToken is a legacy key (the bot token is Worker-held now, see
+      // oauth.go); it is cleared from _global if an old install still has it.
+      discord: ['discordGuildId', 'discordChannelId', 'discordWebhookUrl', 'discordBotToken'],
       fal: ['falApiKey'],
       elevenlabs: ['elevenLabsApiKey'],
       heygen: ['heygenApiKey'],
@@ -10691,87 +10727,61 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };
     if (keys.length === 0) {
-      return { success: false, error: 'Shopify Payments uses your Shopify connection — disconnect Shopify to remove it.' };
+      return { success: false, error: 'Shopify Payments uses your Shopify connection. Disconnect Shopify to remove it.' };
     }
 
-    // Keys that live in global config (not per-brand files)
-    const GLOBAL_KEYS_SET = new Set(['falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'foreplayApiKey', 'trendtrackApiKey', 'slackBotToken', 'slackWebhookUrl', 'slackChannel', 'discordGuildId', 'discordChannelId']);
-    const isGlobalPlatform = keys.every(k => GLOBAL_KEYS_SET.has(k));
-
-    // 1. Clear from global config (for global platforms + legacy single-brand setups)
-    const cfg = readConfig();
-    let globalChanged = false;
-    for (const key of keys) {
-      if (cfg[key] !== undefined && cfg[key] !== '') {
-        delete cfg[key];
-        globalChanged = true;
-      }
-    }
-    if (cfg._tokenTimestamps && cfg._tokenTimestamps[platform]) {
-      delete cfg._tokenTimestamps[platform];
-      globalChanged = true;
-    }
-    if (globalChanged) writeConfig(cfg);
-
-    // 2. Clear from the active brand's plaintext config (new format post-migration)
-    if (!isGlobalPlatform && brandName) {
-      const brandConfigPath = path.join(appRoot, '.claude', 'tools', `.merlin-config-${brandName}.json`);
-      try {
-        const brandCfg = JSON.parse(fs.readFileSync(brandConfigPath, 'utf8'));
-        let brandChanged = false;
-        for (const key of keys) {
-          if (brandCfg[key] !== undefined && brandCfg[key] !== '') {
-            delete brandCfg[key];
-            brandChanged = true;
-          }
-        }
-        if (brandChanged) {
-          const tmpPath = brandConfigPath + '.tmp';
-          fs.writeFileSync(tmpPath, JSON.stringify(brandCfg, null, 2));
-          fs.renameSync(tmpPath, brandConfigPath);
-        }
-      } catch { /* brand config may not exist — that's fine */ }
-
-      // 3. Clear from the old encrypted tokens file (legacy, may still exist on
-      // machines that haven't been migrated yet). Safe no-op if the file is gone.
-      const legacyTokensPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${brandName}`);
-      try {
-        const buf = fs.readFileSync(legacyTokensPath);
+    // A platform is universal when EVERY key it owns is a universal
+    // credential (UNIVERSAL_KEYS, the _global vault namespace). discordBotToken
+    // is the one legacy global key outside that set. Derived rather than
+    // hand-listed: the old hand-written set omitted arcadsApiKey, so an Arcads
+    // disconnect with a brand selected cleared the wrong scope and the tile
+    // stayed connected off the _global vault entry.
+    const isGlobalPlatform = keys.every(k => UNIVERSAL_KEYS.has(k) || DISCONNECT_EXTRA_GLOBAL_KEYS.has(k));
+    const brandConfigPath = (b) => path.join(appRoot, '.claude', 'tools', `.merlin-config-${b}.json`);
+    const result = applyDisconnect({ platform, brandName, keys, isGlobalPlatform }, {
+      readGlobalConfig: () => readConfig(),
+      writeGlobalConfig: (c) => writeConfig(c),
+      readBrandConfig: (b) => {
+        try { return JSON.parse(fs.readFileSync(brandConfigPath(b), 'utf8')); } catch { return null; }
+      },
+      writeBrandConfig: (b, c) => {
+        const p = brandConfigPath(b);
+        const tmpPath = p + '.tmp';
+        fs.writeFileSync(tmpPath, JSON.stringify(c, null, 2));
+        fs.renameSync(tmpPath, p);
+      },
+      // Legacy encrypted tokens file (machines not yet migrated). Safe no-op
+      // when the file is gone.
+      scrubLegacyTokens: (b, ks) => {
+        const legacyTokensPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${b}`);
+        let buf;
+        try { buf = fs.readFileSync(legacyTokensPath); } catch { return; }
         let tokens = {};
         if (canUseSafeStorage()) {
           try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch { tokens = JSON.parse(buf.toString('utf8')); }
         } else if (process.platform === 'darwin' && looksEncrypted(buf)) {
-          // macOS: skip legacy encrypted file — readBrandConfig handles migration
-          throw new Error('skip legacy on darwin');
+          return; // macOS: readBrandConfig handles migration of this file
         } else { tokens = JSON.parse(buf.toString('utf8')); }
         let changed = false;
-        for (const key of keys) {
-          if (tokens[key] !== undefined && tokens[key] !== '') {
-            delete tokens[key];
-            changed = true;
-          }
+        for (const key of ks) {
+          if (tokens[key] !== undefined) { delete tokens[key]; changed = true; }
         }
-        if (changed) {
-          if (canUseSafeStorage()) {
-            fs.writeFileSync(legacyTokensPath, safeStorage.encryptString(JSON.stringify(tokens)));
-          } else {
-            fs.writeFileSync(legacyTokensPath, JSON.stringify(tokens), { mode: 0o600 });
-          }
+        if (!changed) return;
+        if (canUseSafeStorage()) {
+          fs.writeFileSync(legacyTokensPath, safeStorage.encryptString(JSON.stringify(tokens)));
+        } else {
+          fs.writeFileSync(legacyTokensPath, JSON.stringify(tokens), { mode: 0o600 });
         }
-      } catch { /* legacy file may not exist — normal */ }
-    }
+      },
+      vaultDeleteKeys: (scope, ks) => vaultDeleteMany(scope, ks),
+      vaultRemainingKeys: (scope, ks) => vaultRemainingMany(scope, ks),
+      hasBrands: () => listBrandDirs(path.join(appRoot, 'assets', 'brands')).length > 0,
+      clearAuthFailure: (p, b) => authFailureStore.clear(p, b),
+    });
 
-    // 4. Clear vault entries for the disconnected platform
-    const vaultBrand = isGlobalPlatform ? '_global' : (brandName || '_global');
-    for (const key of keys) {
-      if (VAULT_SENSITIVE_KEYS.includes(key)) {
-        vaultDelete(vaultBrand, key);
-      }
-    }
-
-    // 5. Notify the renderer so the tile re-reads connection state
+    // Notify the renderer so every open tile re-reads connection state.
     if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
-    return { success: true };
+    return { success: true, scope: result.scope, brand: result.brand };
   } catch (err) { return { success: false, error: err.message }; }
 });
 
