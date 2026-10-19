@@ -737,7 +737,7 @@ const EXPORT_JOB_MAX_ATTEMPTS = 48;         // ~24h of hour-cap pauses
 //     checkpoint. google-ads-demandgen-push is excluded because it spends.
 const EXPORT_JOB_STALL_MS = 15 * 60 * 1000;
 const EXPORT_PROGRESS_PREFIX = 'MERLIN_PROGRESS ';
-const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export', 'shipstation-export', 'rakuten-export']);
+const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export', 'shipstation-export', 'rakuten-export', 'cin7-export']);
 
 // Parse one MERLIN_PROGRESS line into { stage, counts } or null.
 function parseExportProgressLine(line) {
@@ -3207,12 +3207,17 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── cin7 ──────────────────────────────────────────────────
-  // Cin7 Core inventory reporting (READ-ONLY — cin7.go ships no write
-  // verbs). BYOK: Account ID + Application Key from Cin7 Core → Settings →
-  // API, entered on the Cin7 tile.
+  // Cin7 inventory reporting and raw export (READ-ONLY: cin7.go, cin7_omni.go
+  // and cin7_export.go ship no write verbs, enforced by source-scan tests).
+  // Two products share the tile, picked on it (cin7Product) or auto-detected
+  // from the id shape: Cin7 Core (Account ID + Application Key from Settings >
+  // API) and Cin7 Omni (API username + API key from Settings > Integrations &
+  // API > API v1). export is Omni-only and runs as a resumable background
+  // job, like shipstation-export: it writes the brand's own data to local
+  // disk only and never spends, so it never cards.
   tools.push(defineTool({
     name: 'cin7',
-    description: 'Cin7 Core inventory reporting (read-only). Pulls products, stock levels, and sales-order stats into the dashboard. Actions: report (pull inventory/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved Account ID + Application Key). Connect by entering your Account ID + Application Key from Cin7 Core → Settings → API into the Cin7 tile.',
+    description: 'Cin7 inventory data (read-only), Cin7 Core or Cin7 Omni. Actions: report (pull inventory/metrics for a window, batchCount = days, default 30); export (Cin7 Omni only: full raw pull of every Omni entity, sales orders, quotes, purchase orders, credit notes, payments, fees, payouts, stock, stock adjustments and transfers, production jobs, products, product options, categories, BOMs, serial numbers, contacts, branches, users, vouchers, to JSONL plus a manifest of counts, bytes and date coverage; runs as a background job you poll with jobs_poll, waits out Omni rate limits and resumes from a checkpoint; no dates = full history, or startDate+endDate or days; cin7DateField picks modified (default) or created dates for the window; outputDir picks the folder); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved credentials). Cin7 Core: Account ID + Application Key from Cin7 Core Settings > API. Cin7 Omni: API username + API key from Cin7 Omni Settings > Integrations & API > API v1. Enter them on the Cin7 tile.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -3220,16 +3225,38 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'cin7' },
     input: {
-      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull inventory/metrics for the window. status → check connection (no API call). connect → how to get Cin7 API credentials. verify → validate the saved credentials.'),
+      action: z.enum(['report', 'export', 'status', 'connect', 'verify']).describe('report: pull inventory/metrics for the window. export: full raw JSONL export of Cin7 Omni as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get Cin7 API credentials. verify: validate the saved credentials.'),
       brand: brandSchema.optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+      days: z.coerce.number().int().optional().describe('export: only records in the last N days (UTC). Ignored when startDate is given. Omit every date param for full history.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('export: window start, YYYY-MM-DD inclusive, UTC. Omit for full history.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('export: window end, YYYY-MM-DD inclusive, UTC. Default open-ended.'),
+      cin7DateField: z.enum(['modified', 'created']).optional().describe('export: which date the window filters on, modified (default, catches edits) or created. Entities with only one date use that one.'),
+      outputDir: z.string().optional().describe('export: absolute folder for the JSONL files and manifest.json. Must be empty or a previous run of the same export. Default: a cin7-export folder under the brand results.'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
         return {
           summary: 'Connect Cin7',
-          instructions: 'Open the Cin7 tile in the Connections panel and enter your Account ID + Application Key (Cin7 Core → Settings → API).',
+          instructions: 'Open the Cin7 tile in the Connections panel and pick your product. Cin7 Core: enter the Account ID and Application Key from Cin7 Core Settings > API. Cin7 Omni: in Cin7 Omni open Settings > Integrations & API > API v1, add an API connection with Read permission on the areas you need, then enter its API username and API key. Then run action "verify".',
         };
+      }
+      // export is a full-history pull that cannot finish inside the MCP call
+      // boundary (Omni allows 60 calls a minute, 5000 a day), so it runs as a
+      // background job (jobs_poll for status). The engine checkpoints every
+      // page, so a retry resumes rather than restarts.
+      if (args.action === 'export') {
+        if (ctx.jobStore) {
+          const job = startExportJob(ctx, 'cin7', 'cin7-export', args);
+          return envelope.ok({
+            data: {
+              summary: 'Cin7 Omni raw export started in the background.',
+              jobId: job.jobId,
+              next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path. The files contain customer names and addresses: keep them where customer data is allowed.`,
+            },
+          });
+        }
+        return toEnvelope(await runBinary(ctx, 'cin7-export', args));
       }
       const actionMap = { report: 'cin7-report', status: 'cin7-status', verify: 'cin7-verify' };
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
@@ -4035,7 +4062,7 @@ function buildTools(tool, z, ctx) {
       if (args.platform === 'cin7') {
         return {
           summary: 'Cin7 connects via API credentials',
-          instructions: 'Click the Cin7 tile in the Connections panel and enter your Account ID + Application Key (Cin7 Core → Settings → API). Alternatively call mcp__merlin__cin7 with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+          instructions: 'Click the Cin7 tile in the Connections panel, pick Cin7 Core or Cin7 Omni, and enter the credentials (Core: Account ID + Application Key from Settings > API. Omni: API username + API key from Settings > Integrations & API > API v1). Alternatively call mcp__merlin__cin7 with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
         };
       }
       try {

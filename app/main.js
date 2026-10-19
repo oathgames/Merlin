@@ -2897,6 +2897,7 @@ function translateTool(toolName, input) {
       'loop-report':              { label: 'Pull Loop Returns metrics', cost: 'Free' },
       'cin7-verify':              { label: 'Verify your Cin7 credentials', cost: 'Free' },
       'cin7-report':              { label: 'Pull Cin7 inventory metrics', cost: 'Free' },
+      'cin7-export':              { label: 'Export your Cin7 Omni data to your computer', cost: 'Free' },
       'gorgias-setup':            { label: 'Verify your Gorgias credentials', cost: 'Free' },
       'gorgias-verify':           { label: 'Verify your Gorgias credentials', cost: 'Free' },
       'gorgias-tickets':          { label: 'List Gorgias support tickets (de-identified)', cost: 'Free' },
@@ -9473,7 +9474,7 @@ const BRAND_KEYS = [
   // Loop Returns — brand-specific BYOK (API key).
   'loopApiKey',
   // Cin7 Core — brand-specific BYOK (Account ID + Application Key).
-  'cin7AccountId', 'cin7ApplicationKey',
+  'cin7AccountId', 'cin7ApplicationKey', 'cin7Product',
   // Gorgias helpdesk — brand-specific BYOK (subdomain + account email + API
   // key). Mirror of brandScopedKeys in autocmo-core/vault.go.
   'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
@@ -10749,7 +10750,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       loop_returns: ['loopApiKey'],
       // Cin7 Core — Account ID + Application Key. Mirror of
       // platformVaultKeys["cin7"] in autocmo-core/oauth.go.
-      cin7: ['cin7AccountId', 'cin7ApplicationKey'],
+      cin7: ['cin7AccountId', 'cin7ApplicationKey', 'cin7Product'],
       // Gorgias — subdomain + account email + API key. Mirror of
       // platformVaultKeys["gorgias"] in autocmo-core/oauth.go.
       gorgias: ['gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey'],

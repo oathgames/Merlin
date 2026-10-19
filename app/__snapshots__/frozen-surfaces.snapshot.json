@@ -184,6 +184,7 @@
       "blogPublishMode",
       "cin7AccountId",
       "cin7ApplicationKey",
+      "cin7Product",
       "clarityApiToken",
       "dailyAdBudget",
       "discordChannelId",
@@ -746,12 +747,13 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Cin7 Core inventory reporting (read-only). Pulls products, stock levels, and sales-order stats into the dashboard. Actions: report (pull inventory/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved Account ID + Application Key). Connect by entering your Account ID + Application Key from Cin7 Core → Settings → API into the Cin7 tile.",
+      "description": "Cin7 inventory data (read-only), Cin7 Core or Cin7 Omni. Actions: report (pull inventory/metrics for a window, batchCount = days, default 30); export (Cin7 Omni only: full raw pull of every Omni entity, sales orders, quotes, purchase orders, credit notes, payments, fees, payouts, stock, stock adjustments and transfers, production jobs, products, product options, categories, BOMs, serial numbers, contacts, branches, users, vouchers, to JSONL plus a manifest of counts, bytes and date coverage; runs as a background job you poll with jobs_poll, waits out Omni rate limits and resumes from a checkpoint; no dates = full history, or startDate+endDate or days; cin7DateField picks modified (default) or created dates for the window; outputDir picks the folder); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved credentials). Cin7 Core: Account ID + Application Key from Cin7 Core Settings > API. Cin7 Omni: API username + API key from Cin7 Omni Settings > Integrations & API > API v1. Enter them on the Cin7 tile.",
       "input": {
         "action": {
-          "description": "report → pull inventory/metrics for the window. status → check connection (no API call). connect → how to get Cin7 API credentials. verify → validate the saved credentials.",
+          "description": "report: pull inventory/metrics for the window. export: full raw JSONL export of Cin7 Omni as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get Cin7 API credentials. verify: validate the saved credentials.",
           "enum": [
             "report",
+            "export",
             "status",
             "connect",
             "verify"
@@ -768,8 +770,36 @@
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
         },
+        "cin7DateField": {
+          "description": "export: which date the window filters on, modified (default, catches edits) or created. Entities with only one date use that one.",
+          "enum": [
+            "modified",
+            "created"
+          ],
+          "type": "string"
+        },
+        "days": {
+          "description": "export: only records in the last N days (UTC). Ignored when startDate is given. Omit every date param for full history.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "export: window end, YYYY-MM-DD inclusive, UTC. Default open-ended.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "outputDir": {
+          "description": "export: absolute folder for the JSONL files and manifest.json. Must be empty or a previous run of the same export. Default: a cin7-export folder under the brand results.",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "export: window start, YYYY-MM-DD inclusive, UTC. Omit for full history.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         }
       },
