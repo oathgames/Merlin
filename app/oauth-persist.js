@@ -245,7 +245,7 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   'faireApiToken',
   'shipStationApiKey', 'shipStationApiSecret',
   'loopApiKey',
-  'cin7AccountId', 'cin7ApplicationKey',
+  'cin7AccountId', 'cin7ApplicationKey', 'cin7Product',
   'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
   // QuickBooks OAuth tokens + non-secret identifiers. The tokens are
   // vaulted (VAULT_SENSITIVE_KEYS); realmId / tokenExpiresAt / useSandbox

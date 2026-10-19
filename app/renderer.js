@@ -7567,35 +7567,101 @@ function showShipStationConnectModal(activeBrand) {
   });
 }
 
-// Cin7 connect modal — two chained steps (Account ID -> Application Key).
-// Cin7's API authenticates with both values on every request, so the
-// single-field API_KEY_PLATFORMS modal can't collect them. Both fields are
-// vaulted (VAULT_SENSITIVE_KEYS). See cin7.go.
+// Cin7 connect modal: a product choice (Cin7 Core or Cin7 Omni), then two
+// chained credential steps. Both products authenticate with two values on
+// every request, so the single-field API_KEY_PLATFORMS modal can't collect
+// them. The choice is saved as cin7Product so the engine never has to guess
+// (cin7Mode in cin7.go falls back to the id shape only when it is unset).
+// Both credentials are vaulted (VAULT_SENSITIVE_KEYS); cin7Product is not a
+// secret. See cin7.go and cin7_omni.go.
+const CIN7_PRODUCT_COPY = {
+  core: {
+    name: 'Cin7 Core',
+    idTitle: 'Cin7 Core: Account ID',
+    idBody: 'In Cin7 Core open Settings, then API, and copy the Account ID. (Step 2 of 3)',
+    idPlaceholder: 'Cin7 Core Account ID',
+    idMissing: 'Enter your Account ID',
+    keyTitle: 'Cin7 Core: Application Key',
+    keyBody: 'Enter the Application Key from the same API page. It is stored encrypted and never shown again. Merlin only reads from Cin7. (Step 3 of 3)',
+    keyPlaceholder: 'Cin7 Core Application Key',
+    keyMissing: 'Enter your Application Key',
+  },
+  omni: {
+    name: 'Cin7 Omni',
+    idTitle: 'Cin7 Omni: API username',
+    idBody: 'In Cin7 Omni open Settings, then Integrations & API, then API v1. Add an API connection with Read permission on the areas you want in Merlin, then copy its API username. (Step 2 of 3)',
+    idPlaceholder: 'Cin7 Omni API username',
+    idMissing: 'Enter your API username',
+    keyTitle: 'Cin7 Omni: API key',
+    keyBody: 'Enter the API key from the same API connection. It is stored encrypted and never shown again. Merlin only reads from Cin7. (Step 3 of 3)',
+    keyPlaceholder: 'Cin7 Omni API key',
+    keyMissing: 'Enter your API key',
+  },
+};
+function buildCin7ProductChoiceNode() {
+  const wrap = document.createElement('div');
+  const intro = document.createElement('p');
+  intro.textContent = 'Which Cin7 do you use? (Step 1 of 3)';
+  wrap.appendChild(intro);
+  [['omni', 'Cin7 Omni', 'Older Cin7, login at go.cin7.com'], ['core', 'Cin7 Core', 'Formerly DEAR Inventory, login at inventory.dearsystems.com']].forEach(([value, label, hint], i) => {
+    const row = document.createElement('label');
+    row.style.display = 'block';
+    row.style.margin = '8px 0';
+    row.style.cursor = 'pointer';
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'cin7-product';
+    input.value = value;
+    if (i === 0) input.checked = true;
+    row.appendChild(input);
+    const text = document.createElement('span');
+    text.textContent = ' ' + label + ': ' + hint;
+    row.appendChild(text);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
 function showCin7ConnectModal(activeBrand) {
+  const choiceNode = buildCin7ProductChoiceNode();
   showModal({
-    title: 'Cin7 — Account ID',
-    body: 'Enter your Cin7 Account ID (Cin7 → Settings → Integrations & API). (Step 1 of 2)',
-    inputPlaceholder: 'Cin7 Account ID',
+    title: 'Connect Cin7',
+    bodyNode: choiceNode,
     confirmLabel: 'Next',
     cancelLabel: 'Cancel',
-    onConfirm: async (v1) => {
-      const accountId = (v1 || '').trim();
-      if (!accountId) { showModalError('Enter your Account ID'); throw new Error('validation'); }
+    onConfirm: async () => {
+      const picked = choiceNode.querySelector('input[name="cin7-product"]:checked');
+      const product = picked && CIN7_PRODUCT_COPY[picked.value] ? picked.value : 'omni';
+      const copy = CIN7_PRODUCT_COPY[product];
       setTimeout(() => {
         showModal({
-          title: 'Cin7 — Application Key',
-          body: 'Enter your Cin7 Application Key (same API settings page). It is stored encrypted and never shown again. (Step 2 of 2)',
-          inputPlaceholder: 'Cin7 Application Key',
-          confirmLabel: 'Save',
+          title: copy.idTitle,
+          body: copy.idBody,
+          inputPlaceholder: copy.idPlaceholder,
+          confirmLabel: 'Next',
           cancelLabel: 'Cancel',
-          onConfirm: async (v2) => {
-            const appKey = (v2 || '').trim();
-            if (!appKey) { showModalError('Enter your Application Key'); throw new Error('validation'); }
-            let r = await merlin.saveConfigField('cin7AccountId', accountId, activeBrand);
-            if (!r.success) { showModalError(r.error || 'Failed to save Account ID'); throw new Error('save'); }
-            r = await merlin.saveConfigField('cin7ApplicationKey', appKey, activeBrand);
-            if (!r.success) { showModalError(r.error || 'Failed to save Application Key'); throw new Error('save'); }
-            loadConnections();
+          onConfirm: async (v1) => {
+            const accountId = (v1 || '').trim();
+            if (!accountId) { showModalError(copy.idMissing); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: copy.keyTitle,
+                body: copy.keyBody,
+                inputPlaceholder: copy.keyPlaceholder,
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v2) => {
+                  const appKey = (v2 || '').trim();
+                  if (!appKey) { showModalError(copy.keyMissing); throw new Error('validation'); }
+                  let r = await merlin.saveConfigField('cin7Product', product, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save your Cin7 product', 'Cin7')); throw new Error('save'); }
+                  r = await merlin.saveConfigField('cin7AccountId', accountId, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save ' + copy.idPlaceholder, 'Cin7')); throw new Error('save'); }
+                  r = await merlin.saveConfigField('cin7ApplicationKey', appKey, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save ' + copy.keyPlaceholder, 'Cin7')); throw new Error('save'); }
+                  loadConnections();
+                },
+              });
+            }, 0);
           },
         });
       }, 0);
