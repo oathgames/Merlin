@@ -638,3 +638,35 @@ test('meta_launch_test_batch cents-checks per-ad budgets even with no top-level 
   assert.equal(execFileCalls.length, 0, 'a refused per-ad budget must never reach the engine');
   assert.match(JSON.stringify(res), /ads\[0\]\.dailyBudget=5000/);
 });
+
+// ── skipThumbnails (Hard-Won Rule 23, 2026-10-17) ─────────────────────
+// The engine reads cmd.SkipThumbnails on meta-insights and meta-list-ads to
+// save up to 4 Meta reads per run, but neither MCP route declared it, so the
+// saving was unreachable. Assert the declaration AND the --cmd landing, through
+// the tool handlers a caller actually reaches.
+test('skipThumbnails is declared as a boolean on meta_review_performance and meta_audit', () => {
+  for (const toolName of ['meta_review_performance', 'meta_audit']) {
+    const schema = byName(toolName).schema;
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(schema, 'skipThumbnails'),
+      `${toolName}.skipThumbnails must be declared: the engine reads it and zod strips what is not declared.`,
+    );
+  }
+});
+
+test('meta_review_performance skipThumbnails reaches the meta-insights --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_review_performance').handler({ brand: 'ripit', batchCount: 7, skipThumbnails: true });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-insights');
+  assert.equal(cmd.skipThumbnails, true, 'skipThumbnails must reach the engine');
+});
+
+test('meta_audit list-ads skipThumbnails reaches the meta-list-ads --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_audit').handler({ action: 'list-ads', brand: 'ripit', targetAdSetId: '120001', skipThumbnails: true });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-list-ads');
+  assert.equal(cmd.targetAdSetId, '120001');
+  assert.equal(cmd.skipThumbnails, true, 'skipThumbnails must reach the engine');
+});
