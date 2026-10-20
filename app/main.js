@@ -2956,6 +2956,8 @@ function translateTool(toolName, input) {
       // user gate that produces it.
       'klaviyo-flow-delete':         { label: 'Permanently delete this Klaviyo flow', cost: 'Cannot be undone — the flow, its steps and its reporting history are removed' },
       'klaviyo-template-delete':     { label: 'Permanently delete this Klaviyo email template', cost: 'Cannot be undone — any campaign or flow message still using it breaks' },
+      'klaviyo-subscribe-bulk':      { label: 'Import a list of emails into Klaviyo as subscribed to email marketing', cost: 'No ad spend. Adds every profile to Klaviyo (raises your Klaviyo profile count and bill) and subscribes it to email marketing; cannot be bulk-undone' },
+      'klaviyo-list-create':         { label: 'Create a new Klaviyo list', cost: 'Free. Returns the existing list instead if one already has this exact name' },
       'postscript-automation-delete':{ label: 'Permanently delete this Postscript SMS automation', cost: 'Cannot be undone — the flow stops sending and its steps are removed' },
       // Engine actions gated by requireApproval whose card had never been
       // wired (2026-09-04). Plain-English impact, not the action name.
@@ -3018,6 +3020,27 @@ function translateTool(toolName, input) {
       'template-delete': { label: 'Permanently delete this Klaviyo email template', cost: 'Cannot be undone — any campaign or flow message still using it breaks' },
     };
     if (mcpKlaviyoLabels[input.action]) return mcpKlaviyoLabels[input.action];
+    // Bulk consent import: name the brand, the source and the target so the
+    // card says exactly which emails go where, and repeat the consent date.
+    if (input.action === 'subscribe-bulk') {
+      const brandLabel = (typeof input.brand === 'string' && input.brand.trim()) ? input.brand.trim().toUpperCase() : 'this brand';
+      const clean = (v) => String(v || '').replace(/\s+/g, ' ').slice(0, 160);
+      const source = input.csvPath ? clean(path.basename(String(input.csvPath)))
+        : `${clean(input.csvPattern || '*.csv')} in ${clean(input.csvDir ? path.basename(String(input.csvDir)) : 'the folder')}`;
+      const target = input.listId ? `list ${clean(input.listId)}`
+        : input.listName ? `list "${clean(input.listName)}"`
+          : `one list per file named "${clean(input.listNameTemplate)}"`;
+      const consent = input.historicalImport === false
+        ? 'not marked as a historical import, so "Added to list" flows on these lists WILL send'
+        : `consent dated ${clean(input.consentedAt) || '(missing, the engine will refuse)'}`;
+      return {
+        label: `Subscribe the emails in ${source} to ${brandLabel}'s Klaviyo email marketing, into ${target}`,
+        cost: `No ad spend. Every accepted profile is added to Klaviyo as SUBSCRIBED (${consent}); unsubscribed and spam-reported profiles are skipped. Raises the Klaviyo profile count and cannot be bulk-undone`,
+      };
+    }
+    if (input.action === 'list-create') {
+      return { label: `Create the Klaviyo list "${String(input.listName || '').slice(0, 160)}"`, cost: 'Free. Returns the existing list instead if one already has this exact name' };
+    }
   }
   if (toolName === 'mcp__merlin__postscript' && input && input.action === 'automation-delete') {
     return {
@@ -3565,6 +3588,11 @@ async function handleToolApproval(toolName, input, opts) {
       // invocation away from being skipped.
       'klaviyo-flow-delete', 'klaviyo-template-delete',
       'mailchimp-campaign-delete', 'postscript-automation-delete',
+      // Klaviyo bulk consent import + list create (2026-10-20). Both are
+      // requireApproval-gated in the engine and carded on the MCP path; the
+      // Bash path cards them too (a Bash dry run cards as well, which only
+      // over-protects).
+      'klaviyo-subscribe-bulk', 'klaviyo-list-create',
       // Same bypass shape again (2026-09-04). Both are requireApproval-gated
       // in the engine, and both are now carded on the MCP path via
       // CARDED_DESTRUCTIVE_ACTIONS ('quiz-funnel-gen' on the content tool,
