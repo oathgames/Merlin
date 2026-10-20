@@ -57,6 +57,7 @@
       "mcp__merlin__meta_promote_to_retargeting": "Promote ad into Meta retargeting",
       "mcp__merlin__meta_refresh_creative_spec": "Rebuild a live Meta ad's creative enhancement settings",
       "mcp__merlin__meta_scale_winner": "Scale this winning Meta ad",
+      "mcp__merlin__meta_set_attribution": "Change the attribution window of a live Meta ad set",
       "mcp__merlin__meta_set_frequency_cap": "Set a frequency cap on a Meta ad set",
       "mcp__merlin__meta_set_optimization_goal": "Change what a live Meta ad set optimizes for",
       "mcp__merlin__meta_upload_customer_list": "Upload a customer list as a Meta audience",
@@ -85,6 +86,7 @@
       "mcp__merlin__meta_research_competitor_ads": "competitor-scan",
       "mcp__merlin__meta_review_performance": "insights",
       "mcp__merlin__meta_scale_winner": "duplicate",
+      "mcp__merlin__meta_set_attribution": "duplicate",
       "mcp__merlin__meta_set_frequency_cap": "setup",
       "mcp__merlin__meta_set_optimization_goal": "duplicate",
       "mcp__merlin__meta_setup_account": "discover",
@@ -4301,6 +4303,65 @@
         }
       },
       "name": "meta_set_advantage_audience"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "meta"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Change the attribution setting of an existing Meta AD SET (which clicks and views count as conversions). Defaults to the Merlin standard: 7-day click, 1-day view, 1-day engaged-view. Conversion-optimized ad sets only (OFFSITE_CONVERSIONS or VALUE). Edits the live ad set in place and verifies by reading it back; no-ops if it already matches. Can send the ad set back into learning. If Meta refuses the edit on a published ad set, duplicate the ad set and set the window on the copy.",
+      "input": {
+        "approved": {
+          "description": "Approval flag for this write. The engine REFUSES the edit without it; set true only with explicit user approval to change a live ad set's attribution.",
+          "type": "boolean"
+        },
+        "attributionSpec": {
+          "description": "Attribution windows to set. Omit for the Merlin standard (7d click, 1d view, 1d engaged-view). Allowed: CLICK_THROUGH 1 or 7 (required), VIEW_THROUGH 1, ENGAGED_VIDEO_VIEW 1.",
+          "items": {
+            "properties": {
+              "event_type": {
+                "enum": [
+                  "CLICK_THROUGH",
+                  "VIEW_THROUGH",
+                  "ENGAGED_VIDEO_VIEW"
+                ],
+                "type": "string"
+              },
+              "window_days": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "event_type",
+              "window_days"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "brand": {
+          "description": "Brand name",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "targetAdSetId": {
+          "description": "The ad set whose attribution setting to change",
+          "type": "string"
+        }
+      },
+      "name": "meta_set_attribution"
     },
     {
       "annotations": {

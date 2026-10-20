@@ -848,6 +848,49 @@ test('meta_set_optimization_goal refuses a blank ad set id before hitting the bi
   assert.equal(execFileCalls.length, 0, 'a blank ad set id must not reach the binary');
 });
 
+// meta_set_attribution (2026-10-20): single-field sibling of the goal edit.
+test('meta_set_attribution routes targetAdSetId, attributionSpec and approved', async () => {
+  assert.ok(INTENT_ACTIONS.has('meta-set-attribution'),
+    'no intent tool routes to meta-set-attribution; the engine action would be unreachable.');
+  execFileCalls.length = 0;
+  await tool('meta_set_attribution').handler({
+    brand: 'acme',
+    targetAdSetId: '120210000000000000',
+    attributionSpec: [{ event_type: 'CLICK_THROUGH', window_days: 7 }, { event_type: 'VIEW_THROUGH', window_days: 1 }],
+    approved: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-set-attribution');
+  assert.equal(cmd.targetAdSetId, '120210000000000000',
+    'runMetaSetAttribution reads cmd.TargetAdSetID and fatals without it.');
+  assert.deepEqual(cmd.attributionSpec, [{ event_type: 'CLICK_THROUGH', window_days: 7 }, { event_type: 'VIEW_THROUGH', window_days: 1 }],
+    'the engine reads cmd.AttributionSpec (json "attributionSpec"); a dropped spec silently applies the default.');
+  assert.equal(cmd.approved, true);
+});
+
+test('meta_set_attribution omitting the spec sends none (engine applies the standard) and never invents approval', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_attribution').handler({ brand: 'acme', targetAdSetId: '120210000000000000' });
+  const cmd = lastCmd();
+  assert.ok(!('attributionSpec' in cmd), 'an omitted spec must stay absent so the engine uses the configured default.');
+  assert.ok(!('approved' in cmd) || cmd.approved !== true,
+    'the handler must never auto-set approved.');
+});
+
+test('meta_set_attribution refuses a blank ad set id before hitting the binary', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_set_attribution').handler({ brand: 'acme', targetAdSetId: ' ', approved: true });
+  assert.match(JSON.stringify(res), /targetAdSetId is required/);
+  assert.equal(execFileCalls.length, 0);
+});
+
+test('meta_set_attribution refuses an empty attributionSpec before hitting the binary', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_set_attribution').handler({ brand: 'acme', targetAdSetId: '1', attributionSpec: [], approved: true });
+  assert.match(JSON.stringify(res), /attributionSpec is empty/);
+  assert.equal(execFileCalls.length, 0);
+});
+
 test('meta_clone_adset carries every optional override into --cmd', async () => {
   execFileCalls.length = 0;
   await tool('meta_clone_adset').handler({
@@ -922,7 +965,7 @@ test('meta_set_frequency_cap refuses a window past Meta\'s 90-day cap locally', 
 // dailyBudget is omitted; the goal change has no budget field at all).
 test('the spend-shaped ad-set writes route to an always-cards action', () => {
   const policySrc = fs.readFileSync(path.join(APP_DIR, 'mcp-approval-policy.js'), 'utf8');
-  for (const name of ['meta_set_optimization_goal', 'meta_clone_adset']) {
+  for (const name of ['meta_set_optimization_goal', 'meta_clone_adset', 'meta_set_attribution']) {
     assert.match(policySrc, new RegExp(`'mcp__merlin__${name}':\\s*'duplicate'`),
       `${name} is costImpact:'spend' and must route to 'duplicate' — 'push' would auto-approve it in-cap.`);
   }
