@@ -302,6 +302,15 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // so a human confirms every run. The engine (gorgias-export-raw) also
   // refuses without approved:true.
   'export-raw',
+  // Klaviyo bulk consent import (2026-10-20, klaviyo-bulk-subscribe).
+  // resolveMerlinAction maps klaviyo {action:'subscribe-bulk'} to this only
+  // when dryRun is literally false; every other value routes to READ_ONLY
+  // 'dry-run'. A real run subscribes up to millions of profiles to email
+  // marketing (and creates missing lists), which is not undoable at scale
+  // and changes who a brand can email, so a human confirms every run. The
+  // engine refuses without approved:true (requireApproval). 'list-create'
+  // is the single idempotent list create, carded as a live account write.
+  'subscribe-bulk', 'list-create',
 ]));
 
 // ── Intent-tool routing ─────────────────────────────────────────────
@@ -475,6 +484,13 @@ function resolveMerlinAction(toolName, input) {
     if (rawAction === 'create-ad-squad') return { effectiveAction: 'duplicate', label: null };
     if (rawAction === 'create-audience') return { effectiveAction: 'setup', label: null };
     if (rawAction === 'pixels' || rawAction === 'ad-squads') return { effectiveAction: 'list', label: null };
+  }
+  // REGRESSION GUARD (2026-10-20, klaviyo-bulk-subscribe): subscribe-bulk is
+  // a dry run unless dryRun is literally false (the engine applies the same
+  // rule), so only that exact value routes to the carded 'subscribe-bulk'.
+  // Anything else is the read-only plan and auto-approves as 'dry-run'.
+  if (toolName === 'mcp__merlin__klaviyo' && rawAction === 'subscribe-bulk') {
+    return { effectiveAction: (input && input.dryRun === false) ? 'subscribe-bulk' : 'dry-run', label: null };
   }
   if (rawAction) return { effectiveAction: rawAction, label: null };
   const mapped = INTENT_TOOL_TO_ACTION[toolName];

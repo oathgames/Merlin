@@ -31,11 +31,13 @@
       "flows-bulk-import",
       "install-ga4",
       "install-quiz-funnel",
+      "list-create",
       "post",
       "publish",
       "quiz-funnel-gen",
       "resume-all",
       "segment-create",
+      "subscribe-bulk",
       "sync-shopify",
       "template-delete",
       "tier1-cleanup",
@@ -2281,7 +2283,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email's content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"), or with measurement \"unique\" distinct profiles per day, or \"sum_value\" the summed event value (e.g. order revenue). segment-get reads one segment definition in plain language (ANDed groups of ORed conditions, Apple Mail Privacy machine-open filters called out) plus its profile_count. Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\". For \"what is in this segment\" / \"does this segment count machine opens\", use \"segment-get\" with segmentId (ids come from segments-list).",
+      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email's content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"), or with measurement \"unique\" distinct profiles per day, or \"sum_value\" the summed event value (e.g. order revenue). segment-get reads one segment definition in plain language (ANDed groups of ORed conditions, Apple Mail Privacy machine-open filters called out) plus its profile_count. Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\". For \"what is in this segment\" / \"does this segment count machine opens\", use \"segment-get\" with segmentId (ids come from segments-list). To import a CSV (or a folder of CSVs) of consented emails into lists as SUBSCRIBED, use \"subscribe-bulk\": it is a DRY RUN by default (rows, valid/duplicate counts, target lists, calls and time needed, nothing written); show the user that report, then pass dryRun:false only when they ask to import. Profiles Klaviyo has as unsubscribed, spam-reported or manually suppressed are always skipped. \"list-create\" makes one list by exact name, idempotently.",
       "input": {
         "action": {
           "description": "Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)",
@@ -2313,7 +2315,9 @@
             "segments-list",
             "segment-create",
             "segment-get",
-            "export"
+            "export",
+            "list-create",
+            "subscribe-bulk"
           ],
           "type": "string"
         },
@@ -2339,9 +2343,33 @@
           "description": "Klaviyo campaign ID to send/schedule (campaign-send, campaign-schedule). The campaign must already exist as a draft in Klaviyo.",
           "type": "string"
         },
+        "consentedAt": {
+          "description": "subscribe-bulk: when the original consent was collected, YYYY-MM-DD or RFC3339, in the past. Required for the real run while historicalImport is on.",
+          "type": "string"
+        },
+        "csvDir": {
+          "description": "subscribe-bulk: a folder of CSVs (use with csvPattern and listNameTemplate). Files run in name order.",
+          "type": "string"
+        },
+        "csvPath": {
+          "description": "subscribe-bulk: one CSV with an Email column (or a single headerless column of emails).",
+          "type": "string"
+        },
+        "csvPattern": {
+          "description": "subscribe-bulk: file-name pattern inside csvDir, e.g. \"F21_Verified_*.csv\". Default \"*.csv\".",
+          "type": "string"
+        },
+        "customSource": {
+          "description": "subscribe-bulk: consent source label stored on each profile. Default \"Merlin bulk import\".",
+          "type": "string"
+        },
         "dir": {
           "description": "Directory of files for bulk-upload (.html) or image-upload (.png/.jpg/.gif/.webp). Must be inside assets/brands/<brand>/. For image-upload, files upload in filename order, so a 01_/02_/03_ prefix round-trips as the flow order.",
           "type": "string"
+        },
+        "dryRun": {
+          "description": "subscribe-bulk only. Defaults to TRUE: reads the files and Klaviyo (lists, suppressed profiles) and reports rows, valid/duplicate/invalid counts, target lists, calls needed and duration, and writes NOTHING to Klaviyo. Pass false (with approved:true) only after the user reviewed the dry run and asked to import.",
+          "type": "boolean"
         },
         "editorType": {
           "description": "Klaviyo editor the created template opens in: 'SYSTEM_DRAGGABLE' for the drag-and-drop builder a marketer can edit visually (use this for CAMPAIGN templates), or 'CODE' for raw HTML (the default, and correct for flow templates Merlin owns end to end). Klaviyo may store a different editor than requested; the result reports editorTypeStored so a silent downgrade is visible.",
@@ -2367,6 +2395,10 @@
           "description": "When true, flows-bulk-import bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.",
           "type": "boolean"
         },
+        "historicalImport": {
+          "description": "subscribe-bulk: default true. Records the import as consent collected in the past (needs consentedAt): Klaviyo skips double opt-in emails and \"Added to list\" flows. Flows triggered by \"Subscribed to Email Marketing\" are NOT documented as skipped.",
+          "type": "boolean"
+        },
         "htmlContent": {
           "description": "Raw email HTML body (create/update). Max 5 MB.",
           "type": "string"
@@ -2379,9 +2411,27 @@
           "description": "When true on flow-get, request the heavy `definition` blob (full flow topology) via additional-fields[flow]=definition. Default true. Set false to skip and get only the summary attributes.",
           "type": "boolean"
         },
+        "listId": {
+          "description": "subscribe-bulk: the Klaviyo list id every CSV goes into (ids from action \"lists\"). Give exactly one of listId, listName, listNameTemplate.",
+          "type": "string"
+        },
+        "listName": {
+          "description": "list-create: exact name of the list to create (an existing list with this exact name is returned instead). subscribe-bulk: exact name of the one target list; created as single opt-in on the real run if missing.",
+          "type": "string"
+        },
+        "listNameTemplate": {
+          "description": "subscribe-bulk with csvDir: one list per file. {n} = the last number in the file name (zero padding kept), {basename} = file name without extension. e.g. \"F21_Warmup_Batch_{n}\" maps F21_Verified_07.csv to F21_Warmup_Batch_07.",
+          "type": "string"
+        },
         "manifestPath": {
           "description": "Filesystem path to a flow manifest JSON for flows-bulk-import. MUST live under assets/brands/<brand>/email/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {manifest_version, brand, flows:[{name, status?, trigger, steps}, ...]}. References uploaded templates by template_id (run templates-bulk-upload first to get the IDs).",
           "type": "string"
+        },
+        "maxMinutes": {
+          "description": "subscribe-bulk: engine time budget per invocation before it checkpoints and pauses (default 25). The background job re-invokes until done.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
         },
         "measurement": {
           "description": "metric-aggregate only: count (default) = events per day, unique = distinct profiles per day (per-day uniques do NOT add up to a window unique), sum_value = summed event value per day (e.g. revenue on an order metric).",
@@ -2402,6 +2452,14 @@
         },
         "nameTemplate": {
           "description": "Format string for bulk-upload, e.g. \"POG / 01-welcome / {basename}\". {basename} = filename without extension.",
+          "type": "string"
+        },
+        "optInProcess": {
+          "description": "list-create / lists created by subscribe-bulk. Default single_opt_in. A double opt-in list emails a confirmation to every profile added without historicalImport.",
+          "enum": [
+            "single_opt_in",
+            "double_opt_in"
+          ],
           "type": "string"
         },
         "replyTo": {

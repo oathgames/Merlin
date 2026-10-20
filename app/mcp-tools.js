@@ -833,7 +833,9 @@ function exportJobRunFn(ctx, action, args) {
       // out and re-invoke; checkpoints make the re-run a resume.
       let parsed = null;
       try {
-        const m = (last.text || '').match(/\{[\s\S]*"exported"[\s\S]*\}/);
+        // "resumable" is the result key of non-export resumable jobs
+        // (klaviyo-subscribe-bulk), which use the same paused contract.
+        const m = (last.text || '').match(/\{[\s\S]*"(?:exported|resumable)"[\s\S]*\}/);
         if (m) parsed = JSON.parse(m[0]);
       } catch { /* unparseable output — treat as done */ }
       if (parsed && parsed.paused) {
@@ -1923,7 +1925,7 @@ function buildTools(tool, z, ctx) {
   //                              cap is plan-tier-global, not per-endpoint).
   tools.push(defineTool({
     name: 'klaviyo',
-    description: 'Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email\'s content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow ("which subject line is winning"); metric-aggregate returns per-day counts of any tracked metric ("how many times did Started Checkout fire"), or with measurement "unique" distinct profiles per day, or "sum_value" the summed event value (e.g. order revenue). segment-get reads one segment definition in plain language (ANDed groups of ORed conditions, Apple Mail Privacy machine-open filters called out) plus its profile_count. Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI ("how is my welcome series doing"), use action="flow-performance". For per-email A/B inside a flow ("which welcome email is winning"), use "flow-message-performance". For metric time-series ("how many checkouts last week"), use "metric-aggregate". For "what is in this segment" / "does this segment count machine opens", use "segment-get" with segmentId (ids come from segments-list).',
+    description: 'Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email\'s content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow ("which subject line is winning"); metric-aggregate returns per-day counts of any tracked metric ("how many times did Started Checkout fire"), or with measurement "unique" distinct profiles per day, or "sum_value" the summed event value (e.g. order revenue). segment-get reads one segment definition in plain language (ANDed groups of ORed conditions, Apple Mail Privacy machine-open filters called out) plus its profile_count. Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI ("how is my welcome series doing"), use action="flow-performance". For per-email A/B inside a flow ("which welcome email is winning"), use "flow-message-performance". For metric time-series ("how many checkouts last week"), use "metric-aggregate". For "what is in this segment" / "does this segment count machine opens", use "segment-get" with segmentId (ids come from segments-list). To import a CSV (or a folder of CSVs) of consented emails into lists as SUBSCRIBED, use "subscribe-bulk": it is a DRY RUN by default (rows, valid/duplicate counts, target lists, calls and time needed, nothing written); show the user that report, then pass dryRun:false only when they ask to import. Profiles Klaviyo has as unsubscribed, spam-reported or manually suppressed are always skipped. "list-create" makes one list by exact name, idempotently.',
     // REGRESSION GUARD (2026-04-29, Gitar PR #151 finding): klaviyo
     // tool's expanded action surface includes template-create / -update /
     // -delete and bulk-template-upload (51+ writes per call). Every other
@@ -2004,6 +2006,14 @@ function buildTools(tool, z, ctx) {
         // cursor pagination of profiles/lists/segments/campaigns/flows/metrics/
         // events to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt.
         'export',
+        // list-create: idempotent create of ONE list by exact name (returns
+        // the existing list instead of making a duplicate). Carded write.
+        'list-create',
+        // subscribe-bulk: import CSVs of consented emails into lists with
+        // email marketing consent SUBSCRIBED. DRY RUN by default; dryRun:false
+        // is the carded consent write (CARDED_DESTRUCTIVE_ACTIONS). Runs as a
+        // background job (jobs_poll) and resumes from its checkpoint.
+        'subscribe-bulk',
       ]).describe('Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (performance/campaigns/flow-performance/flow-message-performance/metric-aggregate). Default 30.'),
@@ -2044,6 +2054,19 @@ function buildTools(tool, z, ctx) {
       includeDefinition: z.boolean().optional().describe('When true on flow-get, request the heavy `definition` blob (full flow topology) via additional-fields[flow]=definition. Default true. Set false to skip and get only the summary attributes.'),
       manifestPath: z.string().optional().describe('Filesystem path to a flow manifest JSON for flows-bulk-import. MUST live under assets/brands/<brand>/email/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {manifest_version, brand, flows:[{name, status?, trigger, steps}, ...]}. References uploaded templates by template_id (run templates-bulk-upload first to get the IDs).'),
       forceReimport: z.boolean().optional().describe('When true, flows-bulk-import bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.'),
+      // list-create / subscribe-bulk fields
+      listId: z.string().optional().describe('subscribe-bulk: the Klaviyo list id every CSV goes into (ids from action "lists"). Give exactly one of listId, listName, listNameTemplate.'),
+      listName: z.string().optional().describe('list-create: exact name of the list to create (an existing list with this exact name is returned instead). subscribe-bulk: exact name of the one target list; created as single opt-in on the real run if missing.'),
+      listNameTemplate: z.string().optional().describe('subscribe-bulk with csvDir: one list per file. {n} = the last number in the file name (zero padding kept), {basename} = file name without extension. e.g. "F21_Warmup_Batch_{n}" maps F21_Verified_07.csv to F21_Warmup_Batch_07.'),
+      optInProcess: z.enum(['single_opt_in', 'double_opt_in']).optional().describe('list-create / lists created by subscribe-bulk. Default single_opt_in. A double opt-in list emails a confirmation to every profile added without historicalImport.'),
+      csvPath: z.string().optional().describe('subscribe-bulk: one CSV with an Email column (or a single headerless column of emails).'),
+      csvDir: z.string().optional().describe('subscribe-bulk: a folder of CSVs (use with csvPattern and listNameTemplate). Files run in name order.'),
+      csvPattern: z.string().optional().describe('subscribe-bulk: file-name pattern inside csvDir, e.g. "F21_Verified_*.csv". Default "*.csv".'),
+      dryRun: z.boolean().optional().describe('subscribe-bulk only. Defaults to TRUE: reads the files and Klaviyo (lists, suppressed profiles) and reports rows, valid/duplicate/invalid counts, target lists, calls needed and duration, and writes NOTHING to Klaviyo. Pass false (with approved:true) only after the user reviewed the dry run and asked to import.'),
+      historicalImport: z.boolean().optional().describe('subscribe-bulk: default true. Records the import as consent collected in the past (needs consentedAt): Klaviyo skips double opt-in emails and "Added to list" flows. Flows triggered by "Subscribed to Email Marketing" are NOT documented as skipped.'),
+      consentedAt: z.string().optional().describe('subscribe-bulk: when the original consent was collected, YYYY-MM-DD or RFC3339, in the past. Required for the real run while historicalImport is on.'),
+      customSource: z.string().optional().describe('subscribe-bulk: consent source label stored on each profile. Default "Merlin bulk import".'),
+      maxMinutes: z.coerce.number().int().optional().describe('subscribe-bulk: engine time budget per invocation before it checkpoints and pauses (default 25). The background job re-invokes until done.'),
     },
     // Handler does NOT auto-set args.approved — that bypasses the safety
     // rail. The host approval card (CARDED_DESTRUCTIVE_ACTIONS in
@@ -2063,6 +2086,27 @@ function buildTools(tool, z, ctx) {
             summary: 'Klaviyo full-history export started in the background.',
             jobId: job.jobId,
             next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path.`,
+          },
+        });
+      }
+      // subscribe-bulk: a real import is ~1 call per 1000 profiles at
+      // Merlin's cap (9.6M profiles is hours), and even the dry run pages
+      // through every suppressed profile. Both run as a background job;
+      // the engine checkpoints after every call and pauses on its time
+      // budget, and the job loop re-invokes it. NOT restart-resumable: the
+      // real run's approval is an in-memory card click (see
+      // RESTART_RESUMABLE_EXPORT_ACTIONS); re-running after a restart asks
+      // again and resumes from the same checkpoint.
+      if (args.action === 'subscribe-bulk' && ctx.jobStore) {
+        const real = args.dryRun === false;
+        const job = startExportJob(ctx, 'klaviyo', 'klaviyo-subscribe-bulk', args);
+        return envelope.ok({
+          data: {
+            summary: real
+              ? 'Klaviyo bulk subscribe started in the background. It resumes from its checkpoint until every file is done.'
+              : 'Klaviyo bulk subscribe DRY RUN started in the background. Nothing is written to Klaviyo.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read the result (per-file counts, target lists, calls and estimate${real ? ', accepted/rejected totals' : ', blockers and warnings'}).`,
           },
         });
       }
