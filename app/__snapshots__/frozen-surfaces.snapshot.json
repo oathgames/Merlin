@@ -5544,10 +5544,10 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads and creatives are not created by this tool.",
+      "description": "Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, turn many campaigns, ad squads and ads on or off at once (batch-status; ad squads and ads are created PAUSED, so after a build or bulk-push use batch-status ACTIVE on the ad squads and ads, then the campaign), list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads: bulk-push uploads vertical 9:16 images or videos (1080x1920; images JPG/PNG under 5MB, videos MP4 H.264 3 to 180 seconds), creates one Web View creative per ad (headline up to 34 characters, link tagged with UTMs) and one PAUSED ad per creative in an existing ad squad, skipping ad names that already exist there. upload-media, create-creative and create-ad do the same steps one at a time. Every creative needs the brand Snapchat Public Profile id (snapchatProfileId, remembered for the brand after first use).",
       "input": {
         "action": {
-          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure.",
+          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. batch-status = set batchStatus (ACTIVE or PAUSED) on up to 50 objects listed by id in campaignIds, adSquadIds and adIds; activation is checked against maxDailyAdBudget (ad squads add their budget, ads add none) and is refused as a whole if over it, pausing never is; each object is verified after the change. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure. upload-media = upload one 9:16 image or video and wait until Snapchat has processed it. create-creative = create one Web View creative from uploaded media. create-ad = create one PAUSED ad from a creative in an ad squad. bulk-push = upload, create creatives and create PAUSED ads for up to 50 ads in one ad squad.",
           "enum": [
             "status",
             "ad-accounts",
@@ -5555,6 +5555,7 @@
             "insights",
             "kill",
             "activate",
+            "batch-status",
             "pixels",
             "audiences",
             "ad-squads",
@@ -5562,16 +5563,90 @@
             "create-audience",
             "create-campaign",
             "create-ad-squad",
-            "build-architecture"
+            "build-architecture",
+            "upload-media",
+            "create-creative",
+            "create-ad",
+            "bulk-push"
           ],
           "type": "string"
         },
-        "adSetName": {
-          "description": "create-ad-squad: explicit ad squad name (required)",
+        "adHeadline": {
+          "description": "create-creative: headline, 34 characters max",
           "type": "string"
         },
+        "adIds": {
+          "description": "batch-status: Snapchat ad ids (UUIDs) to change. campaignIds + adSquadIds + adIds: 1 to 50 ids in total.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "adImagePath": {
+          "description": "upload-media: path to a 1080x1920 JPG or PNG under 5MB",
+          "type": "string"
+        },
+        "adLink": {
+          "description": "create-creative: https landing page; UTMs are added from the brand snapchatUrlTags (default utm_source=snapchat)",
+          "type": "string"
+        },
+        "adName": {
+          "description": "create-creative / create-ad: explicit name (required)",
+          "type": "string"
+        },
+        "adSetName": {
+          "description": "create-ad-squad: explicit ad squad name (required). bulk-push: pick the target ad squad by name instead of targetAdSetId (add campaignId if the name is not unique).",
+          "type": "string"
+        },
+        "adSquadIds": {
+          "description": "batch-status: Snapchat ad squad ids (UUIDs) to change",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "adVideoPath": {
+          "description": "upload-media: path to a 9:16 MP4 (H.264, 3 to 180 seconds, under 1GB)",
+          "type": "string"
+        },
+        "ads": {
+          "description": "bulk-push: up to 50 ads. Every ad is validated before anything uploads; names that already exist in the ad squad are skipped.",
+          "items": {
+            "properties": {
+              "cta": {
+                "description": "Call to action for this ad (default SHOP_NOW); same values as ctaType",
+                "type": "string"
+              },
+              "headline": {
+                "description": "Headline, 34 characters max",
+                "type": "string"
+              },
+              "imagePath": {
+                "description": "1080x1920 JPG or PNG under 5MB",
+                "type": "string"
+              },
+              "link": {
+                "description": "https landing page (UTMs added)",
+                "type": "string"
+              },
+              "name": {
+                "description": "Ad name (required, unique in the ad squad; also names the media and creative)",
+                "type": "string"
+              },
+              "videoPath": {
+                "description": "9:16 MP4, H.264, 3 to 180 seconds",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "approved": {
-          "description": "Approval flag for kill, activate, the create actions, and a real (dryRun:false) build. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.",
+          "description": "Approval flag for kill, activate, batch-status, the create actions, and a real (dryRun:false) build. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.",
           "type": "boolean"
         },
         "audienceDescription": {
@@ -5621,6 +5696,14 @@
           "minimum": -9007199254740991,
           "type": "integer"
         },
+        "batchStatus": {
+          "description": "batch-status: the status to set on every listed object (required)",
+          "enum": [
+            "ACTIVE",
+            "PAUSED"
+          ],
+          "type": "string"
+        },
         "bidStrategy": {
           "description": "create-ad-squad: bid strategy (AUTO_BID only)",
           "enum": [
@@ -5636,8 +5719,19 @@
           "description": "Snapchat campaign id (UUID) for kill, activate, campaign-level insights, ad-squads (scope to one campaign), or create-ad-squad (the parent campaign)",
           "type": "string"
         },
+        "campaignIds": {
+          "description": "batch-status: Snapchat campaign ids (UUIDs) to change",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "campaignName": {
           "description": "create-campaign: explicit campaign name (required)",
+          "type": "string"
+        },
+        "ctaType": {
+          "description": "create-creative: call to action, one of SHOP_NOW (default), ORDER_NOW, BOOK_NOW, SIGN_UP, GET_NOW, APPLY_NOW, VIEW, WATCH, MORE, READ, LISTEN, TRY, DOWNLOAD, BUY_TICKETS, SHOWTIMES, DONATE, VOTE, PLAY, SHOW, RESPOND, VIEW_MENU, PRE_REGISTER, PLAY_GAME",
           "type": "string"
         },
         "dailyBudget": {
@@ -5696,6 +5790,10 @@
           ],
           "type": "string"
         },
+        "mediaName": {
+          "description": "upload-media: media name (defaults to the file name)",
+          "type": "string"
+        },
         "minAge": {
           "description": "create-ad-squad / build-architecture: minimum age (13 to 49, default 18)",
           "maximum": 9007199254740991,
@@ -5718,8 +5816,24 @@
           "description": "Ad account id (UUID) to switch to (ad-accounts only)",
           "type": "string"
         },
+        "snapchatBrandName": {
+          "description": "create-creative / bulk-push: brand name shown on the ad, 32 characters max (optional)",
+          "type": "string"
+        },
+        "snapchatCreativeId": {
+          "description": "create-ad: the creative id from create-creative",
+          "type": "string"
+        },
+        "snapchatMediaId": {
+          "description": "create-creative: the READY media id from upload-media",
+          "type": "string"
+        },
         "snapchatPixelId": {
           "description": "Pixel id to use for pixel audiences and PIXEL_* optimization. Required only when the account has several pixels and none clearly fires the most.",
+          "type": "string"
+        },
+        "snapchatProfileId": {
+          "description": "create-creative / bulk-push: the brand Snapchat Public Profile id (UUID, from Business Manager > Public Profiles). Saved for the brand after first use, so later calls can omit it.",
           "type": "string"
         },
         "sourceAudienceId": {
@@ -5740,7 +5854,7 @@
           "type": "string"
         },
         "targetAdSetId": {
-          "description": "ads: scope to one ad squad id",
+          "description": "ads: scope to one ad squad id. create-ad / bulk-push: the ad squad that receives the ads.",
           "type": "string"
         }
       },

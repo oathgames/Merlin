@@ -2869,6 +2869,7 @@ function translateTool(toolName, input) {
       'snapchat-insights':        { label: 'Pull Snapchat Ads performance', cost: 'Free' },
       'snapchat-kill':            { label: 'Pause a Snapchat campaign', cost: 'Free' },
       'snapchat-activate':        { label: 'Turn a Snapchat campaign back on', cost: 'Resumes ad spend' },
+      'snapchat-batch-status':    { label: 'Turn Snapchat campaigns, ad squads or ads on or off', cost: 'May resume ad spend' },
       'snapchat-pixels':          { label: 'List Snapchat pixels', cost: 'Free' },
       'snapchat-audiences':       { label: 'List Snapchat audiences', cost: 'Free' },
       'snapchat-ad-squads':       { label: 'List Snapchat ad squads', cost: 'Free' },
@@ -2877,6 +2878,10 @@ function translateTool(toolName, input) {
       'snapchat-create-campaign': { label: 'Create a paused Snapchat campaign', cost: 'No spend until activated' },
       'snapchat-create-ad-squad': { label: 'Create a paused Snapchat ad squad', cost: 'No spend until activated' },
       'snapchat-build-architecture': { label: 'Build Snapchat prospecting and retargeting campaigns (paused)', cost: 'No spend until activated' },
+      'snapchat-upload-media':    { label: 'Upload an image or video to Snapchat', cost: 'Free' },
+      'snapchat-create-creative': { label: 'Create a Snapchat creative', cost: 'Free' },
+      'snapchat-create-ad':       { label: 'Create a paused Snapchat ad', cost: 'No spend until activated' },
+      'snapchat-bulk-push':       { label: 'Upload and create paused Snapchat ads', cost: 'No spend until activated' },
       'twitter-login':            { label: 'Connect X Ads', cost: 'Free' },
       'twitter-status':           { label: 'Check the X Ads connection', cost: 'Free' },
       'twitter-ad-accounts':      { label: 'List X ad accounts', cost: 'Free' },
@@ -9465,6 +9470,11 @@ const BRAND_KEYS = [
   // every new Snapchat prospecting ad squad must exclude (snapchat_build.go
   // chokepoint). Brand-scoped so customer ids never cross brands.
   'snapchatProspectingExclusions',
+  // snapchatPublicProfileId + snapchatUrlTags (2026-10-20, snapchat-ads): the
+  // brand's Snapchat Public Profile id every creative carries (saved after its
+  // first use) and the brand's UTM template for ad links. Mirror of
+  // brandScopedKeys in autocmo-core/vault.go.
+  'snapchatPublicProfileId', 'snapchatUrlTags',
   // X Ads API: OAuth 1.0a token pair + selected ad account + X user id.
   // Mirror of brandScopedKeys in autocmo-core/vault.go (x-brand-keys
   // parity test in mcp-x-reachability.test.js).

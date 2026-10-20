@@ -116,18 +116,19 @@ function engineSnapchatActions() {
 
 const TOOL_ACTIONS = byName('snapchat').schema.action.__enum;
 
-test('snapchat tool exposes exactly the read, status-flip and build surface (no ad/creative push)', () => {
+test('snapchat tool exposes exactly the read, status-flip, build and ad-creation surface', () => {
   assert.deepEqual([...TOOL_ACTIONS].sort(), [
-    'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'build-architecture', 'campaigns',
-    'create-ad-squad', 'create-audience', 'create-campaign', 'insights', 'kill', 'pixels', 'status',
+    'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'batch-status', 'build-architecture', 'bulk-push', 'campaigns',
+    'create-ad', 'create-ad-squad', 'create-audience', 'create-campaign', 'create-creative', 'insights', 'kill',
+    'pixels', 'status', 'upload-media',
   ]);
-  assert.ok(!TOOL_ACTIONS.includes('push'), 'ad / creative push is a listed follow-up, not shipped');
+  assert.ok(!TOOL_ACTIONS.includes('push'), 'there is no auto-approvable single push; ads go through bulk-push or create-ad');
 });
 
 test('engine -> MCP: every snapchat-* engine action is reachable', () => {
   if (!MAIN_GO) return;
   const engine = engineSnapchatActions();
-  assert.ok(engine.length >= 15, `expected the 15 snapchat-* cases in main.go, got ${engine.join(', ')}`);
+  assert.ok(engine.length >= 20, `expected the 20 snapchat-* cases in main.go, got ${engine.join(', ')}`);
   const loginEnum = byName('platform_login').schema.platform.__enum;
   for (const action of engine) {
     if (action === 'snapchat-login') {
@@ -186,13 +187,35 @@ test('ad-accounts switch id and kill approval reach the engine', async () => {
   assert.equal(cmd.approved, true);
 });
 
+test('batch-status typed id lists and status reach the engine end to end', async () => {
+  execFileCalls.length = 0;
+  await byName('snapchat').handler({
+    action: 'batch-status', brand: 'apotheke', batchStatus: 'ACTIVE', approved: true,
+    campaignIds: ['c1'], adSquadIds: ['s1', 's2'], adIds: ['a1'],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-batch-status');
+  assert.equal(cmd.batchStatus, 'ACTIVE');
+  assert.deepEqual(cmd.campaignIds, ['c1']);
+  assert.deepEqual(cmd.adSquadIds, ['s1', 's2']);
+  assert.deepEqual(cmd.adIds, ['a1']);
+  assert.equal(cmd.approved, true);
+});
+
 test('every snapchat write always cards; reads and a dry-run build never do (Rule 19)', () => {
   const resolve = (input) => approvalPolicy.resolveMerlinAction('mcp__merlin__snapchat', input).effectiveAction;
-  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad']) {
+  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push']) {
     const a = resolve({ action });
     assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), `snapchat ${action} must route through the approval card (got '${a}')`);
     assert.notEqual(a, 'push', `snapchat ${action} must never be eligible for in-cap auto-approve`);
   }
+  for (const batchStatus of ['ACTIVE', 'PAUSED', undefined, 'paused', 'active']) {
+    const a = resolve({ action: 'batch-status', batchStatus });
+    assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), `snapchat batch-status ${batchStatus} must card (got '${a}')`);
+    assert.notEqual(a, 'push', 'snapchat batch-status must never be eligible for in-cap auto-approve');
+  }
+  assert.equal(resolve({ action: 'batch-status', batchStatus: 'PAUSED' }), 'kill');
+  assert.equal(resolve({ action: 'batch-status', batchStatus: 'ACTIVE' }), 'duplicate');
   const real = resolve({ action: 'build-architecture', dryRun: false, approved: true });
   assert.ok(approvalPolicy.SPEND_ACTIONS.has(real) && real !== 'push', 'a real build must always card');
   for (const input of [{}, { dryRun: true }, { dryRun: undefined }]) {
@@ -289,13 +312,58 @@ test('read params (status filter, campaign and ad squad scope) reach the engine'
   assert.equal(lastCmd().action, 'snapchat-audiences');
 });
 
+test('ad-creation params reach the engine end to end (no auto-approve)', async () => {
+  execFileCalls.length = 0;
+  const snap = byName('snapchat');
+  await snap.handler({ action: 'upload-media', brand: 'forever21', adImagePath: 'a.png', mediaName: 'Snap_A', approved: true });
+  let cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-upload-media');
+  assert.equal(cmd.adImagePath, 'a.png');
+  assert.equal(cmd.mediaName, 'Snap_A');
+  await snap.handler({ action: 'upload-media', brand: 'forever21', adVideoPath: 'v.mp4', approved: true });
+  assert.equal(lastCmd().adVideoPath, 'v.mp4');
+
+  await snap.handler({ action: 'create-creative', brand: 'forever21', adName: 'Snap_A', snapchatMediaId: 'm1', adHeadline: 'H', adLink: 'https://x.com', ctaType: 'ORDER_NOW', snapchatProfileId: 'p1', snapchatBrandName: 'F21', approved: true });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-create-creative');
+  assert.equal(cmd.adName, 'Snap_A');
+  assert.equal(cmd.snapchatMediaId, 'm1');
+  assert.equal(cmd.adHeadline, 'H');
+  assert.equal(cmd.adLink, 'https://x.com');
+  assert.equal(cmd.ctaType, 'ORDER_NOW');
+  assert.equal(cmd.snapchatProfileId, 'p1');
+  assert.equal(cmd.snapchatBrandName, 'F21');
+
+  await snap.handler({ action: 'create-ad', brand: 'forever21', adName: 'Snap_A', snapchatCreativeId: 'c1', targetAdSetId: 's1', approved: true });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-create-ad');
+  assert.equal(cmd.snapchatCreativeId, 'c1');
+  assert.equal(cmd.targetAdSetId, 's1');
+
+  const ads = [{ name: 'Snap_A', imagePath: 'a.png', headline: 'H', link: 'https://x.com', cta: 'SHOP_NOW' }];
+  await snap.handler({ action: 'bulk-push', brand: 'forever21', adSetName: 'Broad_US', campaignId: 'c1', snapchatProfileId: 'p1', ads });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-bulk-push');
+  assert.equal(cmd.adSetName, 'Broad_US');
+  assert.deepEqual(cmd.ads, ads);
+  assert.equal(cmd.approved, undefined, 'the handler must not auto-approve');
+});
+
+test('bulk-push ads[] keys match the engine strict-key set for snapchat-bulk-push', () => {
+  const item = byName('snapchat').schema.ads.__item.__shape;
+  assert.deepEqual(Object.keys(item).sort(), ['cta', 'headline', 'imagePath', 'link', 'name', 'videoPath']);
+  const strict = coreFile('bulk_ad_strict.go');
+  if (!strict) return;
+  assert.match(strict, /"snapchat-bulk-push":\s*\{/, 'engine must declare a strict-key rule for snapchat-bulk-push');
+});
+
 const MAIN_JS = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
 
 test('BRAND_KEYS and Go brandScopedKeys agree on every snapchat key', () => {
   const m = MAIN_JS.match(/const BRAND_KEYS\s*=\s*\[([\s\S]*?)\];/);
   assert.ok(m, 'BRAND_KEYS must be present in main.js');
   const jsSide = (m[1].match(/'([^']+)'/g) || []).map((s) => s.slice(1, -1)).filter((k) => k.startsWith('snapchat')).sort();
-  assert.deepEqual(jsSide, ['snapchatAccessToken', 'snapchatAdAccountId', 'snapchatOrganizationId', 'snapchatProspectingExclusions', 'snapchatRefreshToken', 'snapchatTokenExpiresAt']);
+  assert.deepEqual(jsSide, ['snapchatAccessToken', 'snapchatAdAccountId', 'snapchatOrganizationId', 'snapchatProspectingExclusions', 'snapchatPublicProfileId', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatUrlTags']);
   if (!VAULT_GO) return;
   const g = VAULT_GO.match(/var brandScopedKeys = map\[string\]bool\{([\s\S]*?)\n\}/);
   assert.ok(g, 'brandScopedKeys must be present in vault.go');
