@@ -884,6 +884,13 @@ test('meta_set_attribution refuses a blank ad set id before hitting the binary',
   assert.equal(execFileCalls.length, 0);
 });
 
+test('meta_set_attribution refuses an empty attributionSpec before hitting the binary', async () => {
+  execFileCalls.length = 0;
+  const res = await tool('meta_set_attribution').handler({ brand: 'acme', targetAdSetId: '1', attributionSpec: [], approved: true });
+  assert.match(JSON.stringify(res), /attributionSpec is empty/);
+  assert.equal(execFileCalls.length, 0);
+});
+
 test('meta_clone_adset carries every optional override into --cmd', async () => {
   execFileCalls.length = 0;
   await tool('meta_clone_adset').handler({

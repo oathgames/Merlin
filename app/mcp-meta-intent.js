@@ -1232,6 +1232,9 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       if (!adSetId) {
         return validationEnvelope('targetAdSetId is required. Name the ad set whose attribution setting should change.');
       }
+      if (Array.isArray(args.attributionSpec) && args.attributionSpec.length === 0) {
+        return validationEnvelope('attributionSpec is empty. Omit it for the Merlin standard (7d click, 1d view, 1d engaged-view) or pass at least a CLICK_THROUGH window.');
+      }
       // Handler does NOT auto-set args.approved; that would bypass the safety
       // rail the engine's requireApproval() exists to enforce.
       return toEnvelope(await runBinary(ctx, 'meta-set-attribution', args), {
