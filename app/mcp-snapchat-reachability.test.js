@@ -118,7 +118,7 @@ const TOOL_ACTIONS = byName('snapchat').schema.action.__enum;
 
 test('snapchat tool exposes exactly the read, status-flip, build and ad-creation surface', () => {
   assert.deepEqual([...TOOL_ACTIONS].sort(), [
-    'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'build-architecture', 'bulk-push', 'campaigns',
+    'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'batch-status', 'build-architecture', 'bulk-push', 'campaigns',
     'create-ad', 'create-ad-squad', 'create-audience', 'create-campaign', 'create-creative', 'insights', 'kill',
     'pixels', 'status', 'upload-media',
   ]);
@@ -128,7 +128,7 @@ test('snapchat tool exposes exactly the read, status-flip, build and ad-creation
 test('engine -> MCP: every snapchat-* engine action is reachable', () => {
   if (!MAIN_GO) return;
   const engine = engineSnapchatActions();
-  assert.ok(engine.length >= 19, `expected the 19 snapchat-* cases in main.go, got ${engine.join(', ')}`);
+  assert.ok(engine.length >= 20, `expected the 20 snapchat-* cases in main.go, got ${engine.join(', ')}`);
   const loginEnum = byName('platform_login').schema.platform.__enum;
   for (const action of engine) {
     if (action === 'snapchat-login') {
@@ -187,6 +187,21 @@ test('ad-accounts switch id and kill approval reach the engine', async () => {
   assert.equal(cmd.approved, true);
 });
 
+test('batch-status typed id lists and status reach the engine end to end', async () => {
+  execFileCalls.length = 0;
+  await byName('snapchat').handler({
+    action: 'batch-status', brand: 'apotheke', batchStatus: 'ACTIVE', approved: true,
+    campaignIds: ['c1'], adSquadIds: ['s1', 's2'], adIds: ['a1'],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-batch-status');
+  assert.equal(cmd.batchStatus, 'ACTIVE');
+  assert.deepEqual(cmd.campaignIds, ['c1']);
+  assert.deepEqual(cmd.adSquadIds, ['s1', 's2']);
+  assert.deepEqual(cmd.adIds, ['a1']);
+  assert.equal(cmd.approved, true);
+});
+
 test('every snapchat write always cards; reads and a dry-run build never do (Rule 19)', () => {
   const resolve = (input) => approvalPolicy.resolveMerlinAction('mcp__merlin__snapchat', input).effectiveAction;
   for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push']) {
@@ -194,6 +209,13 @@ test('every snapchat write always cards; reads and a dry-run build never do (Rul
     assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), `snapchat ${action} must route through the approval card (got '${a}')`);
     assert.notEqual(a, 'push', `snapchat ${action} must never be eligible for in-cap auto-approve`);
   }
+  for (const batchStatus of ['ACTIVE', 'PAUSED', undefined, 'paused', 'active']) {
+    const a = resolve({ action: 'batch-status', batchStatus });
+    assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), `snapchat batch-status ${batchStatus} must card (got '${a}')`);
+    assert.notEqual(a, 'push', 'snapchat batch-status must never be eligible for in-cap auto-approve');
+  }
+  assert.equal(resolve({ action: 'batch-status', batchStatus: 'PAUSED' }), 'kill');
+  assert.equal(resolve({ action: 'batch-status', batchStatus: 'ACTIVE' }), 'duplicate');
   const real = resolve({ action: 'build-architecture', dryRun: false, approved: true });
   assert.ok(approvalPolicy.SPEND_ACTIONS.has(real) && real !== 'push', 'a real build must always card');
   for (const input of [{}, { dryRun: true }, { dryRun: undefined }]) {

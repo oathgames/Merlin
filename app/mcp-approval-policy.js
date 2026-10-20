@@ -479,6 +479,14 @@ function resolveMerlinAction(toolName, input) {
     // meta bulk-push.
     if (rawAction === 'upload-media' || rawAction === 'create-creative') return { effectiveAction: 'setup', label: null };
     if (rawAction === 'create-ad') return { effectiveAction: 'duplicate', label: null };
+    // REGRESSION GUARD (2026-10-20, snap-batch-status): batch-status flips
+    // ACTIVE or PAUSED on many campaigns, ad squads and ads at once. Only a
+    // batchStatus of exactly 'PAUSED' routes to 'kill' (still carded); any
+    // other value routes to the always-carded 'duplicate', never the in-cap
+    // auto-approvable 'push', because one call can resume several budgets.
+    if (rawAction === 'batch-status') {
+      return { effectiveAction: (input && input.batchStatus === 'PAUSED') ? 'kill' : 'duplicate', label: null };
+    }
   }
   if (rawAction) return { effectiveAction: rawAction, label: null };
   const mapped = INTENT_TOOL_TO_ACTION[toolName];

@@ -2869,6 +2869,7 @@ function translateTool(toolName, input) {
       'snapchat-insights':        { label: 'Pull Snapchat Ads performance', cost: 'Free' },
       'snapchat-kill':            { label: 'Pause a Snapchat campaign', cost: 'Free' },
       'snapchat-activate':        { label: 'Turn a Snapchat campaign back on', cost: 'Resumes ad spend' },
+      'snapchat-batch-status':    { label: 'Turn Snapchat campaigns, ad squads or ads on or off', cost: 'May resume ad spend' },
       'snapchat-pixels':          { label: 'List Snapchat pixels', cost: 'Free' },
       'snapchat-audiences':       { label: 'List Snapchat audiences', cost: 'Free' },
       'snapchat-ad-squads':       { label: 'List Snapchat ad squads', cost: 'Free' },
