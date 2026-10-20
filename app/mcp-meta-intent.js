@@ -1191,6 +1191,55 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_set_attribution ───────────────────────────────────────────
+  //
+  // Change the attribution setting (attribution_spec) of an EXISTING Meta ad
+  // set. The engine (autocmo-core/meta_set_attribution.go) writes ONLY
+  // attribution_spec, refuses non-conversion goals (Meta rejects the field on
+  // LPV / traffic / reach), no-ops when the window already matches, and
+  // verifies by read-back.
+  //
+  // Why this is worth a tool: Merlin sets the 7d click / 1d view / 1d
+  // engaged-view standard on every conversion ad set it CREATES, but that is
+  // not retroactive, so older or hand-built ad sets had no path onto it short
+  // of a rebuild.
+  //
+  // costImpact mirrors meta_set_optimization_goal: no NEW spend, but it changes
+  // which conversions an already-spending ad set learns from and can restart
+  // learning. Always cards (INTENT_TOOL_TO_ACTION -> 'duplicate').
+  tools.push(defineTool({
+    name: 'meta_set_attribution',
+    description: 'Change the attribution setting of an existing Meta AD SET (which clicks and views count as conversions). Defaults to the Merlin standard: 7-day click, 1-day view, 1-day engaged-view. Conversion-optimized ad sets only (OFFSITE_CONVERSIONS or VALUE). Edits the live ad set in place and verifies by reading it back; no-ops if it already matches. Can send the ad set back into learning. If Meta refuses the edit on a published ad set, duplicate the ad set and set the window on the copy.',
+    destructive: true,
+    // Setting the same window twice converges: the engine no-ops when the
+    // live spec already matches, so a retry is safe.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      targetAdSetId: z.string().describe('The ad set whose attribution setting to change'),
+      attributionSpec: z.array(z.object({
+        event_type: z.enum(['CLICK_THROUGH', 'VIEW_THROUGH', 'ENGAGED_VIDEO_VIEW']),
+        window_days: z.number().int(),
+      })).optional().describe('Attribution windows to set. Omit for the Merlin standard (7d click, 1d view, 1d engaged-view). Allowed: CLICK_THROUGH 1 or 7 (required), VIEW_THROUGH 1, ENGAGED_VIDEO_VIEW 1.'),
+      approved: z.boolean().optional().describe('Approval flag for this write. The engine REFUSES the edit without it; set true only with explicit user approval to change a live ad set\'s attribution.'),
+    },
+    handler: async (args) => {
+      const adSetId = String(args.targetAdSetId || '').trim();
+      if (!adSetId) {
+        return validationEnvelope('targetAdSetId is required. Name the ad set whose attribution setting should change.');
+      }
+      // Handler does NOT auto-set args.approved; that would bypass the safety
+      // rail the engine's requireApproval() exists to enforce.
+      return toEnvelope(await runBinary(ctx, 'meta-set-attribution', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_clone_adset ───────────────────────────────────────────────
   //
   // Copy an existing ad set (and its ads) into a NEW ad set, optionally with a

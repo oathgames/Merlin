@@ -380,6 +380,10 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // edit buys something different, and the host cannot verify the new goal is
   // the right one for that ad set's promoted_object. Always cards.
   'mcp__merlin__meta_set_optimization_goal':    'duplicate',
+  // meta_set_attribution changes which conversions an ALREADY-SPENDING ad set
+  // learns from and can restart learning. Same shape as the goal edit: no new
+  // spend, but the host cannot verify the window is right. Always cards.
+  'mcp__merlin__meta_set_attribution':          'duplicate',
   // meta_clone_adset creates a new ad set PAUSED, like meta_dpa_setup, so no
   // spend starts on create — but the budget it carries IS the spend surface
   // once a human activates it. dailyBudget is OPTIONAL and omitting it
@@ -428,6 +432,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',
   'mcp__merlin__tiktok_gmv_max_set_roi_target': 'Change a TikTok GMV Max ROI target (a lower target lets GMV Max spend more)',
   'mcp__merlin__meta_set_optimization_goal':    'Change what a live Meta ad set optimizes for',
+  'mcp__merlin__meta_set_attribution':          'Change the attribution window of a live Meta ad set',
   'mcp__merlin__meta_clone_adset':              'Clone a Meta ad set into a new PAUSED ad set',
   'mcp__merlin__meta_set_frequency_cap':        'Set a frequency cap on a Meta ad set',
 });
