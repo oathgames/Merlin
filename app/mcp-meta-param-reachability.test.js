@@ -493,6 +493,7 @@ function goBulkAdTags(src) {
 // reasons that read as deferral.
 const BULK_AD_EXEMPT_KEYS = {
   youtubeVideoId: 'Google Ads Demand Gen only (googleads_demandgen.go). runMetaBulkPush never reads it, so declaring it on a Meta surface would accept the key and silently ignore it. It is declared on google_ads ads[], its real route.',
+  cta: 'Snapchat only (snapchat_ads.go, snapchat-bulk-push). meta-bulk-push refuses it as an unknown ads[] key (bulk_ad_strict.go metaBulkAdKnownKeys), so declaring it on a Meta surface would make every push carrying it fail. It is declared on the snapchat tool ads[], its real route.',
   languages: 'BulkAd.Languages is decoded but read by no engine code path: multi-language variants come from the top-level Command.Languages, which both surfaces already declare. A per-ad key would be a silent no-op, the exact failure Rule 23 exists to prevent.',
 };
 
