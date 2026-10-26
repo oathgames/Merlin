@@ -484,6 +484,23 @@ function resolveMerlinAction(toolName, input) {
     if (rawAction === 'create-ad-squad') return { effectiveAction: 'duplicate', label: null };
     if (rawAction === 'create-audience') return { effectiveAction: 'setup', label: null };
     if (rawAction === 'pixels' || rawAction === 'ad-squads') return { effectiveAction: 'list', label: null };
+    // REGRESSION GUARD (2026-10-20, snapchat-ads): the ad-creation surface.
+    // upload-media and create-creative change account state without spend,
+    // so they route to the always-carded 'setup'. create-ad places an ad in
+    // a live ad squad (created PAUSED by the engine), so it routes to the
+    // always-carded 'duplicate', never the in-cap auto-approvable 'push'.
+    // bulk-push is already in SPEND_ACTIONS by name, the same slot as
+    // meta bulk-push.
+    if (rawAction === 'upload-media' || rawAction === 'create-creative') return { effectiveAction: 'setup', label: null };
+    if (rawAction === 'create-ad') return { effectiveAction: 'duplicate', label: null };
+    // REGRESSION GUARD (2026-10-20, snap-batch-status): batch-status flips
+    // ACTIVE or PAUSED on many campaigns, ad squads and ads at once. Only a
+    // batchStatus of exactly 'PAUSED' routes to 'kill' (still carded); any
+    // other value routes to the always-carded 'duplicate', never the in-cap
+    // auto-approvable 'push', because one call can resume several budgets.
+    if (rawAction === 'batch-status') {
+      return { effectiveAction: (input && input.batchStatus === 'PAUSED') ? 'kill' : 'duplicate', label: null };
+    }
   }
   // REGRESSION GUARD (2026-10-20, klaviyo-bulk-subscribe): subscribe-bulk is
   // a dry run unless dryRun is literally false (the engine applies the same
