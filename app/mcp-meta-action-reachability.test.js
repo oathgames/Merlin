@@ -318,6 +318,7 @@ test('the account-inventory reads are reachable through meta_audit', () => {
     'export-creatives':  'meta-export-creatives',
     'inspect-ads':       'meta-inspect-ads',
     'ad-rejections':     'meta-ad-rejections',
+    'video-frames':      'meta-video-frames',
   };
   for (const [action, engine] of Object.entries(expected)) {
     assert.ok(META_AUDIT_ENUM.includes(action),
