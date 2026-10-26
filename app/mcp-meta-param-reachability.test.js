@@ -295,6 +295,35 @@ test('meta_audit declares startDate and endDate for attribution-compare', () => 
   }
 });
 
+// video-frames (2026-10-26): the engine reads adIds, videoIds, framesPerVideo,
+// framesDir and overwrite. Each must be declared on meta_audit (zod strips the
+// rest) and must reach the --cmd JSON through the real handler.
+test('meta_audit declares every video-frames param', () => {
+  const schema = byName('meta_audit').schema;
+  for (const key of ['adIds', 'videoIds', 'framesPerVideo', 'framesDir', 'overwrite']) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(schema, key),
+      `meta_audit.${key} must be declared: meta-video-frames reads it and zod strips what is not declared.`,
+    );
+  }
+});
+
+test('meta_audit video-frames params reach the --cmd JSON through the handler', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_audit').handler({
+    action: 'video-frames', brand: 'apotheke',
+    adIds: ['120200000000001', '120200000000002'], videoIds: ['55555'],
+    framesPerVideo: 8, framesDir: 'apotheke-creative-lessons/video_frames', overwrite: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-video-frames');
+  assert.deepEqual(cmd.adIds, ['120200000000001', '120200000000002'], 'adIds must reach the engine');
+  assert.deepEqual(cmd.videoIds, ['55555'], 'videoIds must reach the engine');
+  assert.equal(cmd.framesPerVideo, 8, 'framesPerVideo must reach the engine');
+  assert.equal(cmd.framesDir, 'apotheke-creative-lessons/video_frames', 'framesDir must reach the engine');
+  assert.equal(cmd.overwrite, true, 'overwrite must reach the engine');
+});
+
 // REGRESSION GUARD (2026-09-21, Hard-Won Rule 23): the same gap one tool over.
 // meta-insights resolves an exact window (metaResolveInsightsWindow in
 // autocmo-core/meta.go) but meta_review_performance never declared the two
