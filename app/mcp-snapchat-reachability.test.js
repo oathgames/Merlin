@@ -116,11 +116,11 @@ function engineSnapchatActions() {
 
 const TOOL_ACTIONS = byName('snapchat').schema.action.__enum;
 
-test('snapchat tool exposes exactly the read, status-flip, build and ad-creation surface', () => {
+test('snapchat tool exposes exactly the read, status-flip, build, ad-creation and DPA surface', () => {
   assert.deepEqual([...TOOL_ACTIONS].sort(), [
     'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'batch-status', 'build-architecture', 'bulk-push', 'campaigns',
-    'create-ad', 'create-ad-squad', 'create-audience', 'create-campaign', 'create-creative', 'insights', 'kill',
-    'pixels', 'status', 'upload-media',
+    'catalogs', 'create-ad', 'create-ad-squad', 'create-audience', 'create-campaign', 'create-creative', 'create-product-set',
+    'dpa-setup', 'insights', 'kill', 'pixel-stats', 'pixels', 'status', 'upload-media',
   ]);
   assert.ok(!TOOL_ACTIONS.includes('push'), 'there is no auto-approvable single push; ads go through bulk-push or create-ad');
 });
@@ -128,7 +128,7 @@ test('snapchat tool exposes exactly the read, status-flip, build and ad-creation
 test('engine -> MCP: every snapchat-* engine action is reachable', () => {
   if (!MAIN_GO) return;
   const engine = engineSnapchatActions();
-  assert.ok(engine.length >= 20, `expected the 20 snapchat-* cases in main.go, got ${engine.join(', ')}`);
+  assert.ok(engine.length >= 24, `expected the 24 snapchat-* cases in main.go, got ${engine.join(', ')}`);
   const loginEnum = byName('platform_login').schema.platform.__enum;
   for (const action of engine) {
     if (action === 'snapchat-login') {
@@ -204,7 +204,7 @@ test('batch-status typed id lists and status reach the engine end to end', async
 
 test('every snapchat write always cards; reads and a dry-run build never do (Rule 19)', () => {
   const resolve = (input) => approvalPolicy.resolveMerlinAction('mcp__merlin__snapchat', input).effectiveAction;
-  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push']) {
+  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push', 'create-product-set']) {
     const a = resolve({ action });
     assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), `snapchat ${action} must route through the approval card (got '${a}')`);
     assert.notEqual(a, 'push', `snapchat ${action} must never be eligible for in-cap auto-approve`);
@@ -222,14 +222,24 @@ test('every snapchat write always cards; reads and a dry-run build never do (Rul
     const a = resolve({ action: 'build-architecture', ...input });
     assert.ok(approvalPolicy.READ_ONLY_ACTIONS.has(a), `a dry-run build is read-only (input ${JSON.stringify(input)} got '${a}')`);
   }
-  for (const action of ['status', 'ad-accounts', 'campaigns', 'insights', 'pixels', 'audiences', 'ad-squads', 'ads']) {
+  // dpa-setup mirrors build-architecture: only dryRun literally false builds
+  // (budgeted ad squads), and it must card, never in-cap auto-approve.
+  const realDpa = resolve({ action: 'dpa-setup', dryRun: false, approved: true });
+  assert.equal(realDpa, 'duplicate', 'a real dpa-setup must route to the always-carded duplicate');
+  assert.ok(approvalPolicy.SPEND_ACTIONS.has(realDpa), 'a real dpa-setup must always card');
+  for (const input of [{}, { dryRun: true }, { dryRun: undefined }, { dryRun: 'false' }, { dryRun: 0 }]) {
+    const a = resolve({ action: 'dpa-setup', ...input });
+    assert.equal(a, 'dry-run', `only dryRun:false builds; input ${JSON.stringify(input)} must plan (got '${a}')`);
+    assert.ok(approvalPolicy.READ_ONLY_ACTIONS.has(a));
+  }
+  for (const action of ['status', 'ad-accounts', 'campaigns', 'insights', 'pixels', 'audiences', 'ad-squads', 'ads', 'catalogs', 'pixel-stats']) {
     const a = resolve({ action });
     assert.ok(!approvalPolicy.SPEND_ACTIONS.has(a), `snapchat ${action} is a read and must not card`);
   }
   // The reads added with the build surface are named read-only explicitly
   // rather than riding the catch-all. (ad-accounts can switch the selected
   // account, a local config write, so it stays on the catch-all as before.)
-  for (const action of ['insights', 'campaigns', 'status', 'pixels', 'audiences', 'ad-squads', 'ads']) {
+  for (const action of ['insights', 'campaigns', 'status', 'pixels', 'audiences', 'ad-squads', 'ads', 'catalogs', 'pixel-stats']) {
     const a = resolve({ action });
     assert.ok(approvalPolicy.READ_ONLY_ACTIONS.has(a), `snapchat ${action} must be named read-only (got '${a}')`);
   }
@@ -347,6 +357,68 @@ test('ad-creation params reach the engine end to end (no auto-approve)', async (
   assert.equal(cmd.adSetName, 'Broad_US');
   assert.deepEqual(cmd.ads, ads);
   assert.equal(cmd.approved, undefined, 'the handler must not auto-approve');
+});
+
+test('DPA params reach the engine end to end under the engine json keys (no auto-approve)', async () => {
+  execFileCalls.length = 0;
+  const snap = byName('snapchat');
+  await snap.handler({ action: 'catalogs', brand: 'forever21', catalogId: 'cat1' });
+  let cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-catalogs');
+  assert.equal(cmd.catalogId, 'cat1');
+
+  await snap.handler({ action: 'pixel-stats', brand: 'forever21', snapchatPixelId: 'px1', domain: 'forever21.com', days: 14 });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-pixel-stats');
+  assert.equal(cmd.snapchatPixelId, 'px1');
+  assert.equal(cmd.domain, 'forever21.com');
+  assert.equal(cmd.days, 14);
+
+  const filter = { CUSTOM_LABEL_0: { EQ: 'sale' } };
+  await snap.handler({ action: 'create-product-set', brand: 'forever21', catalogId: 'cat1', productSetName: 'Sale', productSetFilter: filter, approved: true });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-create-product-set');
+  assert.equal(cmd.catalogId, 'cat1');
+  assert.equal(cmd.productSetName, 'Sale');
+  assert.deepEqual(cmd.productSetFilter, filter);
+  assert.equal(cmd.approved, true);
+
+  const dpaSquads = [
+    { name: 'DPA_Prospecting', dailyBudget: 50, audience: 'prospecting', adName: 'DPA_P' },
+    { name: 'DPA_ATC', dailyBudget: 75, audience: 'atc_no_purchase', retentionDays: 14, adName: 'DPA_ATC', optimizationGoal: 'PIXEL_PURCHASE', productSetId: 'default' },
+  ];
+  await snap.handler({
+    action: 'dpa-setup', brand: 'forever21', campaignName: 'Snap_DPA', catalogId: 'cat1', productSetId: 'default',
+    snapchatDynamicTemplateId: 't1', snapchatPixelId: 'px1', adHeadline: 'Shop the sale', ctaType: 'SHOP_NOW', snapchatProfileId: 'p1', dpaSquads,
+  });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-dpa-setup');
+  assert.equal(cmd.campaignName, 'Snap_DPA');
+  assert.equal(cmd.productSetId, 'default');
+  assert.equal(cmd.snapchatDynamicTemplateId, 't1');
+  assert.equal(cmd.adHeadline, 'Shop the sale');
+  assert.equal(cmd.ctaType, 'SHOP_NOW');
+  assert.equal(cmd.snapchatProfileId, 'p1');
+  assert.deepEqual(cmd.dpaSquads, dpaSquads);
+  assert.equal(cmd.dryRun, undefined, 'the handler must not default dryRun; the engine treats unset as a dry run');
+  assert.equal(cmd.approved, undefined, 'the handler must not auto-approve');
+});
+
+test('dpaSquads[] keys and top-level DPA keys match the engine json tags', () => {
+  const item = byName('snapchat').schema.dpaSquads.__item.__shape;
+  const keys = Object.keys(item).sort();
+  assert.deepEqual(keys, ['adName', 'audience', 'dailyBudget', 'name', 'optimizationGoal', 'productSetId', 'retentionDays']);
+  const dpaGo = coreFile('snapchat_dpa.go');
+  if (dpaGo) {
+    const m = dpaGo.match(/type SnapchatDPASquad struct \{([\s\S]*?)\n\}/);
+    assert.ok(m, 'SnapchatDPASquad must be present in snapchat_dpa.go');
+    const goKeys = (m[1].match(/json:"([^",]+)/g) || []).map((t) => t.slice(6)).sort();
+    assert.deepEqual(goKeys, keys, 'dpaSquads[] drifted from SnapchatDPASquad json tags');
+  }
+  if (!MAIN_GO) return;
+  for (const key of ['domain', 'productSetName', 'productSetFilter', 'snapchatDynamicTemplateId', 'dpaSquads', 'catalogId', 'productSetId', 'days']) {
+    assert.ok(new RegExp(`json:"${key}[,"]`).test(MAIN_GO), `Command must decode ${key}`);
+  }
 });
 
 test('bulk-push ads[] keys match the engine strict-key set for snapchat-bulk-push', () => {

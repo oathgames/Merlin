@@ -501,6 +501,19 @@ function resolveMerlinAction(toolName, input) {
     if (rawAction === 'batch-status') {
       return { effectiveAction: (input && input.batchStatus === 'PAUSED') ? 'kill' : 'duplicate', label: null };
     }
+    // REGRESSION GUARD (2026-10-26, snapchat-dpa): Dynamic Product Ads.
+    // catalogs and pixel-stats are reads (GETs plus Snap's two read-only
+    // POST search endpoints) and route to 'list'. create-product-set changes
+    // catalog state without spend, so it routes to the always-carded
+    // 'setup'. dpa-setup is a dry run unless dryRun is literally false; that
+    // exact value builds a catalog campaign with several budgeted ad squads,
+    // so it routes to the always-carded 'duplicate' (never the in-cap
+    // auto-approvable 'push'), the same slot as a real build-architecture.
+    if (rawAction === 'catalogs' || rawAction === 'pixel-stats') return { effectiveAction: 'list', label: null };
+    if (rawAction === 'create-product-set') return { effectiveAction: 'setup', label: null };
+    if (rawAction === 'dpa-setup') {
+      return { effectiveAction: (input && input.dryRun === false) ? 'duplicate' : 'dry-run', label: null };
+    }
   }
   // REGRESSION GUARD (2026-10-20, klaviyo-bulk-subscribe): subscribe-bulk is
   // a dry run unless dryRun is literally false (the engine applies the same
