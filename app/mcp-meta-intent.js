@@ -917,6 +917,90 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     ),
   }, tool, z, ctx));
 
+  // ── meta_set_url_tags ──────────────────────────────────────────────
+  //
+  // Rebuild LIVE ads' creatives with new url_tags, replacing the current
+  // tags, and swap each ad onto its new creative (see
+  // autocmo-core/meta_set_url_tags.go). The existing post is kept wherever
+  // Meta allows it: boosted Instagram posts and partnership ads keep their
+  // media id, identity and partnership fields; spec-built dark posts reuse
+  // the post they serve; catalog (DPA) ads keep their product set and
+  // template. Every new creative is read back and verified before the swap,
+  // and the ad's status is re-read after it.
+  //
+  // PREVIEW BY DEFAULT: without confirm:true the engine only reads (one
+  // batched GET per chunk) and prints the per-ad before/after. The approval
+  // policy routes anything but confirm === true to the read-only 'dry-run'
+  // action, and this handler strips approved/confirm from a preview so a
+  // preview can never be upgraded into a write.
+  //
+  // costImpact 'spend' for the same reason as meta_refresh_creative_spec: no
+  // new spend, but a write swaps the creative an already-spending ad serves
+  // (and resets that ad's learning), so the write takes the always-cards
+  // path. The engine refuses a write without approved:true.
+  tools.push(defineTool({
+    name: 'meta_set_url_tags',
+    description: 'Add or replace the UTM / URL tags (url_tags) on LIVE Meta ads. PREVIEW BY DEFAULT: without confirm:true it only reads and shows, per ad, the current and new url_tags, the creative shape, whether the post\'s likes and comments are kept, and the exact creative that would be created. With confirm:true (and user approval) each ad\'s creative is rebuilt with the new tags and everything else preserved: media, copy, CTA and link, the existing post where Meta allows it (boosted Instagram posts, partnership ads, and dark posts keep the same post), partnership fields, and catalog ads\' product set and template. Every new creative is verified before the ad is switched onto it, and the ad is re-read after. Select ads by adIds, or every ad in targetAdSetId / campaignId; onlyMissing:true skips ads that already carry UTMs. urlTags defaults to the brand\'s standard tags. Switching a creative resets that ad\'s learning.',
+    destructive: true,
+    // Re-running converges: ads that already carry the tags are skipped.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      adIds: z.array(z.string()).optional().describe('The ads to retag (max 50 for a preview, 15 for a confirmed write). Use this, adId, targetAdSetId or campaignId.'),
+      adId: z.string().optional().describe('A single ad to retag.'),
+      targetAdSetId: z.string().optional().describe('Select every ad in this ad set instead of listing ad ids.'),
+      campaignId: z.string().optional().describe('Select every ad in this campaign instead of listing ad ids.'),
+      onlyMissing: z.boolean().optional().describe('Skip ads that already carry any UTM (in url_tags or in a link). Recommended with targetAdSetId / campaignId; it also lets a capped run be repeated to finish the rest.'),
+      urlTags: z.string().optional().describe('The FULL url_tags string to set, e.g. "utm_source=facebook&utm_medium=paidsocial&utm_campaign={{campaign.name}}". It REPLACES the current tags; it is not merged. No leading ? or &. Omit to use the brand\'s standard Merlin tags.'),
+      force: z.boolean().optional().describe('Rebuild even when an ad already carries exactly these tags. Off by default because switching a creative resets the ad\'s learning.'),
+      confirm: z.boolean().optional().describe('Set true ONLY to actually apply the change after the user has seen the preview. Without it the call is a read-only preview. A write also needs approval.'),
+      dryRun: z.boolean().optional().describe('Force a read-only preview even if confirm is set.'),
+      acknowledgePartnership: z.boolean().optional().describe('Set true only after the user confirms: rebuild an ad that looks like a partnership ad even though its partnership fields cannot all be read back (so their preservation cannot be verified). The engine refuses such ads without it.'),
+      approved: z.boolean().optional().describe('Approval flag for a confirmed write. The engine REFUSES to write without it; set true only with explicit user approval. Ignored on a preview.'),
+    },
+    handler: async (args) => {
+      const ids = [
+        ...(Array.isArray(args.adIds) ? args.adIds : []),
+        ...(args.adId ? [args.adId] : []),
+      ].map((s) => String(s).trim()).filter(Boolean);
+      const parent = String(args.targetAdSetId || args.campaignId || '').trim();
+      if (ids.length === 0 && !parent) {
+        return validationEnvelope('Name the ads to retag: adIds (or adId), or targetAdSetId / campaignId to select every ad under it.');
+      }
+      if (parent && !/^\d+$/.test(parent)) {
+        return validationEnvelope(`targetAdSetId / campaignId must be a numeric Meta id (got ${JSON.stringify(parent)}).`);
+      }
+      const write = args.confirm === true && args.dryRun !== true;
+      const max = write ? 15 : 50;
+      if (ids.length > max) {
+        return validationEnvelope(`At most ${max} ads per ${write ? 'confirmed write' : 'preview'} (got ${ids.length}). Split the list.`);
+      }
+      if (args.urlTags !== undefined) {
+        const tags = typeof args.urlTags === 'string' ? args.urlTags : '';
+        if (!tags.trim() || tags !== tags.trim() || /^[?&]/.test(tags) || /[\s#]/.test(tags) || !tags.includes('=')) {
+          return validationEnvelope(`urlTags must be key=value pairs joined by &, with no leading ? or &, no spaces and no # (got ${JSON.stringify(tags)}). Omit it to use the brand's standard tags.`);
+        }
+      }
+      if (!write) {
+        // A preview never carries the write approval or the confirm flag, so
+        // it can never be mistaken for (or upgraded into) the live rebuild.
+        const preview = { ...args };
+        delete preview.approved;
+        delete preview.confirm;
+        return toEnvelope(await runBinary(ctx, 'meta-set-url-tags', preview), {
+          nextSuggested: ['meta_set_url_tags'],
+        });
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-set-url-tags', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_set_existing_customers ────────────────────
   // Advertising Settings -> existing customers. ACCOUNT-LEVEL with REPLACE
   // semantics, which is why it cards despite spending nothing: a wrong list

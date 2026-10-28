@@ -384,6 +384,10 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // against budget that is already flowing, and the host cannot verify the
   // resulting creative renders correctly. Always cards.
   'mcp__merlin__meta_refresh_creative_spec':    'duplicate',
+  // meta_set_url_tags swaps LIVE ads onto rebuilt creatives with new tags.
+  // Same shape as meta_refresh_creative_spec: no new spend, but it changes
+  // what already-flowing budget serves and resets learning. Always cards.
+  'mcp__merlin__meta_set_url_tags':             'duplicate',
   // meta_set_optimization_goal changes what an ALREADY-SPENDING ad set bids
   // for. Same shape as edit_ad_link: no new spend, but every dollar after the
   // edit buys something different, and the host cannot verify the new goal is
@@ -436,6 +440,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_dpa_setup':                'Set up Meta DPA catalog retargeting (PAUSED on create)',
   'mcp__merlin__meta_edit_ad_link':             'Change a live Meta ad\'s destination URL',
   'mcp__merlin__meta_refresh_creative_spec':    'Rebuild a live Meta ad\'s creative enhancement settings',
+  'mcp__merlin__meta_set_url_tags':             'Replace the UTM tags on live Meta ads',
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
   'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
   'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',
@@ -523,6 +528,16 @@ function resolveMerlinAction(toolName, input) {
     return { effectiveAction: (input && input.dryRun === false) ? 'subscribe-bulk' : 'dry-run', label: null };
   }
   if (rawAction) return { effectiveAction: rawAction, label: null };
+  // meta_set_url_tags is a pure read in the engine UNLESS confirm is true
+  // (batched GETs only, no creative POST, no swap; runMetaSetURLTags returns
+  // before requireApproval), and dryRun:true forces that read even with
+  // confirm. So only a literal confirm === true without dryRun === true
+  // cards; every other input, including confirm "true", is the read-only
+  // 'dry-run' action, matching the engine exactly.
+  if (toolName === 'mcp__merlin__meta_set_url_tags'
+      && !(input && input.confirm === true && input.dryRun !== true)) {
+    return { effectiveAction: 'dry-run', label: null };
+  }
   const mapped = INTENT_TOOL_TO_ACTION[toolName];
   if (mapped) {
     return { effectiveAction: mapped, label: INTENT_TOOL_LABELS[toolName] || null };
