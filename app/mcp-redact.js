@@ -209,9 +209,15 @@ function applyCredentialPatterns(value) {
 // Heuristic sweep: opaque high-entropy-looking runs embedded in a longer
 // string. This is the guessing half — it is what STRUCTURAL_FIELD_NAMES
 // exempts, because it cannot tell a base64 token from a URL path segment.
-function redactOpaqueRuns(value, looksLikeCredential = isLikelyToken) {
+//
+// `safeRuns` (optional Set) holds runs this same output already prints
+// verbatim in a LABEL field after label redaction; see collectSafeLabelRuns.
+function redactOpaqueRuns(value, looksLikeCredential = isLikelyToken, safeRuns = null) {
   LONG_TOKEN_RE.lastIndex = 0;
-  return value.replace(LONG_TOKEN_RE, (match) => (looksLikeCredential(match) ? '[REDACTED]' : match));
+  return value.replace(LONG_TOKEN_RE, (match) => {
+    if (safeRuns && safeRuns.has(match)) return match;
+    return looksLikeCredential(match) ? '[REDACTED]' : match;
+  });
 }
 
 // Segment-level shape test used by the LABEL predicate below. A human-authored
@@ -277,15 +283,54 @@ function identifierRunLooksLikeCredential(run) {
 // both survived unredacted in `title` / `label` while the identical values
 // under `notes` were redacted. Structural and label are different exemptions
 // and must stay separate parameters , collapsing them again re-opens this.
-function redactStringValue(value, structural = false, label = false, identifier = false) {
+function redactStringValue(value, structural = false, label = false, identifier = false, safeRuns = null) {
   if (typeof value !== 'string') return value;
   if (structural) return applyCredentialPatterns(value);
   if (identifier) return redactOpaqueRuns(applyCredentialPatterns(value), identifierRunLooksLikeCredential);
   if (label) return redactOpaqueRuns(applyCredentialPatterns(value), labelRunLooksLikeCredential);
+  if (safeRuns && safeRuns.has(value)) return applyCredentialPatterns(value);
   if (isLikelyToken(value)) return '[REDACTED]';
   // Sweep embedded runs here rather than relying on a later whole-text pass:
   // the walker knows which subtrees are structural, a text pass does not.
-  return redactOpaqueRuns(applyCredentialPatterns(value));
+  return redactOpaqueRuns(applyCredentialPatterns(value), isLikelyToken, safeRuns);
+}
+
+// REGRESSION GUARD (2026-10-26, Snapchat DPA blocker showed "[REDACTED]"):
+// a human-authored name quoted in PROSE was wiped even though the same output
+// printed it intact under its label field. Live case: a snapchat-dpa-setup
+// dry run, blocker "<squad name> is a prospecting squad but the brand declares
+// no purchaser audience to exclude". Squad names follow
+// MMDDYYYY_Batch_Descriptor and routinely pass 32 characters, so the name was
+// one LONG_TOKEN_RE run inside a non-label string, isLikelyToken called it a
+// token, and the one word telling the reader WHICH squad was blocked was the
+// word destroyed. The "  BLOCKER: ..." status lines after the JSON lost it too.
+//
+// collectSafeLabelRuns returns the opaque runs of every LABEL_FIELD_NAMES value
+// in a parsed payload that survives label redaction UNCHANGED. Those exact
+// strings are already emitted verbatim in this very output, so keeping an
+// identical run elsewhere in the same output reveals nothing new. Nothing is
+// weakened: a label that looks like a credential is redacted in its own field,
+// so it never enters the set; a run that differs from a label by a single
+// character is still swept; every deterministic credential rule still runs on
+// every string; SENSITIVE_FIELD_NAMES subtrees are never read. The set is
+// built per output and never shared across calls.
+function collectSafeLabelRuns(obj, out = new Set()) {
+  if (obj === null || typeof obj !== 'object') return out;
+  if (Array.isArray(obj)) {
+    for (const item of obj) collectSafeLabelRuns(item, out);
+    return out;
+  }
+  for (const [key, value] of Object.entries(obj)) {
+    if (SENSITIVE_FIELD_NAMES.has(key)) continue;
+    if (typeof value === 'string') {
+      if (!LABEL_FIELD_NAMES.has(key)) continue;
+      if (redactStringValue(value, false, true) !== value) continue;
+      for (const run of value.match(LONG_TOKEN_RE) || []) out.add(run);
+    } else if (value && typeof value === 'object') {
+      collectSafeLabelRuns(value, out);
+    }
+  }
+  return out;
 }
 
 /**
@@ -302,15 +347,15 @@ function redactStringValue(value, structural = false, label = false, identifier 
  * URL condition inside a parsed rule object survives too. SENSITIVE_FIELD_NAMES
  * is still checked first and still wins at any depth.
  */
-function redactJsonObj(obj, structural = false, arrayKey = null) {
+function redactJsonObj(obj, structural = false, arrayKey = null, safeRuns = null) {
   if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') return redactStringValue(obj, structural);
+  if (typeof obj === 'string') return redactStringValue(obj, structural, false, false, safeRuns);
   if (typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) {
     // `arrayKey` is the key this array sits under. It reaches the array's
     // DIRECT element objects only (see the reports[].id exemption above) and
     // is reset for anything nested deeper.
-    return obj.map(item => redactJsonObj(item, structural, Array.isArray(item) ? null : arrayKey));
+    return obj.map(item => redactJsonObj(item, structural, Array.isArray(item) ? null : arrayKey, safeRuns));
   }
   const inReportList = REPORT_LIST_CONTAINER_KEYS.has(arrayKey);
   for (const [key, value] of Object.entries(obj)) {
@@ -320,12 +365,12 @@ function redactJsonObj(obj, structural = false, arrayKey = null) {
         obj[key] = '[REDACTED]';
       } else {
         const identifier = IDENTIFIER_FIELD_NAMES.has(key) || (key === 'id' && inReportList);
-        obj[key] = redactStringValue(value, childStructural, LABEL_FIELD_NAMES.has(key), identifier);
+        obj[key] = redactStringValue(value, childStructural, LABEL_FIELD_NAMES.has(key), identifier, safeRuns);
       }
     } else if (typeof value === 'object' && value !== null) {
       // Reassign: Array.prototype.map returns a NEW array, so in-place
       // mutation of the parent is required for array children.
-      obj[key] = redactJsonObj(value, childStructural, Array.isArray(value) ? key : null);
+      obj[key] = redactJsonObj(value, childStructural, Array.isArray(value) ? key : null, safeRuns);
     }
   }
   return obj;
@@ -335,11 +380,12 @@ function redactJsonObj(obj, structural = false, arrayKey = null) {
  * Redact a raw text string (stdout or stderr from the binary).
  * Handles both JSON and plain-text output.
  */
-function redactText(text) {
+function redactText(text, safeRuns = null) {
   if (!text) return '';
   // 1-3: login result block, known token prefixes, Bearer + token URL params.
-  // 4: long base64-ish strings that look like tokens.
-  return redactOpaqueRuns(applyCredentialPatterns(text));
+  // 4: long base64-ish strings that look like tokens, minus safeRuns (label
+  //    runs this same output already prints; see collectSafeLabelRuns).
+  return redactOpaqueRuns(applyCredentialPatterns(text), isLikelyToken, safeRuns);
 }
 
 /**
@@ -383,7 +429,9 @@ function redactOutput(stdout, stderr) {
       if (jsonStart >= 0 && jsonEnd >= 0) {
         const jsonStr = lines.slice(jsonStart, jsonEnd + 1).join('\n');
         const parsed = JSON.parse(jsonStr);
-        const redacted = redactJsonObj(parsed);
+        // Collected BEFORE the walker mutates parsed in place.
+        const safeRuns = collectSafeLabelRuns(parsed);
+        const redacted = redactJsonObj(parsed, false, null, safeRuns);
         // Reconstruct: status lines (redacted) + JSON (redacted).
         //
         // Belt-and-braces pass over the stringified JSON, minus the opaque-run
@@ -403,8 +451,8 @@ function redactOutput(stdout, stderr) {
         // floor; keep them (redacted) rather than silently swallowing output.
         const statusLines = lines.slice(0, jsonStart).join('\n');
         const trailingLines = lines.slice(jsonEnd + 1).join('\n');
-        result = redactText(statusLines) + '\n' + applyCredentialPatterns(JSON.stringify(redacted, null, 2));
-        if (trailingLines.trim()) result += '\n' + redactText(trailingLines);
+        result = redactText(statusLines, safeRuns) + '\n' + applyCredentialPatterns(JSON.stringify(redacted, null, 2));
+        if (trailingLines.trim()) result += '\n' + redactText(trailingLines, safeRuns);
       } else {
         result = redactText(stdout);
       }
@@ -425,4 +473,4 @@ function redactOutput(stdout, stderr) {
   return result.trim();
 }
 
-module.exports = { redactOutput, redactJsonObj, redactText, isLikelyToken };
+module.exports = { redactOutput, redactJsonObj, redactText, isLikelyToken, collectSafeLabelRuns };
