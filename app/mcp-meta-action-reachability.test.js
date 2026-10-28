@@ -981,7 +981,7 @@ test('the spend-shaped ad-set writes route to an always-cards action', () => {
 // gated WRITE that swaps live ads' creatives, so it is an intent tool and it
 // routes through INTENT_TOOL_TO_ACTION per Hard-Won Rule 19.
 
-test('meta_set_url_tags is reachable and sends adIds, urlTags and approved', async () => {
+test('meta_set_url_tags is reachable and sends adIds, urlTags, confirm and approved', async () => {
   assert.ok(INTENT_ACTIONS.has('meta-set-url-tags'), 'no intent tool routes to meta-set-url-tags');
   execFileCalls.length = 0;
   await tool('meta_set_url_tags').handler({
@@ -989,15 +989,17 @@ test('meta_set_url_tags is reachable and sends adIds, urlTags and approved', asy
     adIds: ['120210000000000001', '120210000000000002'],
     urlTags: 'utm_source=facebook&utm_medium=paidsocial&utm_content={{ad.id}}',
     force: true,
+    confirm: true,
     approved: true,
   });
   const cmd = lastCmd();
   assert.equal(cmd.action, 'meta-set-url-tags');
   assert.deepEqual(cmd.adIds, ['120210000000000001', '120210000000000002'],
-    'runMetaSetURLTags reads cmd.AdIDs; dropping the array leaves the engine with no ads.');
+    'the engine reads the shared "adIds" key (Command.SnapchatAdIDs); dropping the array leaves it with no ads.');
   assert.equal(cmd.urlTags, 'utm_source=facebook&utm_medium=paidsocial&utm_content={{ad.id}}',
     'the tags are the whole point of the action and must arrive byte-identical.');
   assert.equal(cmd.force, true);
+  assert.equal(cmd.confirm, true, 'without confirm the engine only previews.');
   assert.equal(cmd.approved, true,
     'the engine requireApproval() gate refuses the rebuild unless approved reaches it as true.');
 });
@@ -1019,7 +1021,10 @@ test('meta_set_url_tags refuses malformed input before hitting the binary', asyn
     { brand: 'acme', adId: '1', urlTags: '?utm_source=fb' },
     { brand: 'acme', adId: '1', urlTags: 'utm source=fb' },
     { brand: 'acme', adId: '1', urlTags: 'nokeyvalue' },
+    { brand: 'acme', adId: '1', urlTags: '' },
+    { brand: 'acme', targetAdSetId: 'act_1' },
     { brand: 'acme', adIds: Array.from({ length: 51 }, (_, i) => String(i + 1)), urlTags: 'a=b' },
+    { brand: 'acme', adIds: Array.from({ length: 16 }, (_, i) => String(i + 1)), confirm: true },
   ]) {
     execFileCalls.length = 0;
     await tool('meta_set_url_tags').handler({ ...args, approved: true });
@@ -1033,38 +1038,55 @@ test('meta_set_url_tags routes to an always-cards action', () => {
     "swaps the creative live spend serves; 'push' would make it eligible for in-cap auto-approve.");
 });
 
-test('meta_set_url_tags dryRun reaches the engine as dryRun and never carries approval', async () => {
-  execFileCalls.length = 0;
-  await tool('meta_set_url_tags').handler({
-    brand: 'acme', adId: '120210000000000001', urlTags: 'utm_source=fb',
-    dryRun: true, acknowledgePartnership: true, approved: true,
-  });
-  const cmd = lastCmd();
-  assert.equal(cmd.action, 'meta-set-url-tags');
-  assert.equal(cmd.dryRun, true, 'Command.URLTagsDryRun is json "dryRun"; dropping it turns a preview into a write attempt.');
-  assert.equal(cmd.acknowledgePartnership, true, 'Command.AcknowledgePartnership is json "acknowledgePartnership".');
-  assert.ok(!('approved' in cmd), 'a preview must never carry the write approval to the binary.');
+test('meta_set_url_tags previews by default and never carries approval or confirm into a preview', async () => {
+  for (const extra of [{}, { approved: true }, { dryRun: true, confirm: true, approved: true }]) {
+    execFileCalls.length = 0;
+    await tool('meta_set_url_tags').handler({
+      brand: 'acme', adId: '120210000000000001', acknowledgePartnership: true, ...extra,
+    });
+    const cmd = lastCmd();
+    assert.equal(cmd.action, 'meta-set-url-tags');
+    assert.equal(cmd.acknowledgePartnership, true, 'Command.AcknowledgePartnership is json "acknowledgePartnership".');
+    assert.ok(!('approved' in cmd), `a preview must never carry the write approval (${JSON.stringify(extra)})`);
+    assert.ok(!('confirm' in cmd), `a preview must never carry confirm (${JSON.stringify(extra)})`);
+    if (extra.dryRun) assert.equal(cmd.dryRun, true, 'dryRun is the shared Command "dryRun" key; it forces the engine preview.');
+  }
 });
 
-test('meta_set_url_tags acknowledgePartnership reaches a live (non-dry) run', async () => {
+test('meta_set_url_tags selects by ad set with onlyMissing and default tags', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_set_url_tags').handler({
+    brand: 'acme', targetAdSetId: '120210000000000009', onlyMissing: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.targetAdSetId, '120210000000000009', 'Command.TargetAdSetID is json "targetAdSetId".');
+  assert.equal(cmd.onlyMissing, true, 'Command.URLTagsOnlyMissing is json "onlyMissing".');
+  assert.ok(!('urlTags' in cmd), 'omitted urlTags lets the engine use the brand default.');
+});
+
+test('meta_set_url_tags acknowledgePartnership reaches a confirmed write', async () => {
   execFileCalls.length = 0;
   await tool('meta_set_url_tags').handler({
     brand: 'acme', adId: '120210000000000001', urlTags: 'utm_source=fb',
-    acknowledgePartnership: true, approved: true,
+    acknowledgePartnership: true, confirm: true, approved: true,
   });
   const cmd = lastCmd();
   assert.equal(cmd.acknowledgePartnership, true);
+  assert.equal(cmd.confirm, true);
   assert.equal(cmd.approved, true);
   assert.ok(!cmd.dryRun);
 });
 
-test('meta_set_url_tags cards unless dryRun is literally true', () => {
+test('meta_set_url_tags cards only when confirm is literally true', () => {
   const policy = require('./mcp-approval-policy');
   const name = 'mcp__merlin__meta_set_url_tags';
-  const dry = policy.resolveMerlinAction(name, { dryRun: true });
-  assert.equal(dry.effectiveAction, 'dry-run');
-  assert.ok(policy.READ_ONLY_ACTIONS.has('dry-run'), 'the engine dry run is a pure read');
-  for (const input of [{}, { dryRun: false }, { dryRun: 'true' }, { dryRun: 1 }, { approved: true }]) {
+  assert.ok(policy.READ_ONLY_ACTIONS.has('dry-run'), 'the engine preview is a pure read');
+  for (const input of [{}, { dryRun: true }, { approved: true }, { confirm: 'true' }, { confirm: 1 },
+    { confirm: true, dryRun: true }]) {
+    const out = policy.resolveMerlinAction(name, input);
+    assert.equal(out.effectiveAction, 'dry-run', `must be the read-only preview for ${JSON.stringify(input)}`);
+  }
+  for (const input of [{ confirm: true }, { confirm: true, approved: true }, { confirm: true, dryRun: false }]) {
     const out = policy.resolveMerlinAction(name, input);
     assert.equal(out.effectiveAction, 'duplicate', `must card for ${JSON.stringify(input)}`);
     assert.ok(!policy.READ_ONLY_ACTIONS.has(out.effectiveAction));

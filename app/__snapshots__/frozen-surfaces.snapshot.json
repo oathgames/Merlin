@@ -4581,25 +4581,25 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Replace the UTM / URL tags (url_tags) on one or more LIVE Meta ads. Each ad's creative is rebuilt with the new tags and everything else preserved: media, copy, CTA and destination link, the boosted Instagram post (same post, same likes and comments), the publishing identity, partnership ad fields, and enhancement settings. Every new creative is read back and verified before the ad is switched onto it. Use when ads are missing UTMs or carry the wrong ones, including boosted-post and partnership ads that no other tool can retag. Switching a creative resets that ad's learning, so ads that already carry exactly these tags are skipped unless force is set.",
+      "description": "Add or replace the UTM / URL tags (url_tags) on LIVE Meta ads. PREVIEW BY DEFAULT: without confirm:true it only reads and shows, per ad, the current and new url_tags, the creative shape, whether the post's likes and comments are kept, and the exact creative that would be created. With confirm:true (and user approval) each ad's creative is rebuilt with the new tags and everything else preserved: media, copy, CTA and link, the existing post where Meta allows it (boosted Instagram posts, partnership ads, and dark posts keep the same post), partnership fields, and catalog ads' product set and template. Every new creative is verified before the ad is switched onto it, and the ad is re-read after. Select ads by adIds, or every ad in targetAdSetId / campaignId; onlyMissing:true skips ads that already carry UTMs. urlTags defaults to the brand's standard tags. Switching a creative resets that ad's learning.",
       "input": {
         "acknowledgePartnership": {
           "description": "Set true only after the user confirms: rebuild an ad that looks like a partnership ad even though its partnership fields cannot all be read back (so their preservation cannot be verified). The engine refuses such ads without it.",
           "type": "boolean"
         },
         "adId": {
-          "description": "A single ad to retag. Use this or adIds.",
+          "description": "A single ad to retag.",
           "type": "string"
         },
         "adIds": {
-          "description": "The ads to retag (max 50). Use this or adId.",
+          "description": "The ads to retag (max 50 for a preview, 15 for a confirmed write). Use this, adId, targetAdSetId or campaignId.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "approved": {
-          "description": "Approval flag for this write. The engine REFUSES to rebuild without it; set true only with explicit user approval. Not needed for dryRun.",
+          "description": "Approval flag for a confirmed write. The engine REFUSES to write without it; set true only with explicit user approval. Ignored on a preview.",
           "type": "boolean"
         },
         "brand": {
@@ -4607,8 +4607,16 @@
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
         },
+        "campaignId": {
+          "description": "Select every ad in this campaign instead of listing ad ids.",
+          "type": "string"
+        },
+        "confirm": {
+          "description": "Set true ONLY to actually apply the change after the user has seen the preview. Without it the call is a read-only preview. A write also needs approval.",
+          "type": "boolean"
+        },
         "dryRun": {
-          "description": "Read-only preview: reads each ad's creative and shows the fields Meta returned plus the exact creative that WOULD be created, with no write of any kind and no approval needed. Run this first on boosted-post and partnership ads.",
+          "description": "Force a read-only preview even if confirm is set.",
           "type": "boolean"
         },
         "force": {
@@ -4619,8 +4627,16 @@
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
         },
+        "onlyMissing": {
+          "description": "Skip ads that already carry any UTM (in url_tags or in a link). Recommended with targetAdSetId / campaignId; it also lets a capped run be repeated to finish the rest.",
+          "type": "boolean"
+        },
+        "targetAdSetId": {
+          "description": "Select every ad in this ad set instead of listing ad ids.",
+          "type": "string"
+        },
         "urlTags": {
-          "description": "The FULL url_tags string to set, e.g. \"utm_source=facebook&utm_medium=paidsocial&utm_campaign={{campaign.name}}\". It REPLACES the current tags; it is not merged. No leading ? or &.",
+          "description": "The FULL url_tags string to set, e.g. \"utm_source=facebook&utm_medium=paidsocial&utm_campaign={{campaign.name}}\". It REPLACES the current tags; it is not merged. No leading ? or &. Omit to use the brand's standard Merlin tags.",
           "type": "string"
         }
       },

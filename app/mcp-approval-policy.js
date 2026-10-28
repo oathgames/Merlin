@@ -528,11 +528,14 @@ function resolveMerlinAction(toolName, input) {
     return { effectiveAction: (input && input.dryRun === false) ? 'subscribe-bulk' : 'dry-run', label: null };
   }
   if (rawAction) return { effectiveAction: rawAction, label: null };
-  // meta_set_url_tags {dryRun:true} is a pure read in the engine (one batched
-  // GET, no creative POST, no swap; runMetaSetURLTags returns before
-  // requireApproval). Only the literal boolean true routes to the read-only
-  // 'dry-run' action; any other value, including "true", keeps the card.
-  if (toolName === 'mcp__merlin__meta_set_url_tags' && input && input.dryRun === true) {
+  // meta_set_url_tags is a pure read in the engine UNLESS confirm is true
+  // (batched GETs only, no creative POST, no swap; runMetaSetURLTags returns
+  // before requireApproval), and dryRun:true forces that read even with
+  // confirm. So only a literal confirm === true without dryRun === true
+  // cards; every other input, including confirm "true", is the read-only
+  // 'dry-run' action, matching the engine exactly.
+  if (toolName === 'mcp__merlin__meta_set_url_tags'
+      && !(input && input.confirm === true && input.dryRun !== true)) {
     return { effectiveAction: 'dry-run', label: null };
   }
   const mapped = INTENT_TOOL_TO_ACTION[toolName];
