@@ -348,6 +348,7 @@ function detectProvider(s) {
  * Recognizes:
  *   "try again in 12s" | "12 seconds" | "Retry-After: 30"
  *   "try again in 2m" | "2 minutes"  | "45s remaining"
+ *   Go durations from the engine: "try again in 37m0s" | "1h0m0s remaining"
  * Returns seconds (number) or null.
  */
 function parseRetryAfter(s) {
@@ -356,6 +357,25 @@ function parseRetryAfter(s) {
   // Retry-After header style: "Retry-After: 30"
   const headerMatch = /retry[-_ ]?after[:\s]+(\d+)/i.exec(s);
   if (headerMatch) return parseInt(headerMatch[1], 10);
+
+  // REGRESSION GUARD (2026-10-17): the engine prints Go durations
+  // ("try again in 37m0s", "1h0m0s remaining"). The seconds regex below
+  // matched the trailing "0s" and returned 0, so a 37-minute Meta wait was
+  // reported as the generic ~30s retry and the agent hammered a refused
+  // bucket. Read the duration next to the wait phrase first, so a safe-mode
+  // string ("try again in 37s. Safe mode is active for 23h59m0s more")
+  // carries the per-call wait, then any compound Go duration anywhere.
+  const phrase = /(?:try again in|resets? in|retry(?:ing)? in)\s+(\d[\dhms.]*)/i.exec(s)
+    || /(\d[\dhms.]*)\s+remaining/i.exec(s);
+  if (phrase) {
+    const d = parseGoDuration(phrase[1]);
+    if (d !== null) return d;
+  }
+  const compound = /\b(\d+h(?:\d+m)?(?:\d+(?:\.\d+)?s)?|\d+m\d+(?:\.\d+)?s)\b/i.exec(s);
+  if (compound) {
+    const d = parseGoDuration(compound[1]);
+    if (d !== null) return d;
+  }
 
   // "try again in 12s" / "45s remaining" / "12 seconds"
   const secMatch = /(\d+)\s*(?:s\b|seconds?\b)/i.exec(s);
@@ -370,6 +390,21 @@ function parseRetryAfter(s) {
   if (hrMatch) return parseInt(hrMatch[1], 10) * 3600;
 
   return null;
+}
+
+/**
+ * Parse one Go time.Duration string ("37m0s", "1h2m3s", "45s", "2m",
+ * "1.5s") into whole seconds, rounded up. Returns null when the token is
+ * not a Go duration (a bare number, "12 seconds", "500ms").
+ */
+function parseGoDuration(tok) {
+  if (!tok || typeof tok !== 'string') return null;
+  const m = /^(?:(\d+)h)?(?:(\d+)m(?!s))?(?:(\d+(?:\.\d+)?)s)?$/i.exec(tok.replace(/\.+$/, ''));
+  if (!m || (m[1] === undefined && m[2] === undefined && m[3] === undefined)) return null;
+  const total = (parseInt(m[1] || '0', 10) * 3600)
+    + (parseInt(m[2] || '0', 10) * 60)
+    + parseFloat(m[3] || '0');
+  return Math.ceil(total);
 }
 
 /**
@@ -424,6 +459,7 @@ module.exports = {
   classifyBinaryError,
   classifyOrFallback,
   parseRetryAfter,
+  parseGoDuration,
   describeDuration,
   detectProvider,
 };

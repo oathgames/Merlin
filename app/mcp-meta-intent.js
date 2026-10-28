@@ -180,6 +180,9 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       sortBy: z.string().optional().describe('Sort by: spend, roas, ctr, clicks, impressions, cpc, purchases'),
       sortOrder: z.enum(['asc', 'desc']).optional().describe('Sort order (default: desc)'),
       limit: z.number().optional().describe('Max results (e.g. 5 for top 5)'),
+      // Hard-Won Rule 23: the engine reads cmd.SkipThumbnails (autocmo-core
+      // meta.go meta-insights); without this line zod strips it.
+      skipThumbnails: z.boolean().optional().describe('Skip the creative-thumbnail enrichment (up to 4 extra Meta reads per run). Rows then carry no image URL. Pass true for numbers-only pulls, or when the Meta read budget is tight.'),
     },
     handler: async (args) => {
       // Half a window is never a window. The engine refuses it too; refusing
