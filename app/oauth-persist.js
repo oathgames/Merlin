@@ -35,6 +35,13 @@ const VAULT_SENSITIVE_KEYS = [
   'threadsAccessToken',
   'twitterAccessToken',
   'twitterRefreshToken',
+  // X Ads API (OAuth 1.0a, binary twitter-login path): the token secret
+  // signs every request alongside the token, and the selected ad account
+  // and X user id are vaulted brand-scoped by the Go side, so a disconnect
+  // must vaultDelete them or the entries are orphaned.
+  'twitterAccessTokenSecret',
+  'twitterAdAccountId',
+  'twitterUserId',
   'etsyAccessToken',
   'etsyRefreshToken',
   'redditAccessToken',
@@ -122,16 +129,13 @@ const VAULT_SENSITIVE_KEYS = [
   'rakutenTransactionsReportKey',
   'rakutenReportLocale',
   'rakutenNetwork',
-  // Roundel (Target retail media) via the Criteo Retail Media API: the
-  // brand's own Criteo developer app (Client ID + Client Secret, which mint
-  // the OAuth client-credentials token) plus the retail media account and
-  // optional retailer id, saved by the Roundel connect modal
-  // (renderer.js showRoundelConnectModal). The secret authorizes ad spend;
-  // the ids are vaulted with it so the connection lives brand-scoped.
-  'roundelClientId',
-  'roundelClientSecret',
-  'roundelAccountId',
-  'roundelRetailerId',
+  // impact.com Brand API connection, saved by the impact.com connect modal
+  // (renderer.js showImpactConnectModal). The Auth Token is the secret; the
+  // Account SID and default program are vaulted with it (same treatment as
+  // roktAccountId) so a brand's whole connection lives brand-scoped.
+  'impactAccountSid',
+  'impactAuthToken',
+  'impactProgramId',
   // Yotpo BYOK reporting credentials (App Key + Secret Key), saved by the
   // 2-step Yotpo connect modal (renderer.js showYotpoConnectModal).
   'yotpoAppKey',
@@ -152,6 +156,12 @@ const VAULT_SENSITIVE_KEYS = [
   'quickbooksAccessToken',
   'quickbooksRefreshToken',
   'quickbooksRealmId',
+  // Snapchat Marketing API (binary snapchat-login path). The ad account and
+  // organization ids are vaulted brand-scoped by the Go side (same treatment
+  // as quickbooksRealmId), so they are listed here for the same reason: a
+  // disconnect must vaultDelete them or the entries are orphaned.
+  'snapchatAdAccountId',
+  'snapchatOrganizationId',
   // ShipStation BYOK credentials (API Key + API Secret — HTTP Basic pair),
   // saved by the 2-step ShipStation connect modal.
   'shipStationApiKey',
@@ -222,9 +232,10 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // locale + network), saved by the Rakuten connect modal. All five mirrored
   // in VAULT_SENSITIVE_KEYS.
   'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
-  // Roundel (Criteo Retail Media API app + account), saved by the Roundel
-  // connect modal. All four mirrored in VAULT_SENSITIVE_KEYS.
-  'roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId',
+  // impact.com Brand API connection (Account SID + Auth Token + optional
+  // default program), saved by the impact.com connect modal. All three
+  // mirrored in VAULT_SENSITIVE_KEYS.
+  'impactAccountSid', 'impactAuthToken', 'impactProgramId',
   // Yotpo / Sesami / Faire / ShipStation / Loop Returns / Cin7 BYOK
   // credentials, saved by the custom multi-step connect modals and the
   // masked API_KEY_PLATFORMS tiles (renderer.js). All mirrored in
@@ -234,7 +245,7 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   'faireApiToken',
   'shipStationApiKey', 'shipStationApiSecret',
   'loopApiKey',
-  'cin7AccountId', 'cin7ApplicationKey',
+  'cin7AccountId', 'cin7ApplicationKey', 'cin7Product',
   'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
   // QuickBooks OAuth tokens + non-secret identifiers. The tokens are
   // vaulted (VAULT_SENSITIVE_KEYS); realmId / tokenExpiresAt / useSandbox
@@ -243,6 +254,14 @@ const CONFIG_FIELD_ALLOWLIST = new Set([
   // path accept them.
   'quickbooksAccessToken', 'quickbooksRefreshToken',
   'quickbooksRealmId', 'quickbooksTokenExpiresAt', 'quickbooksUseSandbox',
+  // Snapchat Marketing API: tokens + ids are vaulted (VAULT_SENSITIVE_KEYS);
+  // tokenExpiresAt is a non-secret plaintext field that drives the proactive
+  // refresh of Snap's 1-hour access tokens.
+  'snapchatAccessToken', 'snapchatRefreshToken',
+  'snapchatAdAccountId', 'snapchatOrganizationId', 'snapchatTokenExpiresAt',
+  // X Ads API: OAuth 1.0a token pair + selected ad account + user id, all
+  // vaulted (VAULT_SENSITIVE_KEYS).
+  'twitterAccessToken', 'twitterAccessTokenSecret', 'twitterAdAccountId', 'twitterUserId',
   'slackBotToken', 'slackWebhookUrl', 'slackChannel',
   'discordGuildId', 'discordChannelId',
   'productName', 'productUrl', 'productDescription', 'vertical', 'outputDir',

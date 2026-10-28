@@ -43,6 +43,23 @@ const BULK_AD_REUSE_AD_ID_DESC = 'Numeric id of an existing ad whose exact creat
   + 'Keeps the social proof of the source post and, unlike postId, also works for Collection/catalog creatives. '
   + 'Wins over postId, videoId/videoPath and imagePath on the same ad (those are ignored). Refused with publishPageId.';
 
+// REGRESSION GUARD (2026-10-05, google-budget-force, Hard-Won Rules 23 + 25):
+// the engine's spend-anomaly guard (checkSpendAnomaly in
+// autocmo-core/spend_pause.go) refuses a large single-action budget jump and
+// tells the caller to "pass force=true to override". Live hit: a google_ads
+// budget change was refused this way, and the remediation was
+// unreachable because google_ads did not declare `force`, so defineTool's
+// strict check rejected it as an unknown field. Every MCP tool whose engine
+// action can reach that guard declares this exact key (Go json tag "force" on
+// Command.Force), and runBinary copies it into --cmd verbatim. Locked by
+// app/mcp-spend-force-reachability.test.js. `force` never touches the host
+// approval card: spend actions card regardless (see handleToolApproval).
+const SPEND_GUARD_FORCE_DESC = 'Override an engine spend guard whose refusal explicitly says "pass force=true" '
+  + '(the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). '
+  + 'Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. '
+  + 'It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. '
+  + 'It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.';
+
 function firstLine(text) {
   if (!text || typeof text !== 'string') return '';
   const idx = text.indexOf('\n');
@@ -239,6 +256,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         link: z.string().optional(),
       })).optional().describe('Carousel card data (2–10 cards)'),
       postId: z.string().optional().describe('Existing Meta post ID to reuse as creative (preserves social proof)'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -259,7 +277,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   // gets its own ad set with dailyBudget.
   tools.push(defineTool({
     name: 'meta_launch_test_batch',
-    description: 'Launch a batch of Meta test ads (up to 50). Each ad gets its own ad set and daily budget. Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.',
+    description: 'Launch a batch of Meta test ads (up to 50). By default each ad gets its own ad set and daily budget; with sharedAdSet:true every ad goes into ONE ad set whose budget is the top-level dailyBudget (required when that ad set is new). Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -321,6 +339,14 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       partnerPageId: z.string().optional().describe("Publish this push from a CREATOR page instead of the brand page (allowlisted / partnership ads). Numeric Meta page id. The ad account must already hold posting permission on that page, granted by the creator. Verified live: the RIPIT partnership ad set publishes from page 117203078065824 while brand ads use 902808256258024. NOTE: the resulting ad is served from the creator handle but carries no Paid-partnership label, so confirm the creator agreement covers it."),
       partnerInstagramUserId: z.string().optional().describe("Instagram user id to publish from alongside partnerPageId (allowlisted / partnership ads). Numeric. Requires partnerPageId, because an Instagram-only override would publish from the BRAND page on Facebook placements and the creator on Instagram; the engine refuses that split identity."),
       campaignDailyBudget: z.number().optional().describe('Campaign-level daily budget in DOLLARS. Read only under campaignBudgetMode \'cbo\', where it is the real spend governor and is validated against maxDailyAdBudget - an over-cap value is refused, never silently clamped.'),
+      // REGRESSION GUARD (2026-10-08, bulkpush-shared-adset-budget, Rules 1 + 23 + 25):
+      // the top-level budget was never declared here, so zod stripped it and a
+      // NEW shared ad set was silently created at the engine's $5 default (live
+      // Forever 21 push needed $50). Read by Command.DailyBudget in
+      // runMetaBulkPush; validated by validateBudget below and by the engine's
+      // validateDailyBudget on the final number. The engine now refuses a new
+      // shared ad set without it (meta_shared_adset_budget.go).
+      dailyBudget: z.number().optional().describe('Daily budget in DOLLARS (not cents): pass 50 for $50/day. With sharedAdSet:true this is the budget of the ONE ad set the batch creates, and it is REQUIRED for a new shared ad set (the engine refuses rather than default to $5). Not needed with targetAdSetId (existing ad set, budget untouched) or campaignBudgetMode "cbo". Without sharedAdSet it is the batch-wide default for ads that set no ads[].dailyBudget.'),
       sharedAdSet: z.boolean().optional().describe('Put EVERY ad in ONE ad set carrying the full dailyBudget, instead of the default one-ad-set-per-ad (ABO) split. Use for cold creative testing where Meta should concentrate budget on the best creatives rather than force an equal per-ad share.'),
       adSetName: z.string().optional().describe('Shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.'),
       targetAdSetId: z.string().optional().describe('Shared-ad-set mode only: add every ad to this EXISTING ad set instead of creating a new one. '
@@ -334,6 +360,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         + 'Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. '
         + 'Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.'),
       languages: z.array(z.string()).optional().describe('ISO 639-1 codes for multi-language variants (e.g. ["es","fr","de"])'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -377,6 +404,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       dailyBudget: z.number().describe('New daily budget in DOLLARS'),
       previousBudget: z.number().optional().describe('Original daily budget — required for blast-radius math. If omitted, preview gate is skipped.'),
       campaignName: z.string().optional(),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -558,6 +586,7 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       adId: z.string().describe('Target ad ID'),
       dailyBudget: z.number().describe('New daily budget in DOLLARS'),
       previousBudget: z.number().optional().describe('Previous daily budget — required for blast-radius math. If omitted, preview gate is skipped.'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetErr = guardBudget(args);
@@ -1226,6 +1255,58 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     },
   }, tool, z, ctx));
 
+  // ── meta_set_attribution ───────────────────────────────────────────
+  //
+  // Change the attribution setting (attribution_spec) of an EXISTING Meta ad
+  // set. The engine (autocmo-core/meta_set_attribution.go) writes ONLY
+  // attribution_spec, refuses non-conversion goals (Meta rejects the field on
+  // LPV / traffic / reach), no-ops when the window already matches, and
+  // verifies by read-back.
+  //
+  // Why this is worth a tool: Merlin sets the 7d click / 1d view / 1d
+  // engaged-view standard on every conversion ad set it CREATES, but that is
+  // not retroactive, so older or hand-built ad sets had no path onto it short
+  // of a rebuild.
+  //
+  // costImpact mirrors meta_set_optimization_goal: no NEW spend, but it changes
+  // which conversions an already-spending ad set learns from and can restart
+  // learning. Always cards (INTENT_TOOL_TO_ACTION -> 'duplicate').
+  tools.push(defineTool({
+    name: 'meta_set_attribution',
+    description: 'Change the attribution setting of an existing Meta AD SET (which clicks and views count as conversions). Defaults to the Merlin standard: 7-day click, 1-day view, 1-day engaged-view. Conversion-optimized ad sets only (OFFSITE_CONVERSIONS or VALUE). Edits the live ad set in place and verifies by reading it back; no-ops if it already matches. Can send the ad set back into learning. If Meta refuses the edit on a published ad set, duplicate the ad set and set the window on the copy.',
+    destructive: true,
+    // Setting the same window twice converges: the engine no-ops when the
+    // live spec already matches, so a retry is safe.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      targetAdSetId: z.string().describe('The ad set whose attribution setting to change'),
+      attributionSpec: z.array(z.object({
+        event_type: z.enum(['CLICK_THROUGH', 'VIEW_THROUGH', 'ENGAGED_VIDEO_VIEW']),
+        window_days: z.number().int(),
+      })).optional().describe('Attribution windows to set. Omit for the Merlin standard (7d click, 1d view, 1d engaged-view). Allowed: CLICK_THROUGH 1 or 7 (required), VIEW_THROUGH 1, ENGAGED_VIDEO_VIEW 1.'),
+      approved: z.boolean().optional().describe('Approval flag for this write. The engine REFUSES the edit without it; set true only with explicit user approval to change a live ad set\'s attribution.'),
+    },
+    handler: async (args) => {
+      const adSetId = String(args.targetAdSetId || '').trim();
+      if (!adSetId) {
+        return validationEnvelope('targetAdSetId is required. Name the ad set whose attribution setting should change.');
+      }
+      if (Array.isArray(args.attributionSpec) && args.attributionSpec.length === 0) {
+        return validationEnvelope('attributionSpec is empty. Omit it for the Merlin standard (7d click, 1d view, 1d engaged-view) or pass at least a CLICK_THROUGH window.');
+      }
+      // Handler does NOT auto-set args.approved; that would bypass the safety
+      // rail the engine's requireApproval() exists to enforce.
+      return toEnvelope(await runBinary(ctx, 'meta-set-attribution', args), {
+        nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
   // ── meta_clone_adset ───────────────────────────────────────────────
   //
   // Copy an existing ad set (and its ads) into a NEW ad set, optionally with a
@@ -1328,4 +1409,4 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   return tools;
 }
 
-module.exports = { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC };
+module.exports = { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC, SPEND_GUARD_FORCE_DESC };

@@ -35,6 +35,11 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   // before routing them to google-ads-budget / google-ads-brand-exclusion,
   // so they can only ever run the engine's read / preview mode.
   'budget-status', 'brand-exclusion-preview',
+  // google_ads 'audiences' (engine google-ads-audiences) lists user lists and
+  // campaign audience exclusions. The engine action has no write path, and
+  // the handler strips approved / force anyway. Mailchimp's 'audiences' is
+  // also a read, so the global name is safe.
+  'audiences',
   // Google Tag Manager reads. 'discover' and 'audit' are already here
   // from other connectors; 'list-versions' only shows which container
   // version is live and the change history, which mutates nothing.
@@ -74,11 +79,13 @@ const READ_ONLY_ACTIONS = Object.freeze(new Set([
   'export',
   // Google Ads per-ad Demand Gen video performance (GAQL reads only).
   'video-insights',
-  // Roundel (Criteo Retail Media) auction line-item listing: GETs only.
-  // Its spend verbs ('activate', 'budget') are in SPEND_ACTIONS; 'pause'
-  // deliberately stays on the uncarded path (the emergency brake).
-  'line-items',
-]))
+  // TikTok GMV Max reads (tiktok_audit, 2026-10-05). GET-only in the engine
+  // (tiktok_gmv_max.go, AST call-graph test). Listed explicitly so they
+  // auto-approve as reads by name rather than via the catch-all.
+  'gmv-max-stores', 'gmv-max-campaigns', 'gmv-max-campaign-info',
+  'gmv-max-videos', 'gmv-max-report', 'gmv-max-shop-check',
+  'gmv-max-authorizations', 'gmv-max-ads',
+]));
 
 // SPEND_ACTIONS gate the approval card. `push` is the only action eligible
 // for in-cap auto-approve (caller passes an explicit, knowable dailyBudget).
@@ -112,6 +119,15 @@ const SPEND_ACTIONS = Object.freeze(new Set([
   // budget. Always cards (not in-cap eligible like 'push'), because it can
   // also add ads under an existing, possibly live, ad group.
   'demandgen-push',
+  // Google Ads AI Max for Search (2026-10-07): creates a new Search campaign
+  // with its own daily budget. Created PAUSED, but it commits a budget and
+  // the copy that will serve, so it always cards. Not 'push', so it is never
+  // eligible for the in-cap auto-approve.
+  'search-create',
+  // TikTok GMV Max ROI target (2026-10-05). Lowering a ROI target unlocks
+  // spend, so it is SPEND-class. Not 'push', so it is never eligible for the
+  // in-cap auto-approve: the card shows every time.
+  'roi-target',
 ]));
 
 // CARDED_DESTRUCTIVE_ACTIONS gate the generic confirmation card for
@@ -156,6 +172,11 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // live campaigns bid on, so a human looks first. The engine also refuses
   // it without approved:true (requireApproval).
   'brand-exclusion',
+  // google_ads customer exclusion: attaches a user list as a negative
+  // audience to live Search / Display campaigns. No dollars move, but it
+  // changes who live campaigns reach, so a human looks first. The engine
+  // refuses it without approved:true (requireApproval).
+  'exclude-audience',
   // Google Tag Manager writes. These do not move ad dollars, so they are
   // costImpact 'api' and would otherwise land on the catch-all
   // auto-approve at step 4 — the same fallthrough that let Mailchimp
@@ -281,6 +302,15 @@ const CARDED_DESTRUCTIVE_ACTIONS = Object.freeze(new Set([
   // so a human confirms every run. The engine (gorgias-export-raw) also
   // refuses without approved:true.
   'export-raw',
+  // Klaviyo bulk consent import (2026-10-20, klaviyo-bulk-subscribe).
+  // resolveMerlinAction maps klaviyo {action:'subscribe-bulk'} to this only
+  // when dryRun is literally false; every other value routes to READ_ONLY
+  // 'dry-run'. A real run subscribes up to millions of profiles to email
+  // marketing (and creates missing lists), which is not undoable at scale
+  // and changes who a brand can email, so a human confirms every run. The
+  // engine refuses without approved:true (requireApproval). 'list-create'
+  // is the single idempotent list create, carded as a live account write.
+  'subscribe-bulk', 'list-create',
 ]));
 
 // ── Intent-tool routing ─────────────────────────────────────────────
@@ -302,6 +332,7 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   'mcp__merlin__meta_setup_account':            'discover',
   'mcp__merlin__meta_review_performance':       'insights',
   'mcp__merlin__meta_audit':                    'audit',
+  'mcp__merlin__tiktok_audit':                  'audit',
   'mcp__merlin__meta_import_account_state':     'discover',
   'mcp__merlin__meta_research_competitor_ads':  'competitor-scan',
   'mcp__merlin__meta_build_lookalike':          'audit',  // costImpact 'api'; non-spend
@@ -362,6 +393,10 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // edit buys something different, and the host cannot verify the new goal is
   // the right one for that ad set's promoted_object. Always cards.
   'mcp__merlin__meta_set_optimization_goal':    'duplicate',
+  // meta_set_attribution changes which conversions an ALREADY-SPENDING ad set
+  // learns from and can restart learning. Same shape as the goal edit: no new
+  // spend, but the host cannot verify the window is right. Always cards.
+  'mcp__merlin__meta_set_attribution':          'duplicate',
   // meta_clone_adset creates a new ad set PAUSED, like meta_dpa_setup, so no
   // spend starts on create — but the budget it carries IS the spend surface
   // once a human activates it. dailyBudget is OPTIONAL and omitting it
@@ -381,6 +416,7 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // Uploading a customer list adds ad-account state and handles customer PII,
   // so it cards like the other audience writes even though it costs no spend.
   'mcp__merlin__meta_upload_customer_list': 'setup',
+  'mcp__merlin__tiktok_gmv_max_set_roi_target': 'roi-target',
   // meta_set_frequency_cap moves no money and can only reduce delivery, so it
   // is not a spend action. It does edit a live ad set's delivery settings and
   // capping impressions is a judgement call a human should see, so it cards
@@ -408,7 +444,9 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_create_custom_audience':   'Create a Meta custom audience',
   'mcp__merlin__meta_create_engagement_audience': 'Create a Meta Page/Instagram engagement audience',
   'mcp__merlin__meta_upload_customer_list': 'Upload a customer list as a Meta audience',
+  'mcp__merlin__tiktok_gmv_max_set_roi_target': 'Change a TikTok GMV Max ROI target (a lower target lets GMV Max spend more)',
   'mcp__merlin__meta_set_optimization_goal':    'Change what a live Meta ad set optimizes for',
+  'mcp__merlin__meta_set_attribution':          'Change the attribution window of a live Meta ad set',
   'mcp__merlin__meta_clone_adset':              'Clone a Meta ad set into a new PAUSED ad set',
   'mcp__merlin__meta_set_frequency_cap':        'Set a frequency cap on a Meta ad set',
 });
@@ -433,6 +471,61 @@ function resolveMerlinAction(toolName, input) {
   if (toolName === 'mcp__merlin__gorgias' && rawAction === 'export' &&
       input && input.raw !== undefined && input.raw !== false) {
     return { effectiveAction: 'export-raw', label: null };
+  }
+  // REGRESSION GUARD (2026-10-17, snap-architecture): the snapchat tool's
+  // build surface. build-architecture is a dry run unless dryRun is literally
+  // false, so only that exact value routes to the carded 'duplicate' (always
+  // cards, never in-cap auto-approve: one build commits several ad squads'
+  // budgets at once). Any other value over-protects by planning only, which
+  // the engine also enforces (dryRun nil or true makes zero writes).
+  // create-ad-squad commits a budget, so it routes to 'duplicate' too;
+  // create-audience changes account state (and may upload a hashed customer
+  // list), so it routes to the always-carded 'setup'. create-campaign is
+  // already in SPEND_ACTIONS by name. The new reads are named explicitly.
+  if (toolName === 'mcp__merlin__snapchat') {
+    if (rawAction === 'build-architecture') {
+      return { effectiveAction: (input && input.dryRun === false) ? 'duplicate' : 'dry-run', label: null };
+    }
+    if (rawAction === 'create-ad-squad') return { effectiveAction: 'duplicate', label: null };
+    if (rawAction === 'create-audience') return { effectiveAction: 'setup', label: null };
+    if (rawAction === 'pixels' || rawAction === 'ad-squads') return { effectiveAction: 'list', label: null };
+    // REGRESSION GUARD (2026-10-20, snapchat-ads): the ad-creation surface.
+    // upload-media and create-creative change account state without spend,
+    // so they route to the always-carded 'setup'. create-ad places an ad in
+    // a live ad squad (created PAUSED by the engine), so it routes to the
+    // always-carded 'duplicate', never the in-cap auto-approvable 'push'.
+    // bulk-push is already in SPEND_ACTIONS by name, the same slot as
+    // meta bulk-push.
+    if (rawAction === 'upload-media' || rawAction === 'create-creative') return { effectiveAction: 'setup', label: null };
+    if (rawAction === 'create-ad') return { effectiveAction: 'duplicate', label: null };
+    // REGRESSION GUARD (2026-10-20, snap-batch-status): batch-status flips
+    // ACTIVE or PAUSED on many campaigns, ad squads and ads at once. Only a
+    // batchStatus of exactly 'PAUSED' routes to 'kill' (still carded); any
+    // other value routes to the always-carded 'duplicate', never the in-cap
+    // auto-approvable 'push', because one call can resume several budgets.
+    if (rawAction === 'batch-status') {
+      return { effectiveAction: (input && input.batchStatus === 'PAUSED') ? 'kill' : 'duplicate', label: null };
+    }
+    // REGRESSION GUARD (2026-10-26, snapchat-dpa): Dynamic Product Ads.
+    // catalogs and pixel-stats are reads (GETs plus Snap's two read-only
+    // POST search endpoints) and route to 'list'. create-product-set changes
+    // catalog state without spend, so it routes to the always-carded
+    // 'setup'. dpa-setup is a dry run unless dryRun is literally false; that
+    // exact value builds a catalog campaign with several budgeted ad squads,
+    // so it routes to the always-carded 'duplicate' (never the in-cap
+    // auto-approvable 'push'), the same slot as a real build-architecture.
+    if (rawAction === 'catalogs' || rawAction === 'pixel-stats') return { effectiveAction: 'list', label: null };
+    if (rawAction === 'create-product-set') return { effectiveAction: 'setup', label: null };
+    if (rawAction === 'dpa-setup') {
+      return { effectiveAction: (input && input.dryRun === false) ? 'duplicate' : 'dry-run', label: null };
+    }
+  }
+  // REGRESSION GUARD (2026-10-20, klaviyo-bulk-subscribe): subscribe-bulk is
+  // a dry run unless dryRun is literally false (the engine applies the same
+  // rule), so only that exact value routes to the carded 'subscribe-bulk'.
+  // Anything else is the read-only plan and auto-approves as 'dry-run'.
+  if (toolName === 'mcp__merlin__klaviyo' && rawAction === 'subscribe-bulk') {
+    return { effectiveAction: (input && input.dryRun === false) ? 'subscribe-bulk' : 'dry-run', label: null };
   }
   if (rawAction) return { effectiveAction: rawAction, label: null };
   // meta_set_url_tags {dryRun:true} is a pure read in the engine (one batched

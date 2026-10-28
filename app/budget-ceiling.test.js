@@ -194,3 +194,29 @@ test('constants agree with the engine, when the engine source is reachable', () 
       'the host and the engine must refuse the same values');
   }
 });
+
+// REGRESSION GUARD (2026-10-05, google-budget-force): the host cap belongs to
+// the brand the spend call names. activeBrand is a fallback only when the call
+// names none, and an unsafe brand name never composes a config path.
+test('resolveCapBrand: the call brand wins over the active brand', () => {
+  const { resolveCapBrand } = require('./budget-ceiling');
+  assert.strictEqual(resolveCapBrand('ripit', () => 'apotheke'), 'ripit');
+  assert.strictEqual(resolveCapBrand('forever-21_us', () => 'apotheke'), 'forever-21_us');
+});
+
+test('resolveCapBrand: falls back to the active brand only when the call names none', () => {
+  const { resolveCapBrand } = require('./budget-ceiling');
+  assert.strictEqual(resolveCapBrand(undefined, () => 'apotheke'), 'apotheke');
+  assert.strictEqual(resolveCapBrand('', () => 'apotheke'), 'apotheke');
+  assert.strictEqual(resolveCapBrand(null, () => 'apotheke'), 'apotheke');
+  assert.strictEqual(resolveCapBrand(undefined, () => ''), '');
+  assert.strictEqual(resolveCapBrand(undefined, () => { throw new Error('state unreadable'); }), '');
+});
+
+test('resolveCapBrand: path traversal and non-string brands resolve to null (no config read)', () => {
+  const { resolveCapBrand } = require('./budget-ceiling');
+  for (const bad of ['../../x', '..\\..\\x', 'a/b', 'ripit/../apotheke', '.', ' ripit', 'x'.repeat(101), 42, {}, ['ripit']]) {
+    assert.strictEqual(resolveCapBrand(bad, () => 'apotheke'), null, `brand ${JSON.stringify(bad)} must not resolve`);
+  }
+  assert.strictEqual(resolveCapBrand(undefined, () => '../../etc'), null, 'a tampered active brand must not resolve either');
+});

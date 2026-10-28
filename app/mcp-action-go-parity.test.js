@@ -109,6 +109,7 @@ const TOOL_ROUTING = [
   // gtm-list-versions, gtm-install-ga4, gtm-create-version, gtm-publish.
   { name: 'google_tag_manager', prefix: 'gtm' },
   { name: 'tiktok_ads', prefix: 'tiktok' },
+  { name: 'tiktok_audit', prefix: 'tiktok' },
   // budget-status / brand-exclusion-preview are read aliases the handler
   // routes to the same engine actions in read / preview mode.
   { name: 'google_ads', prefix: 'google-ads',
@@ -189,12 +190,12 @@ const TOOL_ROUTING = [
     // openai-ads-*. connect is JS-only (returns instructions) → exempt.
     exemptions: ['connect'],
   },
-  // setup/verify/status/report/publishers/transactions → rakuten-<action> 1:1;
+  // setup/verify/status/report/publishers/transactions/export → rakuten-<action> 1:1;
   // connect is JS-only (returns instructions, no engine call).
   { name: 'rakuten', prefix: 'rakuten', exemptions: ['connect'] },
-  // status/verify/discover/campaigns/line-items/insights/pause/activate/budget
-  // → roundel-<action> 1:1; connect is JS-only (returns instructions).
-  { name: 'roundel', prefix: 'roundel', exemptions: ['connect'] },
+  // status/setup/verify/discover/insights/actions/partners/clicks/report →
+  // impact-<action> 1:1; connect is JS-only (returns instructions).
+  { name: 'impact', prefix: 'impact', exemptions: ['connect'] },
   { name: 'rokt', prefix: 'rokt',
     // report → rokt-report, status → rokt-status, verify → rokt-verify map 1:1
     // via the prefix. connect is JS-only (returns instructions) → exempt.
@@ -244,6 +245,10 @@ const TOOL_ROUTING = [
   { name: 'trendtrack', prefix: 'trendtrack' },
   { name: 'reddit_ads', prefix: 'reddit' },
   { name: 'linkedin_ads', prefix: 'linkedin' },
+  { name: 'pinterest_ads', prefix: 'pinterest' },
+  { name: 'snapchat', prefix: 'snapchat' },
+  // x_ads keeps the engine's twitter- prefix (Config/vault/provider keys).
+  { name: 'x_ads', prefix: 'twitter' },
   { name: 'etsy', prefix: 'etsy' },
   { name: 'config', prefix: '' },          // pass-through: action verbatim
   { name: 'competitor_spy', prefix: 'foreplay' },

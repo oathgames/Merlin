@@ -1626,8 +1626,9 @@ const activeChildProcesses = new Set(); // track spawned Merlin.exe for cleanup
 let _lastMcpCtx = null;
 // Local MCP IPC endpoint (Unix socket / Windows named pipe) for the
 // Claude Desktop sidecar shim. Single instance for the lifetime of the
-// app process — created on the first successful startSession and
-// refreshed (setTools) on subsequent sessions. Stopped on before-quit.
+// app process: created at app boot by bootMcpIpcEndpoint (or by the first
+// startSession if boot could not) and refreshed (setTools) on every
+// session. Stopped on before-quit.
 // See app/mcp-ipc-endpoint.js for the full security boundary comment.
 let _mcpIpcEndpoint = null;
 let pendingMessageQueue = []; // Queue messages sent before SDK is ready
@@ -2680,7 +2681,10 @@ const BANNED_API_HOSTS = [
   'advertising-api-fe.amazon.com', 'sellingpartnerapi-na.amazon.com',
   'sellingpartnerapi-eu.amazon.com', 'sellingpartnerapi-fe.amazon.com',
   'api.klaviyo.com', 'a.klaviyo.com',
-  'adsapi.snapchat.com', 'ads-api.pinterest.com',
+  'adsapi.snapchat.com', 'ads-api.pinterest.com', 'api.pinterest.com',
+  // X Ads API (twitter_ads.go). Every call is OAuth 1.0a signed by the
+  // landing Worker and must run through the binary's preflight + approval.
+  'ads-api.x.com', 'ads-api.twitter.com',
   // Stripe — read-only reporting via the binary only (same reasoning as
   // block-api-bypass.js). Defense in depth: hook blocks first, canUseTool blocks second.
   'api.stripe.com', 'connect.stripe.com',
@@ -2812,7 +2816,6 @@ function translateTool(toolName, input) {
     // Same reading Go applies (last key wins, case-insensitive, escapes
     // decoded). See bash-merlin-action.js REGRESSION GUARD (2026-10-04).
     const action = bashMerlinAction.parseAction(input.command).action || null;
-    const roundelDaily = bashMerlinAction.lastNumber(input.command, 'dailyBudget');
     const translations = {
       'meta-push':     { label: 'Publish this ad to Facebook', cost: '$5/day budget' },
       'meta-setup':    { label: 'Set up your ad campaigns on Facebook', cost: 'Free' },
@@ -2849,17 +2852,47 @@ function translateTool(toolName, input) {
       'rakuten-report':         { label: 'Pull Rakuten affiliate program performance', cost: 'Free' },
       'rakuten-publishers':     { label: 'List Rakuten affiliate publishers', cost: 'Free' },
       'rakuten-transactions':   { label: 'Pull Rakuten affiliate transactions', cost: 'Free' },
-      'roundel-setup':          { label: 'Verify your Roundel (Target) API connection', cost: 'Free' },
-      'roundel-verify':         { label: 'Verify your Roundel (Target) API connection', cost: 'Free' },
-      'roundel-discover':       { label: 'Find your Roundel retail media accounts', cost: 'Free' },
-      'roundel-campaigns':      { label: 'List your Roundel (Target) campaigns', cost: 'Free' },
-      'roundel-line-items':     { label: 'List your Roundel (Target) line items', cost: 'Free' },
-      'roundel-insights':       { label: 'Pull Roundel (Target) ad performance', cost: 'Free' },
-      'roundel-pause':          { label: 'Pause a Roundel (Target) line item', cost: 'Free, stops its spend' },
-      'roundel-activate':       { label: 'Turn on a Roundel (Target) line item', cost: 'Sets ad spend: resumes at its current budget' },
-      'roundel-budget':         { label: 'Change a Roundel (Target) line item daily budget', cost: roundelDaily != null ? `Sets ad spend: $${roundelDaily}/day` : 'Sets ad spend (daily amount not readable, check the command)' },
+      'impact-setup':           { label: 'Verify your impact.com API credentials', cost: 'Free' },
+      'impact-verify':          { label: 'Verify your impact.com API credentials', cost: 'Free' },
+      'impact-discover':        { label: 'List impact.com programs and reports', cost: 'Free' },
+      'impact-insights':        { label: 'Pull impact.com affiliate program performance', cost: 'Free' },
+      'impact-actions':         { label: 'Pull impact.com affiliate conversions', cost: 'Free' },
+      'impact-partners':        { label: 'List impact.com partners', cost: 'Free' },
+      'impact-clicks':          { label: 'Pull impact.com affiliate clicks', cost: 'Free' },
+      'impact-report':          { label: 'Export an impact.com report', cost: 'Free' },
       'quickbooks-login':         { label: 'Connect QuickBooks (read-only accounting)', cost: 'Free' },
       'quickbooks-report':        { label: 'Pull QuickBooks accounting metrics', cost: 'Free' },
+      'snapchat-login':           { label: 'Connect Snapchat Ads', cost: 'Free' },
+      'snapchat-status':          { label: 'Check the Snapchat Ads connection', cost: 'Free' },
+      'snapchat-ad-accounts':     { label: 'List Snapchat ad accounts', cost: 'Free' },
+      'snapchat-campaigns':       { label: 'List Snapchat campaigns', cost: 'Free' },
+      'snapchat-insights':        { label: 'Pull Snapchat Ads performance', cost: 'Free' },
+      'snapchat-kill':            { label: 'Pause a Snapchat campaign', cost: 'Free' },
+      'snapchat-activate':        { label: 'Turn a Snapchat campaign back on', cost: 'Resumes ad spend' },
+      'snapchat-batch-status':    { label: 'Turn Snapchat campaigns, ad squads or ads on or off', cost: 'May resume ad spend' },
+      'snapchat-pixels':          { label: 'List Snapchat pixels', cost: 'Free' },
+      'snapchat-audiences':       { label: 'List Snapchat audiences', cost: 'Free' },
+      'snapchat-ad-squads':       { label: 'List Snapchat ad squads', cost: 'Free' },
+      'snapchat-ads':             { label: 'List Snapchat ads', cost: 'Free' },
+      'snapchat-create-audience': { label: 'Create a Snapchat audience', cost: 'Free' },
+      'snapchat-create-campaign': { label: 'Create a paused Snapchat campaign', cost: 'No spend until activated' },
+      'snapchat-create-ad-squad': { label: 'Create a paused Snapchat ad squad', cost: 'No spend until activated' },
+      'snapchat-build-architecture': { label: 'Build Snapchat prospecting and retargeting campaigns (paused)', cost: 'No spend until activated' },
+      'snapchat-upload-media':    { label: 'Upload an image or video to Snapchat', cost: 'Free' },
+      'snapchat-create-creative': { label: 'Create a Snapchat creative', cost: 'Free' },
+      'snapchat-create-ad':       { label: 'Create a paused Snapchat ad', cost: 'No spend until activated' },
+      'snapchat-bulk-push':       { label: 'Upload and create paused Snapchat ads', cost: 'No spend until activated' },
+      'snapchat-catalogs':        { label: 'Check Snapchat product catalogs', cost: 'Free' },
+      'snapchat-pixel-stats':     { label: 'Check Snapchat pixel events', cost: 'Free' },
+      'snapchat-create-product-set': { label: 'Create a Snapchat product set', cost: 'Free' },
+      'snapchat-dpa-setup':       { label: 'Build Snapchat product catalog ads (paused)', cost: 'No spend until activated' },
+      'twitter-login':            { label: 'Connect X Ads', cost: 'Free' },
+      'twitter-status':           { label: 'Check the X Ads connection', cost: 'Free' },
+      'twitter-ad-accounts':      { label: 'List X ad accounts', cost: 'Free' },
+      'twitter-campaigns':        { label: 'List X campaigns', cost: 'Free' },
+      'twitter-insights':         { label: 'Pull X Ads performance', cost: 'Free' },
+      'twitter-kill':             { label: 'Pause an X campaign', cost: 'Free' },
+      'twitter-activate':         { label: 'Turn an X campaign back on', cost: 'Resumes ad spend' },
       'yotpo-verify':             { label: 'Verify your Yotpo credentials', cost: 'Free' },
       'yotpo-report':             { label: 'Pull Yotpo reviews and loyalty metrics', cost: 'Free' },
       'sesami-verify':            { label: 'Verify your Sesami credentials', cost: 'Free' },
@@ -2868,10 +2901,12 @@ function translateTool(toolName, input) {
       'faire-report':             { label: 'Pull Faire wholesale orders', cost: 'Free' },
       'shipstation-verify':       { label: 'Verify your ShipStation credentials', cost: 'Free' },
       'shipstation-report':       { label: 'Pull ShipStation shipping metrics', cost: 'Free' },
+      'shipstation-export':       { label: 'Export ShipStation orders and shipments to a local file', cost: 'Free' },
       'loop-verify':              { label: 'Verify your Loop Returns API key', cost: 'Free' },
       'loop-report':              { label: 'Pull Loop Returns metrics', cost: 'Free' },
       'cin7-verify':              { label: 'Verify your Cin7 credentials', cost: 'Free' },
       'cin7-report':              { label: 'Pull Cin7 inventory metrics', cost: 'Free' },
+      'cin7-export':              { label: 'Export your Cin7 Omni data to your computer', cost: 'Free' },
       'gorgias-setup':            { label: 'Verify your Gorgias credentials', cost: 'Free' },
       'gorgias-verify':           { label: 'Verify your Gorgias credentials', cost: 'Free' },
       'gorgias-tickets':          { label: 'List Gorgias support tickets (de-identified)', cost: 'Free' },
@@ -2896,6 +2931,9 @@ function translateTool(toolName, input) {
       'reddit-create-campaign': { label: 'Create a Reddit ad campaign', cost: 'Sets daily budget' },
       'reddit-create-ad': { label: 'Create a Reddit ad', cost: 'Sets bid' },
       'reddit-kill':   { label: 'Pause a Reddit campaign or ad', cost: 'Free' },
+      'pinterest-login':    { label: 'Connect to your Pinterest Ads account', cost: 'Free' },
+      'pinterest-kill':     { label: 'Pause Pinterest campaigns, ad groups, or ads', cost: 'Free' },
+      'pinterest-activate': { label: 'Resume Pinterest campaigns, ad groups, or ads', cost: 'Resumes ad spend' },
       'etsy-shop':     { label: 'Check your Etsy shop details', cost: 'Free' },
       'etsy-products': { label: 'View your Etsy listings', cost: 'Free' },
       'etsy-orders':   { label: 'Check your Etsy orders', cost: 'Free' },
@@ -2927,6 +2965,8 @@ function translateTool(toolName, input) {
       // user gate that produces it.
       'klaviyo-flow-delete':         { label: 'Permanently delete this Klaviyo flow', cost: 'Cannot be undone — the flow, its steps and its reporting history are removed' },
       'klaviyo-template-delete':     { label: 'Permanently delete this Klaviyo email template', cost: 'Cannot be undone — any campaign or flow message still using it breaks' },
+      'klaviyo-subscribe-bulk':      { label: 'Import a list of emails into Klaviyo as subscribed to email marketing', cost: 'No ad spend. Adds every profile to Klaviyo (raises your Klaviyo profile count and bill) and subscribes it to email marketing; cannot be bulk-undone' },
+      'klaviyo-list-create':         { label: 'Create a new Klaviyo list', cost: 'Free. Returns the existing list instead if one already has this exact name' },
       'postscript-automation-delete':{ label: 'Permanently delete this Postscript SMS automation', cost: 'Cannot be undone — the flow stops sending and its steps are removed' },
       // Engine actions gated by requireApproval whose card had never been
       // wired (2026-09-04). Plain-English impact, not the action name.
@@ -2989,6 +3029,27 @@ function translateTool(toolName, input) {
       'template-delete': { label: 'Permanently delete this Klaviyo email template', cost: 'Cannot be undone — any campaign or flow message still using it breaks' },
     };
     if (mcpKlaviyoLabels[input.action]) return mcpKlaviyoLabels[input.action];
+    // Bulk consent import: name the brand, the source and the target so the
+    // card says exactly which emails go where, and repeat the consent date.
+    if (input.action === 'subscribe-bulk') {
+      const brandLabel = (typeof input.brand === 'string' && input.brand.trim()) ? input.brand.trim().toUpperCase() : 'this brand';
+      const clean = (v) => String(v || '').replace(/\s+/g, ' ').slice(0, 160);
+      const source = input.csvPath ? clean(path.basename(String(input.csvPath)))
+        : `${clean(input.csvPattern || '*.csv')} in ${clean(input.csvDir ? path.basename(String(input.csvDir)) : 'the folder')}`;
+      const target = input.listId ? `list ${clean(input.listId)}`
+        : input.listName ? `list "${clean(input.listName)}"`
+          : `one list per file named "${clean(input.listNameTemplate)}"`;
+      const consent = input.historicalImport === false
+        ? 'not marked as a historical import, so "Added to list" flows on these lists WILL send'
+        : `consent dated ${clean(input.consentedAt) || '(missing, the engine will refuse)'}`;
+      return {
+        label: `Subscribe the emails in ${source} to ${brandLabel}'s Klaviyo email marketing, into ${target}`,
+        cost: `No ad spend. Every accepted profile is added to Klaviyo as SUBSCRIBED (${consent}); unsubscribed and spam-reported profiles are skipped. Raises the Klaviyo profile count and cannot be bulk-undone`,
+      };
+    }
+    if (input.action === 'list-create') {
+      return { label: `Create the Klaviyo list "${String(input.listName || '').slice(0, 160)}"`, cost: 'Free. Returns the existing list instead if one already has this exact name' };
+    }
   }
   if (toolName === 'mcp__merlin__postscript' && input && input.action === 'automation-delete') {
     return {
@@ -3022,12 +3083,29 @@ function translateTool(toolName, input) {
   return { label: 'Merlin needs your permission to continue', cost: null };
 }
 
-// Calculate current budget usage for approval card context
-function getBudgetContext() {
+// Calculate current budget usage for approval card context.
+//
+// REGRESSION GUARD (2026-10-05, google-budget-force): the cap is read from the
+// brand the SPEND CALL names (`inputBrand`), not readState().activeBrand. The
+// old activeBrand read checked a spend call for brand B against brand A's
+// maxDailyAdBudget whenever A was the active brand, so A's raised cap could
+// authorize B's spend (and B's raised cap was ignored). activeBrand is only a
+// fallback when the call names no brand. A brand name that fails the brand
+// allowlist (path traversal, etc.) returns null: no config is read, so no
+// declared cap applies, the strict default ceiling holds, and in-cap
+// auto-approve stays off. Pinned by app/mcp-spend-force-reachability.test.js
+// and budget-ceiling.test.js (resolveCapBrand).
+// Shown on every approval card for a forced spend call. `force` overrides the
+// engine's spend-anomaly guard AND the push quality gates (forbidden brand
+// words, unverified stats, landing grade), so the human must see that this
+// approval waives Merlin's own checks, not just a budget number.
+const FORCE_CARD_NOTE = '⚠ Overrides Merlin safety checks (large budget jump, ad quality checks)';
+
+function getBudgetContext(inputBrand) {
   try {
-    let activeBrand = '';
-    try { activeBrand = readState().activeBrand || ''; } catch {}
-    const cfg = activeBrand ? readBrandConfig(activeBrand) : readConfig();
+    const capBrand = budgetCeiling.resolveCapBrand(inputBrand, () => readState().activeBrand || '');
+    if (capBrand === null) return null;
+    const cfg = capBrand ? readBrandConfig(capBrand) : readConfig();
     const dailyCap = cfg.maxDailyAdBudget || cfg.dailyAdBudget || 0;
     const monthlyCap = cfg.maxMonthlyAdSpend || cfg.monthlyAdSpend || 0;
     if (dailyCap === 0 && monthlyCap === 0) return null;
@@ -3131,7 +3209,7 @@ async function handleToolApproval(toolName, input, opts) {
 
     // Spend actions: show approval card with budget enforcement
     if (approvalPolicy.SPEND_ACTIONS.has(action)) {
-      const budgetCtx = getBudgetContext();
+      const budgetCtx = getBudgetContext(input.brand);
       const adBudget = input.dailyBudget || 5;
 
       // HARD DENY: catch Claude-passed-cents BEFORE showing the approval card.
@@ -3183,21 +3261,28 @@ async function handleToolApproval(toolName, input, opts) {
       // headroom to gate against — show the card rather than auto-approve.
       let requireSpendApproval = true;
       try {
-        const brandForCfg = input.brand || (() => {
-          try { return readState().activeBrand || ''; } catch { return ''; }
-        })();
-        const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
-        requireSpendApproval = !!cfg.requireSpendApproval;
+        const brandForCfg = budgetCeiling.resolveCapBrand(input.brand, () => readState().activeBrand || '');
+        if (brandForCfg !== null) {
+          const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
+          requireSpendApproval = !!cfg.requireSpendApproval;
+        }
       } catch (e) {
         console.warn('[spend-approval] config read failed, defaulting to require approval:', e && e.message);
       }
+      //
+      // FORCED OVERRIDE ALWAYS CARDS (2026-10-05, google-budget-force). `force`
+      // is declared on every ad tool so the engine's "pass force=true"
+      // remediation is reachable (Hard-Won Rules 23 + 25). A forced call is by
+      // definition one an engine spend guard refused, so it never rides the
+      // in-cap auto-approve path: the human looks at it every time.
+      const forceRequested = budgetCeiling.requestsGuardOverride(input, toolName);
       //
       // HIGH-MAGNITUDE SPEND ALWAYS CARDS (2026-08-13, budget-ceiling). A
       // declared cap authorizes the AMOUNT; it does not waive the human look
       // at this magnitude. Without this clause, an operator who raised
       // maxDailyAdBudget to 5000 for a single flash sale would have every
       // subsequent $5,000/day push fire silently.
-      if (!requireSpendApproval && capForComparison > 0 && action === 'push' &&
+      if (!requireSpendApproval && !forceRequested && capForComparison > 0 && action === 'push' &&
           !budgetCeiling.alwaysRequiresCard(adBudget)) {
         const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
         if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
@@ -3207,9 +3292,14 @@ async function handleToolApproval(toolName, input, opts) {
 
       const translations = {
         'push': { label: 'Publish this ad', cost: `$${adBudget}/day budget` },
+        'search-create': { label: 'Create a Google AI Max Search campaign (starts paused)', cost: `$${adBudget}/day budget` },
         'duplicate': { label: 'Scale this winning ad', cost: 'Increases budget' },
         'setup': { label: 'Set up ad campaigns', cost: 'Free' },
         'setup-retargeting': { label: 'Set up retargeting audiences', cost: 'Free' },
+        'roi-target': {
+          label: 'Change TikTok GMV Max ROI target',
+          cost: `Campaign ${String(input.campaignId || '?').slice(0, 32)}: ROI target to ${Number.isFinite(Number(input.roasBid)) ? Number(input.roasBid) : '?'}. Lower target = more spend`,
+        },
       };
       const translated = translations[action] || { label: `Run ${action}`, cost: null };
       // Intent-tool labels override the generic action-based label so the
@@ -3217,19 +3307,6 @@ async function handleToolApproval(toolName, input, opts) {
       // vs the legacy "Scale this winning ad"). See mcp-approval-policy.js
       // for the per-tool label registry.
       if (intentToolLabel) translated.label = intentToolLabel;
-      // Roundel's spend verbs share the generic 'activate' / 'budget' action
-      // names, which have no entry above and would card as "Run activate".
-      // Name the platform and what moves; activate carries no dailyBudget, so
-      // it must not show a dollar figure the engine never sends.
-      if (toolName === 'mcp__merlin__roundel') {
-        if (action === 'activate') {
-          translated.label = 'Turn on a Roundel (Target) line item';
-          translated.cost = 'Resumes ad spend at the line item current budget';
-        } else if (action === 'budget') {
-          translated.label = 'Change a Roundel (Target) line item daily budget';
-          translated.cost = `$${adBudget}/day`;
-        }
-      }
       let budgetDetail = null;
       if (budgetCtx && budgetCtx.dailyCap > 0 && (action === 'push' || action === 'duplicate')) {
         const overBudget = budgetCtx.remaining < adBudget;
@@ -3242,6 +3319,7 @@ async function handleToolApproval(toolName, input, opts) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
+      if (forceRequested) budgetDetail = (budgetDetail ? budgetDetail + ' · ' : '') + FORCE_CARD_NOTE;
       const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       const external = resolveExternalOriginCard(payload, toolName, input, opts);
@@ -3396,7 +3474,7 @@ async function handleToolApproval(toolName, input, opts) {
   if (toolName === 'Bash' && input.command && input.command.includes('Merlin')) {
     // REGRESSION GUARD (2026-10-04): the first-match regex used here carded
     // the FIRST "action" key while Go runs the LAST one, so
-    // {"action":"roundel-status","action":"roundel-budget","approved":true}
+    // {"action":"rokt-report","action":"meta-push","approved":true}
     // skipped the spend card. A command naming its action more than once, or
     // in a form Merlin cannot decode, is refused outright.
     const parsedBash = bashMerlinAction.parseAction(input.command);
@@ -3415,7 +3493,9 @@ async function handleToolApproval(toolName, input, opts) {
     // anything that touches account configuration stays out.
     const BASH_PUSH_ONLY = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad']);
     if (BASH_SPEND.has(bashAction)) {
-      const budgetCtx = getBudgetContext();
+      // Cap is read for the brand the engine will use: last "brand" wins, as in Go.
+      const bashInputBrand = bashMerlinAction.lastString(input.command, 'brand') || undefined;
+      const budgetCtx = getBudgetContext(bashInputBrand);
       const translated = translateTool(toolName, input);
       // Last occurrence wins, as in Go's encoding/json (see bash-merlin-action.js).
       const parsedBudget = bashMerlinAction.lastNumber(input.command, 'dailyBudget');
@@ -3442,18 +3522,20 @@ async function handleToolApproval(toolName, input, opts) {
       //    finite number; missing data ⇒ no auto-approve.
       let bashRequireSpendApproval = true;
       try {
-        const brandMatch = input.command.match(/"brand"\s*:\s*"([^"]+)"/);
-        const brandForCfg = brandMatch ? brandMatch[1] : (() => {
-          try { return readState().activeBrand || ''; } catch { return ''; }
-        })();
-        const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
-        bashRequireSpendApproval = !!cfg.requireSpendApproval;
+        const brandForCfg = budgetCeiling.resolveCapBrand(bashInputBrand, () => readState().activeBrand || '');
+        if (brandForCfg !== null) {
+          const cfg = brandForCfg ? readBrandConfig(brandForCfg) : readConfig();
+          bashRequireSpendApproval = !!cfg.requireSpendApproval;
+        }
       } catch (e) {
         console.warn('[spend-approval] bash config read failed, defaulting to require approval:', e && e.message);
       }
+      // 5. Forced override always cards (mirror of the MCP path); see
+      //    bashMerlinAction.requestsOverride for the escape/case handling.
+      const bashForceRequested = bashMerlinAction.requestsOverride(input.command, 'force');
       // 4. High-magnitude spend always cards (mirror of the MCP path above):
       //    a raised cap authorizes the amount, not the silence.
-      if (!bashRequireSpendApproval && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction) &&
+      if (!bashRequireSpendApproval && !bashForceRequested && capForComparison > 0 && BASH_PUSH_ONLY.has(bashAction) &&
           !budgetCeiling.alwaysRequiresCard(adBudget)) {
         const headroom = budgetCtx && Number.isFinite(budgetCtx.remaining) ? budgetCtx.remaining : null;
         if (headroom !== null && adBudget <= capForComparison && adBudget <= headroom) {
@@ -3471,6 +3553,7 @@ async function handleToolApproval(toolName, input, opts) {
         if (overBudget) budgetDetail = `⚠ $${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
         if (budgetCtx.monthlyCap > 0) budgetDetail += ` · $${budgetCtx.monthlyCap}/mo cap`;
       }
+      if (bashForceRequested) budgetDetail = (budgetDetail ? budgetDetail + ' · ' : '') + FORCE_CARD_NOTE;
       const toolUseID = newApprovalId();
       const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
@@ -3514,6 +3597,11 @@ async function handleToolApproval(toolName, input, opts) {
       // invocation away from being skipped.
       'klaviyo-flow-delete', 'klaviyo-template-delete',
       'mailchimp-campaign-delete', 'postscript-automation-delete',
+      // Klaviyo bulk consent import + list create (2026-10-20). Both are
+      // requireApproval-gated in the engine and carded on the MCP path; the
+      // Bash path cards them too (a Bash dry run cards as well, which only
+      // over-protects).
+      'klaviyo-subscribe-bulk', 'klaviyo-list-create',
       // Same bypass shape again (2026-09-04). Both are requireApproval-gated
       // in the engine, and both are now carded on the MCP path via
       // CARDED_DESTRUCTIVE_ACTIONS ('quiz-funnel-gen' on the content tool,
@@ -3522,11 +3610,6 @@ async function handleToolApproval(toolName, input, opts) {
       // away from being skipped , and resume-all-spend re-arms every
       // spend-increasing action across every platform for the brand.
       'quiz-funnel-gen', 'resume-all-spend',
-      // Roundel spend verbs. The engine refuses both without approved:true
-      // (requireApproval); they card here rather than in BASH_SPEND because
-      // activate carries no dailyBudget, so BASH_SPEND's "$5/day" default
-      // would put a made-up number on the card.
-      'roundel-activate', 'roundel-budget',
     ]);
     if (BASH_CARDED_DESTRUCTIVE.has(bashAction)) {
       const toolUseID = newApprovalId();
@@ -3653,6 +3736,257 @@ function emitSessionPhase(phase, label) {
     }
   } catch {}
 }
+
+// ── MCP tool context + sidecar IPC endpoint lifecycle ──────────────────
+//
+// REGRESSION GUARD (2026-10-05, ipc-boot): the sidecar IPC endpoint (the
+// named pipe / Unix socket that Claude Desktop, Codex and Claude Code drive
+// Merlin's tools through, via app/merlin-mcp-shim.js and
+// <stateDir>/mcp-shim-token) MUST come up at app boot, NOT on the first
+// chat startSession. Live incident: the app restarted, nobody typed a chat
+// message, and mcp-shim-token kept pointing at a pipe owned by a process
+// that no longer existed. Every external tool call failed ENOENT until a
+// human opened the chat, i.e. Merlin silently blocked Claude from calling
+// its own tools. Fix: bootMcpIpcEndpoint() runs from app.whenReady (after
+// the vault migrations), builds the same ctx startSession builds
+// (buildMcpCtx), and starts the endpoint, which rewrites the token file
+// with a fresh random token once the pipe is listening. startSession now
+// only refreshes the registry (or starts the endpoint if boot could not).
+//
+// What did NOT change: what the endpoint authorizes. Every tools/call still
+// goes through handleToolApproval with merlinApprovalSurface 'ipc' (the
+// 2026-09-28 and 2026-10-04 guards), the token compare is still
+// constant-time, the transport is still pipe/socket only (Rule 11 spirit),
+// and boot is gated on the SAME ensureSubscriptionAccess check startSession
+// applies, so an expired trial gets no endpoint at boot either.
+// Guard: app/mcp-ipc-boot.test.js.
+
+// Builds the ctx object handed to createMerlinMcpServer. Pure function of
+// module-level state plus the SDK module, so app boot and every chat
+// session construct an identical tool surface. The JobStore is shared
+// across ctx instances: createMerlinMcpServer only creates one when
+// ctx.jobStore is unset, so reusing the live one keeps a single prune
+// timer per process (before-quit shuts down the one on _lastMcpCtx).
+function buildMcpCtx(sdkModule) {
+  const ctx = {
+    getBinaryPath,
+    readConfig,
+    readBrandConfig,
+    // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): the MCP tool
+    // surface (runBinary in mcp-tools.js) MUST resolve a brand's binary
+    // config through buildStrictBrandConfig, NOT readBrandConfig. readBrandConfig
+    // is global ⊕ brand overlay — plain legacy creds + non-sensitive BRAND_KEYS
+    // (metaAdAccountId, shopifyStore, …) in the global config merge into EVERY
+    // brand, so mcp__merlin__dashboard/meta_ads/etc. served another brand's ad
+    // account (same class as the Truesight IPC leak fixed the same day).
+    // buildStrictBrandConfig strips ALL BRAND_KEYS from the global base and
+    // overlays only the brand's own creds — no global fallback.
+    buildStrictBrandConfig,
+    writeConfig,
+    writeBrandTokens,
+    vaultGet,
+    vaultPut,
+    ensureBinaryLicenseToken: maybeHydrateBinaryLicenseToken,
+    runOAuthFlow,
+    getConnections,
+    // Revoked-grant tile signal (2026-07-11 audit fix): runBinary in
+    // mcp-tools.js reports the real auth outcome of every platform action
+    // here. TOKEN_EXPIRED flags the platform (per brand) so getConnections
+    // shows 'expired'; any success clears the flag. See auth-failures.js.
+    notePlatformAuthResult: (platform, brandName, outcome) => {
+      try {
+        if (outcome === 'token_expired') authFailureStore.mark(platform, brandName);
+        else if (outcome === 'success') authFailureStore.clear(platform, brandName);
+      } catch {}
+    },
+    appRoot,
+    // Installer-resolved Resources directory (where bundled voice tools
+    // live in a packaged build). Required by tools that resolve binaries
+    // via captions.js#findVoiceTools or the equivalent install-first /
+    // workspace-fallback pattern. Dev mode falls back to <appRoot>/..
+    // (same calculation as the appInstall constant up top).
+    appInstall,
+    activeChildProcesses,
+    appendAudit,
+    sdkModule,
+    // Startup version gate — same one refresh-perf awaits. Scheduled
+    // tasks and chat-driven MCP tool calls must also wait for this so
+    // they don't race past the version check on an old binary and
+    // write output to the wrong directory.
+    awaitStartupChecks: () => (_startupChecksPromise || Promise.resolve()),
+    isBinaryTooOld,
+    minBinaryVersion: MIN_BINARY_VERSION,
+    // §3.6 — progress emitter for long-running MCP tools (brand_scrape,
+    // image/video gen, etc.). Forwarded to the renderer via the
+    // `mcp-progress` IPC channel; preload exposes onMcpProgress(cb) so
+    // the magic tab can animate a live pill. No-op when the window is
+    // gone (scheduled runs, post-quit stragglers).
+    emitProgress: (payload) => {
+      try {
+        if (!win || win.isDestroyed() || !win.webContents) return;
+        win.webContents.send('mcp-progress', payload);
+      } catch (_) { /* telemetry path — never let an emit crash a tool call */ }
+    },
+    // Atomic brand activation — used by the merlin-setup skill IMMEDIATELY
+    // after writing brand.md so the rest of the onboarding conversation
+    // (autopilot spell creation, the WOW summary) is associated with the
+    // new brand thread. Unlike switch-brand IPC, this does NOT abort the
+    // current SDK turn or restart the session: the active turn is owned by
+    // setup itself, restarting mid-flight would orphan it. Future bubbles
+    // append to the new brand's thread (see appendBubble call sites that
+    // read activeBrand from state). The renderer refreshes its dropdown +
+    // peripherals via the brand-activated event without repainting chat.
+    // bulkUploadAssets — exposes the same pipeline the renderer's drag-drop /
+    // paste flow uses, so the new MCP `bulk_upload` tool (v1.19.2) can route
+    // 5+ files into product references/ on demand. Reuses runBulkUploadAssets
+    // (declared later in this file but hoisted as a function declaration).
+    // Single source of truth for SHA dedup, validation, matcher dispatch,
+    // and rename — see the long comment block on runBulkUploadAssets.
+    bulkUploadAssets: (args) => runBulkUploadAssets(args),
+    activateBrand: (brand, opts) => {
+      if (typeof brand !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(brand)) {
+        return { ok: false, code: 'VALIDATION', message: 'invalid brand format' };
+      }
+      const brandDir = path.join(appRoot, 'assets', 'brands', brand);
+      let created = false;
+      let exists = false;
+      try { exists = fs.statSync(brandDir).isDirectory(); } catch {}
+      if (!exists) {
+        // DROPDOWN-FIRST onboarding (zero-friction): when the caller passes
+        // displayName/url it is REGISTERING a new brand — scaffold a minimal
+        // switchable folder (stub brand.md + memory.md) so the brand lands in
+        // the dropdown BEFORE the website scrape + enrichment run. If setup is
+        // interrupted afterward, the brand is already saved + switchable and
+        // the user resumes instead of redoing everything.
+        //
+        // A bare activate (switch intent, no opts) keeps the old BRAND_MISSING
+        // guard so a typo'd slug on a SWITCH can't silently create an empty
+        // junk brand. Create-if-missing is gated on explicit registration
+        // intent (displayName or url present).
+        const wantsCreate = opts && (opts.url || opts.displayName);
+        if (!wantsCreate) {
+          return { ok: false, code: 'BRAND_MISSING', message: `assets/brands/${brand} does not exist` };
+        }
+        try {
+          const r = scaffoldBrandStub(path.join(appRoot, 'assets', 'brands'), brand, { displayName: opts.displayName, url: opts.url });
+          created = r.created;
+        } catch (e) {
+          return { ok: false, code: (e && e.code) || 'BRAND_CREATE_FAILED', message: `could not create brand: ${e && e.message ? e.message : e}` };
+        }
+      }
+      let prevBrand = '';
+      try { prevBrand = readState().activeBrand || ''; } catch {}
+      try { writeState({ activeBrand: brand }); } catch (e) {
+        return { ok: false, code: 'INTERNAL_ERROR', message: `state write failed: ${e.message}` };
+      }
+      try { threads.touch(appRoot, brand); } catch {}
+      // Auto-scaffold brand-manifest.json (live incident 2026-05-04,
+      // dpa-image-cards-render-broken-because-banana-pro-edit-has-
+      // no-canonical-asset-anchor). The binary's brand_manifest.go
+      // soft-warns when no manifest exists and proceeds without the
+      // composite-mode contract — banana-pro-edit then treats
+      // references/1.jpg as a style hint and re-renders the
+      // garment from scratch instead of preserving it. Scaffolder
+      // walks products/<slug>/references/ + logo/ and writes a
+      // minimal manifest so the binary's enforcement path can
+      // anchor on canonical assets. Idempotent (won't clobber a
+      // hand-curated manifest), best-effort (never blocks brand
+      // activation on a scaffolder failure). See
+      // app/brand-manifest-scaffolder.js for the producer-side
+      // contract that mirrors brand_manifest.go's consumer shape.
+      try {
+        const result = scaffoldBrandManifest(appRoot, brand);
+        if (result.action === 'created' || result.action === 'rebuilt') {
+          console.log(`[brand-manifest-scaffold] ${result.action} ${result.manifestPath} — ${result.products} product(s)${result.hadLogo ? ' + logo' : ''}`);
+        } else if (result.action === 'skipped-no-assets') {
+          console.log(`[brand-manifest-scaffold] skipped: no canonical assets yet under ${brandDir} — will retry on next brand_activate after references / logo land`);
+        } else if (!result.ok && result.error) {
+          console.warn(`[brand-manifest-scaffold] ${result.action}: ${result.error}`);
+        }
+      } catch (e) {
+        // Scaffolder must NEVER block brand activation. Any throw is
+        // logged but otherwise swallowed — the binary's no-manifest
+        // soft-warn path is the safety net.
+        try { console.warn(`[brand-manifest-scaffold] unexpected error: ${e.message}`); } catch {}
+      }
+      try {
+        if (win && !win.isDestroyed() && win.webContents) {
+          win.webContents.send('brand-activated', { brand, previousBrand: prevBrand });
+        }
+      } catch {}
+      return { ok: true, brand, previousBrand: prevBrand, created };
+    },
+  };
+  if (_lastMcpCtx && _lastMcpCtx.jobStore) ctx.jobStore = _lastMcpCtx.jobStore;
+  return ctx;
+}
+
+// Bring the sidecar IPC endpoint up, or refresh its tool registry when it
+// is already running. `refresh: false` (boot path) never replaces a
+// registry a chat session already installed. Failure is non-fatal: in-app
+// chat works without the sidecar, and the next startSession retries.
+function ensureMcpIpcEndpoint(merlinMcp, mcpCtx, opts = {}) {
+  try {
+    const allTools = (merlinMcp && merlinMcp._merlinTools) || [];
+    if (_mcpIpcEndpoint && typeof _mcpIpcEndpoint.setTools === 'function') {
+      if (opts.refresh) _mcpIpcEndpoint.setTools(allTools);
+      return _mcpIpcEndpoint;
+    }
+    if (!allTools.length) return null;
+    const { start: startMcpIpc } = require('./mcp-ipc-endpoint');
+    _mcpIpcEndpoint = startMcpIpc({
+      stateDir,
+      tools: allTools,
+      ctx: mcpCtx,
+      getCtx: () => _lastMcpCtx,
+      // REGRESSION GUARD (2026-09-28, ipc-approval-bypass): the sidecar
+      // MUST route every tools/call through the same host approval
+      // decision as the in-app chat. startMcpIpc throws without it.
+      // REGRESSION GUARD (2026-10-04, desktop-approval): the 'ipc'
+      // surface is what makes card-tier decisions resolve on the
+      // originating MCP client instead of an in-app card. It is set
+      // HERE, from the transport, never from tool input. See the guard
+      // above resolveExternalOriginCard.
+      approve: (toolName, input) =>
+        handleToolApproval(toolName, input, { merlinApprovalSurface: 'ipc' }),
+    });
+    console.log(`[mcp-ipc] sidecar endpoint listening (${_mcpIpcEndpoint.socketPath})`);
+    return _mcpIpcEndpoint;
+  } catch (ipcErr) {
+    console.error('[mcp-ipc] Failed to start IPC sidecar endpoint:', ipcErr && ipcErr.message);
+    return null;
+  }
+}
+
+// App-boot start of the sidecar endpoint. Idempotent and single-flight:
+// concurrent callers share one promise, and a chat session that won the
+// race is left untouched. Tool handlers resolve everything lazily through
+// the ctx, so a tools/call arriving before any chat session works.
+let _mcpIpcBootPromise = null;
+function bootMcpIpcEndpoint() {
+  if (_mcpIpcEndpoint) return Promise.resolve(_mcpIpcEndpoint);
+  if (_mcpIpcBootPromise) return _mcpIpcBootPromise;
+  _mcpIpcBootPromise = (async () => {
+    const access = await ensureSubscriptionAccess({ via: 'mcp-ipc-boot' });
+    if (!access || !access.allowed) {
+      console.log('[mcp-ipc] boot start skipped: subscription not active (startSession will retry)');
+      return null;
+    }
+    const sdkModule = await importClaudeAgentSdk();
+    if (_mcpIpcEndpoint) return _mcpIpcEndpoint;
+    const { createMerlinMcpServer } = require('./mcp-server');
+    const mcpCtx = buildMcpCtx(sdkModule);
+    const merlinMcp = await createMerlinMcpServer(mcpCtx);
+    if (_mcpIpcEndpoint) return _mcpIpcEndpoint;
+    if (!_lastMcpCtx) _lastMcpCtx = mcpCtx;
+    return ensureMcpIpcEndpoint(merlinMcp, mcpCtx, { refresh: false });
+  })().catch((err) => {
+    console.error('[mcp-ipc] boot start failed (startSession will retry):', err && err.message);
+    return null;
+  }).finally(() => { _mcpIpcBootPromise = null; });
+  return _mcpIpcBootPromise;
+}
+
 
 async function startSession(brandOverride) {
   // Arm the init barrier. Release is called in the finally block wrapping
@@ -3804,6 +4138,40 @@ async function startSession(brandOverride) {
     }
   } catch {}
 
+  // REGRESSION GUARD (2026-10-05, ipc-sidecar-before-auth): the Merlin MCP
+  // server and the IPC sidecar endpoint are brought up BEFORE the Claude
+  // credential gate below, never after it. Live incident: a local-build
+  // relaunch hit a transient "Not logged in" at boot, the credential gate
+  // returned early via requireAuth(), and the sidecar never started, so
+  // Claude Desktop / Codex / the shim saw a stale mcp-shim-token pointing
+  // at a dead pipe until the user happened to send an in-app message.
+  // External MCP clients do not use Merlin's Claude session at all, so
+  // in-app Claude auth must not gate them. The subscription gate above
+  // still applies. Do not move this block below the credential gate.
+  // Guard: app/ipc-sidecar-before-auth.test.js.
+  // Register the Merlin MCP server — all platform API calls route through
+  // this in-process server. Credentials never enter Claude's context.
+  let mcpConfig = {};
+  try {
+    const { createMerlinMcpServer } = require('./mcp-server');
+    // §G7 — pass ctx as a stable object so before-quit can reach
+    // ctx.jobStore via _lastMcpCtx. createMerlinMcpServer mutates ctx
+    // to set ctx.jobStore (see mcp-server.js:93), so holding the ctx
+    // reference holds the JobStore reference.
+    const mcpCtx = buildMcpCtx(sdkModule);
+    const merlinMcp = await createMerlinMcpServer(mcpCtx);
+    _lastMcpCtx = mcpCtx;
+    mcpConfig = { merlin: merlinMcp };
+
+    // Sidecar IPC endpoint: normally already up from app boot
+    // (bootMcpIpcEndpoint). Refresh its registry with this session's
+    // tools, or start it here if boot could not (trial gate passed only
+    // now, boot import failed). See REGRESSION GUARD (2026-10-05).
+    ensureMcpIpcEndpoint(merlinMcp, mcpCtx, { refresh: true });
+  } catch (err) {
+    console.error('[mcp] Failed to create Merlin MCP server:', err.message);
+  }
+
   // REGRESSION GUARD (2026-04-27, sdk-token-silent-refresh):
   // Two-tier credential resolution. Order matters — read this carefully
   // before changing.
@@ -3862,221 +4230,6 @@ async function startSession(brandOverride) {
         return;
       }
     }
-  }
-
-  // Register the Merlin MCP server — all platform API calls route through
-  // this in-process server. Credentials never enter Claude's context.
-  let mcpConfig = {};
-  try {
-    const { createMerlinMcpServer } = require('./mcp-server');
-    // §G7 — pass ctx as a stable object so before-quit can reach
-    // ctx.jobStore via _lastMcpCtx. createMerlinMcpServer mutates ctx
-    // to set ctx.jobStore (see mcp-server.js:93), so holding the ctx
-    // reference holds the JobStore reference.
-    const mcpCtx = {
-      getBinaryPath,
-      readConfig,
-      readBrandConfig,
-      // REGRESSION GUARD (2026-06-30, cross-brand leak sweep): the MCP tool
-      // surface (runBinary in mcp-tools.js) MUST resolve a brand's binary
-      // config through buildStrictBrandConfig, NOT readBrandConfig. readBrandConfig
-      // is global ⊕ brand overlay — plain legacy creds + non-sensitive BRAND_KEYS
-      // (metaAdAccountId, shopifyStore, …) in the global config merge into EVERY
-      // brand, so mcp__merlin__dashboard/meta_ads/etc. served another brand's ad
-      // account (same class as the Truesight IPC leak fixed the same day).
-      // buildStrictBrandConfig strips ALL BRAND_KEYS from the global base and
-      // overlays only the brand's own creds — no global fallback.
-      buildStrictBrandConfig,
-      writeConfig,
-      writeBrandTokens,
-      vaultGet,
-      vaultPut,
-      ensureBinaryLicenseToken: maybeHydrateBinaryLicenseToken,
-      runOAuthFlow,
-      getConnections,
-      // Revoked-grant tile signal (2026-07-11 audit fix): runBinary in
-      // mcp-tools.js reports the real auth outcome of every platform action
-      // here. TOKEN_EXPIRED flags the platform (per brand) so getConnections
-      // shows 'expired'; any success clears the flag. See auth-failures.js.
-      notePlatformAuthResult: (platform, brandName, outcome) => {
-        try {
-          if (outcome === 'token_expired') authFailureStore.mark(platform, brandName);
-          else if (outcome === 'success') authFailureStore.clear(platform, brandName);
-        } catch {}
-      },
-      appRoot,
-      // Installer-resolved Resources directory (where bundled voice tools
-      // live in a packaged build). Required by tools that resolve binaries
-      // via captions.js#findVoiceTools or the equivalent install-first /
-      // workspace-fallback pattern. Dev mode falls back to <appRoot>/..
-      // (same calculation as the appInstall constant up top).
-      appInstall,
-      activeChildProcesses,
-      appendAudit,
-      sdkModule,
-      // Startup version gate — same one refresh-perf awaits. Scheduled
-      // tasks and chat-driven MCP tool calls must also wait for this so
-      // they don't race past the version check on an old binary and
-      // write output to the wrong directory.
-      awaitStartupChecks: () => (_startupChecksPromise || Promise.resolve()),
-      isBinaryTooOld,
-      minBinaryVersion: MIN_BINARY_VERSION,
-      // §3.6 — progress emitter for long-running MCP tools (brand_scrape,
-      // image/video gen, etc.). Forwarded to the renderer via the
-      // `mcp-progress` IPC channel; preload exposes onMcpProgress(cb) so
-      // the magic tab can animate a live pill. No-op when the window is
-      // gone (scheduled runs, post-quit stragglers).
-      emitProgress: (payload) => {
-        try {
-          if (!win || win.isDestroyed() || !win.webContents) return;
-          win.webContents.send('mcp-progress', payload);
-        } catch (_) { /* telemetry path — never let an emit crash a tool call */ }
-      },
-      // Atomic brand activation — used by the merlin-setup skill IMMEDIATELY
-      // after writing brand.md so the rest of the onboarding conversation
-      // (autopilot spell creation, the WOW summary) is associated with the
-      // new brand thread. Unlike switch-brand IPC, this does NOT abort the
-      // current SDK turn or restart the session: the active turn is owned by
-      // setup itself, restarting mid-flight would orphan it. Future bubbles
-      // append to the new brand's thread (see appendBubble call sites that
-      // read activeBrand from state). The renderer refreshes its dropdown +
-      // peripherals via the brand-activated event without repainting chat.
-      // bulkUploadAssets — exposes the same pipeline the renderer's drag-drop /
-      // paste flow uses, so the new MCP `bulk_upload` tool (v1.19.2) can route
-      // 5+ files into product references/ on demand. Reuses runBulkUploadAssets
-      // (declared later in this file but hoisted as a function declaration).
-      // Single source of truth for SHA dedup, validation, matcher dispatch,
-      // and rename — see the long comment block on runBulkUploadAssets.
-      bulkUploadAssets: (args) => runBulkUploadAssets(args),
-      activateBrand: (brand, opts) => {
-        if (typeof brand !== 'string' || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(brand)) {
-          return { ok: false, code: 'VALIDATION', message: 'invalid brand format' };
-        }
-        const brandDir = path.join(appRoot, 'assets', 'brands', brand);
-        let created = false;
-        let exists = false;
-        try { exists = fs.statSync(brandDir).isDirectory(); } catch {}
-        if (!exists) {
-          // DROPDOWN-FIRST onboarding (zero-friction): when the caller passes
-          // displayName/url it is REGISTERING a new brand — scaffold a minimal
-          // switchable folder (stub brand.md + memory.md) so the brand lands in
-          // the dropdown BEFORE the website scrape + enrichment run. If setup is
-          // interrupted afterward, the brand is already saved + switchable and
-          // the user resumes instead of redoing everything.
-          //
-          // A bare activate (switch intent, no opts) keeps the old BRAND_MISSING
-          // guard so a typo'd slug on a SWITCH can't silently create an empty
-          // junk brand. Create-if-missing is gated on explicit registration
-          // intent (displayName or url present).
-          const wantsCreate = opts && (opts.url || opts.displayName);
-          if (!wantsCreate) {
-            return { ok: false, code: 'BRAND_MISSING', message: `assets/brands/${brand} does not exist` };
-          }
-          try {
-            const r = scaffoldBrandStub(path.join(appRoot, 'assets', 'brands'), brand, { displayName: opts.displayName, url: opts.url });
-            created = r.created;
-          } catch (e) {
-            return { ok: false, code: (e && e.code) || 'BRAND_CREATE_FAILED', message: `could not create brand: ${e && e.message ? e.message : e}` };
-          }
-        }
-        let prevBrand = '';
-        try { prevBrand = readState().activeBrand || ''; } catch {}
-        try { writeState({ activeBrand: brand }); } catch (e) {
-          return { ok: false, code: 'INTERNAL_ERROR', message: `state write failed: ${e.message}` };
-        }
-        try { threads.touch(appRoot, brand); } catch {}
-        // Auto-scaffold brand-manifest.json (live incident 2026-05-04,
-        // dpa-image-cards-render-broken-because-banana-pro-edit-has-
-        // no-canonical-asset-anchor). The binary's brand_manifest.go
-        // soft-warns when no manifest exists and proceeds without the
-        // composite-mode contract — banana-pro-edit then treats
-        // references/1.jpg as a style hint and re-renders the
-        // garment from scratch instead of preserving it. Scaffolder
-        // walks products/<slug>/references/ + logo/ and writes a
-        // minimal manifest so the binary's enforcement path can
-        // anchor on canonical assets. Idempotent (won't clobber a
-        // hand-curated manifest), best-effort (never blocks brand
-        // activation on a scaffolder failure). See
-        // app/brand-manifest-scaffolder.js for the producer-side
-        // contract that mirrors brand_manifest.go's consumer shape.
-        try {
-          const result = scaffoldBrandManifest(appRoot, brand);
-          if (result.action === 'created' || result.action === 'rebuilt') {
-            console.log(`[brand-manifest-scaffold] ${result.action} ${result.manifestPath} — ${result.products} product(s)${result.hadLogo ? ' + logo' : ''}`);
-          } else if (result.action === 'skipped-no-assets') {
-            console.log(`[brand-manifest-scaffold] skipped: no canonical assets yet under ${brandDir} — will retry on next brand_activate after references / logo land`);
-          } else if (!result.ok && result.error) {
-            console.warn(`[brand-manifest-scaffold] ${result.action}: ${result.error}`);
-          }
-        } catch (e) {
-          // Scaffolder must NEVER block brand activation. Any throw is
-          // logged but otherwise swallowed — the binary's no-manifest
-          // soft-warn path is the safety net.
-          try { console.warn(`[brand-manifest-scaffold] unexpected error: ${e.message}`); } catch {}
-        }
-        try {
-          if (win && !win.isDestroyed() && win.webContents) {
-            win.webContents.send('brand-activated', { brand, previousBrand: prevBrand });
-          }
-        } catch {}
-        return { ok: true, brand, previousBrand: prevBrand, created };
-      },
-    };
-    const merlinMcp = await createMerlinMcpServer(mcpCtx);
-    _lastMcpCtx = mcpCtx;
-    mcpConfig = { merlin: merlinMcp };
-
-    // ── Sidecar IPC endpoint (Claude Desktop / Codex / Cline / Cursor) ──
-    //
-    // Bring the local MCP IPC endpoint up (or refresh its tool registry
-    // if it's already running). Claude Desktop spawns
-    // app/merlin-mcp-shim.js, which reads <stateDir>/mcp-shim-token and
-    // connects to the Unix domain socket / Windows named pipe this
-    // endpoint listens on. The same wrapped tool array is passed to both
-    // consumers — credentials never cross the IPC boundary, only tool
-    // inputs and redacted outputs (Hard-Won Security Rule 2 spirit).
-    //
-    // Lifecycle:
-    //   * First successful startSession → endpoint comes up, token + socket
-    //     path written to <stateDir>/mcp-shim-token (mode 0o600).
-    //   * Subsequent startSession (e.g. brand switch) → setTools refreshes
-    //     the registry without rotating the token (the shim's open
-    //     connections stay valid).
-    //   * before-quit → stop() closes the socket, removes the file.
-    //
-    // Failure to bring the endpoint up MUST NOT block in-app chat; the
-    // catch below logs and continues.
-    try {
-      const allTools = (merlinMcp && merlinMcp._merlinTools) || [];
-      if (_mcpIpcEndpoint && typeof _mcpIpcEndpoint.setTools === 'function') {
-        _mcpIpcEndpoint.setTools(allTools);
-      } else if (allTools.length) {
-        const { start: startMcpIpc } = require('./mcp-ipc-endpoint');
-        _mcpIpcEndpoint = startMcpIpc({
-          stateDir,
-          tools: allTools,
-          ctx: mcpCtx,
-          getCtx: () => _lastMcpCtx,
-          // REGRESSION GUARD (2026-09-28, ipc-approval-bypass): the sidecar
-          // MUST route every tools/call through the same host approval
-          // decision as the in-app chat. startMcpIpc throws without it.
-          // REGRESSION GUARD (2026-10-04, desktop-approval): the 'ipc'
-          // surface is what makes card-tier decisions resolve on the
-          // originating MCP client instead of an in-app card. It is set
-          // HERE, from the transport, never from tool input. See the guard
-          // above resolveExternalOriginCard.
-          approve: (toolName, input) =>
-            handleToolApproval(toolName, input, { merlinApprovalSurface: 'ipc' }),
-        });
-        console.log(`[mcp-ipc] sidecar endpoint listening (${_mcpIpcEndpoint.socketPath})`);
-      }
-    } catch (ipcErr) {
-      // Endpoint failure is non-fatal — sidecar mode just won't work
-      // until the next session restart. In-app chat still functions.
-      console.error('[mcp-ipc] Failed to start IPC sidecar endpoint:', ipcErr && ipcErr.message);
-    }
-  } catch (err) {
-    console.error('[mcp] Failed to create Merlin MCP server:', err.message);
   }
 
   // Voice-output tag instruction. Opt-in by design: default is silent, and
@@ -5485,6 +5638,27 @@ function applyExchangeResult(platform, brandName, isGlobalPlatform, parsed) {
 //   /connect/shopify handler.
 const SHOPIFY_CONNECT_URL = 'https://merlingotme.com/connect/shopify';
 
+// takeAccountSelection pulls the engine's ad-account selection explanation
+// (accountSelectionNote / accountSelectionVerified, emitted by the Snapchat,
+// X and Pinterest logins) OUT of a login result before it is persisted.
+// applyExchangeResult writes every non-vault key into the brand config, so
+// leaving these in would store a transient sentence as brand data. Returns
+// the fields to hand back to the caller (platform_login relays the note to
+// the user). REGRESSION GUARD (2026-10-17, Snapchat wrong-account pick).
+function takeAccountSelection(parsed) {
+  const out = {};
+  if (!parsed || typeof parsed !== 'object') return out;
+  if (typeof parsed.accountSelectionNote === 'string' && parsed.accountSelectionNote.trim()) {
+    out.accountNote = parsed.accountSelectionNote.trim();
+  }
+  if (typeof parsed.accountSelectionVerified === 'boolean') {
+    out.accountVerified = parsed.accountSelectionVerified;
+  }
+  delete parsed.accountSelectionNote;
+  delete parsed.accountSelectionVerified;
+  return out;
+}
+
 // Direct OAuth — bypasses SDK entirely, runs the binary from main process
 // Standalone OAuth flow — callable from both the IPC handler (UI clicks)
 // and the MCP platform_login tool. Returns { success, platform } or { error }.
@@ -5576,8 +5750,9 @@ async function runOAuthFlow(platform, brandName, extra) {
       if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
       return { success: true, platform };
     }
+    const selection = takeAccountSelection(parsed);
     applyExchangeResult(platform, brandName, isGlobalPlatform, parsed);
-    return { success: true, platform };
+    return { success: true, platform, ...selection };
   }
 
   // Legacy binary-login fallback. Spawns Merlin.exe <platform>-login which
@@ -5615,8 +5790,9 @@ async function runOAuthFlow(platform, brandName, extra) {
         if (!jsonStr) throw new Error('No JSON in output');
         const result = JSON.parse(jsonStr);
         if (!result || Object.keys(result).length === 0) throw new Error('Empty JSON result');
+        const selection = takeAccountSelection(result);
         applyExchangeResult(platform, brandName, isGlobalPlatform, result);
-        resolve({ success: true, platform });
+        resolve({ success: true, platform, ...selection });
       } catch (parseErr) {
         console.error(`[oauth] JSON parse failed:`, parseErr.message);
         // Fallback: try line-by-line JSON.parse in case binary emitted a
@@ -5626,8 +5802,9 @@ async function runOAuthFlow(platform, brandName, extra) {
           try {
             const maybe = JSON.parse(line.trim());
             if (maybe && typeof maybe === 'object') {
+              const selection = takeAccountSelection(maybe);
               applyExchangeResult(platform, brandName, isGlobalPlatform, maybe);
-              return resolve({ success: true, platform });
+              return resolve({ success: true, platform, ...selection });
             }
           } catch { /* ignore — keep scanning */ }
         }
@@ -9185,6 +9362,28 @@ function vaultDelete(brand, key) {
   }
 }
 
+// Delete several keys from ONE vault namespace with a single load/save.
+// Returns how many entries were actually present and removed. Used by
+// disconnect-platform (see platform-disconnect.js for the scoping rules).
+const { deleteVaultEntries, remainingVaultKeys } = require('./platform-disconnect');
+// REGRESSION GUARD (2026-10-17, snapchat-apotheke-still-connected): this
+// THROWS on a vault load or save failure. It used to log and return 0, and the
+// disconnect handler then reported success while every token stayed in the
+// vault for the engine to keep using. It also matches the brand namespace the
+// way the engine resolves it (case and slug equivalent, never _global for a
+// brand); see platform-disconnect.js deleteVaultEntries.
+function vaultDeleteMany(scope, keys) {
+  const m = vaultLoad();
+  const removed = deleteVaultEntries(m, scope, keys);
+  if (removed > 0) vaultSave(m);
+  return removed;
+}
+
+// Re-read the vault from disk and report which of keys still exist for scope.
+function vaultRemainingMany(scope, keys) {
+  return remainingVaultKeys(vaultLoad(), scope, keys);
+}
+
 // OAuth persistence — VAULT_SENSITIVE_KEYS, isVaultRedactionMarker, and the
 // splitOAuthPersistFields logic live in ./oauth-persist.js so they can be
 // unit-tested without booting Electron. See that file for the REGRESSION
@@ -9253,7 +9452,9 @@ const BRAND_KEYS = [
   'stripeAccessToken', 'stripeAccountId',
   'klaviyoAccessToken', 'klaviyoApiKey',
   'mailchimpApiKey',
-  'pinterestAccessToken',
+  // Pinterest Ads: brand-specific OAuth token pair + expiry + ad account.
+  // Mirror of brandScopedKeys in autocmo-core/vault.go.
+  'pinterestAccessToken', 'pinterestRefreshToken', 'pinterestTokenExpiresAt', 'pinterestAdAccountId',
   'slackBotToken', 'slackWebhookUrl',
   'applovinMaxReportKey', 'applovinAdReportKey',
   'postscriptApiKey',
@@ -9280,10 +9481,10 @@ const BRAND_KEYS = [
   // report keys + locale + network). Mirror of brandScopedKeys in
   // autocmo-core/vault.go.
   'rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork',
-  // Roundel (Target retail media via the Criteo Retail Media API):
-  // brand-specific API app credentials + account. Mirror of brandScopedKeys
-  // in autocmo-core/vault.go.
-  'roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId',
+  // impact.com: brand-specific Brand API connection (Account SID + read-only
+  // Auth Token + optional default program). Mirror of brandScopedKeys in
+  // autocmo-core/vault.go.
+  'impactAccountSid', 'impactAuthToken', 'impactProgramId',
   // Yotpo — brand-specific BYOK (App Key + Secret Key). Mirror of
   // brandScopedKeys in autocmo-core/vault.go.
   'yotpoAppKey', 'yotpoSecretKey',
@@ -9293,15 +9494,38 @@ const BRAND_KEYS = [
   'faireApiToken',
   // QuickBooks Online — brand-specific OAuth token pair + expiry + realm id.
   'quickbooksAccessToken', 'quickbooksRefreshToken', 'quickbooksTokenExpiresAt', 'quickbooksRealmId',
+  // Snapchat Marketing API: brand-specific OAuth token pair + expiry + the
+  // selected ad account and its organization. Mirror of brandScopedKeys in
+  // autocmo-core/vault.go (snapchat-brand-keys parity test).
+  'snapchatAccessToken', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatAdAccountId', 'snapchatOrganizationId',
+  // snapchatProspectingExclusions (2026-10-17): per-brand customer audience ids
+  // every new Snapchat prospecting ad squad must exclude (snapchat_build.go
+  // chokepoint). Brand-scoped so customer ids never cross brands.
+  'snapchatProspectingExclusions',
+  // snapchatPublicProfileId + snapchatUrlTags (2026-10-20, snapchat-ads): the
+  // brand's Snapchat Public Profile id every creative carries (saved after its
+  // first use) and the brand's UTM template for ad links. Mirror of
+  // brandScopedKeys in autocmo-core/vault.go.
+  'snapchatPublicProfileId', 'snapchatUrlTags',
+  // X Ads API: OAuth 1.0a token pair + selected ad account + X user id.
+  // Mirror of brandScopedKeys in autocmo-core/vault.go (x-brand-keys
+  // parity test in mcp-x-reachability.test.js).
+  'twitterAccessToken', 'twitterAccessTokenSecret', 'twitterAdAccountId', 'twitterUserId',
   // ShipStation — brand-specific BYOK (API Key + Secret).
   'shipStationApiKey', 'shipStationApiSecret',
   // Loop Returns — brand-specific BYOK (API key).
   'loopApiKey',
   // Cin7 Core — brand-specific BYOK (Account ID + Application Key).
-  'cin7AccountId', 'cin7ApplicationKey',
+  'cin7AccountId', 'cin7ApplicationKey', 'cin7Product',
   // Gorgias helpdesk — brand-specific BYOK (subdomain + account email + API
   // key). Mirror of brandScopedKeys in autocmo-core/vault.go.
   'gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey',
+  // metaProspectingExclusions (2026-10-07): per-brand customer audience ids
+  // that every new prospecting ad set must exclude. Not a secret, but a value
+  // in the global config would bleed into every brand (wrong account ids, a
+  // 400 on ad-set create, or another brand customers excluded). Mirror of
+  // brandScopedKeys in autocmo-core/vault.go.
+  'metaProspectingExclusions',
 ];
 
 // Universal credentials — shared across every brand on a single user's
@@ -9315,8 +9539,8 @@ const BRAND_KEYS = [
 // return null and the placeholder stays unresolved. Falling back to
 // _global is what caused Magic-panel tiles to show one brand's
 // connections under another brand's tile. Keep this list in sync with
-// `brandScopedKeys` in autocmo-core/vault.go and with GLOBAL_KEYS_SET
-// in disconnect-platform.
+// `brandScopedKeys` in autocmo-core/vault.go. disconnect-platform derives
+// its universal-vs-brand scope decision from this set too.
 const UNIVERSAL_KEYS = new Set([
   'falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'arcadsApiKey',
   'foreplayApiKey', 'trendtrackApiKey', 'googleApiKey',
@@ -10245,19 +10469,15 @@ function getConnections(brandName) {
         : !!rakutenToken;
       if (rakutenResolved) connected.push({ platform: 'rakuten', status: 'connected' });
     }
-    // Roundel (Criteo Retail Media API): connected when the app Client ID and
-    // Client Secret are present, with @@VAULT placeholder resolution on the
-    // secret. The account id is optional at connect time (discover runs on
-    // the app credentials alone and lists it; every account-scoped engine
-    // action names the missing id). Saved, not yet verified: roundel-verify
-    // is the live check.
-    const roundelClientId = brandName ? brandCfg.roundelClientId : globalCfg.roundelClientId;
-    const roundelSecret = brandName ? brandCfg.roundelClientSecret : globalCfg.roundelClientSecret;
-    if (roundelClientId && roundelSecret) {
-      const roundelResolved = typeof roundelSecret === 'string' && roundelSecret.startsWith('@@VAULT:')
-        ? !!vaultGet(brandName || '_global', 'roundelClientSecret')
-        : !!roundelSecret;
-      if (roundelResolved) connected.push({ platform: 'roundel', status: 'connected' });
+    // impact.com: brand-specific Brand API; connected when the Account SID +
+    // Auth Token are present, with @@VAULT placeholder resolution on the token.
+    const impactSid = brandName ? brandCfg.impactAccountSid : globalCfg.impactAccountSid;
+    const impactToken = brandName ? brandCfg.impactAuthToken : globalCfg.impactAuthToken;
+    if (impactSid && impactToken) {
+      const impactResolved = typeof impactToken === 'string' && impactToken.startsWith('@@VAULT:')
+        ? !!vaultGet(brandName || '_global', 'impactAuthToken')
+        : !!impactToken;
+      if (impactResolved) connected.push({ platform: 'impact', status: 'connected' });
     }
     // Yotpo — brand-specific BYOK; connected when App Key + Secret Key are
     // present, with @@VAULT placeholder resolution on the secret.
@@ -10299,6 +10519,26 @@ function getConnections(brandName) {
         ? !!vaultGet(brandName || '_global', 'quickbooksAccessToken')
         : !!qbToken;
       if (qbResolved) connected.push({ platform: 'quickbooks', status: 'connected' });
+    }
+    // Snapchat Marketing API: brand-specific OAuth; connected when the
+    // access or refresh token resolves (snapchat.go refreshes the 1-hour
+    // access token itself, so an expired access token with a live refresh
+    // token is still a working connection).
+    const snapToken = brandName ? brandCfg.snapchatAccessToken : globalCfg.snapchatAccessToken;
+    const snapRefresh = brandName ? brandCfg.snapchatRefreshToken : globalCfg.snapchatRefreshToken;
+    const snapResolves = (v, key) => typeof v === 'string' && v.startsWith('@@VAULT:')
+      ? !!vaultGet(brandName || '_global', key)
+      : !!v;
+    if (snapResolves(snapToken, 'snapchatAccessToken') || snapResolves(snapRefresh, 'snapchatRefreshToken')) {
+      connected.push({ platform: 'snapchat', status: 'connected' });
+    }
+    // X Ads API: OAuth 1.0a tokens do not expire, so the connection is live
+    // only when BOTH halves of the token pair resolve (every request is
+    // signed with the pair; one half alone cannot sign).
+    const xToken = brandName ? brandCfg.twitterAccessToken : globalCfg.twitterAccessToken;
+    const xSecret = brandName ? brandCfg.twitterAccessTokenSecret : globalCfg.twitterAccessTokenSecret;
+    if (snapResolves(xToken, 'twitterAccessToken') && snapResolves(xSecret, 'twitterAccessTokenSecret')) {
+      connected.push({ platform: 'twitter', status: 'connected' });
     }
     // ShipStation — brand-specific BYOK; connected when API Key + Secret are
     // present, with @@VAULT placeholder resolution on the secret.
@@ -10404,12 +10644,35 @@ ipcMain.handle('get-connected-platforms', (_, brandName) => {
   return getConnections(brandName);
 });
 
+// OAuth availability for tiles whose provider app is still pending review.
+// These providers ship NO hardcoded client_id: the canonical one arrives
+// from the BFF's oauth_creds map on an OAuth exchange (Hard-Won Rule 17)
+// and the binary stores it in the global vault under
+// `_oauthcreds_<provider>_clientID` (oauth_bootstrap.go). Until that entry
+// exists a click cannot open a working sign-in, so the renderer shows the
+// tile as "isn't available yet" instead of a dead click. Returns booleans
+// only, never the id itself.
+const NEEDS_CLIENT_ID_PROVIDERS = ['snapchat', 'quickbooks', 'pinterest', 'twitter'];
+function getOAuthAvailability() {
+  const out = {};
+  for (const p of NEEDS_CLIENT_ID_PROVIDERS) {
+    out[p] = !!vaultGet('_global', '_oauthcreds_' + p + '_clientID');
+  }
+  return out;
+}
+ipcMain.handle('get-oauth-availability', () => {
+  try { return getOAuthAvailability(); } catch { return {}; }
+});
+
 // ── Disconnect Platform ────────────────────────────────────
 // Clears all stored credentials for a platform. Platform tokens now live in
 // the plaintext brand config at .merlin-config-{brand}.json (migrated from
 // the old encrypted .merlin-tokens-{brand} format). API keys for service
 // providers (fal, elevenlabs, heygen) and workspace-global integrations
 // (slack, discord) live in the global merlin-config.json instead.
+const { applyDisconnect } = require('./platform-disconnect');
+// Legacy keys that are global but are not UNIVERSAL_KEYS credentials.
+const DISCONNECT_EXTRA_GLOBAL_KEYS = new Set(['discordBotToken']);
 ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
   // Defense-in-depth: brandName reaches path.join for .merlin-config-{brand}.json
   // + .merlin-tokens-{brand} writes below. assertBrandSafe returns silently on
@@ -10426,10 +10689,16 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // leaving it behind on disconnect means a reconnect to a DIFFERENT
       // Meta account inherits the old account's IG identity and every
       // creative POST is refused with 200/1815199.
-      meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaInstagramUserId'],
-      tiktok: ['tiktokAccessToken', 'tiktokAdvertiserId', 'tiktokPixelId'],
-      google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleAdsDeveloperToken', 'googleAdsCustomerId', 'googleAnalyticsPropertyId'],
-      shopify: ['shopifyAccessToken', 'shopifyStore'],
+      // adAccountName / pageName / pixelName are the display labels of those
+      // ids (BRAND_KEYS, 2026-08-13); a label left behind after a disconnect
+      // would describe an account the brand is no longer connected to.
+      meta: ['metaAccessToken', 'metaAdAccountId', 'metaPageId', 'metaPixelId', 'metaInstagramUserId', 'adAccountName', 'pageName', 'pixelName'],
+      tiktok: ['tiktokAccessToken', 'tiktokRefreshToken', 'tiktokTokenExpiresAt', 'tiktokAdvertiserId', 'tiktokPixelId'],
+      // The GA4 measurement id and the GTM account/container/workspace ids are
+      // selections made under this Google grant (brandScopedKeys in
+      // autocmo-core/vault.go), so a reconnect must re-discover them.
+      google: ['googleAccessToken', 'googleRefreshToken', 'googleTokenScope', 'googleTokenExpiresAt', 'googleAdsDeveloperToken', 'googleAdsCustomerId', 'googleAnalyticsPropertyId', 'googleAnalyticsMeasurementId', 'gtmAccountId', 'gtmContainerId', 'gtmWorkspaceId'],
+      shopify: ['shopifyAccessToken', 'shopifyRefreshToken', 'shopifyStore'],
       // revenueSourcePreference is cleared with Stripe so a reconnect picks
       // up a fresh disambiguation prompt instead of silently honoring stale
       // preference from a prior account.
@@ -10443,23 +10712,28 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       stripe: ['stripeAccessToken', 'stripeAccountId', 'revenueSourcePreference'],
       klaviyo: ['klaviyoAccessToken', 'klaviyoApiKey', 'klaviyoRefreshToken'],
       mailchimp: ['mailchimpApiKey'],
-      pinterest: ['pinterestAccessToken', 'pinterestRefreshToken'],
-      amazon: ['amazonAccessToken', 'amazonRefreshToken', 'amazonProfileId'],
-      etsy: ['etsyAccessToken', 'etsyRefreshToken', 'etsyShopId', 'etsyKeystring'],
-      reddit: ['redditAccessToken', 'redditRefreshToken', 'redditAdAccountId'],
+      pinterest: ['pinterestAccessToken', 'pinterestRefreshToken', 'pinterestTokenExpiresAt', 'pinterestAdAccountId'],
+      // amazonSellerId is the selected seller account; the amazon*Client*
+      // app credentials are deliberately kept (they identify the app, not
+      // the connected account).
+      amazon: ['amazonAccessToken', 'amazonRefreshToken', 'amazonTokenExpiresAt', 'amazonProfileId', 'amazonSellerId'],
+      etsy: ['etsyAccessToken', 'etsyRefreshToken', 'etsyTokenExpiresAt', 'etsyShopId', 'etsyKeystring'],
+      reddit: ['redditAccessToken', 'redditRefreshToken', 'redditTokenExpiresAt', 'redditAdAccountId'],
       // LinkedIn was missing for v1.18.0–v1.18.9: OAuth registered in Go
       // but no disconnect path on the Electron side. RSI integration
       // audit caught it (2026-04-27). Cross-checked by the new
       // `every OAUTH_PLATFORMS entry has a disconnect keyMap` test in
       // oauth-persist.test.js.
-      linkedin: ['linkedinAccessToken', 'linkedinRefreshToken', 'linkedinAdAccountId'],
+      linkedin: ['linkedinAccessToken', 'linkedinRefreshToken', 'linkedinTokenExpiresAt', 'linkedinAdAccountId'],
       // Threads inherits from the Meta OAuth grant — disconnecting Meta
       // also clears threadsAccessToken. This entry exists so a
       // standalone Threads disconnect (when/if Threads gets its own
       // OAuth grant) wipes correctly without cross-impact on Meta.
       threads: ['threadsAccessToken'],
       slack: ['slackBotToken', 'slackWebhookUrl', 'slackChannel'],
-      discord: ['discordGuildId', 'discordChannelId'],
+      // discordBotToken is a legacy key (the bot token is Worker-held now, see
+      // oauth.go); it is cleared from _global if an old install still has it.
+      discord: ['discordGuildId', 'discordChannelId', 'discordWebhookUrl', 'discordBotToken'],
       fal: ['falApiKey'],
       elevenlabs: ['elevenLabsApiKey'],
       heygen: ['heygenApiKey'],
@@ -10489,10 +10763,9 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // disconnect. Mirror of platformVaultKeys["rakuten"] in
       // autocmo-core/oauth.go.
       rakuten: ['rakutenReportToken', 'rakutenReportKey', 'rakutenTransactionsReportKey', 'rakutenReportLocale', 'rakutenNetwork'],
-      // Roundel: clear the Criteo API app credentials + account on
-      // disconnect. Mirror of platformVaultKeys["roundel"] in
-      // autocmo-core/oauth.go.
-      roundel: ['roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId'],
+      // impact.com: clear the whole Brand API connection on disconnect.
+      // Mirror of platformVaultKeys["impact"] in autocmo-core/oauth.go.
+      impact: ['impactAccountSid', 'impactAuthToken', 'impactProgramId'],
       // Yotpo — clear both BYOK creds on disconnect. Mirror of
       // platformVaultKeys["yotpo"] in autocmo-core/oauth.go.
       yotpo: ['yotpoAppKey', 'yotpoSecretKey'],
@@ -10505,6 +10778,12 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       // QuickBooks Online — OAuth token pair + expiry + realm id. Mirror of
       // platformVaultKeys["quickbooks"] in autocmo-core/oauth.go.
       quickbooks: ['quickbooksAccessToken', 'quickbooksRefreshToken', 'quickbooksTokenExpiresAt', 'quickbooksRealmId'],
+      // Snapchat Marketing API: token pair + expiry + selected account ids.
+      // Mirror of platformVaultKeys["snapchat"] in autocmo-core/oauth.go.
+      snapchat: ['snapchatAccessToken', 'snapchatRefreshToken', 'snapchatTokenExpiresAt', 'snapchatAdAccountId', 'snapchatOrganizationId'],
+      // X Ads API: OAuth 1.0a token pair + selected account + user id.
+      // Mirror of platformVaultKeys["twitter"] in autocmo-core/oauth.go.
+      twitter: ['twitterAccessToken', 'twitterAccessTokenSecret', 'twitterAdAccountId', 'twitterUserId'],
       // ShipStation — API Key + Secret. Mirror of
       // platformVaultKeys["shipstation"] in autocmo-core/oauth.go.
       shipstation: ['shipStationApiKey', 'shipStationApiSecret'],
@@ -10513,7 +10792,7 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
       loop_returns: ['loopApiKey'],
       // Cin7 Core — Account ID + Application Key. Mirror of
       // platformVaultKeys["cin7"] in autocmo-core/oauth.go.
-      cin7: ['cin7AccountId', 'cin7ApplicationKey'],
+      cin7: ['cin7AccountId', 'cin7ApplicationKey', 'cin7Product'],
       // Gorgias — subdomain + account email + API key. Mirror of
       // platformVaultKeys["gorgias"] in autocmo-core/oauth.go.
       gorgias: ['gorgiasDomain', 'gorgiasEmail', 'gorgiasApiKey'],
@@ -10527,87 +10806,61 @@ ipcMain.handle('disconnect-platform', (_, platform, brandName) => {
     const keys = keyMap[platform];
     if (!keys) return { success: false, error: 'unknown platform' };
     if (keys.length === 0) {
-      return { success: false, error: 'Shopify Payments uses your Shopify connection — disconnect Shopify to remove it.' };
+      return { success: false, error: 'Shopify Payments uses your Shopify connection. Disconnect Shopify to remove it.' };
     }
 
-    // Keys that live in global config (not per-brand files)
-    const GLOBAL_KEYS_SET = new Set(['falApiKey', 'elevenLabsApiKey', 'heygenApiKey', 'foreplayApiKey', 'trendtrackApiKey', 'slackBotToken', 'slackWebhookUrl', 'slackChannel', 'discordGuildId', 'discordChannelId']);
-    const isGlobalPlatform = keys.every(k => GLOBAL_KEYS_SET.has(k));
-
-    // 1. Clear from global config (for global platforms + legacy single-brand setups)
-    const cfg = readConfig();
-    let globalChanged = false;
-    for (const key of keys) {
-      if (cfg[key] !== undefined && cfg[key] !== '') {
-        delete cfg[key];
-        globalChanged = true;
-      }
-    }
-    if (cfg._tokenTimestamps && cfg._tokenTimestamps[platform]) {
-      delete cfg._tokenTimestamps[platform];
-      globalChanged = true;
-    }
-    if (globalChanged) writeConfig(cfg);
-
-    // 2. Clear from the active brand's plaintext config (new format post-migration)
-    if (!isGlobalPlatform && brandName) {
-      const brandConfigPath = path.join(appRoot, '.claude', 'tools', `.merlin-config-${brandName}.json`);
-      try {
-        const brandCfg = JSON.parse(fs.readFileSync(brandConfigPath, 'utf8'));
-        let brandChanged = false;
-        for (const key of keys) {
-          if (brandCfg[key] !== undefined && brandCfg[key] !== '') {
-            delete brandCfg[key];
-            brandChanged = true;
-          }
-        }
-        if (brandChanged) {
-          const tmpPath = brandConfigPath + '.tmp';
-          fs.writeFileSync(tmpPath, JSON.stringify(brandCfg, null, 2));
-          fs.renameSync(tmpPath, brandConfigPath);
-        }
-      } catch { /* brand config may not exist — that's fine */ }
-
-      // 3. Clear from the old encrypted tokens file (legacy, may still exist on
-      // machines that haven't been migrated yet). Safe no-op if the file is gone.
-      const legacyTokensPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${brandName}`);
-      try {
-        const buf = fs.readFileSync(legacyTokensPath);
+    // A platform is universal when EVERY key it owns is a universal
+    // credential (UNIVERSAL_KEYS, the _global vault namespace). discordBotToken
+    // is the one legacy global key outside that set. Derived rather than
+    // hand-listed: the old hand-written set omitted arcadsApiKey, so an Arcads
+    // disconnect with a brand selected cleared the wrong scope and the tile
+    // stayed connected off the _global vault entry.
+    const isGlobalPlatform = keys.every(k => UNIVERSAL_KEYS.has(k) || DISCONNECT_EXTRA_GLOBAL_KEYS.has(k));
+    const brandConfigPath = (b) => path.join(appRoot, '.claude', 'tools', `.merlin-config-${b}.json`);
+    const result = applyDisconnect({ platform, brandName, keys, isGlobalPlatform }, {
+      readGlobalConfig: () => readConfig(),
+      writeGlobalConfig: (c) => writeConfig(c),
+      readBrandConfig: (b) => {
+        try { return JSON.parse(fs.readFileSync(brandConfigPath(b), 'utf8')); } catch { return null; }
+      },
+      writeBrandConfig: (b, c) => {
+        const p = brandConfigPath(b);
+        const tmpPath = p + '.tmp';
+        fs.writeFileSync(tmpPath, JSON.stringify(c, null, 2));
+        fs.renameSync(tmpPath, p);
+      },
+      // Legacy encrypted tokens file (machines not yet migrated). Safe no-op
+      // when the file is gone.
+      scrubLegacyTokens: (b, ks) => {
+        const legacyTokensPath = path.join(appRoot, '.claude', 'tools', `.merlin-tokens-${b}`);
+        let buf;
+        try { buf = fs.readFileSync(legacyTokensPath); } catch { return; }
         let tokens = {};
         if (canUseSafeStorage()) {
           try { tokens = JSON.parse(safeStorage.decryptString(buf)); } catch { tokens = JSON.parse(buf.toString('utf8')); }
         } else if (process.platform === 'darwin' && looksEncrypted(buf)) {
-          // macOS: skip legacy encrypted file — readBrandConfig handles migration
-          throw new Error('skip legacy on darwin');
+          return; // macOS: readBrandConfig handles migration of this file
         } else { tokens = JSON.parse(buf.toString('utf8')); }
         let changed = false;
-        for (const key of keys) {
-          if (tokens[key] !== undefined && tokens[key] !== '') {
-            delete tokens[key];
-            changed = true;
-          }
+        for (const key of ks) {
+          if (tokens[key] !== undefined) { delete tokens[key]; changed = true; }
         }
-        if (changed) {
-          if (canUseSafeStorage()) {
-            fs.writeFileSync(legacyTokensPath, safeStorage.encryptString(JSON.stringify(tokens)));
-          } else {
-            fs.writeFileSync(legacyTokensPath, JSON.stringify(tokens), { mode: 0o600 });
-          }
+        if (!changed) return;
+        if (canUseSafeStorage()) {
+          fs.writeFileSync(legacyTokensPath, safeStorage.encryptString(JSON.stringify(tokens)));
+        } else {
+          fs.writeFileSync(legacyTokensPath, JSON.stringify(tokens), { mode: 0o600 });
         }
-      } catch { /* legacy file may not exist — normal */ }
-    }
+      },
+      vaultDeleteKeys: (scope, ks) => vaultDeleteMany(scope, ks),
+      vaultRemainingKeys: (scope, ks) => vaultRemainingMany(scope, ks),
+      hasBrands: () => listBrandDirs(path.join(appRoot, 'assets', 'brands')).length > 0,
+      clearAuthFailure: (p, b) => authFailureStore.clear(p, b),
+    });
 
-    // 4. Clear vault entries for the disconnected platform
-    const vaultBrand = isGlobalPlatform ? '_global' : (brandName || '_global');
-    for (const key of keys) {
-      if (VAULT_SENSITIVE_KEYS.includes(key)) {
-        vaultDelete(vaultBrand, key);
-      }
-    }
-
-    // 5. Notify the renderer so the tile re-reads connection state
+    // Notify the renderer so every open tile re-reads connection state.
     if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
-    return { success: true };
+    return { success: true, scope: result.scope, brand: result.brand };
   } catch (err) { return { success: false, error: err.message }; }
 });
 
@@ -14927,6 +15180,11 @@ app.whenReady().then(async () => {
     // platform call, so the first TrendTrack/fal/Slack call of the session
     // resolves against a corrected _global rather than failing empty.
     try { migrateUniversalKeysToGlobal(); } catch (err) { console.error('[vault]', err.message); }
+    // Sidecar IPC endpoint at boot, AFTER the vault migrations so the first
+    // external tool call resolves against migrated credentials. Not gated on
+    // a chat session. REGRESSION GUARD (2026-10-05, ipc-boot) above
+    // buildMcpCtx.
+    bootMcpIpcEndpoint();
   }, 600);
 
   // Start the briefing watcher now that appRoot is guaranteed to exist and

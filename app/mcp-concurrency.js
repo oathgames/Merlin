@@ -44,6 +44,7 @@ const DEFAULT_CAPS = Object.freeze({
   reddit_ads: 2,       // ~1 QPS budget, 2 concurrent with spacing = safe
   reddit_organic: 2,   // ban risk is high — be extra careful
   linkedin: 3,         // undocumented; LI analytics api is strict
+  pinterest: 2,        // Trial tier is 1000 calls/day per app; keep fan-out narrow
   stripe: 5,           // 100/sec read. Concurrency cap prevents CPU spike
   foreplay: 3,         // credits are the real limit, not concurrency
 
@@ -89,8 +90,10 @@ const DEFAULT_CAPS = Object.freeze({
   loop_returns: 2, // returns/warehouse reads; no published cap
   cin7:         2, // 60 calls/min account cap; 2 concurrent stays well under
   gorgias:      2, // 40 req/20s per account (API key); export fans out 3 inside the engine
-  rakuten:      2, // Advertiser Reporting API; no published cap, engine chunks windows at concurrency 2
-  roundel:      2, // Criteo Retail Media API: 250 req/min app-wide, reporting 40/min; engine fans out list pages itself
+  rakuten:      1, // Advertiser Reporting API allows ONE report request in flight per account; engine fetches chunks serially
+  impact:       2, // 1,000 req/hr per account; engine fans programs x windows out at concurrency 2
+  snapchat:     2, // Snap: 20 req/s per app, 10 req/s per token; 2 concurrent is anti-thunder
+  twitter:      2, // X Ads: 250 req/15 min per account+token, and every call also round-trips the Worker signer
 
   // Default for any platform not explicitly listed — err on the side of
   // safety. 2 concurrent forces callers to queue instead of fan out wide.

@@ -153,7 +153,10 @@ const byName = (n) => {
 // for multi-identity accounts (meta_publish_identity.go). verticalImagePath had
 // been read by the engine since placement pairing shipped but was never
 // declared on ads[]; portraitImagePath is the new 4x5 feed asset.
-const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId', 'publishPageId', 'publishInstagramId'];
+// dailyBudget (2026-10-08): meta_ads always declared it, but meta_launch_test_batch
+// did not, so a NEW shared ad set created through the intent tool silently fell
+// back to the engine's $5 default (live Forever 21 push needed $50).
+const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSetName', 'adDescription', 'ctaType', 'targetAdSetId', 'publishPageId', 'publishInstagramId', 'dailyBudget'];
 // videoId / reuseAdId (2026-09-29): read by runMetaBulkPush for months (pre-
 // uploaded video, winner-creative reuse) and declared on neither surface.
 // Section 4 below now derives this contract from the Go struct itself.
@@ -290,6 +293,35 @@ test('meta_audit declares startDate and endDate for attribution-compare', () => 
       `meta_audit.${key} must be declared: the engine reads it and zod strips what is not declared.`,
     );
   }
+});
+
+// video-frames (2026-10-26): the engine reads adIds, videoIds, framesPerVideo,
+// framesDir and overwrite. Each must be declared on meta_audit (zod strips the
+// rest) and must reach the --cmd JSON through the real handler.
+test('meta_audit declares every video-frames param', () => {
+  const schema = byName('meta_audit').schema;
+  for (const key of ['adIds', 'videoIds', 'framesPerVideo', 'framesDir', 'overwrite']) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(schema, key),
+      `meta_audit.${key} must be declared: meta-video-frames reads it and zod strips what is not declared.`,
+    );
+  }
+});
+
+test('meta_audit video-frames params reach the --cmd JSON through the handler', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_audit').handler({
+    action: 'video-frames', brand: 'apotheke',
+    adIds: ['120200000000001', '120200000000002'], videoIds: ['55555'],
+    framesPerVideo: 8, framesDir: 'apotheke-creative-lessons/video_frames', overwrite: true,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-video-frames');
+  assert.deepEqual(cmd.adIds, ['120200000000001', '120200000000002'], 'adIds must reach the engine');
+  assert.deepEqual(cmd.videoIds, ['55555'], 'videoIds must reach the engine');
+  assert.equal(cmd.framesPerVideo, 8, 'framesPerVideo must reach the engine');
+  assert.equal(cmd.framesDir, 'apotheke-creative-lessons/video_frames', 'framesDir must reach the engine');
+  assert.equal(cmd.overwrite, true, 'overwrite must reach the engine');
 });
 
 // REGRESSION GUARD (2026-09-21, Hard-Won Rule 23): the same gap one tool over.
@@ -490,6 +522,7 @@ function goBulkAdTags(src) {
 // reasons that read as deferral.
 const BULK_AD_EXEMPT_KEYS = {
   youtubeVideoId: 'Google Ads Demand Gen only (googleads_demandgen.go). runMetaBulkPush never reads it, so declaring it on a Meta surface would accept the key and silently ignore it. It is declared on google_ads ads[], its real route.',
+  cta: 'Snapchat only (snapchat_ads.go, snapchat-bulk-push). meta-bulk-push refuses it as an unknown ads[] key (bulk_ad_strict.go metaBulkAdKnownKeys), so declaring it on a Meta surface would make every push carrying it fail. It is declared on the snapchat tool ads[], its real route.',
   languages: 'BulkAd.Languages is decoded but read by no engine code path: multi-language variants come from the top-level Command.Languages, which both surfaces already declare. A per-ad key would be a silent no-op, the exact failure Rule 23 exists to prevent.',
 };
 
@@ -593,4 +626,45 @@ test('meta_launch_test_batch handler carries videoId and reuseAdId to meta-bulk-
   assert.equal(cmd.action, 'meta-bulk-push');
   assert.equal(cmd.ads[0].reuseAdId, '120240000000000001');
   assert.equal(cmd.ads[1].videoId, '1180000000000002');
+});
+
+// REGRESSION GUARD (2026-10-08, bulkpush-shared-adset-budget, Rules 1 + 23 + 25):
+// the shared ad set budget has to travel through the TOOL HANDLER (the surface a
+// caller reaches), past validateBudget, into Command.DailyBudget. Before this
+// the key was stripped and the engine minted the ad set at $5/day.
+test('meta_launch_test_batch carries a top-level shared ad set dailyBudget into the --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_batch').handler({
+    brand: 'forever21',
+    sharedAdSet: true,
+    adSetName: 'F21_Promo_Shared',
+    dailyBudget: 50,
+    ads: [{ imagePath: '/tmp/a.jpg', name: 'F21_A' }, { imagePath: '/tmp/b.jpg', name: 'F21_B' }],
+  });
+  assert.ok(!(res && res.isError), `handler must not refuse a valid $50 budget: ${JSON.stringify(res)}`);
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-bulk-push');
+  assert.equal(cmd.sharedAdSet, true);
+  assert.equal(cmd.dailyBudget, 50, 'top-level dailyBudget must reach Command.DailyBudget in DOLLARS, unconverted');
+  assert.equal(cmd.adSetName, 'F21_Promo_Shared');
+});
+
+test('meta_launch_test_batch refuses a cents-shaped shared budget before spawning the engine', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_batch').handler({
+    brand: 'forever21', sharedAdSet: true, dailyBudget: 5000, ads: [{ imagePath: '/tmp/a.jpg' }],
+  });
+  assert.equal(execFileCalls.length, 0, 'a refused budget must never reach the engine');
+  assert.match(JSON.stringify(res), /dailyBudget=5000/);
+});
+
+// validateBudget used to return early when the TOP-LEVEL budget was absent,
+// so per-ad budgets on a surface with no top-level key were never checked.
+test('meta_launch_test_batch cents-checks per-ad budgets even with no top-level dailyBudget', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_batch').handler({
+    brand: 'forever21', ads: [{ imagePath: '/tmp/a.jpg', dailyBudget: 5000 }],
+  });
+  assert.equal(execFileCalls.length, 0, 'a refused per-ad budget must never reach the engine');
+  assert.match(JSON.stringify(res), /ads\[0\]\.dailyBudget=5000/);
 });

@@ -72,6 +72,10 @@ const CODES = {
     message: 'Access denied — the platform refused this request.',
     next_action: 'check_permissions',
   },
+  QUOTA_EXCEEDED: {
+    message: 'The service account behind this action is out of credits or over its plan limit.',
+    next_action: 'top_up_provider_account',
+  },
   BUDGET_REJECTED: {
     message: 'Budget exceeds the configured limit.',
     next_action: 'ask_user_to_raise_cap',
@@ -250,6 +254,30 @@ const CLASSIFIERS = [
     test: (s) => /no (config|token|credentials)|not connected|no.*(access.?token|api.?key).* (found|set|configured)/i.test(s),
     classify: (s) => makeError('NOT_CONNECTED', { detail: s }),
   },
+  // Balance / credits / plan quota: MUST stay ABOVE the 401/403 arm.
+  //
+  // REGRESSION GUARD (2026-10-05, fal exhausted-balance masking): fal
+  // answers an empty account with HTTP 403 and a body like "User is locked.
+  // Reason: Exhausted balance. Top up your balance at fal.ai/dashboard/billing".
+  // The bare 403 tripped PERMISSION_DENIED, so the agent was told to check
+  // permissions (reconnect, re-auth) on an account whose only problem was
+  // money. Twice in one day that sent the session down the wrong path. The
+  // fix is ordering: a billing signal anywhere in the text outranks the
+  // status code. Do not widen this to a bare "locked" or "quota": Meta's
+  // security lock and Google's per-minute quota are not top-up problems
+  // (the latter is caught by the rate-limit arms above anyway).
+  {
+    test: (s) => /exhausted (your )?balance|balance (is )?(exhausted|too low|insufficient)|insufficient (funds|balance|credits?)|out of credits|credits? (exhausted|ran out|depleted)|\b402\b|payment required|user is locked|locked.{0,40}(balance|billing|credit)|top up your|quota (exceeded|exhausted)|exceeded (your )?(current )?quota/i.test(s),
+    classify: (s) => {
+      const provider = detectProvider(s);
+      return makeError('QUOTA_EXCEEDED', {
+        message: provider
+          ? `The ${provider} account is out of credits or over its plan limit. Top up the ${provider} account, then retry.`
+          : 'The service account behind this action is out of credits or over its plan limit. Top up that account, then retry.',
+        detail: s,
+      });
+    },
+  },
   // Permission / auth failure
   {
     test: (s) => /\b401\b|\b403\b|unauthoriz(ed|e)|forbidden|access (denied|refused)|permission/i.test(s),
@@ -289,6 +317,31 @@ const CLASSIFIERS = [
     classify: (s) => makeError('INVALID_INPUT', { detail: s }),
   },
 ];
+
+// Vendor names for the QUOTA_EXCEEDED message, most specific first. Only the
+// label is ever emitted, never the matched text.
+const PROVIDER_PATTERNS = [
+  [/\bfal(\.ai|\.run)?\b|\bfal[_-]/i, 'fal.ai'],
+  [/elevenlabs/i, 'ElevenLabs'],
+  [/heygen/i, 'HeyGen'],
+  [/arcads/i, 'Arcads'],
+  [/replicate/i, 'Replicate'],
+  [/openai/i, 'OpenAI'],
+  [/anthropic/i, 'Anthropic'],
+  [/gemini|generativelanguage/i, 'Google Gemini'],
+];
+
+/**
+ * Best-effort provider name for a billing error, or null when the text does
+ * not name one. Never guesses: an unnamed provider gets the generic copy.
+ */
+function detectProvider(s) {
+  if (!s || typeof s !== 'string') return null;
+  for (const [re, label] of PROVIDER_PATTERNS) {
+    if (re.test(s)) return label;
+  }
+  return null;
+}
 
 /**
  * Parse a retry-after value out of a string.
@@ -372,4 +425,5 @@ module.exports = {
   classifyOrFallback,
   parseRetryAfter,
   describeDuration,
+  detectProvider,
 };

@@ -204,11 +204,40 @@ Use when the brand runs an affiliate program on Rakuten Advertising (formerly Li
 | Action | Use |
 |---|---|
 | `status` / `verify` | Connection check; `verify` pulls 2 days and lists any expected columns the saved report lacks |
-| `report` | Totals (sales, orders, clicks, commission, AOV, effective rate, ROAS on commission), top publishers, daily trend. `days` (default 30, max 365) or `startDate`/`endDate` |
+| `report` | Totals (sales, orders, clicks, commission, AOV, effective rate, ROAS on commission), top publishers, daily trend, and `newVsReturning` (orders and sales) when the order report has a new-customer column. `days` (default 30, max 365) or `startDate`/`endDate` |
 | `publishers` | Publisher leaderboard by sales, `limit` up to 1000 |
 | `transactions` | Order-level rows, newest first; needs the transactions report link |
+| `export` | Full raw history to JSONL (every report column, plus publishers and daily files and a manifest of counts and date coverage). Background job: poll `jobs_poll`. Default 365 days, up to 3660. Resumable: re-run the same window to continue |
 
 `rakutenDateType`: `transaction` (default, date of sale) or `process` (date Rakuten booked it, matches invoices). Column sets are whatever the brand's saved report contains, so if `verify` reports missing columns, ask the user to add them to that report in Rakuten. Read-only by construction: Merlin cannot change publishers, commissions or offers.
+
+## Affiliate reporting (`mcp__merlin__impact`): read-only
+
+Use when the brand runs an affiliate or partnership program on impact.com (formerly Impact Radius) and asks how partners are performing: affiliate revenue, payouts, reversals, top partners, affiliate ROAS or CPA, new vs returning customers. Connect on the impact.com tile with the Account SID and Auth Token from app.impact.com > Settings > API (a read-only token is enough), plus an optional default program id.
+
+| Action | Use |
+|---|---|
+| `status` / `verify` | Connection check; `verify` confirms the credentials and lists programs |
+| `discover` | Company (currency, timezone), programs and saved reports (ids for `impactReportId`) |
+| `insights` | Weekly-deck pull: totals (revenue, payout, cost, ROAS, CPA, AOV, reversals, new vs returning) by partner and by program, top partners. `startDate`/`endDate` or `days` (max 366). Add `impactReportId` for clicks |
+| `actions` | Conversion rows, filter `impactState` (pending/approved/reversed/all), `limit` |
+| `partners` | Partner roster, filter `status` |
+| `clicks` | Click totals for one program, max 7 days |
+| `report` | Export a saved report as a table (`impactReportId`); if it is still queued, retry with the returned `impactJobId` |
+
+Dates are in the account's timezone. Revenue excludes reversed actions. Clicks are omitted, not zeroed, when no click report is given. Read-only by construction: Merlin cannot change partners, contracts or payouts.
+
+## Shipping and fulfillment (`mcp__merlin__shipstation`): read-only
+
+Use when the brand ships through ShipStation and asks about orders, shipping volume, label or postage cost, cost per label, carrier or service mix, ship speed (same day, within 2 days, on time), or wants a raw ShipStation history export. Connect on the ShipStation tile with the V1 API Key and API Secret from ShipStation Settings > Account > API Settings. ShipStation only issues V1 keys on the Gold plan or higher (US/Canada) or Scale or higher (UK, AU, NZ, EU); a 401/403 on verify usually means the plan, not a typo.
+
+| Action | Use |
+|---|---|
+| `status` / `verify` | Connection check; `verify` confirms the keys and counts stores |
+| `report` | Weekly-deck pull for `startDate`/`endDate` or `days` (default 30, max 366): orders by status, revenue, units, AOV, labels, label cost and cost per label, voids and return labels, carrier / service / store mix, fulfillments marked shipped elsewhere, order-to-ship time |
+| `export` | Background job (poll `jobs_poll`): orders, shipments, fulfillments, stores, carriers, warehouses and products as JSONL plus `manifest.json` (counts, first/last dates, per-month counts, sha256). Resumable. Full history: pass `startDate` at the account start |
+
+Dates are Pacific (ShipStation's own timezone). Orders window on order date, labels and fulfillments on ship date; revenue, units and ship time exclude cancelled orders. Shipments only include labels bought in ShipStation. The export holds customer names and addresses, so it stays on local disk. Read-only by construction: Merlin cannot buy labels or change orders.
 
 ## Customer support (`mcp__merlin__gorgias`) — read-only, de-identified
 
@@ -241,6 +270,8 @@ Cross-link: deeper email strategy / flow taxonomy / RFM segmentation / deliverab
 - "numbers" / "how we doing" / "performance" / "dashboard" → `dashboard({action: "dashboard"})`
 - "what are customers complaining about" / "support ticket volume" / "gorgias" / "CSAT" → `gorgias({action: "stats"})`, then `tags`
 - "export our support tickets" / "support corpus" → `gorgias({action: "export"})`
+- "shipping costs" / "cost per label" / "how fast are we shipping" / "shipstation" → `shipstation({action: "report"})`
+- "export our shipstation data" / "all our order and shipment history" → `shipstation({action: "export", startDate: "..."})`
 - "how are my flows doing" / "recovered revenue" / "klaviyo flow ROI" → `klaviyo({action: "flow-performance"})`
 - "which subject line is winning" / "best email in my flow" → `klaviyo({action: "flow-message-performance"})`
 - "how many checkouts last week" / "aggregate site events" → `klaviyo({action: "metric-aggregate"})`

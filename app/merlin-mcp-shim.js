@@ -145,6 +145,13 @@ const PROTOCOL_VERSION = '2024-11-05';
 const SERVER_VERSION = readVersion();
 const CONNECT_RETRY_MS = 200;
 const CONNECT_RETRY_COUNT = 3;
+// Pause before the single stale-handshake retry in send(): long enough for a
+// restarting app's endpoint to bind and rewrite mcp-shim-token.
+// Overridable for tests via MERLIN_SHIM_STALE_RETRY_MS.
+const STALE_HANDSHAKE_RETRY_MS = (() => {
+  const v = Number(process.env.MERLIN_SHIM_STALE_RETRY_MS);
+  return Number.isFinite(v) && v >= 0 ? v : 1500;
+})();
 const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // 5 min — long enough for SEO audits
 
 // ──────────────────────────────────────────────────────────────
@@ -297,8 +304,17 @@ function createIpcClient(stateDir) {
     }
   }
 
-  async function send(method, params) {
-    await connect();
+  // One request on the current connection. A connect-phase failure is
+  // tagged retryable: nothing reached the app yet, so a retry can never
+  // double-execute a tool. A socket that dies mid-request is NOT retried.
+  async function sendOnce(method, params) {
+    try {
+      await connect();
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e));
+      err.merlinConnectPhase = true;
+      throw err;
+    }
     const handshake = sock._handshake;
     const id = freshId();
     const req = { id, auth: handshake.token, method, params: params || {} };
@@ -318,6 +334,34 @@ function createIpcClient(stateDir) {
         reject(e);
       }
     });
+  }
+
+  // REGRESSION GUARD (2026-10-05, ipc-boot): stale-handshake resilience.
+  // When the desktop app restarts, <stateDir>/mcp-shim-token is rewritten
+  // with a new pipe path and a new token. A client holding the old one sees
+  // ENOENT on connect, or AUTH_FAILED on a request. Either way: drop the
+  // connection, wait for the rewrite to land, re-read the file (connect()
+  // reads it on every attempt) and retry exactly once. AUTH_FAILED is
+  // rejected by the endpoint before dispatch, so the retry is safe for
+  // writes too; mid-request socket deaths are never retried.
+  async function send(method, params) {
+    let resp;
+    try {
+      resp = await sendOnce(method, params);
+    } catch (e) {
+      if (!e || !e.merlinConnectPhase) throw e;
+      logInfo(`IPC connect failed (${e.code || e.message}); re-reading handshake and retrying once`);
+      destroy(e);
+      await sleep(STALE_HANDSHAKE_RETRY_MS);
+      return sendOnce(method, params);
+    }
+    if (resp && resp.ok === false && resp.error && resp.error.code === 'AUTH_FAILED') {
+      logInfo('IPC auth rejected (token rotated); re-reading handshake and retrying once');
+      destroy(new Error('auth token rotated'));
+      await sleep(STALE_HANDSHAKE_RETRY_MS);
+      return sendOnce(method, params);
+    }
+    return resp;
   }
 
   return { send, destroy, get connected() { return sock && !sock.destroyed; } };

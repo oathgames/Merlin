@@ -2821,7 +2821,7 @@ function handleStreamEvent(msg) {
           label = action === 'audit' ? 'Auditing site' : 'Researching keywords';
         } else if (tool === 'dashboard') {
           label = 'Reading performance';
-        } else if (tool === 'meta_ads' || tool === 'tiktok_ads' || tool === 'google_ads' || tool === 'amazon_ads' || tool === 'reddit_ads') {
+        } else if (tool === 'meta_ads' || tool === 'tiktok_ads' || tool === 'google_ads' || tool === 'amazon_ads' || tool === 'reddit_ads' || tool === 'pinterest_ads') {
           const platform = tool.replace('_ads', '').replace(/^./, function (c) { return c.toUpperCase(); });
           if (action === 'push') label = 'Publishing ' + platform + ' ad';
           else if (action === 'kill') label = 'Pausing ' + platform + ' ad';
@@ -4281,7 +4281,7 @@ const PLATFORM_DISPLAY_NAMES = {
   openai_ads: 'OpenAI Ads',
   rokt: 'Rokt',
   rakuten: 'Rakuten Advertising',
-  roundel: 'Roundel (Target)',
+  impact: 'impact.com',
   clarity: 'Microsoft Clarity',
   posthog: 'PostHog',
   alia: 'Alia Popups',
@@ -4321,7 +4321,7 @@ const VERTICAL_PROFILES = {
     primaryKPI: 'revenue',
     defaultRevenueConnector: 'shopify',
     hasShoppableCatalog: true,
-    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'rakuten', 'roundel', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
+    integrations: ['meta','tiktok','shopify','stripe','klaviyo','mailchimp','postscript','google','pinterest','amazon','reddit','etsy','snapchat','twitter','linkedin','openai_ads','triplewhale','rokt', 'rakuten', 'impact', 'clarity', 'posthog', 'alia', 'yotpo', 'sesami', 'faire', 'quickbooks', 'shopify_payments', 'shipstation', 'loop_returns', 'cin7', 'gorgias', ...BASE_CREATIVE_TOOLS],
   },
   saas: {
     key: 'saas',
@@ -6078,7 +6078,30 @@ const MANUAL_KEY_PLATFORMS = new Set(['meta', 'shopify', 'applovin']);
 // returns false on null / undefined so calling it on a missing element
 // never falsely silences a legitimate click.
 function isStubbedTile(tile) {
-  return !!(tile && tile.dataset && tile.dataset.stubbed === 'true');
+  return !!(tile && tile.dataset && (tile.dataset.stubbed === 'true' || isAwaitingClientId(tile)));
+}
+
+// Tiles marked `data-needs-client-id="true"` belong to OAuth providers that
+// ship no hardcoded client_id: the canonical id arrives from the BFF
+// (Hard-Won Rule 17) and main.js reports its presence through
+// getOAuthAvailability. Until that IPC confirms it, the tile is treated as
+// unavailable everywhere isStubbedTile is consulted, and a click explains
+// why instead of silently doing nothing.
+function isAwaitingClientId(tile) {
+  return !!(tile && tile.dataset && tile.dataset.needsClientId === 'true' && tile.dataset.clientIdReady !== 'true');
+}
+
+function clientIdUnavailableMessage(tile) {
+  const name = tile.querySelector('.tile-name')?.textContent || platformDisplayName(tile.dataset.platform);
+  return `${name} isn't available yet`;
+}
+
+// Applies the { provider: boolean } map from merlin.getOAuthAvailability to
+// every needs-client-id tile. Unknown or missing entries stay unavailable.
+function applyOAuthAvailability(avail) {
+  document.querySelectorAll('.magic-tile[data-needs-client-id="true"]').forEach((t) => {
+    t.dataset.clientIdReady = (avail && avail[t.dataset.platform] === true) ? 'true' : 'false';
+  });
 }
 
 function loadConnections() {
@@ -6116,7 +6139,11 @@ function loadConnections() {
   // every tile with the .loading wait cursor forever. Race the IPC
   // against a 10s deadline; on timeout we restore last-known visual
   // state (drop .loading) and surface a recoverable toast.
-  const fetchPromise = merlin.getConnectedPlatforms(brand);
+  const availabilityPromise = (typeof merlin.getOAuthAvailability === 'function')
+    ? Promise.resolve(merlin.getOAuthAvailability()).catch(() => ({}))
+    : Promise.resolve({});
+  const fetchPromise = Promise.all([merlin.getConnectedPlatforms(brand), availabilityPromise])
+    .then(([conns, avail]) => { applyOAuthAvailability(avail); return conns; });
   const timeoutPromise = new Promise((_, rej) => setTimeout(
     () => rej(new Error('connection-status-timeout')),
     10000,
@@ -6136,9 +6163,14 @@ function loadConnections() {
     // shipped yet.
     allTiles.forEach(t => {
       t.classList.remove('connected', 'expired', 'needs-brand');
+      // connStatus is what the tile context menu reads to decide whether to
+      // offer Disconnect. Reset with the classes so a stale value can never
+      // outlive the brand it was painted for.
+      delete t.dataset.connStatus;
       if (!t.dataset.baseTip && t.dataset.tip) t.dataset.baseTip = t.dataset.tip;
       if (isStubbedTile(t)) {
         t.classList.add('unavailable');
+        if (isAwaitingClientId(t)) t.dataset.tip = clientIdUnavailableMessage(t);
       } else {
         t.classList.remove('unavailable');
         t.dataset.tip = t.dataset.baseTip || t.dataset.tip;
@@ -6166,10 +6198,20 @@ function loadConnections() {
     allTiles.forEach(tile => {
       const platform = tile.dataset.platform;
       if (!platform) return;
-      if (isStubbedTile(tile)) return; // unavailable wins
       if (tile.classList.contains('needs-brand')) return;
+      // A tile still waiting on its OAuth client id paints unavailable, but
+      // if the brand already holds a grant for it the user must still be
+      // able to disconnect that grant (a sign-in to the wrong brand is
+      // exactly the case that needs it). Record the status for the context
+      // menu without painting the tile connected. Coming Soon stubs
+      // (data-stubbed) can never hold a grant and are skipped outright.
+      if (isStubbedTile(tile)) {
+        if (tile.dataset.stubbed !== 'true' && state.get(platform)) tile.dataset.connStatus = state.get(platform);
+        return; // unavailable wins visually
+      }
       const status = state.get(platform);
       if (!status) return;
+      tile.dataset.connStatus = status;
       tile.classList.add('connected');
       const name = tile.querySelector('.tile-name')?.textContent || platformDisplayName(platform);
       if (status === 'expired') {
@@ -6180,33 +6222,8 @@ function loadConnections() {
       }
     });
 
-    // Re-attach (once) the right-click → disconnect handler. We use
-    // event delegation so the handler stays attached across rerenders.
-    const panel = document.getElementById('magic-panel');
-    if (panel && !panel.dataset.disconnectHandlerAttached) {
-      panel.dataset.disconnectHandlerAttached = '1';
-      panel.addEventListener('contextmenu', (e) => {
-        const tile = e.target.closest('.magic-tile');
-        if (!tile || !tile.classList.contains('connected')) return;
-        e.preventDefault();
-        const platform = tile.dataset.platform;
-        const name = tile.querySelector('.tile-name')?.textContent || platform;
-        showContextMenu(e, [
-          { label: 'Disconnect', danger: true, action: () => {
-            showModal({
-              title: `Disconnect ${name}?`,
-              body: 'You can reconnect anytime from the sidebar.',
-              confirmLabel: 'Disconnect',
-              cancelLabel: 'Keep',
-              onConfirm: async () => {
-                await merlin.disconnectPlatform(platform, document.getElementById('brand-select')?.value || '');
-                loadConnections();
-              },
-            });
-          }},
-        ]);
-      });
-    }
+    // Right-click / keyboard Disconnect lives in openTileContextMenu (one
+    // document-level handler for every tile; see the REGRESSION GUARD there).
   }).catch((err) => {
     // REGRESSION GUARD (2026-05-10, BUG-F003): on timeout (or any IPC
     // rejection), drop the .loading wait cursor so the tiles return
@@ -6484,7 +6501,7 @@ document.addEventListener('click', (e) => {
 // users saw a "LinkedIn" tile that did nothing on click.
 // The new source-scan test in oauth-persist.test.js cross-checks
 // every connector_id in oauth-provider-config.js against this Set.
-const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads', 'quickbooks']);
+const OAUTH_PLATFORMS = new Set(['meta', 'tiktok', 'shopify', 'google', 'amazon', 'pinterest', 'slack', 'discord', 'etsy', 'reddit', 'stripe', 'linkedin', 'threads', 'quickbooks', 'snapchat', 'twitter']);
 const API_KEY_PLATFORMS = {
   fal:        { key: 'falApiKey', label: 'fal.ai', placeholder: 'fal-xxxx…', url: 'https://fal.ai/dashboard/keys' },
   elevenlabs: { key: 'elevenLabsApiKey', label: 'ElevenLabs', placeholder: 'xi_xxxx…', url: 'https://elevenlabs.io/app/settings/api-keys' },
@@ -6731,6 +6748,11 @@ function clearOAuthTileWaiting(platform) {
 document.addEventListener('click', async (e) => {
   const tile = e.target.closest('.magic-tile');
   if (!tile) return;
+  if (isAwaitingClientId(tile)) {
+    // Not a dead click: say plainly why nothing opens.
+    showToast(`${clientIdUnavailableMessage(tile)}. It turns on automatically once sign-in is ready, no update needed.`, { variant: 'info' });
+    return;
+  }
   if (isStubbedTile(tile)) return;
   const platform = tile.dataset.platform;
   const activeBrand = getActiveBrandSelection();
@@ -7515,8 +7537,8 @@ function showSesamiConnectModal(activeBrand) {
 // fields are vaulted (VAULT_SENSITIVE_KEYS). See shipstation.go.
 function showShipStationConnectModal(activeBrand) {
   showModal({
-    title: 'ShipStation — API Key',
-    body: 'Enter your ShipStation API Key (ShipStation → Account → API Settings → Generate New API Keys). (Step 1 of 2)',
+    title: 'ShipStation: API Key',
+    body: 'In ShipStation open Settings, Account, API Settings, pick API Version V1 and generate API keys. Paste the API Key here. V1 API access needs the Gold plan or higher (US and Canada) or Scale or higher (UK, AU, NZ, EU). (Step 1 of 2)',
     inputPlaceholder: 'ShipStation API Key',
     confirmLabel: 'Next',
     cancelLabel: 'Cancel',
@@ -7545,35 +7567,101 @@ function showShipStationConnectModal(activeBrand) {
   });
 }
 
-// Cin7 connect modal — two chained steps (Account ID -> Application Key).
-// Cin7's API authenticates with both values on every request, so the
-// single-field API_KEY_PLATFORMS modal can't collect them. Both fields are
-// vaulted (VAULT_SENSITIVE_KEYS). See cin7.go.
+// Cin7 connect modal: a product choice (Cin7 Core or Cin7 Omni), then two
+// chained credential steps. Both products authenticate with two values on
+// every request, so the single-field API_KEY_PLATFORMS modal can't collect
+// them. The choice is saved as cin7Product so the engine never has to guess
+// (cin7Mode in cin7.go falls back to the id shape only when it is unset).
+// Both credentials are vaulted (VAULT_SENSITIVE_KEYS); cin7Product is not a
+// secret. See cin7.go and cin7_omni.go.
+const CIN7_PRODUCT_COPY = {
+  core: {
+    name: 'Cin7 Core',
+    idTitle: 'Cin7 Core: Account ID',
+    idBody: 'In Cin7 Core open Settings, then API, and copy the Account ID. (Step 2 of 3)',
+    idPlaceholder: 'Cin7 Core Account ID',
+    idMissing: 'Enter your Account ID',
+    keyTitle: 'Cin7 Core: Application Key',
+    keyBody: 'Enter the Application Key from the same API page. It is stored encrypted and never shown again. Merlin only reads from Cin7. (Step 3 of 3)',
+    keyPlaceholder: 'Cin7 Core Application Key',
+    keyMissing: 'Enter your Application Key',
+  },
+  omni: {
+    name: 'Cin7 Omni',
+    idTitle: 'Cin7 Omni: API username',
+    idBody: 'In Cin7 Omni open Settings, then Integrations & API, then API v1. Add an API connection with Read permission on the areas you want in Merlin, then copy its API username. (Step 2 of 3)',
+    idPlaceholder: 'Cin7 Omni API username',
+    idMissing: 'Enter your API username',
+    keyTitle: 'Cin7 Omni: API key',
+    keyBody: 'Enter the API key from the same API connection. It is stored encrypted and never shown again. Merlin only reads from Cin7. (Step 3 of 3)',
+    keyPlaceholder: 'Cin7 Omni API key',
+    keyMissing: 'Enter your API key',
+  },
+};
+function buildCin7ProductChoiceNode() {
+  const wrap = document.createElement('div');
+  const intro = document.createElement('p');
+  intro.textContent = 'Which Cin7 do you use? (Step 1 of 3)';
+  wrap.appendChild(intro);
+  [['omni', 'Cin7 Omni', 'Older Cin7, login at go.cin7.com'], ['core', 'Cin7 Core', 'Formerly DEAR Inventory, login at inventory.dearsystems.com']].forEach(([value, label, hint], i) => {
+    const row = document.createElement('label');
+    row.style.display = 'block';
+    row.style.margin = '8px 0';
+    row.style.cursor = 'pointer';
+    const input = document.createElement('input');
+    input.type = 'radio';
+    input.name = 'cin7-product';
+    input.value = value;
+    if (i === 0) input.checked = true;
+    row.appendChild(input);
+    const text = document.createElement('span');
+    text.textContent = ' ' + label + ': ' + hint;
+    row.appendChild(text);
+    wrap.appendChild(row);
+  });
+  return wrap;
+}
 function showCin7ConnectModal(activeBrand) {
+  const choiceNode = buildCin7ProductChoiceNode();
   showModal({
-    title: 'Cin7 — Account ID',
-    body: 'Enter your Cin7 Account ID (Cin7 → Settings → Integrations & API). (Step 1 of 2)',
-    inputPlaceholder: 'Cin7 Account ID',
+    title: 'Connect Cin7',
+    bodyNode: choiceNode,
     confirmLabel: 'Next',
     cancelLabel: 'Cancel',
-    onConfirm: async (v1) => {
-      const accountId = (v1 || '').trim();
-      if (!accountId) { showModalError('Enter your Account ID'); throw new Error('validation'); }
+    onConfirm: async () => {
+      const picked = choiceNode.querySelector('input[name="cin7-product"]:checked');
+      const product = picked && CIN7_PRODUCT_COPY[picked.value] ? picked.value : 'omni';
+      const copy = CIN7_PRODUCT_COPY[product];
       setTimeout(() => {
         showModal({
-          title: 'Cin7 — Application Key',
-          body: 'Enter your Cin7 Application Key (same API settings page). It is stored encrypted and never shown again. (Step 2 of 2)',
-          inputPlaceholder: 'Cin7 Application Key',
-          confirmLabel: 'Save',
+          title: copy.idTitle,
+          body: copy.idBody,
+          inputPlaceholder: copy.idPlaceholder,
+          confirmLabel: 'Next',
           cancelLabel: 'Cancel',
-          onConfirm: async (v2) => {
-            const appKey = (v2 || '').trim();
-            if (!appKey) { showModalError('Enter your Application Key'); throw new Error('validation'); }
-            let r = await merlin.saveConfigField('cin7AccountId', accountId, activeBrand);
-            if (!r.success) { showModalError(r.error || 'Failed to save Account ID'); throw new Error('save'); }
-            r = await merlin.saveConfigField('cin7ApplicationKey', appKey, activeBrand);
-            if (!r.success) { showModalError(r.error || 'Failed to save Application Key'); throw new Error('save'); }
-            loadConnections();
+          onConfirm: async (v1) => {
+            const accountId = (v1 || '').trim();
+            if (!accountId) { showModalError(copy.idMissing); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: copy.keyTitle,
+                body: copy.keyBody,
+                inputPlaceholder: copy.keyPlaceholder,
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v2) => {
+                  const appKey = (v2 || '').trim();
+                  if (!appKey) { showModalError(copy.keyMissing); throw new Error('validation'); }
+                  let r = await merlin.saveConfigField('cin7Product', product, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save your Cin7 product', 'Cin7')); throw new Error('save'); }
+                  r = await merlin.saveConfigField('cin7AccountId', accountId, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save ' + copy.idPlaceholder, 'Cin7')); throw new Error('save'); }
+                  r = await merlin.saveConfigField('cin7ApplicationKey', appKey, activeBrand);
+                  if (!r.success) { showModalError(friendlyErrorPlain(r.error || 'Failed to save ' + copy.keyPlaceholder, 'Cin7')); throw new Error('save'); }
+                  loadConnections();
+                },
+              });
+            }, 0);
           },
         });
       }, 0);
@@ -7661,84 +7749,6 @@ function parseRakutenReportUrl(raw) {
   if (!/^[0-9]{1,4}$/.test(network)) network = '1';
   return { locale: m[1], reportKey: m[2], token, network };
 }
-// Roundel (Target retail media) connect modal. Roundel has no API of its own;
-// its programmatic surface is the Criteo Retail Media API, which authenticates
-// with the BRAND'S OWN Criteo developer app (OAuth2 client credentials) once
-// an Admin of the brand's retail media account approves the app's consent
-// link. So the connection is four fields: Client ID, Client Secret, the retail
-// media Account ID (optional at connect time: discover runs on the app
-// credentials alone and lists it), and an optional Retailer ID (limits
-// reports to Target).
-// All four are saved via save-config-field and vaulted (VAULT_SENSITIVE_KEYS).
-// Like every API-key tile the dot lights on save; mcp__merlin__roundel action
-// "verify" is the live check, and "discover" lists the account + retailer ids
-// when the user does not know them. Ids are checked against the same pattern
-// roundel.go enforces so a pasted URL or stray space fails here, not later.
-const ROUNDEL_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
-function showRoundelConnectModal(activeBrand) {
-  showModal({
-    title: 'Roundel (Target): Client ID',
-    body: 'Roundel campaigns are managed through the Criteo Retail Media API. At developers.criteo.com create an app with the Retail Media domain and campaign read and manage permissions, then have an Admin of your Roundel account approve the app\'s consent link. Paste the app\'s Client ID here. (Step 1 of 4)',
-    inputPlaceholder: 'Criteo app Client ID',
-    confirmLabel: 'Next',
-    cancelLabel: 'Cancel',
-    onConfirm: async (v1) => {
-      const clientId = (v1 || '').trim();
-      if (!clientId) { showModalError('Enter the Client ID'); throw new Error('validation'); }
-      setTimeout(() => {
-        showModal({
-          title: 'Roundel (Target): Client Secret',
-          body: 'Paste the app\'s Client Secret. It can change ad spend, so it is stored encrypted and never shown again. Never paste it in chat. (Step 2 of 4)',
-          inputPlaceholder: 'Criteo app Client Secret',
-          confirmLabel: 'Next',
-          cancelLabel: 'Cancel',
-          onConfirm: async (v2) => {
-            const clientSecret = (v2 || '').trim();
-            if (!clientSecret) { showModalError('Enter the Client Secret'); throw new Error('validation'); }
-            setTimeout(() => {
-              showModal({
-                title: 'Roundel (Target): Account ID',
-                body: 'Enter the retail media Account ID for this brand. If you do not know it, leave this blank and save, then ask Merlin to discover your Roundel accounts and reconnect with the id it finds. Reports and changes need the Account ID. On a reconnect, blank keeps the Account ID already saved. (Step 3 of 4)',
-                inputPlaceholder: 'Retail media Account ID (blank to discover it first)',
-                confirmLabel: 'Next',
-                cancelLabel: 'Cancel',
-                onConfirm: async (v3) => {
-                  const accountId = (v3 || '').trim();
-                  if (accountId && !ROUNDEL_ID_RE.test(accountId)) { showModalError('The Account ID should be letters, numbers, dashes or underscores only, or blank.'); throw new Error('validation'); }
-                  setTimeout(() => {
-                    showModal({
-                      title: 'Roundel (Target): Retailer ID (optional)',
-                      body: 'Optional: the Target retailer id on this account, which limits reports to Roundel when the account also runs on other retailers. Leave blank to include every retailer. On a reconnect, blank keeps any Retailer ID already saved. (Step 4 of 4)',
-                      inputPlaceholder: 'Optional: Retailer ID',
-                      confirmLabel: 'Save',
-                      cancelLabel: 'Cancel',
-                      onConfirm: async (v4) => {
-                        const retailerId = (v4 || '').trim();
-                        if (retailerId && !ROUNDEL_ID_RE.test(retailerId)) { showModalError('The Retailer ID should be letters, numbers, dashes or underscores only, or blank.'); throw new Error('validation'); }
-                        const fields = [
-                          ['roundelClientId', clientId, 'the Client ID'],
-                          ['roundelClientSecret', clientSecret, 'the Client Secret'],
-                        ];
-                        if (accountId) fields.push(['roundelAccountId', accountId, 'the Account ID']);
-                        if (retailerId) fields.push(['roundelRetailerId', retailerId, 'the Retailer ID']);
-                        for (const [key, value, label] of fields) {
-                          const r = await merlin.saveConfigField(key, value, activeBrand);
-                          if (!r.success) { showModalError(friendlyErrorPlain(r.error || ('Failed to save ' + label), 'Roundel')); throw new Error('save'); }
-                        }
-                        loadConnections();
-                      },
-                    });
-                  }, 0);
-                },
-              });
-            }, 0);
-          },
-        });
-      }, 0);
-    },
-  });
-}
-
 function showRakutenConnectModal(activeBrand) {
   showModal({
     title: 'Rakuten Advertising: performance report link',
@@ -7783,6 +7793,64 @@ function showRakutenConnectModal(activeBrand) {
   });
 }
 
+// impact.com connect modal: three chained steps (Account SID -> Auth Token ->
+// optional default program id). impact's Advertiser API uses HTTP Basic auth
+// with the Account SID as the username and the Auth Token as the password;
+// both are created self-serve in app.impact.com under Settings > API, where a
+// read-only token can be generated. Every field is vaulted
+// (VAULT_SENSITIVE_KEYS); the token is a secret. The SID and program patterns
+// mirror impactSIDRe / impactProgramRe in impact.go so a value the modal
+// accepts is one the engine accepts. See impact.go.
+function showImpactConnectModal(activeBrand) {
+  showModal({
+    title: 'impact.com: Account SID',
+    body: 'In impact.com open Settings, then API (app.impact.com > Settings > API). Copy the Account SID shown there and paste it here. Merlin only reads reports and never changes your program. (Step 1 of 3)',
+    inputPlaceholder: 'Account SID (starts with IR...)',
+    confirmLabel: 'Next',
+    cancelLabel: 'Cancel',
+    onConfirm: async (v1) => {
+      const sid = (v1 || '').trim();
+      if (!/^[A-Za-z0-9]{8,64}$/.test(sid)) { showModalError('Paste the Account SID from Settings > API. It is letters and numbers only.'); throw new Error('validation'); }
+      setTimeout(() => {
+        showModal({
+          title: 'impact.com: Auth Token',
+          body: 'On the same page, copy the Auth Token. A read-only token is enough and is the safer choice. It is stored encrypted and never shown again. (Step 2 of 3)',
+          inputPlaceholder: 'Auth Token',
+          confirmLabel: 'Next',
+          cancelLabel: 'Cancel',
+          onConfirm: async (v2) => {
+            const token = (v2 || '').trim();
+            if (!token || /\s/.test(token)) { showModalError('Paste the Auth Token from Settings > API.'); throw new Error('validation'); }
+            setTimeout(() => {
+              showModal({
+                title: 'impact.com: default program (optional)',
+                body: 'If your account runs more than one program, enter the program id to report on by default. Leave this blank to report across every program. (Step 3 of 3)',
+                inputPlaceholder: 'Optional: program id, for example 12345',
+                confirmLabel: 'Save',
+                cancelLabel: 'Cancel',
+                onConfirm: async (v3) => {
+                  const program = (v3 || '').trim();
+                  if (program && !/^[0-9]{1,12}$/.test(program)) { showModalError('The program id is a number. Leave it blank to use every program.'); throw new Error('validation'); }
+                  const fields = [
+                    ['impactAccountSid', sid, 'the Account SID'],
+                    ['impactAuthToken', token, 'the Auth Token'],
+                  ];
+                  if (program) fields.push(['impactProgramId', program, 'the program id']);
+                  for (const [key, value, label] of fields) {
+                    const r = await merlin.saveConfigField(key, value, activeBrand);
+                    if (!r.success) { showModalError(friendlyErrorPlain(r.error || ('Failed to save ' + label), 'impact.com')); throw new Error('save'); }
+                  }
+                  loadConnections();
+                },
+              });
+            }, 0);
+          },
+        });
+      }, 0);
+    },
+  });
+}
+
 // Shopify Payments connect — NOT a separate connection. It rides the
 // Shopify OAuth token (shopify_payments.go runs shopifyGraphQL against
 // cfg.ShopifyStore + cfg.ShopifyAccessToken), so "connecting" it means
@@ -7816,7 +7884,7 @@ function showShopifyPaymentsConnectModal(activeBrand) {
 const CUSTOM_CONNECT_HANDLERS = {
   rokt: showRoktConnectModal,
   rakuten: showRakutenConnectModal,
-  roundel: showRoundelConnectModal,
+  impact: showImpactConnectModal,
   posthog: showPosthogConnectModal,
   yotpo: showYotpoConnectModal,
   sesami: showSesamiConnectModal,
@@ -7841,55 +7909,221 @@ const MANUAL_KEY_HANDLERS = {
   applovin: showApplovinApiKeyModal,
 };
 
-// Tile context menu — right-click to use a manual API key instead of OAuth.
-// Review-friendly escape hatch for users with an existing access token.
+// ── Tile context menu: right-click, the ContextMenu key, or Shift+F10 ──────
+//
+// REGRESSION GUARD (2026-10-17, tile-disconnect): ONE document-level handler
+// owns the context menu for every connection tile. Before this there were two:
+// a document listener for the manual-API-key escape hatch, and a magic-panel
+// listener for Disconnect that was only attached after the first
+// loadConnections() that found a connection (an install with zero connections
+// never got it), opened a second menu on top of the first for Meta, sent
+// whatever brand was selected at CONFIRM time rather than the brand the user
+// was looking at, and swallowed IPC failures silently. Rules this handler
+// keeps, each one locked by tile-disconnect.test.js:
+//   * The menu item names the platform AND the scope it applies to
+//     ("Disconnect Snapchat from Forever 21", or "(all brands)" for the
+//     universal tiles), and the brand is captured when the menu OPENS, so a
+//     brand switch while the confirm is showing can never redirect it.
+//   * Connection state comes from tile.dataset.connStatus (set by
+//     loadConnections), which is recorded even for a tile that paints
+//     unavailable while its OAuth client id is pending, so a grant made to
+//     the wrong brand can always be removed.
+//   * Failures go through friendlyErrorPlain (Hard-Won Rule 6); every label
+//     is set with textContent, never innerHTML.
+//   * Keyboard: the ContextMenu key and Shift+F10 open the same menu anchored
+//     to the focused tile; arrows move, Enter/Space activate, Escape closes
+//     and returns focus to the tile.
 let activeTileMenuCleanup = null;
-function closeTileContextMenu() {
+function closeTileContextMenu(restoreFocus) {
   if (activeTileMenuCleanup) {
-    activeTileMenuCleanup();
+    const cleanup = activeTileMenuCleanup;
     activeTileMenuCleanup = null;
+    cleanup(restoreFocus);
   }
 }
-document.addEventListener('contextmenu', (e) => {
-  const tile = e.target.closest('.magic-tile');
-  if (!tile) return;
-  if (isStubbedTile(tile)) return;
+
+function getActiveBrandLabel(brandValue) {
+  const sel = document.getElementById('brand-select');
+  const opt = sel && sel.selectedOptions && sel.selectedOptions[0];
+  if (opt && opt.value === brandValue) {
+    const label = String(opt.textContent || '').trim();
+    if (label) return label;
+  }
+  return brandValue;
+}
+
+function tileDisplayName(tile) {
+  return tile.querySelector('.tile-name')?.textContent || platformDisplayName(tile.dataset.platform);
+}
+
+// Flip a tile to disconnected immediately after a successful disconnect,
+// before the loadConnections() round-trip repaints the panel.
+function markTileDisconnected(tile) {
+  tile.classList.remove('connected', 'expired');
+  delete tile.dataset.connStatus;
+  if (tile.dataset.baseTip) tile.dataset.tip = tile.dataset.baseTip;
+}
+
+function confirmTileDisconnect(tile, platform, name, brand, brandLabel, isUniversal) {
+  const where = isUniversal ? 'for every brand on this computer' : `for ${brandLabel} only`;
+  const others = isUniversal ? '' : ' Your other brands and other connections stay as they are.';
+  showModal({
+    title: isUniversal ? `Disconnect ${name}?` : `Disconnect ${name} from ${brandLabel}?`,
+    body: `Merlin will forget the ${name} sign-in ${where}.${others} To undo it, click the ${name} tile and connect again.`,
+    confirmLabel: 'Disconnect',
+    cancelLabel: 'Keep connected',
+    onConfirm: async () => {
+      let res;
+      try {
+        res = await merlin.disconnectPlatform(platform, isUniversal ? '' : brand);
+      } catch (err) {
+        res = { success: false, error: (err && err.message) || '' };
+      }
+      if (!res || res.success === false) {
+        const raw = (res && res.error) || `Could not disconnect ${name}. Try again in a moment.`;
+        showToast(friendlyErrorPlain(raw, name), { kind: 'error', duration: 6000 });
+        return;
+      }
+      // Only repaint the tile now if the panel is still showing the brand the
+      // disconnect applied to. loadConnections() below repaints regardless.
+      if (isUniversal || getActiveBrandSelection() === brand) markTileDisconnected(tile);
+      showToast(isUniversal ? `${name} disconnected.` : `${name} disconnected from ${brandLabel}.`, { kind: 'success' });
+      loadConnections();
+    },
+  });
+}
+
+// Build the menu items for a tile. Reads only the tile and the brand
+// selector; returns [] when there is nothing to offer.
+function buildTileMenuItems(tile) {
   const platform = tile.dataset.platform;
+  if (!platform || tile.dataset.stubbed === 'true') return [];
+  const name = tileDisplayName(tile);
+  const isUniversal = tile.dataset.scope === 'universal';
+  const brand = getActiveBrandSelection();
+  const items = [];
+  const status = tile.dataset.connStatus;
+  if (status && (isUniversal || brand)) {
+    const brandLabel = isUniversal ? '' : getActiveBrandLabel(brand);
+    if (platform === 'shopify_payments') {
+      items.push({ label: 'Shopify Payments uses your Shopify connection', disabled: true });
+    } else {
+      items.push({
+        label: isUniversal ? `Disconnect ${name} (all brands)` : `Disconnect ${name} from ${brandLabel}`,
+        danger: true,
+        action: () => confirmTileDisconnect(tile, platform, name, brand, brandLabel, isUniversal),
+      });
+    }
+  }
   const handler = MANUAL_KEY_HANDLERS[platform];
-  if (!handler) return;
-  e.preventDefault();
-  const activeBrand = getActiveBrandSelection();
+  if (handler && !isStubbedTile(tile)) {
+    items.push({ label: 'Use my API key', action: () => handler(brand) });
+  }
+  return items;
+}
+
+function openTileContextMenu(tile, x, y, fromKeyboard) {
+  const items = buildTileMenuItems(tile);
+  if (items.length === 0) return false;
   closeTileContextMenu();
+  document.querySelectorAll('.merlin-context-menu').forEach(m => m.remove());
   const menu = document.createElement('div');
-  menu.className = 'tile-context-menu';
-  menu.style.cssText = 'position:fixed;z-index:400;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:4px;box-shadow:0 6px 20px rgba(0,0,0,.4);font-size:13px';
-  menu.style.top = Math.min(e.clientY, window.innerHeight - 60) + 'px';
-  menu.style.left = Math.min(e.clientX, window.innerWidth - 180) + 'px';
-  const btn = document.createElement('button');
-  btn.textContent = 'Use my API key';
-  btn.style.cssText = 'display:block;width:100%;padding:8px 14px;border:none;background:transparent;color:var(--text);text-align:left;cursor:pointer;border-radius:4px;font-size:13px';
-  btn.onmouseenter = () => { btn.style.background = 'var(--accent-bg)'; };
-  btn.onmouseleave = () => { btn.style.background = 'transparent'; };
-  btn.onclick = () => {
-    closeTileContextMenu();
-    handler(activeBrand);
-  };
-  menu.appendChild(btn);
+  // tile-context-menu keeps the magic panel's outside-click guard from
+  // closing the panel when an item is clicked.
+  menu.className = 'merlin-context-menu tile-context-menu';
+  menu.setAttribute('role', 'menu');
+  menu.setAttribute('aria-label', `${tileDisplayName(tile)} options`);
+  const buttons = [];
+  items.forEach(item => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'context-menu-item';
+    el.setAttribute('role', 'menuitem');
+    el.textContent = item.label;
+    if (item.danger) el.classList.add('context-menu-item-danger');
+    if (item.disabled) {
+      el.disabled = true;
+      el.setAttribute('aria-disabled', 'true');
+    } else {
+      el.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        closeTileContextMenu(false);
+        item.action();
+      });
+      buttons.push(el);
+    }
+    menu.appendChild(el);
+  });
+  menu.style.left = '-9999px';
+  menu.style.top = '-9999px';
   document.body.appendChild(menu);
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - mw - 8)) + 'px';
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - mh - 8)) + 'px';
+
+  const onKey = (ev) => {
+    const i = buttons.indexOf(document.activeElement);
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      closeTileContextMenu(true);
+    } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault();
+      if (buttons.length === 0) return;
+      const next = ev.key === 'ArrowDown' ? (i + 1) % buttons.length : (i - 1 + buttons.length) % buttons.length;
+      buttons[next].focus();
+    } else if (ev.key === 'Tab') {
+      closeTileContextMenu(false);
+    }
+  };
+  menu.addEventListener('keydown', onKey);
   const dismiss = (ev) => {
     if (menu.contains(ev.target)) return;
-    closeTileContextMenu();
+    closeTileContextMenu(false);
   };
   const timer = setTimeout(() => {
     document.addEventListener('click', dismiss);
     document.addEventListener('contextmenu', dismiss);
   }, 10);
-  activeTileMenuCleanup = () => {
+  activeTileMenuCleanup = (restoreFocus) => {
     clearTimeout(timer);
     document.removeEventListener('click', dismiss);
     document.removeEventListener('contextmenu', dismiss);
+    menu.removeEventListener('keydown', onKey);
     menu.remove();
+    if (restoreFocus && tile.isConnected) { try { tile.focus(); } catch { /* detached */ } }
   };
+  if (fromKeyboard && buttons.length) buttons[0].focus();
+  return true;
+}
+
+document.addEventListener('contextmenu', (e) => {
+  const tile = e.target.closest('.magic-tile');
+  if (!tile) return;
+  // A keyboard-originated contextmenu event (ContextMenu key) arrives with
+  // zero coordinates; anchor the menu to the tile instead of the corner.
+  let x = e.clientX;
+  let y = e.clientY;
+  const fromKeyboard = (x === 0 && y === 0);
+  if (fromKeyboard) {
+    const r = tile.getBoundingClientRect();
+    x = r.left + 8;
+    y = r.bottom - 4;
+  }
+  if (openTileContextMenu(tile, x, y, fromKeyboard)) e.preventDefault();
+});
+
+// Shift+F10 / ContextMenu key on a focused tile. Chromium usually also fires a
+// contextmenu event for these; openTileContextMenu replaces any open menu, so
+// whichever arrives second is a harmless re-open at the same anchor.
+document.addEventListener('keydown', (e) => {
+  if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+  const active = document.activeElement;
+  const tile = active && typeof active.closest === 'function' ? active.closest('.magic-tile') : null;
+  if (!tile) return;
+  const r = tile.getBoundingClientRect();
+  if (openTileContextMenu(tile, r.left + 8, r.bottom - 4, true)) e.preventDefault();
 });
 
 // Request a platform

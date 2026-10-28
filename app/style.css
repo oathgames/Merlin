@@ -1818,7 +1818,8 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .tile-cancel:hover,.tile-cancel:focus{color:var(--danger);border-color:currentColor;outline:none}
 
 .magic-tile.unavailable,
-.magic-tile[data-stubbed]{
+.magic-tile[data-stubbed],
+.magic-tile[data-needs-client-id="true"]:not([data-client-id-ready="true"]){
   opacity:.38;
   cursor:not-allowed;
   pointer-events:auto; /* keep the tooltip reachable on hover */
@@ -1826,7 +1827,8 @@ body{transition:padding-right var(--dur-med) var(--ease)}
   border-color:var(--hover-4);
 }
 .magic-tile.unavailable:hover,
-.magic-tile[data-stubbed]:hover{
+.magic-tile[data-stubbed]:hover,
+.magic-tile[data-needs-client-id="true"]:not([data-client-id-ready="true"]):hover{
   /* Override the generic hover rule so dark gray stays dark gray. */
   border-color:var(--hover-4);
   background:var(--hover-1);
@@ -3386,6 +3388,33 @@ body{transition:padding-right var(--dur-med) var(--ease)}
 .context-menu-item:hover {
   background:var(--surface);
   color:var(--text);
+}
+/* Tile context menu items are <button>s (keyboard reachable); reset the UA
+   button chrome so they match the div-based items above. */
+button.context-menu-item {
+  display:block;
+  width:100%;
+  text-align:left;
+  border:none;
+  background:transparent;
+  font:inherit;
+  font-size:var(--fs-sm);
+}
+.context-menu-item:focus-visible {
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+  background:var(--surface);
+  color:var(--text);
+}
+.context-menu-item-danger { color:#ef4444; }
+.context-menu-item-danger:hover,
+.context-menu-item-danger:focus-visible { color:#f87171; }
+.context-menu-item:disabled,
+.context-menu-item:disabled:hover {
+  opacity:.55;
+  cursor:default;
+  background:transparent;
+  color:var(--text-muted);
 }
 /* Preview stats panel (shown alongside image in archive preview) */
 /* Multi-select + merge for creative pairing */

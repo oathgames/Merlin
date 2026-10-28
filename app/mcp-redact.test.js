@@ -567,3 +567,133 @@ test('redactOutput still falls back to text redaction when the block is unparsea
   const out = redactOutput(`{ broken ${token}\n}`, '');
   assert.ok(!out.includes(token));
 });
+
+// ─────────────────────────────────────────────────────────────────────
+// REGRESSION GUARD (2026-10-05): impact.com report ids are identifiers.
+// `impact action=report` (list mode) returned ~20 of 54 saved report ids as
+// "[REDACTED]" because snake_case ids of 32+ chars tripped isLikelyToken.
+// A masked id cannot be passed back as impactReportId. The exemption is
+// field-aware: reports[].id plus report-id-named fields only, and opaque
+// runs are still swept under a stricter identifier predicate.
+// ─────────────────────────────────────────────────────────────────────
+
+const LONG_REPORT_IDS = [
+  'att_adv_performance_by_media_pm_only',
+  'adv_performance_by_day_pm_only_custom',
+  'adv_partner_cost_breakdown_by_partner_pm_only',
+  'adv_action_listing_sku_pm_only_custom_permissions',
+  'adv_perf_by_partner_2024_v2_pm_only_extended',
+];
+// Mixed alphanumeric opaque runs (Impact Auth Token / Account SID shape).
+const IMPACT_TOKEN = fake('Xk9QmT2rLp4Wv8Zb', 'N3cH7yJ5fD1gS6aE');
+const IMPACT_SID = fake('IR', 'a8Kd93LmQx7ZpT2vW5nB4cY6hJ1fG0sR');
+// Letters-only opaque run: passes the LABEL predicate, must not pass the
+// identifier predicate.
+const LETTERS_ONLY_SECRET = fake('QwErTyUiOpAsDfGh', 'JkLzXcVbNmPoIuYt');
+
+function reportListStdout(reports) {
+  return [
+    '[TOKEN] Shopify token auto-renewed',
+    '',
+    JSON.stringify({ hint: 'Pass one of these ids as impactReportId to export it for a date window.', reports }, null, 2),
+  ].join('\n');
+}
+
+test('fixtures are load-bearing: every long report id trips the bare length heuristic', () => {
+  for (const id of LONG_REPORT_IDS) {
+    assert.equal(isLikelyToken(id), true, `${id} must be heuristic-positive or the guard test below is vacuous`);
+  }
+});
+
+test('impact report list keeps long report ids intact (reports[].id)', () => {
+  const reports = LONG_REPORT_IDS.map((id, i) => ({ id, name: `Report ${i}`, category: 'Performance', apiAccessible: true }));
+  const out = redactOutput(reportListStdout(reports), '');
+  assert.ok(!out.includes('[REDACTED]'), `report ids were masked:\n${out}`);
+  for (const id of LONG_REPORT_IDS) assert.ok(out.includes(`"id": "${id}"`), `${id} was lost`);
+});
+
+test('reportId / impactReportId / report_id / clicksSource keep long report ids intact', () => {
+  const id = LONG_REPORT_IDS[0];
+  const out = redactJsonObj({ reportId: id, impactReportId: id, report_id: id, clicksSource: `report:${id}` });
+  assert.equal(out.reportId, id);
+  assert.equal(out.impactReportId, id);
+  assert.equal(out.report_id, id);
+  assert.equal(out.clicksSource, `report:${id}`);
+});
+
+test('real secrets in reports[].id are still redacted', () => {
+  for (const secret of [IMPACT_TOKEN, IMPACT_SID, LETTERS_ONLY_SECRET, fake('sk-', BODY_32), fake('EAA', 'B', BODY_32)]) {
+    const out = redactJsonObj({ reports: [{ id: secret, name: 'x' }] });
+    assert.ok(!JSON.stringify(out).includes(secret), `secret survived in reports[].id: ${secret}`);
+  }
+  const bearer = redactJsonObj({ reports: [{ id: `Bearer ${IMPACT_TOKEN}` }] });
+  assert.ok(!JSON.stringify(bearer).includes(IMPACT_TOKEN));
+});
+
+test('real secrets in report-id-named fields are still redacted', () => {
+  for (const key of ['reportId', 'impactReportId', 'report_id', 'clicksSource']) {
+    for (const secret of [IMPACT_TOKEN, IMPACT_SID, LETTERS_ONLY_SECRET]) {
+      const out = redactJsonObj({ [key]: secret });
+      assert.equal(out[key], '[REDACTED]', `${key} leaked ${secret}`);
+    }
+  }
+  const embedded = redactJsonObj({ clicksSource: `report:${IMPACT_TOKEN}` });
+  assert.ok(!embedded.clicksSource.includes(IMPACT_TOKEN));
+});
+
+test('id exemption is scoped to direct reports[] elements only', () => {
+  const longId = LONG_REPORT_IDS[0];
+  assert.equal(redactJsonObj({ id: IMPACT_TOKEN }).id, '[REDACTED]');
+  assert.equal(redactJsonObj({ id: longId }).id, '[REDACTED]', 'bare id must keep the default heuristic');
+  assert.equal(redactJsonObj({ campaigns: [{ id: IMPACT_TOKEN }] }).campaigns[0].id, '[REDACTED]');
+  assert.equal(redactJsonObj({ campaigns: [{ id: longId }] }).campaigns[0].id, '[REDACTED]');
+  assert.equal(redactJsonObj({ reports: [{ meta: { id: longId } }] }).reports[0].meta.id, '[REDACTED]');
+  assert.equal(redactJsonObj({ reports: [[{ id: longId }]] }).reports[0][0].id, '[REDACTED]');
+});
+
+test('sensitive field names still win inside a report element', () => {
+  const out = redactJsonObj({ reports: [{ id: LONG_REPORT_IDS[0], token: 'short', access_token: 'abc' }] });
+  assert.equal(out.reports[0].id, LONG_REPORT_IDS[0]);
+  assert.equal(out.reports[0].token, '[REDACTED]');
+  assert.equal(out.reports[0].access_token, '[REDACTED]');
+});
+
+// Mutation-style checks: rebuild the module with each guard removed and prove
+// the behaviour the assertions above pin actually changes. If a mutant still
+// redacts, the tests are not testing the guard.
+function loadMutant(find, replace) {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const os = require('node:os');
+  const src = fs.readFileSync(path.join(__dirname, 'mcp-redact.js'), 'utf8');
+  assert.ok(src.includes(find), `mutation anchor missing (source changed?): ${find}`);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-redact-mutant-'));
+  const file = path.join(dir, 'mcp-redact.js');
+  fs.writeFileSync(file, src.replace(find, replace));
+  try { return require(file); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+const IDENT_LINE = 'if (identifier) return redactOpaqueRuns(applyCredentialPatterns(value), identifierRunLooksLikeCredential);';
+
+test('mutation: dropping the opaque-run sweep on identifiers leaks a token', () => {
+  const m = loadMutant(IDENT_LINE, 'if (identifier) return applyCredentialPatterns(value);');
+  assert.equal(m.redactJsonObj({ reports: [{ id: IMPACT_TOKEN }] }).reports[0].id, IMPACT_TOKEN);
+});
+
+test('mutation: reusing the label predicate for identifiers leaks a letters-only secret', () => {
+  const m = loadMutant(IDENT_LINE, 'if (identifier) return redactOpaqueRuns(applyCredentialPatterns(value), labelRunLooksLikeCredential);');
+  assert.equal(m.redactJsonObj({ reportId: LETTERS_ONLY_SECRET }).reportId, LETTERS_ONLY_SECRET);
+});
+
+test('mutation: exempting id everywhere leaks a long run under a bare id', () => {
+  const m = loadMutant("(key === 'id' && inReportList)", "(key === 'id')");
+  assert.equal(m.redactJsonObj({ id: LONG_REPORT_IDS[0] }).id, LONG_REPORT_IDS[0]);
+});
+
+test('mutation: removing the identifier exemption masks report ids again', () => {
+  const m = loadMutant(
+    "const identifier = IDENTIFIER_FIELD_NAMES.has(key) || (key === 'id' && inReportList);",
+    'const identifier = false;',
+  );
+  assert.equal(m.redactJsonObj({ reports: [{ id: LONG_REPORT_IDS[0] }] }).reports[0].id, '[REDACTED]');
+});

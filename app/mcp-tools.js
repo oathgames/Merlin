@@ -25,7 +25,7 @@ const envelope = require('./mcp-envelope');
 const errors = require('./mcp-errors');
 const { defineTool } = require('./mcp-define-tool');
 const { DEFAULT_POLICIES } = require('./mcp-preview');
-const { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC } = require('./mcp-meta-intent');
+const { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC, SPEND_GUARD_FORCE_DESC } = require('./mcp-meta-intent');
 
 // Regex shared between the MCP zod tightening here and the main-process
 // assertBrandSafe() guard in main.js. Mirror of app/preload.js:BRAND_RE.
@@ -208,7 +208,15 @@ const { denyReasonForBudget, BUDGET_HARD_CEILING } = require('./budget-ceiling')
 
 function validateBudget(ctx, args, platform) {
 	const budget = args.dailyBudget;
-	if (budget === undefined || budget === null) return null;
+	const hasTop = !(budget === undefined || budget === null);
+	const hasNested = Array.isArray(args.ads) && args.ads.some((a) => a && typeof a === 'object'
+		&& a.dailyBudget !== undefined && a.dailyBudget !== null && a.dailyBudget !== 0);
+	// REGRESSION GUARD (2026-10-08, bulkpush-shared-adset-budget): this used to
+	// return early whenever the TOP-LEVEL budget was absent, which skipped the
+	// nested ads[] check below entirely. meta_launch_test_batch declared no
+	// top-level budget at all, so its per-ad budgets were never cents-checked
+	// at the MCP layer. Only skip when there is nothing to check.
+	if (!hasTop && !hasNested) return null;
 
 	// Read the user's declared cap. It both authorizes (up to itself) and
 	// triggers the relative cents detector (beyond 10x).
@@ -314,6 +322,9 @@ const META_AUDIT_ACTION_MAP = Object.freeze({
   // Creative export (2026-09-01): downloads every ACTIVE ad's image to a local
   // directory plus a manifest of copy/headline/CTA. Read-only against Meta.
   'export-creatives':           'meta-export-creatives',
+  // Video frames (2026-10-26): N evenly spaced frames per ad video, so burned-in
+  // captions and on-screen text past the cover frame can be reviewed. Read-only.
+  'video-frames':               'meta-video-frames',
   'angle-performance':          'angle-performance',
 });
 
@@ -343,7 +354,8 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   // OAuth login flows — user may connect globally or per-brand; the binary
   // writes to the correct scope based on whether brand was passed.
   // REGRESSION GUARD (2026-05-10, A004): pinterest-login, snapchat-login,
-  // and twitter-login were dropped because their case statements were
+  // and twitter-login were dropped (all three returned in 2026-10 with
+  // real handlers; see below) because their case statements were
   // also removed from main.go's action router during the v1.22.0 RSI
   // cleanup. Leaving them in this allowlist would silently let an LLM
   // call an unreachable action with no brand and get a generic "unknown
@@ -352,6 +364,9 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   'meta-login', 'tiktok-login', 'google-login', 'amazon-login',
   'shopify-login', 'klaviyo-login', 'etsy-login', 'reddit-login',
   'linkedin-login',
+  // pinterest-login graduated 2026-10 (pinterest.go): brand-optional like
+  // linkedin-login, routed in main.go again.
+  'pinterest-login',
   'stripe-login',
   // QuickBooks Online — OAuth login (Intuit). Brand-OPTIONAL, not
   // brand-agnostic: the binary vaults under cmd.Brand's scope, so callers
@@ -359,6 +374,13 @@ const BRAND_OPTIONAL_ACTIONS = new Set([
   // does too — 2026-09-11 audit fix). Listed here so a brandless call
   // still reaches the binary instead of dying on BRAND_MISSING.
   'quickbooks-login',
+  // Snapchat Marketing API OAuth (2026-10-09). Same brand-OPTIONAL shape
+  // as quickbooks-login: runSnapchatLogin vaults under cmd.Brand when one
+  // is passed and the global scope otherwise.
+  'snapchat-login',
+  // X Ads OAuth 1.0a (2026-10-09, twitter_ads.go). Same brand-OPTIONAL
+  // shape: runTwitterLogin vaults under cmd.Brand when one is passed.
+  'twitter-login',
   // AppLovin + Postscript are API-key connectors (no OAuth). The *-login
   // actions in the binary just verify the key and persist it — no brand
   // context needed for the global-scoped case.
@@ -718,7 +740,7 @@ const EXPORT_JOB_MAX_ATTEMPTS = 48;         // ~24h of hour-cap pauses
 //     checkpoint. google-ads-demandgen-push is excluded because it spends.
 const EXPORT_JOB_STALL_MS = 15 * 60 * 1000;
 const EXPORT_PROGRESS_PREFIX = 'MERLIN_PROGRESS ';
-const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export']);
+const RESTART_RESUMABLE_EXPORT_ACTIONS = new Set(['gorgias-export', 'klaviyo-export', 'shipstation-export', 'rakuten-export', 'cin7-export']);
 
 // Parse one MERLIN_PROGRESS line into { stage, counts } or null.
 function parseExportProgressLine(line) {
@@ -814,7 +836,9 @@ function exportJobRunFn(ctx, action, args) {
       // out and re-invoke; checkpoints make the re-run a resume.
       let parsed = null;
       try {
-        const m = (last.text || '').match(/\{[\s\S]*"exported"[\s\S]*\}/);
+        // "resumable" is the result key of non-export resumable jobs
+        // (klaviyo-subscribe-bulk), which use the same paused contract.
+        const m = (last.text || '').match(/\{[\s\S]*"(?:exported|resumable)"[\s\S]*\}/);
         if (m) parsed = JSON.parse(m[0]);
       } catch { /* unparseable output — treat as done */ }
       if (parsed && parsed.paused) {
@@ -1079,6 +1103,7 @@ function buildTools(tool, z, ctx) {
       // NOT a launch-status control. The refusal lives in the handler below;
       // the engine only reads cmd.Status on meta-import.
       status: z.string().optional().describe('READ FILTER for action:"import" ONLY. One of active, paused, all. This does NOT set the status new ads launch with; passing status:"PAUSED" on push/bulk-push is refused rather than silently ignored. Launch status comes from the brand config key metaLaunchStatus (default ACTIVE).'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       // Cents-detection guard (defense-in-depth; binary has its own cap).
@@ -1181,6 +1206,10 @@ function buildTools(tool, z, ctx) {
   //                              custom_audiences ∪ excluded_custom_audiences,
   //                              flags the classic "include site visitors,
   //                              forget to exclude purchasers" leak.
+  //                              Also flags PROSPECTING ad sets (no included
+  //                              audience) that exclude nothing or miss any
+  //                              of the brand metaProspectingExclusions
+  //                              (REGRESSION GUARD 2026-10-07).
   //   list-conversions        — every custom conversion + when each last fired.
   //   audit-pixel             — pixel health: last_fired_time, automatic
   //                              matching status, top events over 7d, plus
@@ -1230,7 +1259,7 @@ function buildTools(tool, z, ctx) {
   // without a confirmation card.
   tools.push(defineTool({
     name: 'meta_audit',
-    description: 'Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the "forgot to exclude purchasers" leak, run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog\'s review status. Also the account INVENTORY surface: list-adsets returns every ad set with its parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link (pass status:"paused" to find staged drafts, status:"all" for everything) — this is how you verify a campaign really was staged PAUSED before anyone activates it; list-ads returns the ads inside one ad set with their creative format, per-placement image hashes, and — the fields a destination or attribution audit needs — every distinct destination URL the ad points at (links[] plus linkCount, which counts placement-customized / Advantage+ creatives correctly; a linkCount of 0 means the ad has NO readable destination and a linkCount above 1 means its placements point at different pages) and the ad\'s urlTags (the UTM string Meta appends to every click; an empty urlTags means clicks land untagged and Triple Whale attribution is broken for that ad); inspect-adset dumps one ad set\'s full settings plus a sample creative\'s toggles so a new ad set can be built to match a proven winner; list-videos lists videos already uploaded to the ad account; list-catalog-sets lists a catalog\'s product sets and feeds (this is where the productSetId for DPA setup comes from); resolve-geo checks that US state names resolve to Meta region keys before a geo-targeted build; aware-audience returns the tiered warm/addressable audience pool (the retargeting-readiness leading indicator); ad-rejections lists EVERY disapproved or with-issues ad in the account with the actual policy reason (failedDeliveryChecks, issues, reviewFeedback, plus a flattened reasons[] list and noReasonReturned when Meta gave none), which is the action to use for "why was my ad rejected". All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says "why was my ad rejected", "which ads are disapproved", "audit my retargeting", "what\'s my pixel match quality", "audit my events setup", "check my EMQ", "list my custom audiences", "what ad sets do I have", "are those campaigns actually paused", "show me the ads in that ad set", "what videos are uploaded", "what product sets exist", or "is my catalog healthy". export-creatives downloads EVERY currently ACTIVE ad\'s creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a "what creatives are we running right now" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable.',
+    description: 'Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the "forgot to exclude purchasers" leak (audit-retargeting-cascade also flags every PROSPECTING ad set that excludes no custom audiences or is missing any of the brand\'s declared metaProspectingExclusions customer audiences, with per-ad-set prospecting / missingProspectingExclusions fields and account rollup counts), run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog\'s review status. Also the account INVENTORY surface: list-adsets returns every ad set with its parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link (pass status:"paused" to find staged drafts, status:"all" for everything) — this is how you verify a campaign really was staged PAUSED before anyone activates it; list-ads returns the ads inside one ad set with their creative format, per-placement image hashes, and — the fields a destination or attribution audit needs — every distinct destination URL the ad points at (links[] plus linkCount, which counts placement-customized / Advantage+ creatives correctly; a linkCount of 0 means the ad has NO readable destination and a linkCount above 1 means its placements point at different pages) and the ad\'s urlTags (the UTM string Meta appends to every click; an empty urlTags means clicks land untagged and Triple Whale attribution is broken for that ad); inspect-adset dumps one ad set\'s full settings plus a sample creative\'s toggles so a new ad set can be built to match a proven winner; list-videos lists videos already uploaded to the ad account; list-catalog-sets lists a catalog\'s product sets and feeds (this is where the productSetId for DPA setup comes from); resolve-geo checks that US state names resolve to Meta region keys before a geo-targeted build; aware-audience returns the tiered warm/addressable audience pool (the retargeting-readiness leading indicator); ad-rejections lists EVERY disapproved or with-issues ad in the account with the actual policy reason (failedDeliveryChecks, issues, reviewFeedback, plus a flattened reasons[] list and noReasonReturned when Meta gave none), which is the action to use for "why was my ad rejected". All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says "why was my ad rejected", "which ads are disapproved", "audit my retargeting", "are my prospecting ad sets excluding customers", "what\'s my pixel match quality", "audit my events setup", "check my EMQ", "list my custom audiences", "what ad sets do I have", "are those campaigns actually paused", "show me the ads in that ad set", "what videos are uploaded", "what product sets exist", or "is my catalog healthy". export-creatives downloads EVERY currently ACTIVE ad\'s creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a "what creatives are we running right now" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable. video-frames saves N evenly spaced frames (framesPerVideo, default 6, max 24) from each ad\'s video to a local folder, one subfolder per ad with a frames.json of file names and timestamps, so burned-in captions, on-screen text, the CTA card and readability can be judged across the whole video instead of only the cover thumbnail; pass adIds (resolved to the creative\'s video) and/or videoIds, at most 200 per call, and framesDir (inside the workspace). Videos whose file Meta will not hand over fall back to Meta\'s auto-generated thumbnails (method "thumbnails", no timestamps). Ads already extracted at the same framesPerVideo are skipped, so a long list can be run in chunks and re-run safely; pass overwrite:true to re-pull.',
     destructive: false,
     idempotent: true,
     costImpact: 'api',
@@ -1266,7 +1295,8 @@ function buildTools(tool, z, ctx) {
         'attribution-compare',
         'export-creatives',
         'angle-performance',
-      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall. list-adsets is the account inventory read: every ad set with parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link — pass status:"paused" to locate staged drafts, status:"all" to see everything (default "active"). list-ads lists the ads inside ONE ad set (pass targetAdSetId) with creative format, per-placement image hashes, links[]/linkCount (EVERY destination URL the ad points at, including placement-customized creatives whose destination lives in asset_feed_spec rather than on link_data — linkCount 0 = no readable destination, linkCount >1 = its placements disagree), and urlTags (the ad\'s UTM string; empty = clicks land untagged and Triple Whale attribution is broken). Use list-ads, not inspect-adset, to audit destinations or UTMs: inspect-adset only ever samples ONE creative per ad set. inspect-adset dumps one ad set\'s settings plus a sample creative\'s toggles for cloning a winner (pass the AD SET id via adId). list-videos lists videos already uploaded to the ad account. list-catalog-sets lists a catalog\'s product sets + feeds (pass catalogId) — the source of the productSetId that meta_dpa_setup takes. resolve-geo resolves US state names in geoRegions AND city names in geoCities (\"Dallas, TX\") to Meta keys so a geo build can be verified before it runs; city names are not unique, so it reports the resolved city with its state. aware-audience returns the tiered warm/addressable audience pool. ad-rejections lists every DISAPPROVED / WITH_ISSUES ad in the account (no params) with adSetId/adSetName/campaignId and every reason Meta returns: failedDeliveryChecks (checkName/summary/description; Meta often puts the real reason HERE while reviewFeedback is empty), issues (code/level/type/summary/message), reviewFeedback (global + placementSpecific), recommendations, a flattened reasons[] and noReasonReturned (true = Meta flagged the ad but gave no reason; send the user to Account Quality). truncated:true means the page cap stopped the read. list-boosted-posts lists every ORGANIC social post the account has run ads against, deduped, with a link to each and the ads using it (answers \"which of our posts have we put spend behind?\"); it identifies a boost by source_instagram_media_id or object_story_id, never by instagram_permalink_url, which every Instagram-placed ad carries including dark posts that were never published organically. attribution-compare re-scores the same spend under 1d-click and 7d-click next to the account default (which credits view-through), so you can see how much of a headline ROAS depends on that choice before defending the number; pass batchCount for a day window, omit it for lifetime. angle-performance reports what each CREATIVE ANGLE (hidden_cost, social_proof_pivot, identity_shift, ...) actually earned for THIS brand, ranked by profit contribution and damped by confidence, so a creative batch can be weighted toward angles the brand has real results behind instead of spread evenly across the matrix; it reports attribution coverage alongside the ranking because a ranking built from 4% of spend is a hypothesis and one built from 80% is a finding, and it classifies older untagged ads after the fact (pass skipClassify to turn that off). export-creatives downloads EVERY currently ACTIVE ad\'s creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a "what creatives are we running right now" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable.'),
+        'video-frames',
+      ]).describe('The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta\'s Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall. list-adsets is the account inventory read: every ad set with parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link — pass status:"paused" to locate staged drafts, status:"all" to see everything (default "active"). list-ads lists the ads inside ONE ad set (pass targetAdSetId) with creative format, per-placement image hashes, links[]/linkCount (EVERY destination URL the ad points at, including placement-customized creatives whose destination lives in asset_feed_spec rather than on link_data — linkCount 0 = no readable destination, linkCount >1 = its placements disagree), and urlTags (the ad\'s UTM string; empty = clicks land untagged and Triple Whale attribution is broken). Use list-ads, not inspect-adset, to audit destinations or UTMs: inspect-adset only ever samples ONE creative per ad set. inspect-adset dumps one ad set\'s settings plus a sample creative\'s toggles for cloning a winner (pass the AD SET id via adId). list-videos lists videos already uploaded to the ad account. list-catalog-sets lists a catalog\'s product sets + feeds (pass catalogId) — the source of the productSetId that meta_dpa_setup takes. resolve-geo resolves US state names in geoRegions AND city names in geoCities (\"Dallas, TX\") to Meta keys so a geo build can be verified before it runs; city names are not unique, so it reports the resolved city with its state. aware-audience returns the tiered warm/addressable audience pool. ad-rejections lists every DISAPPROVED / WITH_ISSUES ad in the account (no params) with adSetId/adSetName/campaignId and every reason Meta returns: failedDeliveryChecks (checkName/summary/description; Meta often puts the real reason HERE while reviewFeedback is empty), issues (code/level/type/summary/message), reviewFeedback (global + placementSpecific), recommendations, a flattened reasons[] and noReasonReturned (true = Meta flagged the ad but gave no reason; send the user to Account Quality). truncated:true means the page cap stopped the read. list-boosted-posts lists every ORGANIC social post the account has run ads against, deduped, with a link to each and the ads using it (answers \"which of our posts have we put spend behind?\"); it identifies a boost by source_instagram_media_id or object_story_id, never by instagram_permalink_url, which every Instagram-placed ad carries including dark posts that were never published organically. attribution-compare re-scores the same spend under 1d-click and 7d-click next to the account default (which credits view-through), so you can see how much of a headline ROAS depends on that choice before defending the number; pass batchCount for a day window, omit it for lifetime. angle-performance reports what each CREATIVE ANGLE (hidden_cost, social_proof_pivot, identity_shift, ...) actually earned for THIS brand, ranked by profit contribution and damped by confidence, so a creative batch can be weighted toward angles the brand has real results behind instead of spread evenly across the matrix; it reports attribution coverage alongside the ranking because a ranking built from 4% of spend is a hypothesis and one built from 80% is a finding, and it classifies older untagged ads after the fact (pass skipClassify to turn that off). export-creatives downloads EVERY currently ACTIVE ad\'s creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a "what creatives are we running right now" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable. video-frames saves N evenly spaced frames (framesPerVideo, default 6, max 24) from each ad\'s video to a local folder, one subfolder per ad with a frames.json of file names and timestamps, so burned-in captions, on-screen text, the CTA card and readability can be judged across the whole video instead of only the cover thumbnail; pass adIds (resolved to the creative\'s video) and/or videoIds, at most 200 per call, and framesDir (inside the workspace). Videos whose file Meta will not hand over fall back to Meta\'s auto-generated thumbnails (method "thumbnails", no timestamps). Ads already extracted at the same framesPerVideo are skipped, so a long list can be run in chunks and re-run safely; pass overwrite:true to re-pull.'),
       brand: brandSchema.describe('Brand name for vault-scoped Meta credentials.'),
       adId: z.string().optional().describe('For audit-audience-rule: the custom-audience numeric id. For audit-pixel and audit-events: optional pixel id override (defaults to brand cfg metaPixelId). For inspect-adset: the AD SET id to inspect.'),
       targetAdSetId: z.string().optional().describe('For list-ads: the ad set whose ads to list. For inspect-ads: the ad set to VERIFY after a push; returns per ad name, status, effective_status, creative page_id, instagram_user_id, links, CTA, url_tags, contextual_multi_ads and local_store_extension enroll status. Falls back to adId when omitted.'),
@@ -1299,6 +1329,13 @@ function buildTools(tool, z, ctx) {
       // sits beside a week it does not describe.
       startDate: z.string().optional().describe('For attribution-compare: exact window start, YYYY-MM-DD. Both startDate and endDate or neither. Takes precedence over batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week a deck covers.'),
       endDate: z.string().optional().describe('For attribution-compare: exact window end, YYYY-MM-DD, INCLUSIVE. Must not be in the future.'),
+      // video-frames params (2026-10-26). Declared here because zod strips
+      // undeclared keys and defineTool refuses them (Hard-Won Rule 23).
+      adIds: z.array(z.string()).optional().describe('For video-frames: numeric Meta ad ids whose video(s) to pull frames from. adIds + videoIds: at most 200 per call.'),
+      videoIds: z.array(z.string()).optional().describe('For video-frames: numeric Meta video ids to pull frames from directly (no ad lookup).'),
+      framesPerVideo: z.number().int().optional().describe('For video-frames: frames per video, evenly spaced at the midpoints of equal slices. Default 6, max 24.'),
+      framesDir: z.string().optional().describe('For video-frames: output folder, relative to the workspace or an absolute path inside it. Default <outputDir>/video_frames. Paths containing .. are refused.'),
+      overwrite: z.boolean().optional().describe('For video-frames: re-pull ads whose frames.json already records a complete extraction. Default false (skip them).'),
     },
     handler: async (args) => {
       const action = metaAuditEngineAction(args.action);
@@ -1505,12 +1542,100 @@ function buildTools(tool, z, ctx) {
       batchCount: z.coerce.number().int().optional().describe('Days of data (-1=today, 7=last week, 30=last month)'),
       sortBy: z.string().optional().describe('Sort results by: spend, roas, ctr, clicks'),
       limit: z.number().optional().describe('Max results to return'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'TikTok');
       if (budgetError) return validationEnvelope(budgetError);
       return toEnvelope(await runBinary(ctx, 'tiktok-' + args.action, args));
     },
+  }, tool, z, ctx));
+
+  // ── tiktok_audit ─────────────────────────────────────────
+  // REGRESSION GUARD (2026-10-05, Hard-Won Rule 23): TikTok GMV Max READ
+  // surface. The engine's GMV Max reads (autocmo-core/tiktok_gmv_max.go) are
+  // GET-only by construction and covered by a Go call-graph test, so this tool
+  // is destructive:false / costImpact:'api' and routes through
+  // INTENT_TOOL_TO_ACTION -> 'audit' (READ_ONLY) in mcp-approval-policy.js: a
+  // read never cards and can never fall into a SPEND path. Kept OUT of
+  // tiktok_ads on purpose: that tool is destructive / costImpact:'spend', so a
+  // read added to its enum would inherit the spend posture. Every action maps
+  // to 'tiktok-' + action; mcp-tiktok-gmv-max-reachability.test.js asserts both
+  // directions plus that each param lands in the --cmd JSON.
+  tools.push(defineTool({
+    name: 'tiktok_audit',
+    description: 'Use when the user asks how TikTok GMV Max (TikTok Shop) is set up or performing: the ROI target, budget, which videos it can run, affiliate creative, or why GMV Max delivery or ROI moved. All actions are READ-ONLY GETs; nothing is created, changed, or spent. '
+      + 'gmv-max-campaign-info reads ONE GMV Max campaign\'s settings (pass campaignId): ROI target (roas_bid), budget, status, optimization goal, product scope, affiliate-posts flag. '
+      + 'gmv-max-campaigns lists GMV Max campaigns. gmv-max-report pulls GMV Max reporting (defaults: last 7 complete days by campaign_id + stat_time_day with cost/orders/gross_revenue/roi; pass startDate/endDate, dimensions, metrics, campaignId; per-video needs campaignId + dimensions like ["campaign_id","item_id"]). '
+      + 'gmv-max-videos lists the video pool GMV Max may run, including authorized affiliate posts. gmv-max-authorizations lists exclusive affiliate authorizations. gmv-max-stores lists the TikTok Shops and their Business Center. gmv-max-shop-check reports whether a Shop already runs GMV Max. '
+      + 'gmv-max-ads lists ads inside a campaign (campaignId). campaigns lists every TikTok campaign with type, status and budget. The Shop (tiktokStoreId / tiktokBcId) is resolved automatically when the brand has one Shop.',
+    destructive: false,
+    idempotent: true,
+    costImpact: 'api',
+    brandRequired: true,
+    concurrency: { platform: 'tiktok' },
+    preview: false,
+    input: {
+      action: z.enum([
+        'gmv-max-stores',
+        'gmv-max-campaigns',
+        'gmv-max-campaign-info',
+        'gmv-max-videos',
+        'gmv-max-report',
+        'gmv-max-shop-check',
+        'gmv-max-authorizations',
+        'gmv-max-ads',
+        'campaigns',
+      ]).describe('The read to perform. All read-only.'),
+      brand: brandSchema.describe('Brand name for vault-scoped TikTok credentials.'),
+      campaignId: z.string().optional().describe('gmv-max-campaign-info / gmv-max-ads: required campaign id. gmv-max-report: scope to one campaign (required for item_id / item_group_id breakdowns). gmv-max-campaigns: filter to one id.'),
+      startDate: z.string().optional().describe('gmv-max-report: window start YYYY-MM-DD. Pass both or neither; default is the last 7 complete days.'),
+      endDate: z.string().optional().describe('gmv-max-report: window end YYYY-MM-DD, inclusive.'),
+      dimensions: z.array(z.string()).optional().describe('gmv-max-report: e.g. ["campaign_id","stat_time_day"] (default) or ["campaign_id","item_id"] for per-video. TikTok returns the accepted names on error.'),
+      metrics: z.array(z.string()).optional().describe('gmv-max-report: e.g. ["cost","orders","gross_revenue","roi"] (default adds cost_per_order).'),
+      tiktokStoreId: z.string().optional().describe('TikTok Shop id. Optional: resolved from the store list when the brand has one Shop.'),
+      tiktokBcId: z.string().optional().describe('Business Center authorized for the Shop. Optional: resolved with the Shop.'),
+      tiktokAdvertiserId: z.string().optional().describe('Override the brand\'s TikTok ad account id for this read.'),
+      tiktokFilters: z.any().optional().describe('Advanced: TikTok `filtering` JSON passed through verbatim (gmv-max-report, campaigns).'),
+      page: z.coerce.number().int().optional().describe('Page number (1-based).'),
+      pageSize: z.coerce.number().int().optional().describe('Rows per page.'),
+      keyword: z.string().optional().describe('gmv-max-videos / gmv-max-stores: search keyword.'),
+      spuIdList: z.array(z.string()).optional().describe('gmv-max-videos: limit to these product (SPU) ids.'),
+      needAuthCodeVideo: z.boolean().optional().describe('gmv-max-videos: include auth-code (affiliate) videos. Default true; false shows only non-auth-code identities.'),
+      customPostsEligible: z.boolean().optional().describe('gmv-max-videos: also surface affiliate posts eligible as custom posts.'),
+      sortField: z.string().optional().describe('gmv-max-videos / gmv-max-report: sort field, e.g. "cost" or "roi".'),
+      sortType: z.enum(['ASC', 'DESC']).optional().describe('Sort direction.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'tiktok-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── tiktok_gmv_max_set_roi_target ────────────────────────
+  // REGRESSION GUARD (2026-10-05, Hard-Won Rules 19 + 23): the ONE TikTok GMV
+  // Max write. Intent-style (no action field), so mcp-approval-policy.js maps
+  // it by NAME to 'roi-target', a SPEND action that is never eligible for the
+  // in-cap auto-approve: lowering a ROI target unlocks spend, so the human
+  // card shows every time. The engine refuses without approved:true and
+  // verifies by re-reading the campaign (tiktok_gmv_max_roi.go). The handler
+  // never sets `approved` itself; that would bypass the safety rail.
+  tools.push(defineTool({
+    name: 'tiktok_gmv_max_set_roi_target',
+    description: 'Use when the user explicitly asks to change the ROI target (roas_bid) of a TikTok GMV Max campaign, e.g. "set the GMV Max ROI target to 1.2". Changes ONLY the ROI target: never budget, status, schedule or product scope. A LOWER target lets GMV Max spend more aggressively, so this always shows an approval card. '
+      + 'Read the current target first with tiktok_audit gmv-max-campaign-info and tell the user the before and after values. '
+      + 'The engine re-reads the campaign after the change and fails loudly unless the new target landed and nothing else moved; it returns roasBidBefore / roasBidAfter. Setting the value it already has is a no-op. Refuses campaigns with no ROI target (max-delivery mode).',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'tiktok' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name for vault-scoped TikTok credentials.'),
+      campaignId: z.string().describe('GMV Max campaign id (from tiktok_audit gmv-max-campaigns).'),
+      roasBid: z.coerce.number().describe('New ROI target as a multiple of spend, e.g. 1.2 for 1.2x. Accepted range 0.1 to 50, at most two decimals.'),
+      tiktokAdvertiserId: z.string().optional().describe('Override the brand\'s TikTok ad account id.'),
+      approved: z.boolean().optional().describe('Approval flag. Set by the Merlin approval card flow; the engine REFUSES the change without it. Do not set true unless the user explicitly approved this exact ROI target change.'),
+    },
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'tiktok-gmv-max-update-roi', args)),
   }, tool, z, ctx));
 
   // ── google_ads ───────────────────────────────────────────
@@ -1522,13 +1647,23 @@ function buildTools(tool, z, ctx) {
       + 'Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand\'s organic Shorts, no upload) '
       + 'OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). '
       + 'Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), '
-      + 'and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), '
+      + 'and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Optional excludeUserListIds (user list ids from audiences) excludes those customers on the ad group. Re-running is idempotent: existing ads are skipped by name.), '
       + 'activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), '
       + 'video-insights (per-ad Demand Gen video performance; batchCount = days), '
       + 'budget-status (read one campaign\'s daily budget, bidding strategy, and whether the budget is shared; pass campaignId), '
       + 'budget (change one campaign\'s daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), '
       + 'brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google\'s brand directory and shows the list + campaigns that would change), '
-      + 'brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card).',
+      + 'brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card), '
+      + 'search-create (AI Max for Search: builds one PAUSED Search campaign in a single all-or-nothing request, with AI Max on, maximize conversion value bidding (optional targetRoas), Google Search only, '
+      + 'one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. '
+      + 'Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), '
+      + 'finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). '
+      + 'excludeUserListIds = user list ids (from audiences) excluded as negative audiences in the same request. '
+      + 'Always shows an approval card; start it later with activate), '
+      + 'audiences (read only: every user list / Customer Match list with size for Search and Display, membership status, eligibility and match rate, '
+      + 'plus the excluded lists of each ENABLED campaign (for Demand Gen, per ad group) and customer acquisition goal mode; flags prospecting campaigns and Demand Gen ad groups that exclude no customers), '
+      + 'exclude-audience (attach userListId as a negative audience to campaignIds in one all-or-nothing request: SEARCH and DISPLAY at campaign level, DEMAND_GEN on every ad group of the campaign; '
+      + 'do not mix DEMAND_GEN with SEARCH/DISPLAY in one call; skips campaigns and ad groups that already exclude it; refuses Performance Max, which needs the "new customers only" customer acquisition goal instead; shows an approval card).',
     destructive: true,
     idempotent: true,
     costImpact: 'spend',
@@ -1536,7 +1671,7 @@ function buildTools(tool, z, ctx) {
     concurrency: { platform: 'google' },
     preview: false,
     input: {
-      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion']).describe('Operation'),
+      action: z.enum(['push', 'insights', 'kill', 'duplicate', 'setup', 'status', 'demandgen-push', 'activate', 'video-insights', 'budget-status', 'budget', 'brand-exclusion-preview', 'brand-exclusion', 'search-create', 'audiences', 'exclude-audience']).describe('Operation'),
       brand: brandSchema,
       adId: z.string().optional(),
       campaignId: z.string().optional(),
@@ -1575,8 +1710,26 @@ function buildTools(tool, z, ctx) {
       brandQuery: z.string().optional().describe('brand-exclusion: brand name to look up in Google\'s brand directory, e.g. "Apotheke"'),
       brandEntityIds: z.array(z.string()).optional().describe('brand-exclusion: brand entity ids from the preview\'s suggestions; required when the preview says needsBrandChoice'),
       brandListName: z.string().optional().describe('brand-exclusion: brand list name to create or reuse, default "Brand Exclusions"'),
-      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign'),
-      approved: z.boolean().optional().describe('Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
+      campaignIds: z.array(z.string()).optional().describe('brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign. exclude-audience: required, the SEARCH / DISPLAY or DEMAND_GEN campaign ids to exclude userListId from'),
+      // AI Max for Search (engine google-ads-search-create). Keys match the
+      // engine Command json tags verbatim; campaignName, adSetName, dailyBudget,
+      // adLink, geoTargetConstants and the brand* keys above are shared.
+      keywords: z.array(z.string()).optional().describe('search-create: ad group keywords, added as BROAD match (max 80 chars / 10 words each)'),
+      negativeKeywords: z.array(z.string()).optional().describe('search-create: campaign-level negative keywords'),
+      headlines: z.array(z.string()).optional().describe('search-create: responsive search ad headlines, 3 to 15, max 30 characters each, all distinct'),
+      descriptions: z.array(z.string()).optional().describe('search-create: responsive search ad descriptions, 2 to 4, max 90 characters each'),
+      path1: z.string().optional().describe('search-create: display URL path 1, max 15 characters'),
+      path2: z.string().optional().describe('search-create: display URL path 2, max 15 characters, needs path1'),
+      targetRoas: z.number().optional().describe('search-create: target ROAS as a ratio (4 = 400%); omit for plain maximize conversion value'),
+      finalUrlExpansion: z.boolean().optional().describe('search-create: let AI Max send traffic to other pages on the site (default true); false keeps every click on adLink'),
+      brandExclusion: z.boolean().optional().describe('search-create: attach a negative brand list to the new campaign'),
+      // Customer exclusions (engine google-ads-audiences /
+      // google-ads-exclude-audience, googleads_audiences.go). Keys match the
+      // Go Command json tags; see TestExcludeAudience_WireTags.
+      userListId: z.string().optional().describe('exclude-audience: numeric user list id to exclude (from the audiences action), e.g. a Customer Match purchaser list'),
+      excludeUserListIds: z.array(z.string()).optional().describe('search-create: numeric user list ids to exclude from the new campaign as negative audiences. demandgen-push: user list ids excluded on the ad group (new or existing), verified on read-back'),
+      approved: z.boolean().optional().describe('Approval flag for activate, budget, brand-exclusion and exclude-audience. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     // Handler does NOT auto-set args.approved; the approval card does.
     handler: async (args) => {
@@ -1600,12 +1753,16 @@ function buildTools(tool, z, ctx) {
       // mode. The write-only fields are stripped so a read alias can never
       // carry a write through the READ_ONLY (uncarded) approval tier.
       if (args.action === 'budget-status') {
-        const { dailyBudget, approved, ...rest } = args;
+        const { dailyBudget, approved, force, ...rest } = args;
         return toEnvelope(await runBinary(ctx, 'google-ads-budget', rest));
       }
       if (args.action === 'brand-exclusion-preview') {
-        const { approved, ...rest } = args;
+        const { approved, force, ...rest } = args;
         return toEnvelope(await runBinary(ctx, 'google-ads-brand-exclusion', rest));
+      }
+      if (args.action === 'audiences') {
+        const { approved, force, ...rest } = args;
+        return toEnvelope(await runBinary(ctx, 'google-ads-audiences', rest));
       }
       return toEnvelope(await runBinary(ctx, 'google-ads-' + args.action, args));
     },
@@ -1628,6 +1785,7 @@ function buildTools(tool, z, ctx) {
       campaignId: z.string().optional(),
       dailyBudget: z.number().optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Amazon');
@@ -1667,7 +1825,7 @@ function buildTools(tool, z, ctx) {
       action: z.enum(['products', 'orders', 'import', 'analytics', 'cohorts', 'export']).describe('Operation — export → full-history bulk export of orders/products/customers via Shopify GraphQL bulk operations to exports/<brand>/shopify/*.jsonl + MANIFEST.txt (for data-procurement packages)'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (for analytics/orders) — legacy spelling of days'),
-      days: z.coerce.number().int().optional().describe('Lookback window in days. cohorts defaults to 365 (a full seasonal repeat curve); analytics/orders default to 30. Wins over batchCount when both are sent.'),
+      days: z.coerce.number().int().optional().describe('Lookback window in days. orders defaults to 7, analytics to 30, cohorts to 365 (a full seasonal repeat curve). orders/analytics can see at most the last 60 days of orders (the app has no read_all_orders scope): a larger value is clamped to 60 and the output says so in a NOTE and window_note. Wins over batchCount when both are sent.'),
     },
     handler: async (args) => {
       // export and cohorts are both GraphQL bulk-operation pulls: Shopify
@@ -1778,7 +1936,7 @@ function buildTools(tool, z, ctx) {
   //                              cap is plan-tier-global, not per-endpoint).
   tools.push(defineTool({
     name: 'klaviyo',
-    description: 'Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email\'s content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow ("which subject line is winning"); metric-aggregate returns per-day counts of any tracked metric ("how many times did Started Checkout fire"). Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI ("how is my welcome series doing"), use action="flow-performance". For per-email A/B inside a flow ("which welcome email is winning"), use "flow-message-performance". For metric time-series ("how many checkouts last week"), use "metric-aggregate".',
+    description: 'Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email\'s content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow ("which subject line is winning"); metric-aggregate returns per-day counts of any tracked metric ("how many times did Started Checkout fire"), or with measurement "unique" distinct profiles per day, or "sum_value" the summed event value (e.g. order revenue). segment-get reads one segment definition in plain language (ANDed groups of ORed conditions, Apple Mail Privacy machine-open filters called out) plus its profile_count. Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI ("how is my welcome series doing"), use action="flow-performance". For per-email A/B inside a flow ("which welcome email is winning"), use "flow-message-performance". For metric time-series ("how many checkouts last week"), use "metric-aggregate". For "what is in this segment" / "does this segment count machine opens", use "segment-get" with segmentId (ids come from segments-list). To import a CSV (or a folder of CSVs) of consented emails into lists as SUBSCRIBED, use "subscribe-bulk": it is a DRY RUN by default (rows, valid/duplicate counts, target lists, calls and time needed, nothing written); show the user that report, then pass dryRun:false only when they ask to import. Profiles Klaviyo has as unsubscribed, spam-reported or manually suppressed are always skipped. "list-create" makes one list by exact name, idempotently.',
     // REGRESSION GUARD (2026-04-29, Gitar PR #151 finding): klaviyo
     // tool's expanded action surface includes template-create / -update /
     // -delete and bulk-template-upload (51+ writes per call). Every other
@@ -1851,10 +2009,22 @@ function buildTools(tool, z, ctx) {
         // Klaviyo-UI step. Condition GROUPS are ANDed; conditions WITHIN
         // a group are ORed.
         'segments-list', 'segment-create',
+        // segment-get: READ-ONLY, one segment by id with its definition
+        // rendered readable plus profile_count (2026-10-08). Not carded:
+        // it is a GET, so it stays out of CARDED_DESTRUCTIVE_ACTIONS.
+        'segment-get',
         // Full-history bulk export for data-procurement packages — read-only
         // cursor pagination of profiles/lists/segments/campaigns/flows/metrics/
         // events to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt.
         'export',
+        // list-create: idempotent create of ONE list by exact name (returns
+        // the existing list instead of making a duplicate). Carded write.
+        'list-create',
+        // subscribe-bulk: import CSVs of consented emails into lists with
+        // email marketing consent SUBSCRIBED. DRY RUN by default; dryRun:false
+        // is the carded consent write (CARDED_DESTRUCTIVE_ACTIONS). Runs as a
+        // background job (jobs_poll) and resumes from its checkpoint.
+        'subscribe-bulk',
       ]).describe('Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)'),
       brand: brandSchema,
       batchCount: z.coerce.number().int().optional().describe('Days of data (performance/campaigns/flow-performance/flow-message-performance/metric-aggregate). Default 30.'),
@@ -1881,7 +2051,9 @@ function buildTools(tool, z, ctx) {
       flowActionId: z.string().optional().describe('Klaviyo flow ACTION id — one send-email step inside a flow (e.g. 111531895). Required for flow-set-message-template. Get it from flow-get: definition.actions[].id. The action must be type "send-email"; anything else is refused.'),
       messageName: z.string().optional().describe('Optional step label for klaviyo flow-set-message-template — the name shown on the email step in the flow editor. Omit to keep the message\'s current label (it is always sent, because Klaviyo resets an omitted name to its own default).'),
       // Performance fields
-      metricId: z.string().optional().describe('Klaviyo metric ID. Required for metric-aggregate (pick one from the metrics list shown by the legacy "performance" action). Optional for campaign-performance / flow-performance: which Placed Order metric to attribute against when the account has more than one (default prefers the Shopify integration metric; the report lists the alternatives).'),
+      metricId: z.string().optional().describe('Klaviyo metric ID. Required for metric-aggregate (pick one from the metrics list shown by the legacy "performance" action). Optional for campaign-performance / flow-performance / flow-message-performance: the conversion metric to attribute against. Default is Placed Order (preferring the Shopify integration metric when there are several); an account with no Placed Order falls back to another order metric, and with no order metric at all to an engagement metric, in which case the report says orders and revenue are not meaningful.'),
+      measurement: z.enum(['count', 'unique', 'sum_value']).optional().describe('metric-aggregate only: count (default) = events per day, unique = distinct profiles per day (per-day uniques do NOT add up to a window unique), sum_value = summed event value per day (e.g. revenue on an order metric).'),
+      segmentId: z.string().optional().describe('Klaviyo segment ID for segment-get (read-only). Get ids from segments-list.'),
       flowBody: z.any().optional().describe('Full flow body for flow-create. Shape: {name, trigger:{type, list_id?, metric?}, steps:[{type, ...}]}. Step types: "delay" {duration_seconds}, "send_email" {subject, preheader, from_email, from_name, template_id?, body?}, "wait_until" {time_of_day, timezone}, "branch" {condition}. The binary runs CheckFlowCANSPAM before any HTTP — trigger.type must be on the documented-consent allowlist (list_added, segment_added, profile_subscribed_marketing, ecommerce_placed_order, ecommerce_started_checkout, viewed_product, custom_event), every send_email step must have an unsubscribe token + physical address + subject + from_name. Failures REFUSE the create (no auto-fix).'),
       segmentBody: z.any().optional().describe('Full segment body for segment-create. Shape: {name, definition:{condition_groups:[{conditions:[{type:"profile-metric", metric_id, measurement:"count"|"sum", measurement_filter:{type:"numeric",operator,value}, timeframe_filter:{type:"date",operator:"in-the-last"|"alltime"|..., quantity?, unit?}}]}]}}. Condition GROUPS are ANDed together; conditions WITHIN a group are ORed — "zero opens AND zero clicks in 60d" needs two groups of one condition each. metric_id values come from the "performance" action\'s tracked-metrics list. The binary validates the envelope (name + non-empty condition_groups) and refuses duplicate segment names against live Klaviyo state; condition-schema errors surface verbatim from Klaviyo\'s 400 responses.'),
       // REGRESSION GUARD (2026-04-29, Gitar PR #166): was z.string().optional()
@@ -1893,6 +2065,19 @@ function buildTools(tool, z, ctx) {
       includeDefinition: z.boolean().optional().describe('When true on flow-get, request the heavy `definition` blob (full flow topology) via additional-fields[flow]=definition. Default true. Set false to skip and get only the summary attributes.'),
       manifestPath: z.string().optional().describe('Filesystem path to a flow manifest JSON for flows-bulk-import. MUST live under assets/brands/<brand>/email/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {manifest_version, brand, flows:[{name, status?, trigger, steps}, ...]}. References uploaded templates by template_id (run templates-bulk-upload first to get the IDs).'),
       forceReimport: z.boolean().optional().describe('When true, flows-bulk-import bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.'),
+      // list-create / subscribe-bulk fields
+      listId: z.string().optional().describe('subscribe-bulk: the Klaviyo list id every CSV goes into (ids from action "lists"). Give exactly one of listId, listName, listNameTemplate.'),
+      listName: z.string().optional().describe('list-create: exact name of the list to create (an existing list with this exact name is returned instead). subscribe-bulk: exact name of the one target list; created as single opt-in on the real run if missing.'),
+      listNameTemplate: z.string().optional().describe('subscribe-bulk with csvDir: one list per file. {n} = the last number in the file name (zero padding kept), {basename} = file name without extension. e.g. "F21_Warmup_Batch_{n}" maps F21_Verified_07.csv to F21_Warmup_Batch_07.'),
+      optInProcess: z.enum(['single_opt_in', 'double_opt_in']).optional().describe('list-create / lists created by subscribe-bulk. Default single_opt_in. A double opt-in list emails a confirmation to every profile added without historicalImport.'),
+      csvPath: z.string().optional().describe('subscribe-bulk: one CSV with an Email column (or a single headerless column of emails).'),
+      csvDir: z.string().optional().describe('subscribe-bulk: a folder of CSVs (use with csvPattern and listNameTemplate). Files run in name order.'),
+      csvPattern: z.string().optional().describe('subscribe-bulk: file-name pattern inside csvDir, e.g. "F21_Verified_*.csv". Default "*.csv".'),
+      dryRun: z.boolean().optional().describe('subscribe-bulk only. Defaults to TRUE: reads the files and Klaviyo (lists, suppressed profiles) and reports rows, valid/duplicate/invalid counts, target lists, calls needed and duration, and writes NOTHING to Klaviyo. Pass false (with approved:true) only after the user reviewed the dry run and asked to import.'),
+      historicalImport: z.boolean().optional().describe('subscribe-bulk: default true. Records the import as consent collected in the past (needs consentedAt): Klaviyo skips double opt-in emails and "Added to list" flows. Flows triggered by "Subscribed to Email Marketing" are NOT documented as skipped.'),
+      consentedAt: z.string().optional().describe('subscribe-bulk: when the original consent was collected, YYYY-MM-DD or RFC3339, in the past. Required for the real run while historicalImport is on.'),
+      customSource: z.string().optional().describe('subscribe-bulk: consent source label stored on each profile. Default "Merlin bulk import".'),
+      maxMinutes: z.coerce.number().int().optional().describe('subscribe-bulk: engine time budget per invocation before it checkpoints and pauses (default 25). The background job re-invokes until done.'),
     },
     // Handler does NOT auto-set args.approved — that bypasses the safety
     // rail. The host approval card (CARDED_DESTRUCTIVE_ACTIONS in
@@ -1912,6 +2097,27 @@ function buildTools(tool, z, ctx) {
             summary: 'Klaviyo full-history export started in the background.',
             jobId: job.jobId,
             next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path.`,
+          },
+        });
+      }
+      // subscribe-bulk: a real import is ~1 call per 1000 profiles at
+      // Merlin's cap (9.6M profiles is hours), and even the dry run pages
+      // through every suppressed profile. Both run as a background job;
+      // the engine checkpoints after every call and pauses on its time
+      // budget, and the job loop re-invokes it. NOT restart-resumable: the
+      // real run's approval is an in-memory card click (see
+      // RESTART_RESUMABLE_EXPORT_ACTIONS); re-running after a restart asks
+      // again and resumes from the same checkpoint.
+      if (args.action === 'subscribe-bulk' && ctx.jobStore) {
+        const real = args.dryRun === false;
+        const job = startExportJob(ctx, 'klaviyo', 'klaviyo-subscribe-bulk', args);
+        return envelope.ok({
+          data: {
+            summary: real
+              ? 'Klaviyo bulk subscribe started in the background. It resumes from its checkpoint until every file is done.'
+              : 'Klaviyo bulk subscribe DRY RUN started in the background. Nothing is written to Klaviyo.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read the result (per-file counts, target lists, calls and estimate${real ? ', accepted/rejected totals' : ', blockers and warnings'}).`,
           },
         });
       }
@@ -2777,7 +2983,7 @@ function buildTools(tool, z, ctx) {
   // tile, which splits the report's "Get API" link into vaulted brand keys.
   tools.push(defineTool({
     name: 'rakuten',
-    description: 'Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first). Window: days (default 30, transactions default 7, max 365) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.',
+    description: 'Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first); export (full historical raw pull to JSONL in the brand results folder: every column of the performance report and of the order report, plus a publisher roster and daily totals, with a manifest of counts and date coverage; runs as a background job, resumable, default 365 days, up to 3660 days). report also splits orders into new vs returning customers when the order report carries a new-customer column. Window: days (default 30, transactions default 7, max 365; export max 3660) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -2785,9 +2991,9 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'rakuten' },
     input: {
-      action: z.enum(['status', 'connect', 'setup', 'verify', 'report', 'publishers', 'transactions']).describe('status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day. publishers → publishers ranked by sales. transactions → order-level rows.'),
+      action: z.enum(['status', 'connect', 'setup', 'verify', 'report', 'publishers', 'transactions', 'export']).describe('status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day, plus new vs returning when available. publishers → publishers ranked by sales. transactions → order-level rows. export → full raw JSONL pull with a manifest (background job, resumable).'),
       brand: brandSchema.optional(),
-      days: z.coerce.number().int().optional().describe('Window length in days ending today (default 30; transactions default 7; max 365). Ignored when startDate is set.'),
+      days: z.coerce.number().int().optional().describe('Window length in days ending today (default 30; transactions default 7; max 365; export default 365, max 3660). Ignored when startDate is set.'),
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window start, YYYY-MM-DD (inclusive).'),
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window end, YYYY-MM-DD (inclusive). Defaults to today.'),
       limit: z.coerce.number().int().optional().describe('Max rows returned: top publishers for report (default 25), publishers (default 50), transactions (default 200). The results file always keeps every row.'),
@@ -2807,88 +3013,76 @@ function buildTools(tool, z, ctx) {
         report: 'rakuten-report',
         publishers: 'rakuten-publishers',
         transactions: 'rakuten-transactions',
+        export: 'rakuten-export',
       };
+      // export can span years of 28-day chunks fetched one at a time, which
+      // does not fit the MCP call boundary, so it runs as a background job
+      // (jobs_poll for status). The engine checkpoints every chunk in its
+      // manifest, so a retry or an app restart resumes rather than restarts.
+      if (args.action === 'export' && ctx.jobStore) {
+        const job = startExportJob(ctx, 'rakuten', 'rakuten-export', args);
+        return envelope.ok({
+          data: {
+            summary: 'Rakuten Advertising export started in the background.',
+            jobId: job.jobId,
+            next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the export folder and manifest.`,
+          },
+        });
+      }
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
     },
   }, tool, z, ctx));
 
-  // ── roundel ───────────────────────────────────────────────
-  // Roundel (Target's retail media network). Roundel has no API of its own:
-  // its self-serve programmatic surface is the Criteo Retail Media API
-  // (api.criteo.com), authenticated with the brand's own Criteo developer app
-  // (OAuth2 client credentials) after the advertiser account grants consent.
-  // roundel.go reads accounts, campaigns, auction line items and async
-  // performance reports, and can pause, activate and re-budget a line item.
-  // SPENDS REAL MONEY on activate/budget, so destructive:true +
-  // costImpact:'spend': both route through the host approval card
-  // (SPEND_ACTIONS 'activate' / 'budget') and the engine independently
-  // refuses them without the approved flag (requireApproval), validates the
-  // final daily number (validateDailyBudget) and the projected account total
-  // against the monthly caps. pause is never gated: it is the emergency brake.
-  // Read actions (status/verify/discover/campaigns/line-items/insights)
-  // auto-approve. Connect happens in the Roundel tile (the client secret is vaulted).
-  // The engine also accepts roundel-setup as an alias of roundel-verify; the
-  // MCP enum exposes verify only, because 'setup' is a SPEND_ACTIONS verb and
-  // would put a misleading "Set up ad campaigns" card in front of a read.
+  // ── impact ────────────────────────────────────────────────
+  // impact.com (affiliate / partnership platform, formerly Impact Radius)
+  // reporting, READ-ONLY. impact.go reads the Brand API (api.impact.com) with
+  // the brand's own Account SID + read-only Auth Token, so this tool can only
+  // READ program performance; it cannot change payouts, partners, contracts or
+  // actions (destructive:false, costImpact:'api', no approval card).
+  // Read-only by construction: impact.go has one GET-only request constructor
+  // that also refuses impact.com's _method verb override
+  // (TestImpactSourceIsReadOnly). Connect happens in the impact.com tile.
   tools.push(defineTool({
-    name: 'roundel',
-    description: 'Roundel (Target retail media) via the Criteo Retail Media API. Actions: status (connection check, no API call); connect (how to create the Criteo API app and grant access); verify (test the saved credentials and confirm the account is reachable); discover (list the retail media accounts the app can see and the retailers on each, flagging the Target one, so you know which account and retailer ids to save); campaigns (list campaigns, status filter); line-items (auction line items with status, budget and daily pacing, optionally for one campaignId); insights (spend, impressions, clicks, attributed sales, units and ROAS by campaign, line item and day, from an async report: when it returns status "pending" with a roundelReportId, call insights again with that roundelReportId instead of starting a new report; days default 30 or startDate/endDate, max 90 days); pause (pause one lineItemId, never needs approval); activate (turn a paused lineItemId on: SPENDS money, shows an approval card, refused if the line item has no knowable daily spend or the projected account total breaks your caps); budget (set a lineItemId daily pacing to dailyBudget dollars: shows an approval card). ROAS is attributed target.com sales, not your store revenue, and recent days fill in for up to 14 days.',
-    destructive: true,
-    idempotent: false,
+    name: 'impact',
+    description: 'impact.com affiliate and partnership program reporting (read-only; formerly Impact Radius). Actions: status (connection check, no API call); connect (how to get the Account SID and Auth Token); setup / verify (validate the saved credentials, list programs); discover (company currency and timezone, programs, and the saved reports that can be exported over the API); insights (weekly scorecard for a window: revenue, actions, payout, total cost, ROAS, CPA, AOV, new vs returning customers, reversals, top partners, by program and by day; pass impactReportId of a partner performance report to add clicks); actions (conversion rows, newest first, filter with impactState); partners (partner roster, filter with status); clicks (clicks by partner and day for one program, at most 7 days, impact.com allows 10 day-exports per day); report (no impactReportId lists exportable reports; with one, exports it for the window; with impactJobId, collects a still-running export). Window: days (default 7) or startDate / endDate (YYYY-MM-DD, matched on the account-timezone event date, so a Sun-Sat week is exact). impactProgramId picks one program (default: the brand default, else every program). limit caps rows returned. Cannot change payouts, partners or actions.',
+    destructive: false,
+    idempotent: true,
     preview: false,
-    costImpact: 'spend',
-    brandRequired: true,
-    concurrency: { platform: 'roundel' },
+    costImpact: 'api',
+    brandRequired: false,
+    concurrency: { platform: 'impact' },
     input: {
-      action: z.enum(['status', 'connect', 'verify', 'discover', 'campaigns', 'line-items', 'insights', 'pause', 'activate', 'budget']).describe('status → connection check (no API call). connect → how to connect. verify → test credentials. discover → accounts + retailers. campaigns / line-items / insights → read. pause → pause a lineItemId. activate → turn a lineItemId on (spends, approval card). budget → set a lineItemId daily budget (approval card).'),
-      brand: brandSchema,
-      days: z.coerce.number().int().optional().describe('Insights: window length in days ending today (default 30, max 90). Ignored when startDate is set.'),
-      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: window start, YYYY-MM-DD inclusive.'),
-      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: window end, YYYY-MM-DD inclusive. Defaults to today.'),
-      campaignId: z.string().optional().describe('Campaign id: scopes line-items to one campaign.'),
-      lineItemId: z.string().optional().describe('Auction line item id (pause / activate / budget).'),
-      dailyBudget: z.coerce.number().optional().describe('Budget: the new daily pacing in dollars for lineItemId. Validated against your daily and monthly caps.'),
-      status: z.enum(['all', 'active', 'paused', 'scheduled', 'ended', 'draft', 'archived', 'budgetHit', 'noFunds']).optional().describe('campaigns / line-items: filter by status (default all).'),
-      limit: z.coerce.number().int().optional().describe('Max rows returned (campaigns, line-items, insights breakdowns). The results file always keeps every row.'),
-      roundelReportId: z.string().optional().describe('Insights: resume a pending report by the id a previous insights call returned, instead of creating a new one.'),
-      approved: z.boolean().optional().describe('Approval flag for activate and budget. Set by the Electron approval card on user click; the engine REFUSES both without it. Do not set true unless the user explicitly approved the spend change.'),
+      action: z.enum(['status', 'connect', 'setup', 'verify', 'discover', 'insights', 'actions', 'partners', 'clicks', 'report']).describe('status → connection check (no API call). connect → how to get API credentials. setup/verify → validate credentials. discover → programs and exportable reports. insights → weekly affiliate scorecard. actions → conversion rows. partners → partner roster. clicks → clicks by partner and day. report → list, export or collect a saved report.'),
+      brand: brandSchema.optional(),
+      days: z.coerce.number().int().optional().describe('Window length in days ending today (default 7; clicks default 1, max 7; others max 366). Ignored when startDate is set.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window start, YYYY-MM-DD (inclusive, account timezone).'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Window end, YYYY-MM-DD (inclusive). Defaults to today.'),
+      limit: z.coerce.number().int().optional().describe('Max rows returned: top partners for insights (default 10), actions / partners / report rows (default 200). The results file always keeps every row.'),
+      impactProgramId: z.string().regex(/^\d{1,12}$/).optional().describe('impact.com program (campaign) id from discover. Defaults to the brand default, else every program.'),
+      impactReportId: z.string().regex(/^[A-Za-z0-9_.-]{1,128}$/).optional().describe('Saved report id or handle from discover. report exports it; insights uses it as the clicks source (a report with partner and Clicks columns).'),
+      impactJobId: z.string().regex(/^[A-Za-z0-9-]{1,64}$/).optional().describe('Collect a still-running export by the jobId an earlier call returned (report action).'),
+      impactState: z.enum(['pending', 'approved', 'reversed', 'all']).optional().describe('actions filter by action state (default all).'),
+      status: z.enum(['active', 'pending', 'expired', 'declined', 'suspended', 'deactivated', 'closing', 'closed', 'all']).optional().describe('partners filter by partner state (default all).'),
     },
-    // Handler does NOT auto-set args.approved; the approval card does.
     handler: async (args) => {
       if (args.action === 'connect') {
         return {
-          summary: 'Connect Roundel (Target)',
-          instructions: 'Roundel campaigns are managed through the Criteo Retail Media API. 1) At developers.criteo.com create an app with the Retail Media domain and the campaign read and manage permissions, and note its Client ID and Client Secret. 2) Generate a consent link for the app and have an Admin (or Business / Technical Manager) of the brand\'s Roundel retail media account approve it. 3) Open the Roundel tile in the Connections panel and paste the Client ID, Client Secret and retail media Account ID (Retailer ID is optional and limits reports to Target). 4) Run action "verify", then "discover" if you do not know the account or retailer id. Never paste the client secret in chat.',
+          summary: 'Connect impact.com',
+          instructions: 'In app.impact.com open Settings, then API (under Technical). Copy the Account SID, then create a read-only Auth Token (or reveal an existing read-only one) and copy it. Open the impact.com tile in the Connections panel, paste both, and optionally a default program id, then run action "verify". Merlin reads reports only; it cannot change payouts, partners, contracts or actions.',
         };
       }
-      // Only budget carries a budget to validate. A dailyBudget riding along
-      // on any other action is dropped so it can never decorate a read or a
-      // pause with a spend figure.
-      if (args.action === 'budget') {
-        const budgetError = validateBudget(ctx, args, 'Roundel');
-        if (budgetError) return validationEnvelope(budgetError);
-      }
       const actionMap = {
-        status: 'roundel-status',
-        verify: 'roundel-verify',
-        discover: 'roundel-discover',
-        campaigns: 'roundel-campaigns',
-        'line-items': 'roundel-line-items',
-        insights: 'roundel-insights',
-        pause: 'roundel-pause',
-        activate: 'roundel-activate',
-        budget: 'roundel-budget',
+        status: 'impact-status',
+        setup: 'impact-setup',
+        verify: 'impact-verify',
+        discover: 'impact-discover',
+        insights: 'impact-insights',
+        actions: 'impact-actions',
+        partners: 'impact-partners',
+        clicks: 'impact-clicks',
+        report: 'impact-report',
       };
-      let pass = args;
-      if (args.action !== 'budget') {
-        const { dailyBudget, ...rest } = args;
-        pass = rest;
-      }
-      if (args.action !== 'activate' && args.action !== 'budget') {
-        const { approved, ...rest } = pass;
-        pass = rest;
-      }
-      return toEnvelope(await runBinary(ctx, actionMap[args.action], pass));
+      return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
     },
   }, tool, z, ctx));
 
@@ -2983,12 +3177,16 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── shipstation ───────────────────────────────────────────
-  // ShipStation shipping/3PL reporting (READ-ONLY — shipstation.go ships no
-  // write verbs). BYOK: API Key + Secret from ShipStation → Account → API
-  // Settings, entered on the ShipStation tile.
+  // ShipStation shipping reporting and raw export (READ-ONLY: shipstation.go
+  // and shipstation_export.go have one GET-only request constructor and a
+  // source-scan test that fails on write verbs). BYOK: V1 API Key + Secret
+  // from ShipStation Settings > Account > API Settings, entered on the
+  // ShipStation tile. V1 needs the Gold plan or higher (US/CA) or Scale or
+  // higher (UK/AU/NZ/EU). export is a resumable background job, like
+  // gorgias-export: it writes the brand's own data to local disk only.
   tools.push(defineTool({
     name: 'shipstation',
-    description: 'ShipStation shipping reporting (read-only). Pulls shipments, carriers, and fulfillment stats into the dashboard. Actions: report (pull shipments/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Connect by entering your API Key + Secret from ShipStation → Account → API Settings into the ShipStation tile.',
+    description: 'ShipStation shipping data (read-only, ShipStation API V1). Actions: report (weekly-reporting summary for a Pacific-day window: orders placed by status, revenue, units, AOV, labels shipped, label cost and cost per label, voids and return labels, carrier / service / store mix, fulfillments marked shipped outside ShipStation, and order-to-ship time with same-day / within-2-days / on-time %; window = startDate+endDate, or days, default 30, max 366); export (full raw pull of orders, shipments, fulfillments plus stores, carriers, warehouses and products to JSONL with a manifest of counts and date coverage, runs as a background job you poll with jobs_poll, resumable, window = startDate+endDate or days, default 30, back to 2011); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Needs V1 API keys from ShipStation Settings > Account > API Settings, which ShipStation only issues on the Gold plan or higher (US/Canada) or Scale or higher (UK, AU, NZ, EU).',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -2996,16 +3194,36 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'shipstation' },
     input: {
-      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull shipments/metrics for the window. status → check connection (no API call). connect → how to get ShipStation API credentials. verify → validate the saved credentials.'),
+      action: z.enum(['report', 'export', 'status', 'connect', 'verify']).describe('report: weekly-reporting summary for the window. export: full raw JSONL export as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get ShipStation API credentials. verify: validate the saved credentials.'),
       brand: brandSchema.optional(),
-      batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+      days: z.coerce.number().int().optional().describe('report / export: days ending today (Pacific). report default 30, max 366; export default 30. Values above the max are clamped; 0 or less uses the default. Ignored when startDate is given.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('report / export: exact window start, YYYY-MM-DD inclusive, Pacific time (ShipStation reports every date in Pacific). For a full-history export pass the account start, e.g. 2018-01-01.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('report / export: exact window end, YYYY-MM-DD inclusive, Pacific time. Default today.'),
+      batchCount: z.coerce.number().int().optional().describe('Legacy alias for days on report.'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
         return {
           summary: 'Connect ShipStation',
-          instructions: 'Open the ShipStation tile in the Connections panel and enter your API Key + Secret (ShipStation → Account → API Settings).',
+          instructions: 'In ShipStation open Settings > Account > API Settings, choose API Version V1 and generate API keys (the secret is shown once). V1 API access needs the Gold plan or higher in the US and Canada, or Scale or higher in the UK, AU, NZ and EU. Then open the ShipStation tile in the Connections panel, enter the API Key and API Secret, and run action "verify".',
         };
+      }
+      // export is a multi-year pull that cannot finish inside the MCP call
+      // boundary, so it runs as a background job (jobs_poll for status). The
+      // engine checkpoints every month slice, so a retry resumes rather than
+      // restarts.
+      if (args.action === 'export') {
+        if (ctx.jobStore) {
+          const job = startExportJob(ctx, 'shipstation', 'shipstation-export', args);
+          return envelope.ok({
+            data: {
+              summary: 'ShipStation raw export started in the background.',
+              jobId: job.jobId,
+              next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path. The files contain customer names and addresses: keep them where customer data is allowed.`,
+            },
+          });
+        }
+        return toEnvelope(await runBinary(ctx, 'shipstation-export', args));
       }
       const actionMap = { report: 'shipstation-report', status: 'shipstation-status', verify: 'shipstation-verify' };
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
@@ -3044,12 +3262,17 @@ function buildTools(tool, z, ctx) {
   }, tool, z, ctx));
 
   // ── cin7 ──────────────────────────────────────────────────
-  // Cin7 Core inventory reporting (READ-ONLY — cin7.go ships no write
-  // verbs). BYOK: Account ID + Application Key from Cin7 Core → Settings →
-  // API, entered on the Cin7 tile.
+  // Cin7 inventory reporting and raw export (READ-ONLY: cin7.go, cin7_omni.go
+  // and cin7_export.go ship no write verbs, enforced by source-scan tests).
+  // Two products share the tile, picked on it (cin7Product) or auto-detected
+  // from the id shape: Cin7 Core (Account ID + Application Key from Settings >
+  // API) and Cin7 Omni (API username + API key from Settings > Integrations &
+  // API > API v1). export is Omni-only and runs as a resumable background
+  // job, like shipstation-export: it writes the brand's own data to local
+  // disk only and never spends, so it never cards.
   tools.push(defineTool({
     name: 'cin7',
-    description: 'Cin7 Core inventory reporting (read-only). Pulls products, stock levels, and sales-order stats into the dashboard. Actions: report (pull inventory/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved Account ID + Application Key). Connect by entering your Account ID + Application Key from Cin7 Core → Settings → API into the Cin7 tile.',
+    description: 'Cin7 inventory data (read-only), Cin7 Core or Cin7 Omni. Actions: report (pull inventory/metrics for a window, batchCount = days, default 30); export (Cin7 Omni only: full raw pull of every Omni entity, sales orders, quotes, purchase orders, credit notes, payments, fees, payouts, stock, stock adjustments and transfers, production jobs, products, product options, categories, BOMs, serial numbers, contacts, branches, users, vouchers, to JSONL plus a manifest of counts, bytes and date coverage; runs as a background job you poll with jobs_poll, waits out Omni rate limits and resumes from a checkpoint; no dates = full history, or startDate+endDate or days; cin7DateField picks modified (default) or created dates for the window; outputDir picks the folder); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved credentials). Cin7 Core: Account ID + Application Key from Cin7 Core Settings > API. Cin7 Omni: API username + API key from Cin7 Omni Settings > Integrations & API > API v1. Enter them on the Cin7 tile.',
     destructive: false,
     idempotent: true,
     preview: false,
@@ -3057,16 +3280,38 @@ function buildTools(tool, z, ctx) {
     brandRequired: false,
     concurrency: { platform: 'cin7' },
     input: {
-      action: z.enum(['report', 'status', 'connect', 'verify']).describe('report → pull inventory/metrics for the window. status → check connection (no API call). connect → how to get Cin7 API credentials. verify → validate the saved credentials.'),
+      action: z.enum(['report', 'export', 'status', 'connect', 'verify']).describe('report: pull inventory/metrics for the window. export: full raw JSONL export of Cin7 Omni as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get Cin7 API credentials. verify: validate the saved credentials.'),
       brand: brandSchema.optional(),
       batchCount: z.coerce.number().int().optional().describe('Days of data for report (default 30).'),
+      days: z.coerce.number().int().optional().describe('export: only records in the last N days (UTC). Ignored when startDate is given. Omit every date param for full history.'),
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('export: window start, YYYY-MM-DD inclusive, UTC. Omit for full history.'),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('export: window end, YYYY-MM-DD inclusive, UTC. Default open-ended.'),
+      cin7DateField: z.enum(['modified', 'created']).optional().describe('export: which date the window filters on, modified (default, catches edits) or created. Entities with only one date use that one.'),
+      outputDir: z.string().optional().describe('export: absolute folder for the JSONL files and manifest.json. Must be empty or a previous run of the same export. Default: a cin7-export folder under the brand results.'),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
         return {
           summary: 'Connect Cin7',
-          instructions: 'Open the Cin7 tile in the Connections panel and enter your Account ID + Application Key (Cin7 Core → Settings → API).',
+          instructions: 'Open the Cin7 tile in the Connections panel and pick your product. Cin7 Core: enter the Account ID and Application Key from Cin7 Core Settings > API. Cin7 Omni: in Cin7 Omni open Settings > Integrations & API > API v1, add an API connection with Read permission on the areas you need, then enter its API username and API key. Then run action "verify".',
         };
+      }
+      // export is a full-history pull that cannot finish inside the MCP call
+      // boundary (Omni allows 60 calls a minute, 5000 a day), so it runs as a
+      // background job (jobs_poll for status). The engine checkpoints every
+      // page, so a retry resumes rather than restarts.
+      if (args.action === 'export') {
+        if (ctx.jobStore) {
+          const job = startExportJob(ctx, 'cin7', 'cin7-export', args);
+          return envelope.ok({
+            data: {
+              summary: 'Cin7 Omni raw export started in the background.',
+              jobId: job.jobId,
+              next_action: `Poll jobs_poll with jobId "${job.jobId}" until state is terminal, then read result for the manifest path. The files contain customer names and addresses: keep them where customer data is allowed.`,
+            },
+          });
+        }
+        return toEnvelope(await runBinary(ctx, 'cin7-export', args));
       }
       const actionMap = { report: 'cin7-report', status: 'cin7-status', verify: 'cin7-verify' };
       return toEnvelope(await runBinary(ctx, actionMap[args.action], args));
@@ -3263,6 +3508,7 @@ function buildTools(tool, z, ctx) {
       // mcp-openai-ads-reachability.test.js.
       startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: exact window start, YYYY-MM-DD inclusive (ad account timezone). Give with endDate; overrides batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.'),
       endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Insights: exact window end, YYYY-MM-DD inclusive. Give with startDate; must not be before startDate.'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       if (args.action === 'connect') {
@@ -3430,6 +3676,7 @@ function buildTools(tool, z, ctx) {
       // unreachable failure mode, with no error anywhere.
       bid: z.number().optional().describe('CPM bid in USD (dollars, not cents, not micros) for create-ad — the price per thousand impressions, NOT a budget. Never derive it from dailyBudget; the two are unrelated. Omit for the platform default.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'Reddit');
@@ -3460,11 +3707,192 @@ function buildTools(tool, z, ctx) {
       adLink: z.string().optional().describe('Destination URL'),
       adImagePath: z.string().optional().describe('Path to an image for a single-image sponsored creative (push). When set, Merlin uploads the image to the sponsoring organization, creates a Direct Sponsored Content post, and builds the creative from it. Requires an organization-backed ad account. Omit for a text/link creative.'),
       batchCount: z.coerce.number().int().optional().describe('Days of data (for insights)'),
+      force: z.boolean().optional().describe(SPEND_GUARD_FORCE_DESC),
     },
     handler: async (args) => {
       const budgetError = validateBudget(ctx, args, 'LinkedIn');
       if (budgetError) return validationEnvelope(budgetError);
       return toEnvelope(await runBinary(ctx, 'linkedin-' + args.action, args));
+    },
+  }, tool, z, ctx));
+
+  // ── snapchat ─────────────────────────────────────────────
+  // Snapchat Marketing API (snapchat.go + snapchat_build.go). Read surface
+  // (status, ad-accounts, campaigns, insights, pixels, audiences, ad-squads,
+  // ads), the status flips (kill = pause, activate = resume one campaign;
+  // batch-status = ACTIVE or PAUSED on many campaigns, ad squads and ads by
+  // explicit typed ids, cap-checked on ACTIVE, every write read back), and the
+  // build surface (create-audience, create-campaign, create-ad-squad,
+  // build-architecture). Every write is gated on cmd.Approved by
+  // requireApproval in the binary AND on the host approval card
+  // (mcp-approval-policy.js resolveMerlinAction, Hard-Won Rule 19).
+  // build-architecture defaults to a dry run (zero writes); only an explicit
+  // dryRun:false routes to the carded SPEND path. Everything is created
+  // PAUSED. Ad creation (snapchat_ads.go): upload-media, create-creative,
+  // create-ad and bulk-push; ads are always created PAUSED. Dynamic Product
+  // Ads (snapchat_dpa.go, snapchat_dpa_read.go): catalogs and pixel-stats
+  // are reads; create-product-set is an approval-gated write; dpa-setup is a
+  // dry run unless dryRun:false, which builds a PAUSED catalog campaign with
+  // budgeted ad squads and routes to the carded SPEND path like a real build.
+  tools.push(defineTool({
+    name: 'snapchat',
+    description: 'Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, turn many campaigns, ad squads and ads on or off at once (batch-status; ad squads and ads are created PAUSED, so after a build or bulk-push use batch-status ACTIVE on the ad squads and ads, then the campaign), list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads: bulk-push uploads vertical 9:16 images or videos (1080x1920; images JPG/PNG under 5MB, videos MP4 H.264 3 to 180 seconds), creates one Web View creative per ad (headline up to 34 characters, link tagged with UTMs) and one PAUSED ad per creative in an existing ad squad, skipping ad names that already exist there. upload-media, create-creative and create-ad do the same steps one at a time. Every creative needs the brand Snapchat Public Profile id (snapchatProfileId, remembered for the brand after first use). Dynamic Product Ads (catalog ads): catalogs reports each catalog with its feeds, latest feed upload, product sets with product counts, dynamic templates and whether a pixel is linked, plus the problems that block DPA; pixel-stats breaks pixel events down by event type for one domain; create-product-set creates one product set from a filter; dpa-setup plans (dry run, default) or, with dryRun:false and approval, builds a PAUSED catalog campaign with one dynamic product ad per ad squad (prospecting, add-to-cart without purchase, or viewed without add-to-cart), every ad squad and ad PAUSED.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'snapchat' },
+    preview: false,
+    input: {
+      action: z.enum(['status', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate', 'batch-status', 'pixels', 'audiences', 'ad-squads', 'ads', 'create-audience', 'create-campaign', 'create-ad-squad', 'build-architecture', 'upload-media', 'create-creative', 'create-ad', 'bulk-push', 'catalogs', 'pixel-stats', 'create-product-set', 'dpa-setup']).describe('status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. batch-status = set batchStatus (ACTIVE or PAUSED) on up to 50 objects listed by id in campaignIds, adSquadIds and adIds; activation is checked against maxDailyAdBudget (ad squads add their budget, ads add none) and is refused as a whole if over it, pausing never is; each object is verified after the change. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure. upload-media = upload one 9:16 image or video and wait until Snapchat has processed it. create-creative = create one Web View creative from uploaded media. create-ad = create one PAUSED ad from a creative in an ad squad. bulk-push = upload, create creatives and create PAUSED ads for up to 50 ads in one ad squad. catalogs = list product catalogs with feeds, product sets, templates, linked pixels and DPA readiness problems (optionally one catalogId). pixel-stats = pixel events by event type for a domain over the last days (default 7, max 28). create-product-set = create one product set (productSetName + productSetFilter) in a catalog; a set with the same name is reused. dpa-setup = plan (dry run, default) or build a PAUSED Dynamic Product Ads campaign from dpaSquads.'),
+      brand: brandSchema,
+      campaignId: z.string().optional().describe('Snapchat campaign id (UUID) for kill, activate, campaign-level insights, ad-squads (scope to one campaign), or create-ad-squad (the parent campaign)'),
+      batchStatus: z.enum(['ACTIVE', 'PAUSED']).optional().describe('batch-status: the status to set on every listed object (required)'),
+      campaignIds: z.array(z.string()).optional().describe('batch-status: Snapchat campaign ids (UUIDs) to change'),
+      adSquadIds: z.array(z.string()).optional().describe('batch-status: Snapchat ad squad ids (UUIDs) to change'),
+      adIds: z.array(z.string()).optional().describe('batch-status: Snapchat ad ids (UUIDs) to change. campaignIds + adSquadIds + adIds: 1 to 50 ids in total.'),
+      dryRun: z.boolean().optional().describe('build-architecture and dpa-setup. Defaults to true: returns the full plan and payloads and writes nothing. Pass false (with approved:true) only when the user has reviewed the plan and asked to build it.'),
+      snapchatPixelId: z.string().optional().describe('Pixel id to use for pixel audiences and PIXEL_* optimization (also scopes pixel-stats to one pixel and picks the dpa-setup pixel). Required only when the account has several pixels and none clearly fires the most.'),
+      audienceType: z.enum(['pixel', 'customer-list', 'lookalike']).optional().describe('create-audience: pixel = website visitors by event; customer-list = upload a CSV of emails and phones (hashed locally before upload); lookalike = expand a customer-list seed'),
+      audienceName: z.string().optional().describe('create-audience: explicit audience name (required)'),
+      audienceEvent: z.enum(['PAGE_VIEW', 'VIEW_CONTENT', 'ADD_CART', 'START_CHECKOUT', 'PURCHASE', 'SIGN_UP', 'ADD_BILLING', 'SEARCH', 'SUBSCRIBE', 'START_TRIAL', 'ADD_TO_WISHLIST', 'LIST_VIEW']).optional().describe('create-audience pixel: the event that qualifies a visitor (default PAGE_VIEW)'),
+      audienceDescription: z.string().optional().describe('create-audience customer-list: optional audience description'),
+      audienceRetentionDays: z.coerce.number().int().optional().describe('create-audience pixel: lookback window in days (1 to 395, default 30)'),
+      inputPath: z.string().optional().describe('create-audience customer-list: path to the CSV (email in column 1, phone in column 2; a raw Shopify customer export works)'),
+      sourceAudienceId: z.string().optional().describe('create-audience lookalike: the customer-list seed audience id. build-architecture: optional customer-list seed; when set, the plan adds a lookalike prospecting ad squad and excludes the seed from prospecting.'),
+      lookalikeCountry: z.string().optional().describe('Lookalike country code (default us)'),
+      lookalikeType: z.enum(['BALANCE', 'SIMILARITY', 'REACH']).optional().describe('Lookalike type (default BALANCE)'),
+      campaignName: z.string().optional().describe('create-campaign / dpa-setup: explicit campaign name (required)'),
+      adSetName: z.string().optional().describe('create-ad-squad: explicit ad squad name (required). bulk-push: pick the target ad squad by name instead of targetAdSetId (add campaignId if the name is not unique).'),
+      dailyBudget: z.coerce.number().optional().describe('Daily budget in dollars per ad squad (create-ad-squad, build-architecture; minimum 5, default 5 for the build). Validated against maxDailyAdBudget.'),
+      optimizationGoal: z.enum(['PIXEL_PURCHASE', 'PIXEL_ADD_TO_CART', 'PIXEL_PAGE_VIEW', 'PIXEL_SIGNUP', 'SWIPES', 'IMPRESSIONS']).optional().describe('create-ad-squad: what the ad squad optimizes for (default PIXEL_PURCHASE)'),
+      bidStrategy: z.enum(['AUTO_BID']).optional().describe('create-ad-squad: bid strategy (AUTO_BID only)'),
+      minAge: z.coerce.number().int().optional().describe('create-ad-squad / build-architecture: minimum age (13 to 49, default 18)'),
+      includeAudienceIds: z.array(z.string()).optional().describe('create-ad-squad: audience ids to target. Omit for a broad prospecting ad squad.'),
+      excludeAudienceIds: z.array(z.string()).optional().describe('create-ad-squad / build-architecture: audience ids to exclude. Prospecting ad squads always also exclude the brand snapchatProspectingExclusions.'),
+      targetAdSetId: z.string().optional().describe('ads: scope to one ad squad id. create-ad / bulk-push: the ad squad that receives the ads.'),
+      adImagePath: z.string().optional().describe('upload-media: path to a 1080x1920 JPG or PNG under 5MB'),
+      adVideoPath: z.string().optional().describe('upload-media: path to a 9:16 MP4 (H.264, 3 to 180 seconds, under 1GB)'),
+      mediaName: z.string().optional().describe('upload-media: media name (defaults to the file name)'),
+      snapchatMediaId: z.string().optional().describe('create-creative: the READY media id from upload-media'),
+      snapchatCreativeId: z.string().optional().describe('create-ad: the creative id from create-creative'),
+      adName: z.string().optional().describe('create-creative / create-ad: explicit name (required)'),
+      adHeadline: z.string().optional().describe('create-creative / dpa-setup: headline, 34 characters max'),
+      adLink: z.string().optional().describe('create-creative: https landing page; UTMs are added from the brand snapchatUrlTags (default utm_source=snapchat)'),
+      ctaType: z.string().optional().describe('create-creative / dpa-setup: call to action, one of SHOP_NOW (default), ORDER_NOW, BOOK_NOW, SIGN_UP, GET_NOW, APPLY_NOW, VIEW, WATCH, MORE, READ, LISTEN, TRY, DOWNLOAD, BUY_TICKETS, SHOWTIMES, DONATE, VOTE, PLAY, SHOW, RESPOND, VIEW_MENU, PRE_REGISTER, PLAY_GAME'),
+      snapchatProfileId: z.string().optional().describe('create-creative / bulk-push / dpa-setup: the brand Snapchat Public Profile id (UUID, from Business Manager > Public Profiles). Saved for the brand after first use, so later calls can omit it.'),
+      snapchatBrandName: z.string().optional().describe('create-creative / bulk-push: brand name shown on the ad, 32 characters max (optional)'),
+      ads: z.array(z.object({
+        name: z.string().describe('Ad name (required, unique in the ad squad; also names the media and creative)'),
+        imagePath: z.string().optional().describe('1080x1920 JPG or PNG under 5MB'),
+        videoPath: z.string().optional().describe('9:16 MP4, H.264, 3 to 180 seconds'),
+        headline: z.string().optional().describe('Headline, 34 characters max'),
+        link: z.string().optional().describe('https landing page (UTMs added)'),
+        cta: z.string().optional().describe('Call to action for this ad (default SHOP_NOW); same values as ctaType'),
+      })).optional().describe('bulk-push: up to 50 ads. Every ad is validated before anything uploads; names that already exist in the ad squad are skipped.'),
+      catalogId: z.string().optional().describe('catalogs: report on one catalog only. create-product-set / dpa-setup: the catalog to use (may be omitted when the organization has exactly one).'),
+      productSetId: z.string().optional().describe('dpa-setup: the product set the ads show, or "default" for the whole catalog. Alternatively pass productSetName + productSetFilter to create or reuse a set.'),
+      productSetName: z.string().optional().describe('create-product-set / dpa-setup: product set name (required for create-product-set)'),
+      productSetFilter: z.record(z.any()).optional().describe('create-product-set / dpa-setup: Snapchat product set filter, a JSON object of upper-case attribute rules, for example {"CUSTOM_LABEL_0":{"EQ":"sale"}}. Combine rules with AND / OR lists.'),
+      snapchatDynamicTemplateId: z.string().optional().describe('dpa-setup: an existing dynamic template id (catalogs lists them); omit to use the catalog default'),
+      dpaSquads: z.array(z.object({
+        name: z.string().describe('Ad squad name (required, explicit)'),
+        dailyBudget: z.coerce.number().describe('Daily budget in dollars (minimum 5). The total is validated against maxDailyAdBudget.'),
+        audience: z.enum(['prospecting', 'atc_no_purchase', 'vc_no_atc']).describe('prospecting = broad (brand purchaser exclusions always applied); atc_no_purchase = added to cart, did not buy; vc_no_atc = viewed a product, did not add to cart'),
+        retentionDays: z.coerce.number().int().optional().describe('Retargeting lookback in days (1 to 30, default 14)'),
+        adName: z.string().describe('Name of the one dynamic product ad in this ad squad (required)'),
+        optimizationGoal: z.string().optional().describe('PIXEL_* optimization goal (default PIXEL_PURCHASE)'),
+        productSetId: z.string().optional().describe('Product set for this ad squad only, or "default"; empty uses the setup product set'),
+      })).optional().describe('dpa-setup: 1 to 10 ad squads, each created PAUSED with one dynamic product ad.'),
+      domain: z.string().optional().describe('pixel-stats: website domain to break events down for, for example forever21.com (default: every domain on each pixel)'),
+      days: z.coerce.number().int().optional().describe('pixel-stats: trailing days (default 7, max 28)'),
+      snapchatAdAccountId: z.string().optional().describe('Ad account id (UUID) to switch to (ad-accounts only)'),
+      level: z.enum(['campaign', 'adsquad', 'ad']).optional().describe('Insights breakdown level (default campaign)'),
+      batchCount: z.coerce.number().int().optional().describe('Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.'),
+      startDate: z.string().optional().describe('Insights window start, YYYY-MM-DD (account timezone)'),
+      endDate: z.string().optional().describe('Insights window end, YYYY-MM-DD inclusive (account timezone)'),
+      status: z.enum(['active', 'paused', 'all']).optional().describe('Status filter for campaigns, ad-squads and ads (default all)'),
+      approved: z.boolean().optional().describe('Approval flag for kill, activate, batch-status, the create actions (including create-product-set), and a real (dryRun:false) build or dpa-setup. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.'),
+    },
+    // Handler does NOT auto-set args.approved; the binary refuses every write
+    // without it (requireApproval in snapchat.go / snapchat_build.go), and the
+    // host approval card gates the call (resolveMerlinAction maps the snapchat
+    // writes to SPEND actions; a dry-run build or dpa-setup maps to 'dry-run').
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'snapchat-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── x_ads ────────────────────────────────────────────────
+  // X (Twitter) Ads API (twitter_ads.go, engine actions twitter-*). The tool
+  // is named x_ads for the product's current name; the engine keeps the
+  // twitter- prefix because Config/vault keys and the OAuth provider key
+  // (getTwitterOAuth, bootstrapProviderKeys) already use it. Reads plus the
+  // two status flips, which the binary gates on cmd.Approved
+  // (requireApproval) and the host gates on the approval card
+  // (SPEND_ACTIONS has kill + activate, Hard-Won Rule 19). There is
+  // deliberately NO creation push.
+  tools.push(defineTool({
+    name: 'x_ads',
+    description: 'X (Twitter) Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/engagements/clicks/purchases/ROAS for campaigns, line items or promoted posts over a date range, and pause (kill) or resume (activate) a campaign. Creating new X campaigns is not supported yet.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'twitter' },
+    preview: false,
+    input: {
+      action: z.enum(['status', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate']).describe('status = connection + selected ad account. ad-accounts = list accounts the login can see (pass twitterAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign.'),
+      brand: brandSchema,
+      campaignId: z.string().optional().describe('X campaign id for kill, activate, or campaign-level insights scoped to one campaign'),
+      twitterAdAccountId: z.string().optional().describe('X ad account id to switch to (ad-accounts only)'),
+      level: z.enum(['campaign', 'line_item', 'promoted_tweet']).optional().describe('Insights breakdown level (default campaign). line_item = ad group, promoted_tweet = individual promoted post.'),
+      batchCount: z.coerce.number().int().optional().describe('Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.'),
+      startDate: z.string().optional().describe('Insights window start, YYYY-MM-DD (ad account timezone)'),
+      endDate: z.string().optional().describe('Insights window end, YYYY-MM-DD inclusive (ad account timezone)'),
+      status: z.enum(['active', 'paused', 'all']).optional().describe('Campaign status filter for campaigns (default all)'),
+      approved: z.boolean().optional().describe('Approval flag for kill and activate. Pass true only when the user asked for the pause or resume; the Merlin approval card still asks them to confirm before it runs.'),
+    },
+    // Handler does NOT auto-set args.approved; the binary refuses kill and
+    // activate without it (requireApproval in twitter_ads.go), and the host
+    // approval card gates the call (SPEND_ACTIONS has kill + activate).
+    handler: async (args) => toEnvelope(await runBinary(ctx, 'twitter-' + args.action, args)),
+  }, tool, z, ctx));
+
+  // ── pinterest_ads ────────────────────────────────────────
+  // Pinterest Ads (API v5, engine pinterest.go). Reads plus pause/activate
+  // ONLY: there is deliberately no campaign creation or budget write yet.
+  // kill and activate are in mcp-approval-policy.js SPEND_ACTIONS, so both
+  // always card; the engine also refuses either without approved:true
+  // (requireApproval), and activate honours the brand's master spend pause.
+  // adGroupId maps to the engine's targetAdSetId explicitly (Rule 23: an
+  // undeclared or unmapped param is a silently unreachable capability).
+  tools.push(defineTool({
+    name: 'pinterest_ads',
+    description: 'Pinterest Ads: check the connection, list or switch ad accounts, list campaigns, pull performance (campaign, ad group, or ad level over a date range), and pause or resume campaigns, ad groups, or ads. Cannot create campaigns or change budgets.',
+    destructive: true,
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'pinterest' },
+    preview: false,
+    input: {
+      action: z.enum(['status', 'verify', 'ad-accounts', 'campaigns', 'insights', 'kill', 'activate']).describe('status/verify → connection check (verify makes a live call). ad-accounts → list ad accounts this login can manage (pass pinterestAdAccountId to switch). campaigns → list campaigns. insights → performance report. kill → pause campaigns/ad groups/ads (approval card). activate → resume them (approval card, respects the spend pause).'),
+      brand: brandSchema,
+      campaignId: z.string().optional().describe('Pinterest campaign id, or several comma-separated (kill/activate).'),
+      adGroupId: z.string().optional().describe('Pinterest ad group id, or several comma-separated (kill/activate).'),
+      adId: z.string().optional().describe('Pinterest ad id, or several comma-separated (kill/activate).'),
+      pinterestAdAccountId: z.string().optional().describe('Pinterest ad account id (digits) to switch this brand to (ad-accounts only).'),
+      level: z.enum(['campaign', 'adgroup', 'ad', 'account']).optional().describe('insights: reporting level (default campaign).'),
+      days: z.coerce.number().int().optional().describe('insights: last N complete days (default 7, max 90).'),
+      startDate: z.string().optional().describe('insights: YYYY-MM-DD, within the last 90 days. Pass with endDate instead of days.'),
+      endDate: z.string().optional().describe('insights: YYYY-MM-DD, at most 90 days after startDate.'),
+      status: z.enum(['active', 'paused', 'archived', 'all']).optional().describe('campaigns/insights: filter by delivery status (campaigns default active+paused, insights default all).'),
+      approved: z.boolean().optional().describe('Approval flag for kill/activate. Set by the Merlin approval card on user click; the engine REFUSES the change without it. Do not set true unless the user explicitly approved pausing or resuming these exact ids.'),
+    },
+    handler: async (args) => {
+      const { adGroupId, ...rest } = args;
+      const mapped = { ...rest };
+      if (adGroupId) mapped.targetAdSetId = adGroupId;
+      return toEnvelope(await runBinary(ctx, 'pinterest-' + args.action, mapped));
     },
   }, tool, z, ctx));
 
@@ -3570,9 +3998,14 @@ function buildTools(tool, z, ctx) {
       // them; the binary's runPinterestLogin / runSnapchatLogin / runTwitterLogin
       // remain (TODO providers) but are unreachable from the agent. When any
       // graduates to ACTIVE, add it back here AND update the comingSoon list.
+      // snapchat graduated 2026-10-09 (snapchat.go): it falls through to
+      // ctx.runOAuthFlow like quickbooks, and the binary refuses with a
+      // plain-English "isn't available yet" until the BFF has delivered its
+      // client_id (Rule 17). twitter (X Ads) graduated the same day
+      // (twitter_ads.go) on the same terms.
       // klaviyo stays in the enum because its API-key tile is the active
       // path — the comingSoon branch redirects the user to the tile.
-      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'triplewhale', 'openai_ads', 'roundel', 'threads', 'quickbooks', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
+      platform: z.enum(['meta', 'tiktok', 'google', 'shopify', 'amazon', 'klaviyo', 'slack', 'discord', 'etsy', 'reddit', 'applovin', 'postscript', 'clarity', 'posthog', 'stripe', 'linkedin', 'pinterest', 'triplewhale', 'openai_ads', 'threads', 'quickbooks', 'snapchat', 'twitter', 'yotpo', 'sesami', 'faire', 'shipstation', 'loop_returns', 'cin7', 'gorgias', 'shopify_payments']).describe('Platform to connect'),
       brand: brandSchema.optional(),
       store: z.string().optional().describe('Shopify store URL or name (for shopify)'),
     },
@@ -3617,7 +4050,7 @@ function buildTools(tool, z, ctx) {
       // today — but if a future refactor accidentally removes that branch,
       // klaviyo falls through to a generic "coming soon" message instead
       // of a binary fatal, preserving the friendly-error contract.
-      const comingSoon = ['pinterest', 'snapchat', 'twitter', 'klaviyo'];
+      const comingSoon = ['klaviyo'];
       if (comingSoon.includes(args.platform)) {
         return {
           summary: `${args.platform} integration is coming soon`,
@@ -3643,12 +4076,6 @@ function buildTools(tool, z, ctx) {
         return {
           summary: 'OpenAI Ads connects via API key',
           instructions: 'Click the OpenAI Ads tile in the Connections panel and paste your Ads API key from ads.openai.com (Settings → API). It authorizes real ad spend, so it is entered in a masked field, never in chat. Then call mcp__merlin__openai_ads with action "verify" to confirm it works, or connection_status to check.',
-        };
-      }
-      if (args.platform === 'roundel') {
-        return {
-          summary: 'Roundel (Target) connects with a Criteo Retail Media API app',
-          instructions: 'Create an app with the Retail Media domain at developers.criteo.com, have an Admin of the brand Roundel retail media account approve its consent link, then click the Roundel tile in the Connections panel and paste the Client ID, Client Secret (stored encrypted; never paste it in chat) and Account ID. Then call mcp__merlin__roundel with action "verify", or "discover" to find the account and Target retailer ids.',
         };
       }
       // Microsoft Clarity connects via the dedicated `clarity` tool: it
@@ -3718,7 +4145,7 @@ function buildTools(tool, z, ctx) {
       if (args.platform === 'shipstation') {
         return {
           summary: 'ShipStation connects via API credentials',
-          instructions: 'Click the ShipStation tile in the Connections panel and enter your API Key + Secret (ShipStation → Account → API Settings). Alternatively call mcp__merlin__shipstation with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+          instructions: 'Click the ShipStation tile in the Connections panel and enter your V1 API Key + Secret (ShipStation Settings > Account > API Settings; V1 needs the Gold plan or higher in the US/Canada, Scale or higher elsewhere). Alternatively call mcp__merlin__shipstation with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
         };
       }
       if (args.platform === 'loop_returns') {
@@ -3736,7 +4163,7 @@ function buildTools(tool, z, ctx) {
       if (args.platform === 'cin7') {
         return {
           summary: 'Cin7 connects via API credentials',
-          instructions: 'Click the Cin7 tile in the Connections panel and enter your Account ID + Application Key (Cin7 Core → Settings → API). Alternatively call mcp__merlin__cin7 with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
+          instructions: 'Click the Cin7 tile in the Connections panel, pick Cin7 Core or Cin7 Omni, and enter the credentials (Core: Account ID + Application Key from Settings > API. Omni: API username + API key from Settings > Integrations & API > API v1). Alternatively call mcp__merlin__cin7 with action "connect" for the same steps, then action "verify" to validate. Then use connection_status to verify.',
         };
       }
       try {
@@ -3747,8 +4174,19 @@ function buildTools(tool, z, ctx) {
             message: `Connection failed: ${redactOutput(result.error, '')}`,
           }));
         }
-        // NEVER return tokens. Only success status.
-        return { summary: `Connected ${args.platform}`, success: true, platform: args.platform };
+        // NEVER return tokens. Only success status, plus the engine's
+        // plain-English ad-account selection note when the login could see
+        // more than one plausible account (Snapchat / X / Pinterest). The
+        // note is the only signal the user gets that Merlin may have picked
+        // another business's account, so the agent must relay it.
+        const out = { summary: `Connected ${args.platform}`, success: true, platform: args.platform };
+        if (typeof result.accountVerified === 'boolean') out.accountVerified = result.accountVerified;
+        if (typeof result.accountNote === 'string' && result.accountNote) {
+          out.accountNote = redactOutput(result.accountNote, '');
+          out.summary += `. Ad account check: ${out.accountNote}`;
+          out.instructions = 'Tell the user which ad account was selected and why, list the other accounts from accountNote, and offer to switch if it is the wrong business.';
+        }
+        return out;
       } catch (e) {
         return envelope.fail(errors.makeError('INTERNAL_ERROR', {
           message: `Connection error: ${redactOutput(e.message, '')}`,

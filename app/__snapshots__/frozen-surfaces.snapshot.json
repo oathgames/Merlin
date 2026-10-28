@@ -23,6 +23,7 @@
       "create-custom-metric",
       "create-key-event",
       "create-version",
+      "exclude-audience",
       "export-raw",
       "flow-delete",
       "flow-set-message-template",
@@ -30,11 +31,13 @@
       "flows-bulk-import",
       "install-ga4",
       "install-quiz-funnel",
+      "list-create",
       "post",
       "publish",
       "quiz-funnel-gen",
       "resume-all",
       "segment-create",
+      "subscribe-bulk",
       "sync-shopify",
       "template-delete",
       "tier1-cleanup",
@@ -56,10 +59,12 @@
       "mcp__merlin__meta_promote_to_retargeting": "Promote ad into Meta retargeting",
       "mcp__merlin__meta_refresh_creative_spec": "Rebuild a live Meta ad's creative enhancement settings",
       "mcp__merlin__meta_scale_winner": "Scale this winning Meta ad",
+      "mcp__merlin__meta_set_attribution": "Change the attribution window of a live Meta ad set",
       "mcp__merlin__meta_set_frequency_cap": "Set a frequency cap on a Meta ad set",
       "mcp__merlin__meta_set_optimization_goal": "Change what a live Meta ad set optimizes for",
       "mcp__merlin__meta_set_url_tags": "Replace the UTM tags on live Meta ads",
-      "mcp__merlin__meta_upload_customer_list": "Upload a customer list as a Meta audience"
+      "mcp__merlin__meta_upload_customer_list": "Upload a customer list as a Meta audience",
+      "mcp__merlin__tiktok_gmv_max_set_roi_target": "Change a TikTok GMV Max ROI target (a lower target lets GMV Max spend more)"
     },
     "intentToolToAction": {
       "mcp__merlin__meta_activate_asset": "duplicate",
@@ -84,17 +89,21 @@
       "mcp__merlin__meta_research_competitor_ads": "competitor-scan",
       "mcp__merlin__meta_review_performance": "insights",
       "mcp__merlin__meta_scale_winner": "duplicate",
+      "mcp__merlin__meta_set_attribution": "duplicate",
       "mcp__merlin__meta_set_frequency_cap": "setup",
       "mcp__merlin__meta_set_optimization_goal": "duplicate",
       "mcp__merlin__meta_set_url_tags": "duplicate",
       "mcp__merlin__meta_setup_account": "discover",
-      "mcp__merlin__meta_upload_customer_list": "setup"
+      "mcp__merlin__meta_upload_customer_list": "setup",
+      "mcp__merlin__tiktok_audit": "audit",
+      "mcp__merlin__tiktok_gmv_max_set_roi_target": "roi-target"
     },
     "readOnlyActions": [
       "accounts",
       "adgroups",
       "ads",
       "analytics",
+      "audiences",
       "audit",
       "automation-emails",
       "automations-list",
@@ -113,10 +122,17 @@
       "flow-get",
       "flows-list",
       "gaps",
+      "gmv-max-ads",
+      "gmv-max-authorizations",
+      "gmv-max-campaign-info",
+      "gmv-max-campaigns",
+      "gmv-max-report",
+      "gmv-max-shop-check",
+      "gmv-max-stores",
+      "gmv-max-videos",
       "insights",
       "keywords",
       "landing-audit",
-      "line-items",
       "list",
       "list-avatars",
       "list-versions",
@@ -149,6 +165,8 @@
       "lockdown",
       "push",
       "retarget",
+      "roi-target",
+      "search-create",
       "setup",
       "setup-retargeting"
     ]
@@ -172,6 +190,7 @@
       "blogPublishMode",
       "cin7AccountId",
       "cin7ApplicationKey",
+      "cin7Product",
       "clarityApiToken",
       "dailyAdBudget",
       "discordChannelId",
@@ -191,6 +210,9 @@
       "gorgiasEmail",
       "heygenApiKey",
       "imageModel",
+      "impactAccountSid",
+      "impactAuthToken",
+      "impactProgramId",
       "klaviyoAccessToken",
       "klaviyoApiKey",
       "loopApiKey",
@@ -227,10 +249,6 @@
       "roktAccountId",
       "roktAppId",
       "roktAppSecret",
-      "roundelAccountId",
-      "roundelClientId",
-      "roundelClientSecret",
-      "roundelRetailerId",
       "sesamiApiKey",
       "sesamiClientId",
       "sesamiShopId",
@@ -241,12 +259,21 @@
       "slackBotToken",
       "slackChannel",
       "slackWebhookUrl",
+      "snapchatAccessToken",
+      "snapchatAdAccountId",
+      "snapchatOrganizationId",
+      "snapchatRefreshToken",
+      "snapchatTokenExpiresAt",
       "startAtLogin",
       "tiktokAccessToken",
       "tiktokAdvertiserId",
       "tiktokPixelId",
       "trendtrackApiKey",
       "triplewhaleApiKey",
+      "twitterAccessToken",
+      "twitterAccessTokenSecret",
+      "twitterAdAccountId",
+      "twitterUserId",
       "vertical",
       "yotpoAppKey",
       "yotpoSecretKey"
@@ -276,6 +303,9 @@
       "gorgiasDomain",
       "gorgiasEmail",
       "heygenApiKey",
+      "impactAccountSid",
+      "impactAuthToken",
+      "impactProgramId",
       "klaviyoAccessToken",
       "klaviyoApiKey",
       "klaviyoRefreshToken",
@@ -302,10 +332,6 @@
       "roktAccountId",
       "roktAppId",
       "roktAppSecret",
-      "roundelAccountId",
-      "roundelClientId",
-      "roundelClientSecret",
-      "roundelRetailerId",
       "sesamiApiKey",
       "sesamiClientId",
       "sesamiShopId",
@@ -315,6 +341,8 @@
       "slackBotToken",
       "slackWebhookUrl",
       "snapchatAccessToken",
+      "snapchatAdAccountId",
+      "snapchatOrganizationId",
       "snapchatRefreshToken",
       "stripeAccessToken",
       "threadsAccessToken",
@@ -325,7 +353,10 @@
       "triplewhaleApiKey",
       "triplewhaleRefreshToken",
       "twitterAccessToken",
+      "twitterAccessTokenSecret",
+      "twitterAdAccountId",
       "twitterRefreshToken",
+      "twitterUserId",
       "yotpoAppKey",
       "yotpoSecretKey"
     ]
@@ -488,6 +519,10 @@
         },
         "dailyBudget": {
           "type": "number"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -718,12 +753,13 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Cin7 Core inventory reporting (read-only). Pulls products, stock levels, and sales-order stats into the dashboard. Actions: report (pull inventory/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved Account ID + Application Key). Connect by entering your Account ID + Application Key from Cin7 Core → Settings → API into the Cin7 tile.",
+      "description": "Cin7 inventory data (read-only), Cin7 Core or Cin7 Omni. Actions: report (pull inventory/metrics for a window, batchCount = days, default 30); export (Cin7 Omni only: full raw pull of every Omni entity, sales orders, quotes, purchase orders, credit notes, payments, fees, payouts, stock, stock adjustments and transfers, production jobs, products, product options, categories, BOMs, serial numbers, contacts, branches, users, vouchers, to JSONL plus a manifest of counts, bytes and date coverage; runs as a background job you poll with jobs_poll, waits out Omni rate limits and resumes from a checkpoint; no dates = full history, or startDate+endDate or days; cin7DateField picks modified (default) or created dates for the window; outputDir picks the folder); status (connection check, no API call); connect (how to get Cin7 API credentials); verify (validate the saved credentials). Cin7 Core: Account ID + Application Key from Cin7 Core Settings > API. Cin7 Omni: API username + API key from Cin7 Omni Settings > Integrations & API > API v1. Enter them on the Cin7 tile.",
       "input": {
         "action": {
-          "description": "report → pull inventory/metrics for the window. status → check connection (no API call). connect → how to get Cin7 API credentials. verify → validate the saved credentials.",
+          "description": "report: pull inventory/metrics for the window. export: full raw JSONL export of Cin7 Omni as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get Cin7 API credentials. verify: validate the saved credentials.",
           "enum": [
             "report",
+            "export",
             "status",
             "connect",
             "verify"
@@ -740,8 +776,36 @@
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
         },
+        "cin7DateField": {
+          "description": "export: which date the window filters on, modified (default, catches edits) or created. Entities with only one date use that one.",
+          "enum": [
+            "modified",
+            "created"
+          ],
+          "type": "string"
+        },
+        "days": {
+          "description": "export: only records in the last N days (UTC). Ignored when startDate is given. Omit every date param for full history.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "export: window end, YYYY-MM-DD inclusive, UTC. Default open-ended.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "outputDir": {
+          "description": "export: absolute folder for the JSONL files and manifest.json. Must be empty or a previous run of the same export. Default: a cin7-export folder under the brand results.",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "export: window start, YYYY-MM-DD inclusive, UTC. Omit for full history.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         }
       },
@@ -1326,7 +1390,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days), budget-status (read one campaign's daily budget, bidding strategy, and whether the budget is shared; pass campaignId), budget (change one campaign's daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google's brand directory and shows the list + campaigns that would change), brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card).",
+      "description": "Manage Google Ads campaigns: create, check performance, pause/scale, and run YouTube Shorts video ads. Actions: status, setup, push (Performance Max image ad), insights, kill, duplicate, demandgen-push (YouTube Shorts / Demand Gen VIDEO ads: builds a PAUSED Demand Gen campaign + ad group and one video ad per ads[] entry. Each ad takes EITHER youtubeVideoId (an existing YouTube video id or any YouTube/Shorts URL, e.g. the brand's organic Shorts, no upload) OR videoPath (a local mp4, e.g. a Meta winner, uploaded unlisted through Google Ads; uploads run as a background job, poll jobs_poll). Needs campaignName + adSetName (or targetAdSetId), dailyBudget for a new campaign, businessName (<=25 chars), logoPath (square logo), and per ad: name, headline (<=40 chars, up to 5 lines split by |), body (description <=90), link. Optional excludeUserListIds (user list ids from audiences) excludes those customers on the ad group. Re-running is idempotent: existing ads are skipped by name.), activate (turn a PAUSED Google campaign on; pass campaignId; shows an approval card), video-insights (per-ad Demand Gen video performance; batchCount = days), budget-status (read one campaign's daily budget, bidding strategy, and whether the budget is shared; pass campaignId), budget (change one campaign's daily budget: campaignId + dailyBudget in dollars; refuses shared budgets; shows an approval card), brand-exclusion-preview (Performance Max brand exclusions, read only: looks up brandQuery in Google's brand directory and shows the list + campaigns that would change), brand-exclusion (apply it: builds or reuses the brand list brandListName, adds brandEntityIds from the preview, and attaches it as a negative to every PMax campaign or to campaignIds; re-running is idempotent; shows an approval card), search-create (AI Max for Search: builds one PAUSED Search campaign in a single all-or-nothing request, with AI Max on, maximize conversion value bidding (optional targetRoas), Google Search only, one ad group (adSetName, default the campaign name), BROAD keywords, optional negativeKeywords, and one responsive search ad. Needs campaignName (must not already exist), dailyBudget, adLink (https), keywords, 3 to 15 headlines (<=30 chars each), 2 to 4 descriptions (<=90 chars each); optional path1/path2 (<=15 chars), finalUrlExpansion (default true), geoTargetConstants (default US), brandExclusion=true to attach a negative brand list (reuses brandListName, or creates it from brandEntityIds / brandQuery). excludeUserListIds = user list ids (from audiences) excluded as negative audiences in the same request. Always shows an approval card; start it later with activate), audiences (read only: every user list / Customer Match list with size for Search and Display, membership status, eligibility and match rate, plus the excluded lists of each ENABLED campaign (for Demand Gen, per ad group) and customer acquisition goal mode; flags prospecting campaigns and Demand Gen ad groups that exclude no customers), exclude-audience (attach userListId as a negative audience to campaignIds in one all-or-nothing request: SEARCH and DISPLAY at campaign level, DEMAND_GEN on every ad group of the campaign; do not mix DEMAND_GEN with SEARCH/DISPLAY in one call; skips campaigns and ad groups that already exclude it; refuses Performance Max, which needs the \"new customers only\" customer acquisition goal instead; shows an approval card).",
       "input": {
         "action": {
           "description": "Operation",
@@ -1343,7 +1407,10 @@
             "budget-status",
             "budget",
             "brand-exclusion-preview",
-            "brand-exclusion"
+            "brand-exclusion",
+            "search-create",
+            "audiences",
+            "exclude-audience"
           ],
           "type": "string"
         },
@@ -1408,7 +1475,7 @@
           "type": "array"
         },
         "approved": {
-          "description": "Approval flag for activate, budget and brand-exclusion. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.",
+          "description": "Approval flag for activate, budget, brand-exclusion and exclude-audience. Set by the Electron approval card on user click; the engine REFUSES activation without it. Do not set true unless the user explicitly approved turning the campaign on.",
           "type": "boolean"
         },
         "batchCount": {
@@ -1438,6 +1505,10 @@
           },
           "type": "array"
         },
+        "brandExclusion": {
+          "description": "search-create: attach a negative brand list to the new campaign",
+          "type": "boolean"
+        },
         "brandListName": {
           "description": "brand-exclusion: brand list name to create or reuse, default \"Brand Exclusions\"",
           "type": "string"
@@ -1454,7 +1525,7 @@
           "type": "string"
         },
         "campaignIds": {
-          "description": "brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign",
+          "description": "brand-exclusion: Performance Max campaign ids to attach to; omit for every non-removed PMax campaign. exclude-audience: required, the SEARCH / DISPLAY or DEMAND_GEN campaign ids to exclude userListId from",
           "items": {
             "type": "string"
           },
@@ -1486,8 +1557,37 @@
         "dailyBudget": {
           "type": "number"
         },
+        "descriptions": {
+          "description": "search-create: responsive search ad descriptions, 2 to 4, max 90 characters each",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "excludeUserListIds": {
+          "description": "search-create: numeric user list ids to exclude from the new campaign as negative audiences. demandgen-push: user list ids excluded on the ad group (new or existing), verified on read-back",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "finalUrlExpansion": {
+          "description": "search-create: let AI Max send traffic to other pages on the site (default true); false keeps every click on adLink",
+          "type": "boolean"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "geoTargetConstants": {
           "description": "demandgen-push: Google geo target ids for a NEW ad group, default [\"2840\"] (United States)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "headlines": {
+          "description": "search-create: responsive search ad headlines, 3 to 15, max 30 characters each, all distinct",
           "items": {
             "type": "string"
           },
@@ -1497,12 +1597,34 @@
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
         },
+        "keywords": {
+          "description": "search-create: ad group keywords, added as BROAD match (max 80 chars / 10 words each)",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "limit": {
           "description": "Max results to return",
           "type": "number"
         },
         "logoPath": {
           "description": "demandgen-push: absolute path to a square logo image (at least 128x128)",
+          "type": "string"
+        },
+        "negativeKeywords": {
+          "description": "search-create: campaign-level negative keywords",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "path1": {
+          "description": "search-create: display URL path 1, max 15 characters",
+          "type": "string"
+        },
+        "path2": {
+          "description": "search-create: display URL path 2, max 15 characters, needs path1",
           "type": "string"
         },
         "sortBy": {
@@ -1516,6 +1638,14 @@
         "targetCpa": {
           "description": "demandgen-push: target cost per acquisition in dollars, with bidStrategy TARGET_CPA",
           "type": "number"
+        },
+        "targetRoas": {
+          "description": "search-create: target ROAS as a ratio (4 = 400%); omit for plain maximize conversion value",
+          "type": "number"
+        },
+        "userListId": {
+          "description": "exclude-audience: numeric user list id to exclude (from the audiences action), e.g. a Customer Match purchaser list",
+          "type": "string"
         },
         "youtubeChannelId": {
           "description": "demandgen-push: upload mp4s to this YouTube channel (must be linked to the Google Ads account). Omit to upload unlisted to the Google-managed channel.",
@@ -1956,6 +2086,108 @@
     {
       "annotations": {
         "brandRequired": false,
+        "concurrency": {
+          "platform": "impact"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "impact.com affiliate and partnership program reporting (read-only; formerly Impact Radius). Actions: status (connection check, no API call); connect (how to get the Account SID and Auth Token); setup / verify (validate the saved credentials, list programs); discover (company currency and timezone, programs, and the saved reports that can be exported over the API); insights (weekly scorecard for a window: revenue, actions, payout, total cost, ROAS, CPA, AOV, new vs returning customers, reversals, top partners, by program and by day; pass impactReportId of a partner performance report to add clicks); actions (conversion rows, newest first, filter with impactState); partners (partner roster, filter with status); clicks (clicks by partner and day for one program, at most 7 days, impact.com allows 10 day-exports per day); report (no impactReportId lists exportable reports; with one, exports it for the window; with impactJobId, collects a still-running export). Window: days (default 7) or startDate / endDate (YYYY-MM-DD, matched on the account-timezone event date, so a Sun-Sat week is exact). impactProgramId picks one program (default: the brand default, else every program). limit caps rows returned. Cannot change payouts, partners or actions.",
+      "input": {
+        "action": {
+          "description": "status → connection check (no API call). connect → how to get API credentials. setup/verify → validate credentials. discover → programs and exportable reports. insights → weekly affiliate scorecard. actions → conversion rows. partners → partner roster. clicks → clicks by partner and day. report → list, export or collect a saved report.",
+          "enum": [
+            "status",
+            "connect",
+            "setup",
+            "verify",
+            "discover",
+            "insights",
+            "actions",
+            "partners",
+            "clicks",
+            "report"
+          ],
+          "type": "string"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "days": {
+          "description": "Window length in days ending today (default 7; clicks default 1, max 7; others max 366). Ignored when startDate is set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "Window end, YYYY-MM-DD (inclusive). Defaults to today.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "impactJobId": {
+          "description": "Collect a still-running export by the jobId an earlier call returned (report action).",
+          "pattern": "^[A-Za-z0-9-]{1,64}$",
+          "type": "string"
+        },
+        "impactProgramId": {
+          "description": "impact.com program (campaign) id from discover. Defaults to the brand default, else every program.",
+          "pattern": "^\\d{1,12}$",
+          "type": "string"
+        },
+        "impactReportId": {
+          "description": "Saved report id or handle from discover. report exports it; insights uses it as the clicks source (a report with partner and Clicks columns).",
+          "pattern": "^[A-Za-z0-9_.-]{1,128}$",
+          "type": "string"
+        },
+        "impactState": {
+          "description": "actions filter by action state (default all).",
+          "enum": [
+            "pending",
+            "approved",
+            "reversed",
+            "all"
+          ],
+          "type": "string"
+        },
+        "limit": {
+          "description": "Max rows returned: top partners for insights (default 10), actions / partners / report rows (default 200). The results file always keeps every row.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "startDate": {
+          "description": "Window start, YYYY-MM-DD (inclusive, account timezone).",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "status": {
+          "description": "partners filter by partner state (default all).",
+          "enum": [
+            "active",
+            "pending",
+            "expired",
+            "declined",
+            "suspended",
+            "deactivated",
+            "closing",
+            "closed",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "name": "impact"
+    },
+    {
+      "annotations": {
+        "brandRequired": false,
         "costImpact": "none",
         "destructive": true,
         "idempotent": true,
@@ -2053,7 +2285,7 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email's content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"). Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\".",
+      "description": "Klaviyo email marketing — performance reports, lists, campaigns + email template CRUD (list/get/create/update/delete) + bulk template upload from a folder of HTML files + full programmatic Flows API (list/get/create/update-status/delete + bulk-import a manifest of email automations with CAN-SPAM gate + flow-set-message-template, which repoints a flow email step at a template in the template library — the only API path that can change a live flow email's content, since flow-authored templates are read-only). Performance analytics: flow-performance returns sends/opens/clicks/conversions/recovered-revenue per flow over a window; flow-message-performance breaks the same stats out per individual email inside one flow (\"which subject line is winning\"); metric-aggregate returns per-day counts of any tracked metric (\"how many times did Started Checkout fire\"), or with measurement \"unique\" distinct profiles per day, or \"sum_value\" the summed event value (e.g. order revenue). segment-get reads one segment definition in plain language (ANDed groups of ORed conditions, Apple Mail Privacy machine-open filters called out) plus its profile_count. Token swap translates {{UNSUB_URL}} / {{ FIRST_NAME }} / {{COMPANY_ADDRESS}} placeholders into Klaviyo Django tags. When to use (REGRESSION GUARD 2026-05-10, E003 — agent-routing hints): For email-flow ROI (\"how is my welcome series doing\"), use action=\"flow-performance\". For per-email A/B inside a flow (\"which welcome email is winning\"), use \"flow-message-performance\". For metric time-series (\"how many checkouts last week\"), use \"metric-aggregate\". For \"what is in this segment\" / \"does this segment count machine opens\", use \"segment-get\" with segmentId (ids come from segments-list). To import a CSV (or a folder of CSVs) of consented emails into lists as SUBSCRIBED, use \"subscribe-bulk\": it is a DRY RUN by default (rows, valid/duplicate counts, target lists, calls and time needed, nothing written); show the user that report, then pass dryRun:false only when they ask to import. Profiles Klaviyo has as unsubscribed, spam-reported or manually suppressed are always skipped. \"list-create\" makes one list by exact name, idempotently.",
       "input": {
         "action": {
           "description": "Operation — export → full-history bulk export of profiles/lists/segments/campaigns/flows/metrics/events via cursor pagination to exports/<brand>/klaviyo/*.jsonl + MANIFEST.txt (for data-procurement packages)",
@@ -2084,7 +2316,10 @@
             "flow-set-message-template",
             "segments-list",
             "segment-create",
-            "export"
+            "segment-get",
+            "export",
+            "list-create",
+            "subscribe-bulk"
           ],
           "type": "string"
         },
@@ -2110,9 +2345,33 @@
           "description": "Klaviyo campaign ID to send/schedule (campaign-send, campaign-schedule). The campaign must already exist as a draft in Klaviyo.",
           "type": "string"
         },
+        "consentedAt": {
+          "description": "subscribe-bulk: when the original consent was collected, YYYY-MM-DD or RFC3339, in the past. Required for the real run while historicalImport is on.",
+          "type": "string"
+        },
+        "csvDir": {
+          "description": "subscribe-bulk: a folder of CSVs (use with csvPattern and listNameTemplate). Files run in name order.",
+          "type": "string"
+        },
+        "csvPath": {
+          "description": "subscribe-bulk: one CSV with an Email column (or a single headerless column of emails).",
+          "type": "string"
+        },
+        "csvPattern": {
+          "description": "subscribe-bulk: file-name pattern inside csvDir, e.g. \"F21_Verified_*.csv\". Default \"*.csv\".",
+          "type": "string"
+        },
+        "customSource": {
+          "description": "subscribe-bulk: consent source label stored on each profile. Default \"Merlin bulk import\".",
+          "type": "string"
+        },
         "dir": {
           "description": "Directory of files for bulk-upload (.html) or image-upload (.png/.jpg/.gif/.webp). Must be inside assets/brands/<brand>/. For image-upload, files upload in filename order, so a 01_/02_/03_ prefix round-trips as the flow order.",
           "type": "string"
+        },
+        "dryRun": {
+          "description": "subscribe-bulk only. Defaults to TRUE: reads the files and Klaviyo (lists, suppressed profiles) and reports rows, valid/duplicate/invalid counts, target lists, calls needed and duration, and writes NOTHING to Klaviyo. Pass false (with approved:true) only after the user reviewed the dry run and asked to import.",
+          "type": "boolean"
         },
         "editorType": {
           "description": "Klaviyo editor the created template opens in: 'SYSTEM_DRAGGABLE' for the drag-and-drop builder a marketer can edit visually (use this for CAMPAIGN templates), or 'CODE' for raw HTML (the default, and correct for flow templates Merlin owns end to end). Klaviyo may store a different editor than requested; the result reports editorTypeStored so a silent downgrade is visible.",
@@ -2138,6 +2397,10 @@
           "description": "When true, flows-bulk-import bypasses the live-state dedup that refuses duplicate-by-name imports. Use this only when intentionally creating a second copy.",
           "type": "boolean"
         },
+        "historicalImport": {
+          "description": "subscribe-bulk: default true. Records the import as consent collected in the past (needs consentedAt): Klaviyo skips double opt-in emails and \"Added to list\" flows. Flows triggered by \"Subscribed to Email Marketing\" are NOT documented as skipped.",
+          "type": "boolean"
+        },
         "htmlContent": {
           "description": "Raw email HTML body (create/update). Max 5 MB.",
           "type": "string"
@@ -2150,8 +2413,35 @@
           "description": "When true on flow-get, request the heavy `definition` blob (full flow topology) via additional-fields[flow]=definition. Default true. Set false to skip and get only the summary attributes.",
           "type": "boolean"
         },
+        "listId": {
+          "description": "subscribe-bulk: the Klaviyo list id every CSV goes into (ids from action \"lists\"). Give exactly one of listId, listName, listNameTemplate.",
+          "type": "string"
+        },
+        "listName": {
+          "description": "list-create: exact name of the list to create (an existing list with this exact name is returned instead). subscribe-bulk: exact name of the one target list; created as single opt-in on the real run if missing.",
+          "type": "string"
+        },
+        "listNameTemplate": {
+          "description": "subscribe-bulk with csvDir: one list per file. {n} = the last number in the file name (zero padding kept), {basename} = file name without extension. e.g. \"F21_Warmup_Batch_{n}\" maps F21_Verified_07.csv to F21_Warmup_Batch_07.",
+          "type": "string"
+        },
         "manifestPath": {
           "description": "Filesystem path to a flow manifest JSON for flows-bulk-import. MUST live under assets/brands/<brand>/email/ — the binary refuses arbitrary paths to block traversal. Manifest shape: {manifest_version, brand, flows:[{name, status?, trigger, steps}, ...]}. References uploaded templates by template_id (run templates-bulk-upload first to get the IDs).",
+          "type": "string"
+        },
+        "maxMinutes": {
+          "description": "subscribe-bulk: engine time budget per invocation before it checkpoints and pauses (default 25). The background job re-invokes until done.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "measurement": {
+          "description": "metric-aggregate only: count (default) = events per day, unique = distinct profiles per day (per-day uniques do NOT add up to a window unique), sum_value = summed event value per day (e.g. revenue on an order metric).",
+          "enum": [
+            "count",
+            "unique",
+            "sum_value"
+          ],
           "type": "string"
         },
         "messageName": {
@@ -2159,11 +2449,19 @@
           "type": "string"
         },
         "metricId": {
-          "description": "Klaviyo metric ID. Required for metric-aggregate (pick one from the metrics list shown by the legacy \"performance\" action). Optional for campaign-performance / flow-performance: which Placed Order metric to attribute against when the account has more than one (default prefers the Shopify integration metric; the report lists the alternatives).",
+          "description": "Klaviyo metric ID. Required for metric-aggregate (pick one from the metrics list shown by the legacy \"performance\" action). Optional for campaign-performance / flow-performance / flow-message-performance: the conversion metric to attribute against. Default is Placed Order (preferring the Shopify integration metric when there are several); an account with no Placed Order falls back to another order metric, and with no order metric at all to an engagement metric, in which case the report says orders and revenue are not meaningful.",
           "type": "string"
         },
         "nameTemplate": {
           "description": "Format string for bulk-upload, e.g. \"POG / 01-welcome / {basename}\". {basename} = filename without extension.",
+          "type": "string"
+        },
+        "optInProcess": {
+          "description": "list-create / lists created by subscribe-bulk. Default single_opt_in. A double opt-in list emails a confirmation to every profile added without historicalImport.",
+          "enum": [
+            "single_opt_in",
+            "double_opt_in"
+          ],
           "type": "string"
         },
         "replyTo": {
@@ -2176,6 +2474,10 @@
         },
         "segmentBody": {
           "description": "Full segment body for segment-create. Shape: {name, definition:{condition_groups:[{conditions:[{type:\"profile-metric\", metric_id, measurement:\"count\"|\"sum\", measurement_filter:{type:\"numeric\",operator,value}, timeframe_filter:{type:\"date\",operator:\"in-the-last\"|\"alltime\"|..., quantity?, unit?}}]}]}}. Condition GROUPS are ANDed together; conditions WITHIN a group are ORed — \"zero opens AND zero clicks in 60d\" needs two groups of one condition each. metric_id values come from the \"performance\" action's tracked-metrics list. The binary validates the envelope (name + non-empty condition_groups) and refuses duplicate segment names against live Klaviyo state; condition-schema errors surface verbatim from Klaviyo's 400 responses."
+        },
+        "segmentId": {
+          "description": "Klaviyo segment ID for segment-get (read-only). Get ids from segments-list.",
+          "type": "string"
         },
         "startDate": {
           "description": "campaign-performance / flow-performance: exact window start, YYYY-MM-DD inclusive (ET). Give with endDate; overrides batchCount.",
@@ -2270,6 +2572,10 @@
         "dailyBudget": {
           "description": "Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform's API. If the user says \"$10 a day\", pass 10. If unsure, ask the user.",
           "type": "number"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -2506,6 +2812,10 @@
           "description": "New daily budget in DOLLARS",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -2715,6 +3025,10 @@
           "description": "Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform's API. If the user says \"$10 a day\", pass 10. If unsure, ask the user.",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -2784,10 +3098,10 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the \"forgot to exclude purchasers\" leak, run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog's review status. Also the account INVENTORY surface: list-adsets returns every ad set with its parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link (pass status:\"paused\" to find staged drafts, status:\"all\" for everything) — this is how you verify a campaign really was staged PAUSED before anyone activates it; list-ads returns the ads inside one ad set with their creative format, per-placement image hashes, and — the fields a destination or attribution audit needs — every distinct destination URL the ad points at (links[] plus linkCount, which counts placement-customized / Advantage+ creatives correctly; a linkCount of 0 means the ad has NO readable destination and a linkCount above 1 means its placements point at different pages) and the ad's urlTags (the UTM string Meta appends to every click; an empty urlTags means clicks land untagged and Triple Whale attribution is broken for that ad); inspect-adset dumps one ad set's full settings plus a sample creative's toggles so a new ad set can be built to match a proven winner; list-videos lists videos already uploaded to the ad account; list-catalog-sets lists a catalog's product sets and feeds (this is where the productSetId for DPA setup comes from); resolve-geo checks that US state names resolve to Meta region keys before a geo-targeted build; aware-audience returns the tiered warm/addressable audience pool (the retargeting-readiness leading indicator); ad-rejections lists EVERY disapproved or with-issues ad in the account with the actual policy reason (failedDeliveryChecks, issues, reviewFeedback, plus a flattened reasons[] list and noReasonReturned when Meta gave none), which is the action to use for \"why was my ad rejected\". All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says \"why was my ad rejected\", \"which ads are disapproved\", \"audit my retargeting\", \"what's my pixel match quality\", \"audit my events setup\", \"check my EMQ\", \"list my custom audiences\", \"what ad sets do I have\", \"are those campaigns actually paused\", \"show me the ads in that ad set\", \"what videos are uploaded\", \"what product sets exist\", or \"is my catalog healthy\". export-creatives downloads EVERY currently ACTIVE ad's creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a \"what creatives are we running right now\" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable.",
+      "description": "Inspect Meta ad assets — list custom audiences and custom conversions, read the targeting rule of an audience, audit your retargeting cascade for the \"forgot to exclude purchasers\" leak (audit-retargeting-cascade also flags every PROSPECTING ad set that excludes no custom audiences or is missing any of the brand's declared metaProspectingExclusions customer audiences, with per-ad-set prospecting / missingProspectingExclusions fields and account rollup counts), run pixel diagnostics (last fired time, automatic matching status, top events, match rate where available), audit per-event Event Match Quality (EMQ) scores so the user can see exactly which events have a Low / Good / Great match grade and what to fix (mirrors the EMQ column in Events Manager → Data Sources), list frequency caps across active ad sets, and audit a product catalog's review status. Also the account INVENTORY surface: list-adsets returns every ad set with its parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link (pass status:\"paused\" to find staged drafts, status:\"all\" for everything) — this is how you verify a campaign really was staged PAUSED before anyone activates it; list-ads returns the ads inside one ad set with their creative format, per-placement image hashes, and — the fields a destination or attribution audit needs — every distinct destination URL the ad points at (links[] plus linkCount, which counts placement-customized / Advantage+ creatives correctly; a linkCount of 0 means the ad has NO readable destination and a linkCount above 1 means its placements point at different pages) and the ad's urlTags (the UTM string Meta appends to every click; an empty urlTags means clicks land untagged and Triple Whale attribution is broken for that ad); inspect-adset dumps one ad set's full settings plus a sample creative's toggles so a new ad set can be built to match a proven winner; list-videos lists videos already uploaded to the ad account; list-catalog-sets lists a catalog's product sets and feeds (this is where the productSetId for DPA setup comes from); resolve-geo checks that US state names resolve to Meta region keys before a geo-targeted build; aware-audience returns the tiered warm/addressable audience pool (the retargeting-readiness leading indicator); ad-rejections lists EVERY disapproved or with-issues ad in the account with the actual policy reason (failedDeliveryChecks, issues, reviewFeedback, plus a flattened reasons[] list and noReasonReturned when Meta gave none), which is the action to use for \"why was my ad rejected\". All actions are READ-ONLY GETs against the Graph API — never writes, never spend impact. Use when the user says \"why was my ad rejected\", \"which ads are disapproved\", \"audit my retargeting\", \"are my prospecting ad sets excluding customers\", \"what's my pixel match quality\", \"audit my events setup\", \"check my EMQ\", \"list my custom audiences\", \"what ad sets do I have\", \"are those campaigns actually paused\", \"show me the ads in that ad set\", \"what videos are uploaded\", \"what product sets exist\", or \"is my catalog healthy\". export-creatives downloads EVERY currently ACTIVE ad's creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a \"what creatives are we running right now\" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable. video-frames saves N evenly spaced frames (framesPerVideo, default 6, max 24) from each ad's video to a local folder, one subfolder per ad with a frames.json of file names and timestamps, so burned-in captions, on-screen text, the CTA card and readability can be judged across the whole video instead of only the cover thumbnail; pass adIds (resolved to the creative's video) and/or videoIds, at most 200 per call, and framesDir (inside the workspace). Videos whose file Meta will not hand over fall back to Meta's auto-generated thumbnails (method \"thumbnails\", no timestamps). Ads already extracted at the same framesPerVideo are skipped, so a long list can be run in chunks and re-run safely; pass overwrite:true to re-pull.",
       "input": {
         "action": {
-          "description": "The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta's Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall. list-adsets is the account inventory read: every ad set with parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link — pass status:\"paused\" to locate staged drafts, status:\"all\" to see everything (default \"active\"). list-ads lists the ads inside ONE ad set (pass targetAdSetId) with creative format, per-placement image hashes, links[]/linkCount (EVERY destination URL the ad points at, including placement-customized creatives whose destination lives in asset_feed_spec rather than on link_data — linkCount 0 = no readable destination, linkCount >1 = its placements disagree), and urlTags (the ad's UTM string; empty = clicks land untagged and Triple Whale attribution is broken). Use list-ads, not inspect-adset, to audit destinations or UTMs: inspect-adset only ever samples ONE creative per ad set. inspect-adset dumps one ad set's settings plus a sample creative's toggles for cloning a winner (pass the AD SET id via adId). list-videos lists videos already uploaded to the ad account. list-catalog-sets lists a catalog's product sets + feeds (pass catalogId) — the source of the productSetId that meta_dpa_setup takes. resolve-geo resolves US state names in geoRegions AND city names in geoCities (\"Dallas, TX\") to Meta keys so a geo build can be verified before it runs; city names are not unique, so it reports the resolved city with its state. aware-audience returns the tiered warm/addressable audience pool. ad-rejections lists every DISAPPROVED / WITH_ISSUES ad in the account (no params) with adSetId/adSetName/campaignId and every reason Meta returns: failedDeliveryChecks (checkName/summary/description; Meta often puts the real reason HERE while reviewFeedback is empty), issues (code/level/type/summary/message), reviewFeedback (global + placementSpecific), recommendations, a flattened reasons[] and noReasonReturned (true = Meta flagged the ad but gave no reason; send the user to Account Quality). truncated:true means the page cap stopped the read. list-boosted-posts lists every ORGANIC social post the account has run ads against, deduped, with a link to each and the ads using it (answers \"which of our posts have we put spend behind?\"); it identifies a boost by source_instagram_media_id or object_story_id, never by instagram_permalink_url, which every Instagram-placed ad carries including dark posts that were never published organically. attribution-compare re-scores the same spend under 1d-click and 7d-click next to the account default (which credits view-through), so you can see how much of a headline ROAS depends on that choice before defending the number; pass batchCount for a day window, omit it for lifetime. angle-performance reports what each CREATIVE ANGLE (hidden_cost, social_proof_pivot, identity_shift, ...) actually earned for THIS brand, ranked by profit contribution and damped by confidence, so a creative batch can be weighted toward angles the brand has real results behind instead of spread evenly across the matrix; it reports attribution coverage alongside the ranking because a ranking built from 4% of spend is a hypothesis and one built from 80% is a finding, and it classifies older untagged ads after the fact (pass skipClassify to turn that off). export-creatives downloads EVERY currently ACTIVE ad's creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a \"what creatives are we running right now\" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable.",
+          "description": "The audit operation to perform. All actions read-only. audit-events surfaces per-event Event Match Quality (EMQ) scores (0-10, graded Great/Good/Low) from Meta's Dataset Quality API plus actionable fix advice for any event below 8.0. audit-change-history pulls the account Change History (who changed what, when — budget/bid/status/audience edits flagged, old→new values) to trace a delivery shift to a specific edit vs. the auction; pass windowDays to look back further than 7. audit-delivery-breakdown pulls insights sliced by day (to pinpoint WHEN delivery moved) and/or by dimension via breakdowns= (WHERE it moved). audit-account-state reads account_status, disable_reason, and spend-cap-vs-spent to rule out an account-level stall. list-adsets is the account inventory read: every ad set with parent campaign id/name/status, its own effective status, optimization goal, daily budget and destination link — pass status:\"paused\" to locate staged drafts, status:\"all\" to see everything (default \"active\"). list-ads lists the ads inside ONE ad set (pass targetAdSetId) with creative format, per-placement image hashes, links[]/linkCount (EVERY destination URL the ad points at, including placement-customized creatives whose destination lives in asset_feed_spec rather than on link_data — linkCount 0 = no readable destination, linkCount >1 = its placements disagree), and urlTags (the ad's UTM string; empty = clicks land untagged and Triple Whale attribution is broken). Use list-ads, not inspect-adset, to audit destinations or UTMs: inspect-adset only ever samples ONE creative per ad set. inspect-adset dumps one ad set's settings plus a sample creative's toggles for cloning a winner (pass the AD SET id via adId). list-videos lists videos already uploaded to the ad account. list-catalog-sets lists a catalog's product sets + feeds (pass catalogId) — the source of the productSetId that meta_dpa_setup takes. resolve-geo resolves US state names in geoRegions AND city names in geoCities (\"Dallas, TX\") to Meta keys so a geo build can be verified before it runs; city names are not unique, so it reports the resolved city with its state. aware-audience returns the tiered warm/addressable audience pool. ad-rejections lists every DISAPPROVED / WITH_ISSUES ad in the account (no params) with adSetId/adSetName/campaignId and every reason Meta returns: failedDeliveryChecks (checkName/summary/description; Meta often puts the real reason HERE while reviewFeedback is empty), issues (code/level/type/summary/message), reviewFeedback (global + placementSpecific), recommendations, a flattened reasons[] and noReasonReturned (true = Meta flagged the ad but gave no reason; send the user to Account Quality). truncated:true means the page cap stopped the read. list-boosted-posts lists every ORGANIC social post the account has run ads against, deduped, with a link to each and the ads using it (answers \"which of our posts have we put spend behind?\"); it identifies a boost by source_instagram_media_id or object_story_id, never by instagram_permalink_url, which every Instagram-placed ad carries including dark posts that were never published organically. attribution-compare re-scores the same spend under 1d-click and 7d-click next to the account default (which credits view-through), so you can see how much of a headline ROAS depends on that choice before defending the number; pass batchCount for a day window, omit it for lifetime. angle-performance reports what each CREATIVE ANGLE (hidden_cost, social_proof_pivot, identity_shift, ...) actually earned for THIS brand, ranked by profit contribution and damped by confidence, so a creative batch can be weighted toward angles the brand has real results behind instead of spread evenly across the matrix; it reports attribution coverage alongside the ranking because a ranking built from 4% of spend is a hypothesis and one built from 80% is a finding, and it classifies older untagged ads after the fact (pass skipClassify to turn that off). export-creatives downloads EVERY currently ACTIVE ad's creative image to a local folder alongside a manifest.json of adId/adName/adSet/campaign/body (primary text)/title (headline)/cta/link/imagePath; this is the action for a \"what creatives are we running right now\" sheet, because list-ads returns only a signed fbcdn imageUrl that expires in about 24h and that log redaction strips, so the URL alone is not usable. video-frames saves N evenly spaced frames (framesPerVideo, default 6, max 24) from each ad's video to a local folder, one subfolder per ad with a frames.json of file names and timestamps, so burned-in captions, on-screen text, the CTA card and readability can be judged across the whole video instead of only the cover thumbnail; pass adIds (resolved to the creative's video) and/or videoIds, at most 200 per call, and framesDir (inside the workspace). Videos whose file Meta will not hand over fall back to Meta's auto-generated thumbnails (method \"thumbnails\", no timestamps). Ads already extracted at the same framesPerVideo are skipped, so a long list can be run in chunks and re-run safely; pass overwrite:true to re-pull.",
           "enum": [
             "list-audiences",
             "audit-audience-rule",
@@ -2813,13 +3127,21 @@
             "existing-customers",
             "attribution-compare",
             "export-creatives",
-            "angle-performance"
+            "angle-performance",
+            "video-frames"
           ],
           "type": "string"
         },
         "adId": {
           "description": "For audit-audience-rule: the custom-audience numeric id. For audit-pixel and audit-events: optional pixel id override (defaults to brand cfg metaPixelId). For inspect-adset: the AD SET id to inspect.",
           "type": "string"
+        },
+        "adIds": {
+          "description": "For video-frames: numeric Meta ad ids whose video(s) to pull frames from. adIds + videoIds: at most 200 per call.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "agentName": {
           "description": "For audit-events: the Conversions API integration's agent name, used to scope Meta's Dataset Quality API EMQ query. Find it in Events Manager → Data Sources → your dataset → the integration's name (e.g. the Shopify/Stape/Elevar/GTM integration). Optional — if omitted Merlin still attempts the query and tells the user how to find it.",
@@ -2847,6 +3169,16 @@
         "endDate": {
           "description": "For attribution-compare: exact window end, YYYY-MM-DD, INCLUSIVE. Must not be in the future.",
           "type": "string"
+        },
+        "framesDir": {
+          "description": "For video-frames: output folder, relative to the workspace or an absolute path inside it. Default <outputDir>/video_frames. Paths containing .. are refused.",
+          "type": "string"
+        },
+        "framesPerVideo": {
+          "description": "For video-frames: frames per video, evenly spaced at the midpoints of equal slices. Default 6, max 24.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
         },
         "geoCities": {
           "description": "For resolve-geo: US city names to resolve to Meta city keys, optionally disambiguated as \"City, ST\" (e.g. [\"Dallas, TX\"]). City names are NOT unique (there are four US Dallases), so the resolved city AND its state are reported; a state hint that matches nothing errors rather than silently targeting another state. Combines with geoRegions as a union.",
@@ -2884,6 +3216,10 @@
           "description": "Max records to return per page. Defaults: list-audiences=250, list-conversions=100, audit-catalog=200, list-videos=25. Hard caps: 500 (list-videos: 200).",
           "type": "number"
         },
+        "overwrite": {
+          "description": "For video-frames: re-pull ads whose frames.json already records a complete extraction. Default false (skip them).",
+          "type": "boolean"
+        },
         "skipClassify": {
           "description": "For angle-performance: skip after-the-fact classification of older ads whose names carry no angle marker, restricting the report to explicitly tagged ads plus anything already cached. Classification is ON by default because most accounts predate the angle naming convention (a real account had 0 of 263 ads tagged), so skipping it usually returns an empty ranking. Pass true to avoid the LLM call entirely.",
           "type": "boolean"
@@ -2908,6 +3244,13 @@
         "timeIncrement": {
           "description": "For audit-delivery-breakdown: insights bucket size in days. 1 = daily (default, to see WHICH day delivery moved). Pass -1 for a single aggregate window.",
           "type": "number"
+        },
+        "videoIds": {
+          "description": "For video-frames: numeric Meta video ids to pull frames from directly (no ad lookup).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "windowDays": {
           "description": "For audit-change-history and audit-delivery-breakdown: lookback window in days. Default 7. Use e.g. 30 to trace a change further back.",
@@ -3478,6 +3821,10 @@
           "description": "Daily budget in DOLLARS (not cents). Pass 10 for $10/day.",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -3509,7 +3856,7 @@
         "idempotent": true,
         "preview": true
       },
-      "description": "Launch a batch of Meta test ads (up to 50). Each ad gets its own ad set and daily budget. Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.",
+      "description": "Launch a batch of Meta test ads (up to 50). By default each ad gets its own ad set and daily budget; with sharedAdSet:true every ad goes into ONE ad set whose budget is the top-level dailyBudget (required when that ad set is new). Preview-gated at 5+ ads — the first call with {preview: true} returns a confirm_token that must be passed back to execute.",
       "input": {
         "adDescription": {
           "description": "Batch-wide DESCRIPTION — the third Meta copy slot, rendered under the headline. Distinct copy from the headline: an offer, a spec, or a provenance line. A per-ad ads[].description wins over it. Omit and video ads reuse the headline (their historical behavior) while image ads carry no description at all.",
@@ -3606,6 +3953,14 @@
         "ctaType": {
           "description": "Call-to-action BUTTON VERB for this push, e.g. 'SHOP_NOW', 'LEARN_MORE', 'GET_OFFER'. Overrides the brand-wide defaultCTA for this one call only, so a batch can pin its own verb without retargeting every future push. Case-insensitive. An unrecognized verb is refused with the valid list rather than sent to Meta, which returns an opaque 400 for a bad verb.",
           "type": "string"
+        },
+        "dailyBudget": {
+          "description": "Daily budget in DOLLARS (not cents): pass 50 for $50/day. With sharedAdSet:true this is the budget of the ONE ad set the batch creates, and it is REQUIRED for a new shared ad set (the engine refuses rather than default to $5). Not needed with targetAdSetId (existing ad set, budget untouched) or campaignBudgetMode \"cbo\". Without sharedAdSet it is the batch-wide default for ads that set no ads[].dailyBudget.",
+          "type": "number"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -3973,6 +4328,10 @@
           "description": "New daily budget in DOLLARS",
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -4033,6 +4392,65 @@
         }
       },
       "name": "meta_set_advantage_audience"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "meta"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Change the attribution setting of an existing Meta AD SET (which clicks and views count as conversions). Defaults to the Merlin standard: 7-day click, 1-day view, 1-day engaged-view. Conversion-optimized ad sets only (OFFSITE_CONVERSIONS or VALUE). Edits the live ad set in place and verifies by reading it back; no-ops if it already matches. Can send the ad set back into learning. If Meta refuses the edit on a published ad set, duplicate the ad set and set the window on the copy.",
+      "input": {
+        "approved": {
+          "description": "Approval flag for this write. The engine REFUSES the edit without it; set true only with explicit user approval to change a live ad set's attribution.",
+          "type": "boolean"
+        },
+        "attributionSpec": {
+          "description": "Attribution windows to set. Omit for the Merlin standard (7d click, 1d view, 1d engaged-view). Allowed: CLICK_THROUGH 1 or 7 (required), VIEW_THROUGH 1, ENGAGED_VIDEO_VIEW 1.",
+          "items": {
+            "properties": {
+              "event_type": {
+                "enum": [
+                  "CLICK_THROUGH",
+                  "VIEW_THROUGH",
+                  "ENGAGED_VIDEO_VIEW"
+                ],
+                "type": "string"
+              },
+              "window_days": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "event_type",
+              "window_days"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "brand": {
+          "description": "Brand name",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "targetAdSetId": {
+          "description": "The ad set whose attribution setting to change",
+          "type": "string"
+        }
+      },
+      "name": "meta_set_attribution"
     },
     {
       "annotations": {
@@ -4410,6 +4828,10 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "startDate": {
           "description": "Insights: exact window start, YYYY-MM-DD inclusive (ad account timezone). Give with endDate; overrides batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
@@ -4417,6 +4839,97 @@
         }
       },
       "name": "openai_ads"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "pinterest"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Pinterest Ads: check the connection, list or switch ad accounts, list campaigns, pull performance (campaign, ad group, or ad level over a date range), and pause or resume campaigns, ad groups, or ads. Cannot create campaigns or change budgets.",
+      "input": {
+        "action": {
+          "description": "status/verify → connection check (verify makes a live call). ad-accounts → list ad accounts this login can manage (pass pinterestAdAccountId to switch). campaigns → list campaigns. insights → performance report. kill → pause campaigns/ad groups/ads (approval card). activate → resume them (approval card, respects the spend pause).",
+          "enum": [
+            "status",
+            "verify",
+            "ad-accounts",
+            "campaigns",
+            "insights",
+            "kill",
+            "activate"
+          ],
+          "type": "string"
+        },
+        "adGroupId": {
+          "description": "Pinterest ad group id, or several comma-separated (kill/activate).",
+          "type": "string"
+        },
+        "adId": {
+          "description": "Pinterest ad id, or several comma-separated (kill/activate).",
+          "type": "string"
+        },
+        "approved": {
+          "description": "Approval flag for kill/activate. Set by the Merlin approval card on user click; the engine REFUSES the change without it. Do not set true unless the user explicitly approved pausing or resuming these exact ids.",
+          "type": "boolean"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "Pinterest campaign id, or several comma-separated (kill/activate).",
+          "type": "string"
+        },
+        "days": {
+          "description": "insights: last N complete days (default 7, max 90).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "insights: YYYY-MM-DD, at most 90 days after startDate.",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "level": {
+          "description": "insights: reporting level (default campaign).",
+          "enum": [
+            "campaign",
+            "adgroup",
+            "ad",
+            "account"
+          ],
+          "type": "string"
+        },
+        "pinterestAdAccountId": {
+          "description": "Pinterest ad account id (digits) to switch this brand to (ad-accounts only).",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "insights: YYYY-MM-DD, within the last 90 days. Pass with endDate instead of days.",
+          "type": "string"
+        },
+        "status": {
+          "description": "campaigns/insights: filter by delivery status (campaigns default active+paused, insights default all).",
+          "enum": [
+            "active",
+            "paused",
+            "archived",
+            "all"
+          ],
+          "type": "string"
+        }
+      },
+      "name": "pinterest_ads"
     },
     {
       "annotations": {
@@ -4454,11 +4967,13 @@
             "posthog",
             "stripe",
             "linkedin",
+            "pinterest",
             "triplewhale",
             "openai_ads",
-            "roundel",
             "threads",
             "quickbooks",
+            "snapchat",
+            "twitter",
             "yotpo",
             "sesami",
             "faire",
@@ -4656,10 +5171,10 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first). Window: days (default 30, transactions default 7, max 365) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.",
+      "description": "Rakuten Advertising affiliate program reporting (read-only; the affiliate network formerly called LinkShare, not the Rakuten marketplace). Actions: status (connection check, no API call); connect (how to get the report link); setup / verify (validate the saved report link and list the report columns found); report (program sales, orders, clicks and commission cost with totals, top publishers ranked by sales, and a daily series; the full publisher-by-day grain is saved to results); publishers (publishers active in the window ranked by sales, with first and last active day); transactions (order-level rows from the connected order report, newest first); export (full historical raw pull to JSONL in the brand results folder: every column of the performance report and of the order report, plus a publisher roster and daily totals, with a manifest of counts and date coverage; runs as a background job, resumable, default 365 days, up to 3660 days). report also splits orders into new vs returning customers when the order report carries a new-customer column. Window: days (default 30, transactions default 7, max 365; export max 3660) or startDate / endDate (YYYY-MM-DD). rakutenDateType picks transaction date (default) or process date. limit caps rows returned. Cannot change commissions, publishers or offers.",
       "input": {
         "action": {
-          "description": "status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day. publishers → publishers ranked by sales. transactions → order-level rows.",
+          "description": "status → connection check (no API call). connect → how to get the Rakuten report link. setup/verify → validate the saved report link. report → program performance by publisher and day, plus new vs returning when available. publishers → publishers ranked by sales. transactions → order-level rows. export → full raw JSONL pull with a manifest (background job, resumable).",
           "enum": [
             "status",
             "connect",
@@ -4667,7 +5182,8 @@
             "verify",
             "report",
             "publishers",
-            "transactions"
+            "transactions",
+            "export"
           ],
           "type": "string"
         },
@@ -4676,7 +5192,7 @@
           "type": "string"
         },
         "days": {
-          "description": "Window length in days ending today (default 30; transactions default 7; max 365). Ignored when startDate is set.",
+          "description": "Window length in days ending today (default 30; transactions default 7; max 365; export default 365, max 3660). Ignored when startDate is set.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -4776,6 +5292,10 @@
         "dailyBudget": {
           "description": "Daily budget in DOLLARS (not cents). Example: pass 10 for $10/day, 50 for $50/day, 200 for $200/day. NEVER pre-convert to cents — Merlin handles the cents conversion internally when calling the platform's API. If the user says \"$10 a day\", pass 10. If unsure, ask the user.",
           "type": "number"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -4905,99 +5425,6 @@
     {
       "annotations": {
         "brandRequired": true,
-        "concurrency": {
-          "platform": "roundel"
-        },
-        "costImpact": "spend",
-        "destructive": true,
-        "idempotent": false,
-        "preview": false
-      },
-      "description": "Roundel (Target retail media) via the Criteo Retail Media API. Actions: status (connection check, no API call); connect (how to create the Criteo API app and grant access); verify (test the saved credentials and confirm the account is reachable); discover (list the retail media accounts the app can see and the retailers on each, flagging the Target one, so you know which account and retailer ids to save); campaigns (list campaigns, status filter); line-items (auction line items with status, budget and daily pacing, optionally for one campaignId); insights (spend, impressions, clicks, attributed sales, units and ROAS by campaign, line item and day, from an async report: when it returns status \"pending\" with a roundelReportId, call insights again with that roundelReportId instead of starting a new report; days default 30 or startDate/endDate, max 90 days); pause (pause one lineItemId, never needs approval); activate (turn a paused lineItemId on: SPENDS money, shows an approval card, refused if the line item has no knowable daily spend or the projected account total breaks your caps); budget (set a lineItemId daily pacing to dailyBudget dollars: shows an approval card). ROAS is attributed target.com sales, not your store revenue, and recent days fill in for up to 14 days.",
-      "input": {
-        "action": {
-          "description": "status → connection check (no API call). connect → how to connect. verify → test credentials. discover → accounts + retailers. campaigns / line-items / insights → read. pause → pause a lineItemId. activate → turn a lineItemId on (spends, approval card). budget → set a lineItemId daily budget (approval card).",
-          "enum": [
-            "status",
-            "connect",
-            "verify",
-            "discover",
-            "campaigns",
-            "line-items",
-            "insights",
-            "pause",
-            "activate",
-            "budget"
-          ],
-          "type": "string"
-        },
-        "approved": {
-          "description": "Approval flag for activate and budget. Set by the Electron approval card on user click; the engine REFUSES both without it. Do not set true unless the user explicitly approved the spend change.",
-          "type": "boolean"
-        },
-        "brand": {
-          "pattern": "^[a-z0-9_-]{1,100}$",
-          "type": "string"
-        },
-        "campaignId": {
-          "description": "Campaign id: scopes line-items to one campaign.",
-          "type": "string"
-        },
-        "dailyBudget": {
-          "description": "Budget: the new daily pacing in dollars for lineItemId. Validated against your daily and monthly caps.",
-          "type": "number"
-        },
-        "days": {
-          "description": "Insights: window length in days ending today (default 30, max 90). Ignored when startDate is set.",
-          "maximum": 9007199254740991,
-          "minimum": -9007199254740991,
-          "type": "integer"
-        },
-        "endDate": {
-          "description": "Insights: window end, YYYY-MM-DD inclusive. Defaults to today.",
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-          "type": "string"
-        },
-        "limit": {
-          "description": "Max rows returned (campaigns, line-items, insights breakdowns). The results file always keeps every row.",
-          "maximum": 9007199254740991,
-          "minimum": -9007199254740991,
-          "type": "integer"
-        },
-        "lineItemId": {
-          "description": "Auction line item id (pause / activate / budget).",
-          "type": "string"
-        },
-        "roundelReportId": {
-          "description": "Insights: resume a pending report by the id a previous insights call returned, instead of creating a new one.",
-          "type": "string"
-        },
-        "startDate": {
-          "description": "Insights: window start, YYYY-MM-DD inclusive.",
-          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
-          "type": "string"
-        },
-        "status": {
-          "description": "campaigns / line-items: filter by status (default all).",
-          "enum": [
-            "all",
-            "active",
-            "paused",
-            "scheduled",
-            "ended",
-            "draft",
-            "archived",
-            "budgetHit",
-            "noFunds"
-          ],
-          "type": "string"
-        }
-      },
-      "name": "roundel"
-    },
-    {
-      "annotations": {
-        "brandRequired": true,
         "costImpact": "api",
         "destructive": false,
         "idempotent": true
@@ -5087,12 +5514,13 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "ShipStation shipping reporting (read-only). Pulls shipments, carriers, and fulfillment stats into the dashboard. Actions: report (pull shipments/metrics for a window — batchCount = days, default 30); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Connect by entering your API Key + Secret from ShipStation → Account → API Settings into the ShipStation tile.",
+      "description": "ShipStation shipping data (read-only, ShipStation API V1). Actions: report (weekly-reporting summary for a Pacific-day window: orders placed by status, revenue, units, AOV, labels shipped, label cost and cost per label, voids and return labels, carrier / service / store mix, fulfillments marked shipped outside ShipStation, and order-to-ship time with same-day / within-2-days / on-time %; window = startDate+endDate, or days, default 30, max 366); export (full raw pull of orders, shipments, fulfillments plus stores, carriers, warehouses and products to JSONL with a manifest of counts and date coverage, runs as a background job you poll with jobs_poll, resumable, window = startDate+endDate or days, default 30, back to 2011); status (connection check, no API call); connect (how to get ShipStation API credentials); verify (validate the saved API Key + Secret). Needs V1 API keys from ShipStation Settings > Account > API Settings, which ShipStation only issues on the Gold plan or higher (US/Canada) or Scale or higher (UK, AU, NZ, EU).",
       "input": {
         "action": {
-          "description": "report → pull shipments/metrics for the window. status → check connection (no API call). connect → how to get ShipStation API credentials. verify → validate the saved credentials.",
+          "description": "report: weekly-reporting summary for the window. export: full raw JSONL export as a background job (poll jobs_poll). status: check connection (no API call). connect: how to get ShipStation API credentials. verify: validate the saved credentials.",
           "enum": [
             "report",
+            "export",
             "status",
             "connect",
             "verify"
@@ -5100,7 +5528,7 @@
           "type": "string"
         },
         "batchCount": {
-          "description": "Days of data for report (default 30).",
+          "description": "Legacy alias for days on report.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -5109,8 +5537,24 @@
           "pattern": "^[a-z0-9_-]{1,100}$",
           "type": "string"
         },
+        "days": {
+          "description": "report / export: days ending today (Pacific). report default 30, max 366; export default 30. Values above the max are clamped; 0 or less uses the default. Ignored when startDate is given.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "endDate": {
+          "description": "report / export: exact window end, YYYY-MM-DD inclusive, Pacific time. Default today.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "report / export: exact window start, YYYY-MM-DD inclusive, Pacific time (ShipStation reports every date in Pacific). For a full-history export pass the account start, e.g. 2018-01-01.",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
           "type": "string"
         }
       },
@@ -5151,7 +5595,7 @@
           "type": "string"
         },
         "days": {
-          "description": "Lookback window in days. cohorts defaults to 365 (a full seasonal repeat curve); analytics/orders default to 30. Wins over batchCount when both are sent.",
+          "description": "Lookback window in days. orders defaults to 7, analytics to 30, cohorts to 365 (a full seasonal repeat curve). orders/analytics can see at most the last 60 days of orders (the app has no read_all_orders scope): a larger value is clamped to 60 and the output says so in a NOTE and window_note. Wins over batchCount when both are sent.",
           "maximum": 9007199254740991,
           "minimum": -9007199254740991,
           "type": "integer"
@@ -5233,6 +5677,423 @@
         }
       },
       "name": "slack"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "snapchat"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, turn many campaigns, ad squads and ads on or off at once (batch-status; ad squads and ads are created PAUSED, so after a build or bulk-push use batch-status ACTIVE on the ad squads and ads, then the campaign), list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads: bulk-push uploads vertical 9:16 images or videos (1080x1920; images JPG/PNG under 5MB, videos MP4 H.264 3 to 180 seconds), creates one Web View creative per ad (headline up to 34 characters, link tagged with UTMs) and one PAUSED ad per creative in an existing ad squad, skipping ad names that already exist there. upload-media, create-creative and create-ad do the same steps one at a time. Every creative needs the brand Snapchat Public Profile id (snapchatProfileId, remembered for the brand after first use). Dynamic Product Ads (catalog ads): catalogs reports each catalog with its feeds, latest feed upload, product sets with product counts, dynamic templates and whether a pixel is linked, plus the problems that block DPA; pixel-stats breaks pixel events down by event type for one domain; create-product-set creates one product set from a filter; dpa-setup plans (dry run, default) or, with dryRun:false and approval, builds a PAUSED catalog campaign with one dynamic product ad per ad squad (prospecting, add-to-cart without purchase, or viewed without add-to-cart), every ad squad and ad PAUSED.",
+      "input": {
+        "action": {
+          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. batch-status = set batchStatus (ACTIVE or PAUSED) on up to 50 objects listed by id in campaignIds, adSquadIds and adIds; activation is checked against maxDailyAdBudget (ad squads add their budget, ads add none) and is refused as a whole if over it, pausing never is; each object is verified after the change. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure. upload-media = upload one 9:16 image or video and wait until Snapchat has processed it. create-creative = create one Web View creative from uploaded media. create-ad = create one PAUSED ad from a creative in an ad squad. bulk-push = upload, create creatives and create PAUSED ads for up to 50 ads in one ad squad. catalogs = list product catalogs with feeds, product sets, templates, linked pixels and DPA readiness problems (optionally one catalogId). pixel-stats = pixel events by event type for a domain over the last days (default 7, max 28). create-product-set = create one product set (productSetName + productSetFilter) in a catalog; a set with the same name is reused. dpa-setup = plan (dry run, default) or build a PAUSED Dynamic Product Ads campaign from dpaSquads.",
+          "enum": [
+            "status",
+            "ad-accounts",
+            "campaigns",
+            "insights",
+            "kill",
+            "activate",
+            "batch-status",
+            "pixels",
+            "audiences",
+            "ad-squads",
+            "ads",
+            "create-audience",
+            "create-campaign",
+            "create-ad-squad",
+            "build-architecture",
+            "upload-media",
+            "create-creative",
+            "create-ad",
+            "bulk-push",
+            "catalogs",
+            "pixel-stats",
+            "create-product-set",
+            "dpa-setup"
+          ],
+          "type": "string"
+        },
+        "adHeadline": {
+          "description": "create-creative / dpa-setup: headline, 34 characters max",
+          "type": "string"
+        },
+        "adIds": {
+          "description": "batch-status: Snapchat ad ids (UUIDs) to change. campaignIds + adSquadIds + adIds: 1 to 50 ids in total.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "adImagePath": {
+          "description": "upload-media: path to a 1080x1920 JPG or PNG under 5MB",
+          "type": "string"
+        },
+        "adLink": {
+          "description": "create-creative: https landing page; UTMs are added from the brand snapchatUrlTags (default utm_source=snapchat)",
+          "type": "string"
+        },
+        "adName": {
+          "description": "create-creative / create-ad: explicit name (required)",
+          "type": "string"
+        },
+        "adSetName": {
+          "description": "create-ad-squad: explicit ad squad name (required). bulk-push: pick the target ad squad by name instead of targetAdSetId (add campaignId if the name is not unique).",
+          "type": "string"
+        },
+        "adSquadIds": {
+          "description": "batch-status: Snapchat ad squad ids (UUIDs) to change",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "adVideoPath": {
+          "description": "upload-media: path to a 9:16 MP4 (H.264, 3 to 180 seconds, under 1GB)",
+          "type": "string"
+        },
+        "ads": {
+          "description": "bulk-push: up to 50 ads. Every ad is validated before anything uploads; names that already exist in the ad squad are skipped.",
+          "items": {
+            "properties": {
+              "cta": {
+                "description": "Call to action for this ad (default SHOP_NOW); same values as ctaType",
+                "type": "string"
+              },
+              "headline": {
+                "description": "Headline, 34 characters max",
+                "type": "string"
+              },
+              "imagePath": {
+                "description": "1080x1920 JPG or PNG under 5MB",
+                "type": "string"
+              },
+              "link": {
+                "description": "https landing page (UTMs added)",
+                "type": "string"
+              },
+              "name": {
+                "description": "Ad name (required, unique in the ad squad; also names the media and creative)",
+                "type": "string"
+              },
+              "videoPath": {
+                "description": "9:16 MP4, H.264, 3 to 180 seconds",
+                "type": "string"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "approved": {
+          "description": "Approval flag for kill, activate, batch-status, the create actions (including create-product-set), and a real (dryRun:false) build or dpa-setup. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.",
+          "type": "boolean"
+        },
+        "audienceDescription": {
+          "description": "create-audience customer-list: optional audience description",
+          "type": "string"
+        },
+        "audienceEvent": {
+          "description": "create-audience pixel: the event that qualifies a visitor (default PAGE_VIEW)",
+          "enum": [
+            "PAGE_VIEW",
+            "VIEW_CONTENT",
+            "ADD_CART",
+            "START_CHECKOUT",
+            "PURCHASE",
+            "SIGN_UP",
+            "ADD_BILLING",
+            "SEARCH",
+            "SUBSCRIBE",
+            "START_TRIAL",
+            "ADD_TO_WISHLIST",
+            "LIST_VIEW"
+          ],
+          "type": "string"
+        },
+        "audienceName": {
+          "description": "create-audience: explicit audience name (required)",
+          "type": "string"
+        },
+        "audienceRetentionDays": {
+          "description": "create-audience pixel: lookback window in days (1 to 395, default 30)",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "audienceType": {
+          "description": "create-audience: pixel = website visitors by event; customer-list = upload a CSV of emails and phones (hashed locally before upload); lookalike = expand a customer-list seed",
+          "enum": [
+            "pixel",
+            "customer-list",
+            "lookalike"
+          ],
+          "type": "string"
+        },
+        "batchCount": {
+          "description": "Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "batchStatus": {
+          "description": "batch-status: the status to set on every listed object (required)",
+          "enum": [
+            "ACTIVE",
+            "PAUSED"
+          ],
+          "type": "string"
+        },
+        "bidStrategy": {
+          "description": "create-ad-squad: bid strategy (AUTO_BID only)",
+          "enum": [
+            "AUTO_BID"
+          ],
+          "type": "string"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "Snapchat campaign id (UUID) for kill, activate, campaign-level insights, ad-squads (scope to one campaign), or create-ad-squad (the parent campaign)",
+          "type": "string"
+        },
+        "campaignIds": {
+          "description": "batch-status: Snapchat campaign ids (UUIDs) to change",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "campaignName": {
+          "description": "create-campaign / dpa-setup: explicit campaign name (required)",
+          "type": "string"
+        },
+        "catalogId": {
+          "description": "catalogs: report on one catalog only. create-product-set / dpa-setup: the catalog to use (may be omitted when the organization has exactly one).",
+          "type": "string"
+        },
+        "ctaType": {
+          "description": "create-creative / dpa-setup: call to action, one of SHOP_NOW (default), ORDER_NOW, BOOK_NOW, SIGN_UP, GET_NOW, APPLY_NOW, VIEW, WATCH, MORE, READ, LISTEN, TRY, DOWNLOAD, BUY_TICKETS, SHOWTIMES, DONATE, VOTE, PLAY, SHOW, RESPOND, VIEW_MENU, PRE_REGISTER, PLAY_GAME",
+          "type": "string"
+        },
+        "dailyBudget": {
+          "description": "Daily budget in dollars per ad squad (create-ad-squad, build-architecture; minimum 5, default 5 for the build). Validated against maxDailyAdBudget.",
+          "type": "number"
+        },
+        "days": {
+          "description": "pixel-stats: trailing days (default 7, max 28)",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "domain": {
+          "description": "pixel-stats: website domain to break events down for, for example forever21.com (default: every domain on each pixel)",
+          "type": "string"
+        },
+        "dpaSquads": {
+          "description": "dpa-setup: 1 to 10 ad squads, each created PAUSED with one dynamic product ad.",
+          "items": {
+            "properties": {
+              "adName": {
+                "description": "Name of the one dynamic product ad in this ad squad (required)",
+                "type": "string"
+              },
+              "audience": {
+                "description": "prospecting = broad (brand purchaser exclusions always applied); atc_no_purchase = added to cart, did not buy; vc_no_atc = viewed a product, did not add to cart",
+                "enum": [
+                  "prospecting",
+                  "atc_no_purchase",
+                  "vc_no_atc"
+                ],
+                "type": "string"
+              },
+              "dailyBudget": {
+                "description": "Daily budget in dollars (minimum 5). The total is validated against maxDailyAdBudget.",
+                "type": "number"
+              },
+              "name": {
+                "description": "Ad squad name (required, explicit)",
+                "type": "string"
+              },
+              "optimizationGoal": {
+                "description": "PIXEL_* optimization goal (default PIXEL_PURCHASE)",
+                "type": "string"
+              },
+              "productSetId": {
+                "description": "Product set for this ad squad only, or \"default\"; empty uses the setup product set",
+                "type": "string"
+              },
+              "retentionDays": {
+                "description": "Retargeting lookback in days (1 to 30, default 14)",
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "name",
+              "dailyBudget",
+              "audience",
+              "adName"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "dryRun": {
+          "description": "build-architecture and dpa-setup. Defaults to true: returns the full plan and payloads and writes nothing. Pass false (with approved:true) only when the user has reviewed the plan and asked to build it.",
+          "type": "boolean"
+        },
+        "endDate": {
+          "description": "Insights window end, YYYY-MM-DD inclusive (account timezone)",
+          "type": "string"
+        },
+        "excludeAudienceIds": {
+          "description": "create-ad-squad / build-architecture: audience ids to exclude. Prospecting ad squads always also exclude the brand snapchatProspectingExclusions.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "includeAudienceIds": {
+          "description": "create-ad-squad: audience ids to target. Omit for a broad prospecting ad squad.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "inputPath": {
+          "description": "create-audience customer-list: path to the CSV (email in column 1, phone in column 2; a raw Shopify customer export works)",
+          "type": "string"
+        },
+        "level": {
+          "description": "Insights breakdown level (default campaign)",
+          "enum": [
+            "campaign",
+            "adsquad",
+            "ad"
+          ],
+          "type": "string"
+        },
+        "lookalikeCountry": {
+          "description": "Lookalike country code (default us)",
+          "type": "string"
+        },
+        "lookalikeType": {
+          "description": "Lookalike type (default BALANCE)",
+          "enum": [
+            "BALANCE",
+            "SIMILARITY",
+            "REACH"
+          ],
+          "type": "string"
+        },
+        "mediaName": {
+          "description": "upload-media: media name (defaults to the file name)",
+          "type": "string"
+        },
+        "minAge": {
+          "description": "create-ad-squad / build-architecture: minimum age (13 to 49, default 18)",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "optimizationGoal": {
+          "description": "create-ad-squad: what the ad squad optimizes for (default PIXEL_PURCHASE)",
+          "enum": [
+            "PIXEL_PURCHASE",
+            "PIXEL_ADD_TO_CART",
+            "PIXEL_PAGE_VIEW",
+            "PIXEL_SIGNUP",
+            "SWIPES",
+            "IMPRESSIONS"
+          ],
+          "type": "string"
+        },
+        "productSetFilter": {
+          "_reason": "Cannot read properties of undefined (reading '_zod')",
+          "_unrepresentable": {
+            "description": "create-product-set / dpa-setup: Snapchat product set filter, a JSON object of upper-case attribute rules, for example {\"CUSTOM_LABEL_0\":{\"EQ\":\"sale\"}}. Combine rules with AND / OR lists.",
+            "inner": {
+              "type": "record"
+            },
+            "type": "optional"
+          }
+        },
+        "productSetId": {
+          "description": "dpa-setup: the product set the ads show, or \"default\" for the whole catalog. Alternatively pass productSetName + productSetFilter to create or reuse a set.",
+          "type": "string"
+        },
+        "productSetName": {
+          "description": "create-product-set / dpa-setup: product set name (required for create-product-set)",
+          "type": "string"
+        },
+        "snapchatAdAccountId": {
+          "description": "Ad account id (UUID) to switch to (ad-accounts only)",
+          "type": "string"
+        },
+        "snapchatBrandName": {
+          "description": "create-creative / bulk-push: brand name shown on the ad, 32 characters max (optional)",
+          "type": "string"
+        },
+        "snapchatCreativeId": {
+          "description": "create-ad: the creative id from create-creative",
+          "type": "string"
+        },
+        "snapchatDynamicTemplateId": {
+          "description": "dpa-setup: an existing dynamic template id (catalogs lists them); omit to use the catalog default",
+          "type": "string"
+        },
+        "snapchatMediaId": {
+          "description": "create-creative: the READY media id from upload-media",
+          "type": "string"
+        },
+        "snapchatPixelId": {
+          "description": "Pixel id to use for pixel audiences and PIXEL_* optimization (also scopes pixel-stats to one pixel and picks the dpa-setup pixel). Required only when the account has several pixels and none clearly fires the most.",
+          "type": "string"
+        },
+        "snapchatProfileId": {
+          "description": "create-creative / bulk-push / dpa-setup: the brand Snapchat Public Profile id (UUID, from Business Manager > Public Profiles). Saved for the brand after first use, so later calls can omit it.",
+          "type": "string"
+        },
+        "sourceAudienceId": {
+          "description": "create-audience lookalike: the customer-list seed audience id. build-architecture: optional customer-list seed; when set, the plan adds a lookalike prospecting ad squad and excludes the seed from prospecting.",
+          "type": "string"
+        },
+        "startDate": {
+          "description": "Insights window start, YYYY-MM-DD (account timezone)",
+          "type": "string"
+        },
+        "status": {
+          "description": "Status filter for campaigns, ad-squads and ads (default all)",
+          "enum": [
+            "active",
+            "paused",
+            "all"
+          ],
+          "type": "string"
+        },
+        "targetAdSetId": {
+          "description": "ads: scope to one ad squad id. create-ad / bulk-push: the ad squad that receives the ads.",
+          "type": "string"
+        }
+      },
+      "name": "snapchat"
     },
     {
       "annotations": {
@@ -5412,6 +6273,10 @@
         "dailyBudget": {
           "type": "number"
         },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
+        },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
@@ -5426,6 +6291,171 @@
         }
       },
       "name": "tiktok_ads"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "tiktok"
+        },
+        "costImpact": "api",
+        "destructive": false,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Use when the user asks how TikTok GMV Max (TikTok Shop) is set up or performing: the ROI target, budget, which videos it can run, affiliate creative, or why GMV Max delivery or ROI moved. All actions are READ-ONLY GETs; nothing is created, changed, or spent. gmv-max-campaign-info reads ONE GMV Max campaign's settings (pass campaignId): ROI target (roas_bid), budget, status, optimization goal, product scope, affiliate-posts flag. gmv-max-campaigns lists GMV Max campaigns. gmv-max-report pulls GMV Max reporting (defaults: last 7 complete days by campaign_id + stat_time_day with cost/orders/gross_revenue/roi; pass startDate/endDate, dimensions, metrics, campaignId; per-video needs campaignId + dimensions like [\"campaign_id\",\"item_id\"]). gmv-max-videos lists the video pool GMV Max may run, including authorized affiliate posts. gmv-max-authorizations lists exclusive affiliate authorizations. gmv-max-stores lists the TikTok Shops and their Business Center. gmv-max-shop-check reports whether a Shop already runs GMV Max. gmv-max-ads lists ads inside a campaign (campaignId). campaigns lists every TikTok campaign with type, status and budget. The Shop (tiktokStoreId / tiktokBcId) is resolved automatically when the brand has one Shop.",
+      "input": {
+        "action": {
+          "description": "The read to perform. All read-only.",
+          "enum": [
+            "gmv-max-stores",
+            "gmv-max-campaigns",
+            "gmv-max-campaign-info",
+            "gmv-max-videos",
+            "gmv-max-report",
+            "gmv-max-shop-check",
+            "gmv-max-authorizations",
+            "gmv-max-ads",
+            "campaigns"
+          ],
+          "type": "string"
+        },
+        "brand": {
+          "description": "Brand name for vault-scoped TikTok credentials.",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "gmv-max-campaign-info / gmv-max-ads: required campaign id. gmv-max-report: scope to one campaign (required for item_id / item_group_id breakdowns). gmv-max-campaigns: filter to one id.",
+          "type": "string"
+        },
+        "customPostsEligible": {
+          "description": "gmv-max-videos: also surface affiliate posts eligible as custom posts.",
+          "type": "boolean"
+        },
+        "dimensions": {
+          "description": "gmv-max-report: e.g. [\"campaign_id\",\"stat_time_day\"] (default) or [\"campaign_id\",\"item_id\"] for per-video. TikTok returns the accepted names on error.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "endDate": {
+          "description": "gmv-max-report: window end YYYY-MM-DD, inclusive.",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "keyword": {
+          "description": "gmv-max-videos / gmv-max-stores: search keyword.",
+          "type": "string"
+        },
+        "metrics": {
+          "description": "gmv-max-report: e.g. [\"cost\",\"orders\",\"gross_revenue\",\"roi\"] (default adds cost_per_order).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "needAuthCodeVideo": {
+          "description": "gmv-max-videos: include auth-code (affiliate) videos. Default true; false shows only non-auth-code identities.",
+          "type": "boolean"
+        },
+        "page": {
+          "description": "Page number (1-based).",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "pageSize": {
+          "description": "Rows per page.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "sortField": {
+          "description": "gmv-max-videos / gmv-max-report: sort field, e.g. \"cost\" or \"roi\".",
+          "type": "string"
+        },
+        "sortType": {
+          "description": "Sort direction.",
+          "enum": [
+            "ASC",
+            "DESC"
+          ],
+          "type": "string"
+        },
+        "spuIdList": {
+          "description": "gmv-max-videos: limit to these product (SPU) ids.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "startDate": {
+          "description": "gmv-max-report: window start YYYY-MM-DD. Pass both or neither; default is the last 7 complete days.",
+          "type": "string"
+        },
+        "tiktokAdvertiserId": {
+          "description": "Override the brand's TikTok ad account id for this read.",
+          "type": "string"
+        },
+        "tiktokBcId": {
+          "description": "Business Center authorized for the Shop. Optional: resolved with the Shop.",
+          "type": "string"
+        },
+        "tiktokFilters": {
+          "description": "Advanced: TikTok `filtering` JSON passed through verbatim (gmv-max-report, campaigns)."
+        },
+        "tiktokStoreId": {
+          "description": "TikTok Shop id. Optional: resolved from the store list when the brand has one Shop.",
+          "type": "string"
+        }
+      },
+      "name": "tiktok_audit"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "tiktok"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Use when the user explicitly asks to change the ROI target (roas_bid) of a TikTok GMV Max campaign, e.g. \"set the GMV Max ROI target to 1.2\". Changes ONLY the ROI target: never budget, status, schedule or product scope. A LOWER target lets GMV Max spend more aggressively, so this always shows an approval card. Read the current target first with tiktok_audit gmv-max-campaign-info and tell the user the before and after values. The engine re-reads the campaign after the change and fails loudly unless the new target landed and nothing else moved; it returns roasBidBefore / roasBidAfter. Setting the value it already has is a no-op. Refuses campaigns with no ROI target (max-delivery mode).",
+      "input": {
+        "approved": {
+          "description": "Approval flag. Set by the Merlin approval card flow; the engine REFUSES the change without it. Do not set true unless the user explicitly approved this exact ROI target change.",
+          "type": "boolean"
+        },
+        "brand": {
+          "description": "Brand name for vault-scoped TikTok credentials.",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "GMV Max campaign id (from tiktok_audit gmv-max-campaigns).",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "roasBid": {
+          "description": "New ROI target as a multiple of spend, e.g. 1.2 for 1.2x. Accepted range 0.1 to 50, at most two decimals.",
+          "type": "number"
+        },
+        "tiktokAdvertiserId": {
+          "description": "Override the brand's TikTok ad account id.",
+          "type": "string"
+        }
+      },
+      "name": "tiktok_gmv_max_set_roi_target"
     },
     {
       "annotations": {
@@ -5828,6 +6858,86 @@
     },
     {
       "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "twitter"
+        },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "X (Twitter) Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/engagements/clicks/purchases/ROAS for campaigns, line items or promoted posts over a date range, and pause (kill) or resume (activate) a campaign. Creating new X campaigns is not supported yet.",
+      "input": {
+        "action": {
+          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass twitterAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign.",
+          "enum": [
+            "status",
+            "ad-accounts",
+            "campaigns",
+            "insights",
+            "kill",
+            "activate"
+          ],
+          "type": "string"
+        },
+        "approved": {
+          "description": "Approval flag for kill and activate. Pass true only when the user asked for the pause or resume; the Merlin approval card still asks them to confirm before it runs.",
+          "type": "boolean"
+        },
+        "batchCount": {
+          "description": "Trailing days of data for insights (default 7, max 31). Ignored when startDate/endDate are set.",
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "brand": {
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "campaignId": {
+          "description": "X campaign id for kill, activate, or campaign-level insights scoped to one campaign",
+          "type": "string"
+        },
+        "endDate": {
+          "description": "Insights window end, YYYY-MM-DD inclusive (ad account timezone)",
+          "type": "string"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "level": {
+          "description": "Insights breakdown level (default campaign). line_item = ad group, promoted_tweet = individual promoted post.",
+          "enum": [
+            "campaign",
+            "line_item",
+            "promoted_tweet"
+          ],
+          "type": "string"
+        },
+        "startDate": {
+          "description": "Insights window start, YYYY-MM-DD (ad account timezone)",
+          "type": "string"
+        },
+        "status": {
+          "description": "Campaign status filter for campaigns (default all)",
+          "enum": [
+            "active",
+            "paused",
+            "all"
+          ],
+          "type": "string"
+        },
+        "twitterAdAccountId": {
+          "description": "X ad account id to switch to (ad-accounts only)",
+          "type": "string"
+        }
+      },
+      "name": "x_ads"
+    },
+    {
+      "annotations": {
         "brandRequired": false,
         "concurrency": {
           "platform": "yotpo"
@@ -5883,18 +6993,18 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 44610,
-      "bodySha256": "9d734a59f2878a464a1fb0a85a8adf4065aaacff6127045a6c84b714939ae00c",
+      "bodyBytes": 45668,
+      "bodySha256": "70a2eee4f8c421f72c7bd35a9566f11e10d776701627e829f1cdfbc54bd29c00",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
-      "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Etsy, or Roundel (Target retail media). Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
+      "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Pinterest, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",
-      "frontmatterSha256": "4ff32c190eb1e2009d871a693ffcddcada337572b1b1457a6801e1933179690e",
+      "frontmatterSha256": "a91a9fe7731d35223b2fcd2f819b8df8c06dd6dff6664b1044d3bf9aee2ffc95",
       "name": "merlin-ads",
       "owner": "ryan"
     },
     {
-      "bodyBytes": 25950,
-      "bodySha256": "ca845774a3111cf04c6e03ba40fd8e9bfc058cf2a808ef6e18aabfc28d68fc9d",
+      "bodyBytes": 29639,
+      "bodySha256": "c4da4b41a5c6e42764d1e4109cc27095083cd4f4e57c9611351526dae7fe3a98",
       "bytes_justification": "GA4 read+write (2026-05-01) added 13-action surface + write-side approval-card flows alongside the existing dashboard / wisdom / calendar / Conversion Rubric / incrementality blocks. Splitting GA4 into its own SKILL would fragment the analytics-vs-attribution narrative the dashboard relies on.",
       "description": "Use when the user asks about performance, how their ads/store/business are doing, ROAS, MER, CAC, LTV, contribution margin, payback period, CPA, ROI, spend, aggregate revenue, dashboard, weekly numbers, wisdom insights, landing page audits, incrementality/holdout testing, or conversion optimization. Covers the cross-platform dashboard (MER + contribution margin + LTV:CAC as the real north stars, platform ROAS reported directionally with attribution window), incrementality framework (geo holdouts, channel-level lift expectations), the wisdom engine (anonymized collective insights), the marketing calendar (launch cadence + seasonal gaps), the 9-dimension landing page Conversion Rubric with current Core Web Vitals (LCP/INP/CLS), and the GA4 read + write surface (programmatic measurement-plan setup — key events, custom dimensions/metrics, audiences, property settings, idempotent shopify-events attach), plus Gorgias customer-support ticket analytics and de-identified support-corpus exports. Pulls exact numbers from `mcp__merlin__dashboard` — never estimates or derives metrics.",
       "dir": "merlin-analytics",
@@ -6027,6 +7137,7 @@
       "app/binary-paths.js",
       "app/engine-install.js",
       "app/brand-config-sweep.js",
+      "app/platform-disconnect.js",
       "app/brand-dirs.js",
       "app/budget-ceiling.js",
       "app/bash-merlin-action.js",

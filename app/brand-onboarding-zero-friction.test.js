@@ -376,7 +376,9 @@ const anchorMcp = SRC_MAIN.indexOf('approvalPolicy.SPEND_ACTIONS.has(action)');
 test('handleToolApproval auto-approves in-cap Bash Merlin push (mirrors MCP path)', () => {
   const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
   assert.ok(anchorBash > 0, 'Bash BASH_SPEND set not found');
-  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
+  // Window widened 5000 -> 6000 (2026-10-05, google-budget-force): the Bash
+  // spend path gained the forced-override check and card note; order is unchanged.
+  const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 6000);
   // Anchored on the shared-module call — see the MCP-path note above for why
   // the message text is no longer in main.js (2026-08-13, budget-ceiling).
   const centsIdx = sliceBash.indexOf('budgetCeiling.denyReasonForBudget(');

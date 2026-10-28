@@ -189,8 +189,21 @@ jobs:
       # failure produces a type error, a 404, or a log line on its own.
       - name: MCP Meta reachability (params + actions)
         run: node --test app/mcp-meta-param-reachability.test.js app/mcp-meta-action-reachability.test.js
+      - name: Tile disconnect (every tile, brand-scoped)
+        run: node --test app/tile-disconnect.test.js
       - name: MCP Google Demand Gen reachability (YouTube Shorts)
         run: node --test app/mcp-google-demandgen-reachability.test.js
+      # Google AI Max for Search (Rules 19 + 23): search-create args must land
+      # in --cmd and the action must always card (never in-cap auto-approve).
+      - name: MCP Google AI Max Search reachability
+        run: node --test app/mcp-google-search-create-reachability.test.js
+      - name: MCP Google audiences reachability
+        run: node --test app/mcp-google-audiences-reachability.test.js
+      # Spend-guard force override (Rules 23 + 25): the engine's spend-anomaly
+      # guard says "pass force=true"; this pins that force is declared on every
+      # ad tool, lands in --cmd, and never skips the approval card.
+      - name: MCP spend-guard force reachability
+        run: node --test app/mcp-spend-force-reachability.test.js
       # 2026-09-28 incident: the IPC sidecar (mcp-shim-token named pipe)
       # dispatched tools/call straight to the handler, so a klaviyo
       # flow-set-message-template call from an external session changed five
@@ -223,6 +236,19 @@ jobs:
       # never declared, so a weekly deck could only ask for a trailing window.
       - name: MCP OpenAI Ads reachability (insights window params)
         run: node --test app/mcp-openai-ads-reachability.test.js
+      # Pinterest Ads connector (2026-10-09): adGroupId must land as
+      # targetAdSetId, and every engine param must survive zod.
+      - name: MCP Pinterest Ads reachability
+        run: node --test app/mcp-pinterest-reachability.test.js
+      # X Ads connector (2026-10-09): the x_ads tool fronts the engine's
+      # twitter-* actions, so the name seam is checked in both directions.
+      - name: MCP X Ads reachability
+        run: node --test app/mcp-x-reachability.test.js
+      # TikTok GMV Max reads (2026-10-05): tiktok_audit must reach every
+      # tiktok-gmv-max-* engine case, land its params in --cmd, and stay a
+      # READ_ONLY policy action so a read can never fall into a spend path.
+      - name: MCP TikTok GMV Max reachability (tiktok_audit)
+        run: node --test app/mcp-tiktok-gmv-max-reachability.test.js
       # Frozen-surface parity — the before/after harness for large refactors.
       # Collects every externally visible contract the app owns (80 MCP tools
       # with their zod input schemas, the SKILL frontmatter + body hashes, the

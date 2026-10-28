@@ -40,6 +40,16 @@ const BANNED_HOSTS = [
   'api.klaviyo.com',
   'adsapi.snapchat.com',
   'ads-api.pinterest.com',
+  // Pinterest API v5 host. Every Pinterest call must route through the
+  // binary (pinterest.go) so rate-limit preflight and the approval gate on
+  // pinterest-kill / pinterest-activate run.
+  'api.pinterest.com',
+  // X Ads API (current and legacy hosts). Every X call must route through
+  // the binary (twitter_ads.go) so the Worker-side OAuth 1.0a signing,
+  // rate-limit preflight and the approval gate on twitter-kill /
+  // twitter-activate run.
+  'ads-api.x.com',
+  'ads-api.twitter.com',
   // Stripe — read-only reporting via the binary. Direct `curl api.stripe.com`
   // from Claude would bypass the binary's read-only enforcement (stripeGet)
   // and the rate-limit preflight. All Stripe access must go through the binary.
@@ -74,10 +84,21 @@ const BANNED_HOSTS = [
   // through rakuten.go (PreflightCheck + RecordSuccess).
   'ran-reporting.rakutenmarketing.com',
   'api.linksynergy.com',
-  // Roundel (Target retail media) runs on the Criteo Retail Media API. All
-  // calls route through roundel.go (PreflightCheck + RecordSuccess), which
-  // also performs the OAuth client-credentials token exchange.
-  'api.criteo.com',
+  // impact.com (affiliate / partnership platform, formerly Impact Radius)
+  // reporting, read-only. The Brand API authenticates with the brand's Account
+  // SID + Auth Token over Basic auth and honours a _method=PUT|DELETE override
+  // even on GET, so a direct curl/WebFetch could both leak the token and write.
+  // Every call MUST go through impact.go (PreflightCheck + RecordSuccess, GET
+  // only, _method refused).
+  'api.impact.com',
+  // ShipStation: shipping reporting + raw export, read-only. V1 authenticates
+  // with the brand's API Key + Secret over Basic auth and V2 with an API-Key
+  // header; both APIs also expose label-buying and order-mutating writes, so a
+  // direct curl/WebFetch could both leak the credentials and spend postage.
+  // Every call MUST go through shipstation.go (PreflightCheck + the
+  // X-Rate-Limit-Reset gate, GET only, path allowlist).
+  'ssapi.shipstation.com',
+  'api.shipstation.com',
   // Foreplay — competitor ad intelligence. Routed through the binary so every
   // credit-burning call passes PreflightCheck + shows up in the audit log.
   // Direct curl/WebFetch would bypass the user's credit budget telemetry and

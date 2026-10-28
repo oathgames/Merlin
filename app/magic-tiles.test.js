@@ -295,29 +295,6 @@ test('rakuten tile exists, is brand-scope, visible, and has a connect path', () 
   }
 });
 
-// Roundel (2026-10-04): Target retail media via the Criteo Retail Media API.
-// Four brand-scoped fields (app Client ID + Secret, account, optional
-// retailer), all vaulted, collected by a custom multi-step modal.
-test('roundel tile exists, is brand-scope, visible, and has a connect path', () => {
-  const t = tiles.find((x) => x.platform === 'roundel');
-  assert.ok(t, 'brand tile "roundel" missing from index.html');
-  assert.equal(t.scope, 'brand');
-  assert.ok(!t.stubbed, 'roundel tile must not be stubbed; the connector ships in the binary');
-  const ecom = verticals.find((v) => v.includes('shopify'));
-  assert.ok(ecom && ecom.includes('roundel'), 'ecommerce vertical missing roundel');
-  assert.match(renderer, /roundel:\s*showRoundelConnectModal/, 'roundel missing from CUSTOM_CONNECT_HANDLERS');
-  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
-  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
-  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
-  for (const k of ['roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId']) {
-    assert.ok(allowlistBlock.includes(`'${k}'`), `${k} not in CONFIG_FIELD_ALLOWLIST`);
-    assert.ok(sensitiveBlock.includes(`'${k}'`), `${k} not in VAULT_SENSITIVE_KEYS`);
-    assert.ok(mainSrc.includes(`'${k}'`), `${k} not in main.js BRAND_KEYS / disconnect map`);
-  }
-  assert.match(mainSrc, /roundel:\s*\['roundelClientId', 'roundelClientSecret', 'roundelAccountId', 'roundelRetailerId'\]/,
-    'roundel disconnect map must clear all four keys');
-});
-
 test('parseRakutenReportUrl accepts real Get API links and rejects everything else', () => {
   const start = renderer.indexOf('function parseRakutenReportUrl(');
   assert.ok(start >= 0, 'parseRakutenReportUrl not found in renderer.js');
@@ -339,5 +316,36 @@ test('parseRakutenReportUrl accepts real Get API links and rejects everything el
     `${base}/en/reports/k/other?token=t`, `${base}/en/reports/-k/filters?token=t`,
   ]) {
     assert.equal(parse(bad), null, `should reject: ${bad}`);
+  }
+});
+
+// impact.com (2026-10-05): read-only affiliate reporting over Basic auth
+// (Account SID + Auth Token). The modal's SID and program patterns must match
+// impactSIDRe / impactProgramRe in impact.go.
+test('impact tile exists, is brand-scope, visible, and has a connect path', () => {
+  const t = tiles.find((x) => x.platform === 'impact');
+  assert.ok(t, 'brand tile "impact" missing from index.html');
+  assert.equal(t.scope, 'brand');
+  assert.ok(!t.stubbed, 'impact tile must not be stubbed; the connector ships in the binary');
+  const ecom = verticals.find((v) => v.includes('shopify'));
+  assert.ok(ecom && ecom.includes('impact'), 'ecommerce vertical missing impact');
+  assert.match(renderer, /impact:\s*showImpactConnectModal/, 'impact missing from CUSTOM_CONNECT_HANDLERS');
+  const allowlistStart = oauthPersist.indexOf('const CONFIG_FIELD_ALLOWLIST = new Set([');
+  const allowlistBlock = oauthPersist.slice(allowlistStart, oauthPersist.indexOf(']', allowlistStart));
+  const sensitiveBlock = oauthPersist.slice(0, allowlistStart);
+  for (const k of ['impactAccountSid', 'impactAuthToken', 'impactProgramId']) {
+    assert.ok(allowlistBlock.includes(`'${k}'`), `${k} not in CONFIG_FIELD_ALLOWLIST`);
+    assert.ok(sensitiveBlock.includes(`'${k}'`), `${k} not in VAULT_SENSITIVE_KEYS`);
+    assert.ok(mainSrc.includes(`'${k}'`), `${k} not in main.js BRAND_KEYS / disconnect map`);
+  }
+  const start = renderer.indexOf('function showImpactConnectModal(');
+  const body = renderer.slice(start, renderer.indexOf('\n}', start));
+  assert.ok(body.includes('/^[A-Za-z0-9]{8,64}$/'), 'SID pattern drifted from impactSIDRe');
+  assert.ok(body.includes('/^[0-9]{1,12}$/'), 'program pattern drifted from impactProgramRe');
+  assert.ok(body.includes("friendlyErrorPlain("), 'save errors must pass through friendlyErrorPlain');
+  const goSrc = (() => { try { return require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'autocmo-core', 'impact.go'), 'utf8'); } catch (_) { return null; } })();
+  if (goSrc) {
+    assert.ok(goSrc.includes('`^[A-Za-z0-9]{8,64}$`'), 'impactSIDRe changed; update the modal');
+    assert.ok(goSrc.includes('`^[0-9]{1,12}$`'), 'impactProgramRe changed; update the modal');
   }
 });

@@ -1,6 +1,6 @@
 ---
 name: merlin-ads
-description: Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Etsy, or Roundel (Target retail media). Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).
+description: Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Pinterest, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).
 owner: ryan
 bytes_justification: ~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.
 ---
@@ -264,6 +264,15 @@ sending the user to Ads Manager when they ask "what audiences do I have",
 
 `push` (`adVideoPath`, `adHeadline`, `adBody`, `dailyBudget`) · `insights` · `kill` (`adId`) · `duplicate` (`adId`, `campaignId`) · `setup` · `lookalike` (`adId`)
 
+### TikTok GMV Max (`mcp__merlin__tiktok_audit`): read-only
+
+Every action is a GET; nothing is created, changed, or spent. Pass `brand`; the TikTok Shop resolves automatically.
+
+`gmv-max-campaign-info` (`campaignId`: ROI target `roas_bid`, budget, status, goal, product scope) · `gmv-max-campaigns` · `gmv-max-report` (`startDate`/`endDate`, `dimensions`, `metrics`, `campaignId`; per-video: `["campaign_id","item_id"]`) · `gmv-max-videos` (video pool incl. affiliate posts) · `gmv-max-authorizations` · `gmv-max-stores` · `gmv-max-shop-check` · `gmv-max-ads` (`campaignId`) · `campaigns` (all TikTok campaigns).
+
+- "why is GMV Max down" / "what's my GMV Max ROI target" → `gmv-max-campaign-info` then `gmv-max-report`; check the video pool with `gmv-max-videos`.
+- "set the GMV Max ROI target to X" → read the current target first, then `mcp__merlin__tiktok_gmv_max_set_roi_target` (`campaignId`, `roasBid`). The only GMV Max write: always cards (a lower target spends more), changes nothing but roas_bid, returns before/after verified by re-read.
+
 **TikTok-specific playbook:**
 - **Spark Ads** (boost organic posts with auth_code from the creator): these carry native engagement signal and typically beat cold creatives by 30–50% on CTR and CVR. Prefer Spark over standard dark posts whenever a creator partnership or organic post is available.
 - **Creator content over studio content.** TikTok's algorithm penalizes "TV ad" aesthetic. Native creator-style UGC (handheld, selfie angle, on-screen captions) outperforms polished production by wide margins. Route production through `merlin-content` → Raw UGC register, never Hero Product.
@@ -321,13 +330,17 @@ Connector OAuth via `platform_login({platform: "etsy"})`. Same listing/insights 
 
 Connect + campaign ops. **Budget validation runs on the final scaled value** — if the code scales budget (e.g. 3× for LinkedIn scaling), `validateDailyBudget(cfg, scaledBudget, "linkedin")` must run on the scaled number. This is a regression guard — see `linkedin.go`.
 
+### Pinterest (`mcp__merlin__pinterest_ads`)
+
+Connect via `platform_login({platform: "pinterest"})`. Reads: `status`, `verify`, `ad-accounts`, `campaigns` (`status` filter), `insights` (`level` campaign/adgroup/ad/account; `days`, or `startDate` + `endDate` as YYYY-MM-DD; Pinterest caps windows at 90 days back). Writes: `kill` / `activate` on a `campaignId`, `adGroupId` or `adId`; both show an approval card, and `activate` resumes spend. No campaign creation yet: build new campaigns in Pinterest Ads Manager. Spend also lands in the dashboard. See `pinterest.go`.
+
+### X / Twitter (`mcp__merlin__x_ads`)
+
+Connect via `platform_login({platform: "twitter"})`. Reads: `status`, `ad-accounts` (pass `twitterAdAccountId` to switch), `campaigns` (`status` filter), `insights` (`level` campaign/line_item/promoted_tweet; `batchCount` days up to 31, or `startDate` + `endDate` as YYYY-MM-DD). Writes: `kill` / `activate` on a `campaignId`; both show an approval card, and `activate` resumes spend. No campaign creation: build campaigns in X Ads Manager. See `twitter_ads.go`.
+
 ### OpenAI / ChatGPT Ads (`mcp__merlin__openai_ads`)
 
 Run + manage paid ads inside ChatGPT (api.ads.openai.com; US self-serve beta). BYOK — connect by pasting the Ads API key from ads.openai.com into the masked OpenAI Ads tile (never in chat — it authorizes spend), then `action:"verify"`. Actions: `account` / `campaigns` / `insights` (read; `insights` returns daily rows plus totals, for an exact window pass `startDate` + `endDate` as YYYY-MM-DD, e.g. the Sun-Sat reporting week, otherwise `batchCount` days ending yesterday in the ad account timezone), `push` (LAUNCH a live ad — builds campaign → ad group → uploads the creative → ad; needs `adHeadline` (≤50 chars), `adImagePath`, a destination (`adLink` or the brand `productUrl`), and `dailyBudget`), `pause` (a `campaignId`/`adId`). **`push` SPENDS money** and shows an approval card; the binary independently gates it with `requireApproval` + `validateDailyBudget` + `enforceMonthlyCap` + `recordActiveSpend`. Budgets are LIFETIME in micros (1,000,000 = $1): the campaign lifetime = `dailyBudget × 30`, validated against `maxDailyAdBudget` (implied daily) AND `maxMonthlyAdSpend`. Bidding is per-impression (CPM-style). See `openai_ads.go`.
-
-### Roundel / Target retail media (`mcp__merlin__roundel`)
-
-Roundel has no API of its own; Merlin drives it through the Criteo Retail Media API. Connect: the brand creates a Criteo developer app (Retail Media domain, campaign read + manage) at developers.criteo.com, an Admin of its Roundel account approves the consent link, then the Roundel tile takes Client ID, Client Secret, Account ID (blank is fine, `discover` finds it) and optional Retailer ID. `verify` tests it. Reads: `discover` (accounts + retailers, Target flagged), `campaigns`, `line-items` (`campaignId`, `status`), `insights` (async: if it returns `status:"pending"` with a `roundelReportId`, call again with that id, never start a new report; `days` max 90 or `startDate`/`endDate`). Writes on one `lineItemId`: `pause` (never gated), `activate` and `budget` (`dailyBudget` dollars, turns auto pacing off), both approval-carded and capped by the engine against the projected account daily total. ROAS is attributed target.com sales, not store revenue, and the last 14 days keep filling in. See `roundel.go`.
 
 ### Competitor ad research (`mcp__merlin__competitor_spy`) — Foreplay global discovery
 
