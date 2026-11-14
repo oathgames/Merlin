@@ -314,6 +314,9 @@ contextBridge.exposeInMainWorld('merlin', {
     return () => ipcRenderer.removeListener('connections-changed', handler);
   },
   saveConfigField: (key, value, brand) => ipcRenderer.invoke('save-config-field', assertStr(key, 100), assertStr(String(value), 2000), assertBrand(brand)),
+  // OpenAI Ads tile: verifies the pasted key against the ad account first and
+  // saves it (plus the account id) only when the platform accepts it.
+  verifyOpenAIAdsKey: (key, brand) => ipcRenderer.invoke('verify-openai-ads-key', assertStr(String(key), 2000), assertBrand(brand)),
   // Bulk upload — drag-drop / multi-select bulk file ingestion into a brand's
   // inbox/ folder, with SHA-256 dedup + fuzzy product auto-match. Args:
   //   { brand: <slug>, files: [{ name, path, size }] }

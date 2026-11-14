@@ -6520,7 +6520,8 @@ const API_KEY_PLATFORMS = {
   alia: { key: 'aliaApiKey', label: 'Alia Popups', placeholder: 'API key with read:merchant, read:events, and read:segments', url: 'https://api.alia-prod.com/v1/docs' },
   // OpenAI / ChatGPT Ads — paste the Ads API key minted at ads.openai.com.
   // Masked tile (not chat-pasted) because this key authorizes real ad spend.
-  openai_ads: { key: 'openaiAdsApiKey', label: 'OpenAI Ads', placeholder: 'Ads API key from ads.openai.com (not your ChatGPT key)', url: 'https://ads.openai.com' },
+  // verify: the preload bridge that checks the key before it is saved.
+  openai_ads: { key: 'openaiAdsApiKey', label: 'OpenAI Ads', placeholder: 'Ads API key from ads.openai.com (not your ChatGPT key)', url: 'https://ads.openai.com', verify: 'verifyOpenAIAdsKey' },
   triplewhale: { key: 'triplewhaleApiKey', label: 'Triple Whale', placeholder: 'API key from Settings → API Keys', url: 'https://app.triplewhale.com/api-keys' },
   // Klaviyo Private API Key (pk_…). Marketplace OAuth requires a long
   // partner-review pipeline; private keys cover every scope Merlin uses
@@ -6850,10 +6851,20 @@ document.addEventListener('click', async (e) => {
       title: `Connect ${apiDef.label}`,
       bodyNode: wrapper,
       inputPlaceholder: apiDef.placeholder,
-      confirmLabel: 'Save',
+      confirmLabel: apiDef.verify ? 'Verify and save' : 'Save',
       cancelLabel: 'Cancel',
       onConfirm: async (value) => {
         if (!value || value.trim().length < 5) { showModalError('Key is too short'); throw new Error('validation'); }
+        if (apiDef.verify) {
+          // Verify-then-save: the key is only stored once the platform accepts
+          // it (see verify-openai-ads-key in main.js). Rule 6: the engine's
+          // message still passes through friendlyErrorPlain before render.
+          let vr;
+          try { vr = await merlin[apiDef.verify](value.trim(), activeBrand); } catch { vr = null; }
+          if (vr && vr.success) { loadConnections(); return; }
+          showModalError(friendlyErrorPlain((vr && vr.error) || 'Could not verify that key', apiDef.label));
+          throw new Error('verify-failed');
+        }
         const result = await merlin.saveConfigField(apiDef.key, value.trim(), activeBrand);
         if (result.success) {
           loadConnections();
