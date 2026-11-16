@@ -4782,15 +4782,16 @@
         "idempotent": false,
         "preview": false
       },
-      "description": "OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (LAUNCH a live ad: builds campaign + ad group + uploads the creative + ad; needs adHeadline + adImagePath + a destination (adLink or the brand productUrl) + dailyBudget; SPENDS money, shows an approval card with budget), pause (pause a campaignId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.",
+      "description": "OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (builds campaign + ad group + ads, created PAUSED unless the brand sets openaiAdsLaunchStatus ACTIVE; always pass campaignName, adSetName and an ad name; one ad via adHeadline + adImagePath, or up to 50 ads into ONE ad group via ads[]; campaignId adds a new ad group to an existing campaign, targetAdSetId adds ads to an existing ad group; titles 3-50 chars, body up to 100, images PNG/JPEG at least 640x640, checked before anything is created; spend action, approval card), activate (turn ON a campaignId, adSetId or adId; pass the parent campaignId with an ad group or ad so the budget gates use its real budget; spend action, approval card), pause (pause a campaignId, adSetId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.",
       "input": {
         "action": {
-          "description": "account/campaigns/insights → read. push → launch a live ad (spends, approval card). pause → pause a campaignId/adId. connect → how to paste the API key. verify → test a saved key.",
+          "description": "account/campaigns/insights → read. push → create campaign/ad group/ads (PAUSED by default; spend action, approval card). activate → turn a campaign/ad group/ad on (spend action, approval card). pause → pause a campaignId/adSetId/adId. connect → how to paste the API key. verify → test a saved key.",
           "enum": [
             "account",
             "campaigns",
             "insights",
             "push",
+            "activate",
             "pause",
             "connect",
             "verify"
@@ -4798,28 +4799,77 @@
           "type": "string"
         },
         "adBody": {
-          "description": "Ad body text (push; truncated to 100 chars).",
+          "description": "push (single ad): ad body, up to 100 chars (defaults to the title).",
           "type": "string"
         },
         "adHeadline": {
-          "description": "Ad title (push; truncated to 50 chars).",
+          "description": "push (single ad): ad title, 3-50 chars. Longer is refused before anything is created, never truncated.",
           "type": "string"
         },
         "adId": {
-          "description": "Ad id (insights/pause).",
+          "description": "Ad id (activate/pause/insights).",
           "type": "string"
         },
         "adImagePath": {
-          "description": "Path to the creative image (push).",
+          "description": "push (single ad): creative image path or http(s) URL. Local files must be PNG or JPEG, at least 640x640.",
           "type": "string"
         },
         "adLink": {
-          "description": "Destination URL (push; falls back to the brand productUrl).",
+          "description": "push: destination URL for every ad without its own link (falls back to the brand productUrl).",
           "type": "string"
+        },
+        "adName": {
+          "description": "push (single ad): the ad name (3-1000 chars). For bulk, set name on each ads[] item.",
+          "type": "string"
+        },
+        "adSetId": {
+          "description": "activate/pause: the ad group to act on.",
+          "type": "string"
+        },
+        "adSetName": {
+          "description": "push: name for the NEW ad group (3-1000 chars). Defaults to campaignName. Ignored with targetAdSetId.",
+          "type": "string"
+        },
+        "ads": {
+          "description": "push (bulk): up to 50 ads created in ONE ad group in one call. Every ad is validated first; one bad ad fails the whole call before anything is created. Do not combine with adHeadline/adImagePath.",
+          "items": {
+            "properties": {
+              "body": {
+                "description": "Ad body, up to 100 chars (defaults to the title).",
+                "type": "string"
+              },
+              "headline": {
+                "description": "Ad title, 3-50 chars.",
+                "type": "string"
+              },
+              "imagePath": {
+                "description": "Creative image path or http(s) URL (PNG/JPEG, at least 640x640).",
+                "type": "string"
+              },
+              "link": {
+                "description": "Destination URL (defaults to adLink, then the brand productUrl).",
+                "type": "string"
+              },
+              "name": {
+                "description": "Ad name (3-1000 chars).",
+                "type": "string"
+              }
+            },
+            "required": [
+              "imagePath",
+              "headline"
+            ],
+            "type": "object"
+          },
+          "type": "array"
         },
         "apiKey": {
           "description": "OpenAI Ads API key to validate (verify only); from ads.openai.com.",
           "type": "string"
+        },
+        "approved": {
+          "description": "Approval flag for push and activate. The Merlin approval card asks the user to confirm before it runs; the engine REFUSES both without it. Pass true only when the user asked for this exact launch or activation.",
+          "type": "boolean"
         },
         "batchCount": {
           "description": "Insights: trailing days of data ending YESTERDAY in the ad account timezone (default 30). Ignored when startDate + endDate are set.",
@@ -4832,11 +4882,15 @@
           "type": "string"
         },
         "campaignId": {
-          "description": "Campaign id (insights/pause).",
+          "description": "push: existing campaign to add a new ad group to (no new campaign, no new budget; its status is never changed). activate/pause: the campaign to act on, or the parent of adSetId/adId. insights: scope.",
+          "type": "string"
+        },
+        "campaignName": {
+          "description": "push: name for a NEW campaign (3-1000 chars). Always pass one; \"Merlin <headline>\" is only a last-resort fallback. Ignored with campaignId/targetAdSetId.",
           "type": "string"
         },
         "dailyBudget": {
-          "description": "Daily budget in dollars (push). The campaign lifetime budget = dailyBudget × 30, validated against your caps.",
+          "description": "Daily budget in dollars (push/activate). A new campaign gets a lifetime budget of dailyBudget × 30. With an existing campaign, its own budget is what is validated against your caps.",
           "type": "number"
         },
         "endDate": {
@@ -4851,6 +4905,10 @@
         "startDate": {
           "description": "Insights: exact window start, YYYY-MM-DD inclusive (ad account timezone). Give with endDate; overrides batchCount. Use for exact calendar weeks, e.g. the Sun-Sat reporting week.",
           "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+          "type": "string"
+        },
+        "targetAdSetId": {
+          "description": "push: existing ad group to add the new ads to (creates only ads). Pass its campaignId too so membership and the real budget are checked.",
           "type": "string"
         }
       },
@@ -7009,8 +7067,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 45668,
-      "bodySha256": "70a2eee4f8c421f72c7bd35a9566f11e10d776701627e829f1cdfbc54bd29c00",
+      "bodyBytes": 46190,
+      "bodySha256": "f8abfddce918d3ff41b7c10d2a9aae56e0063e581185d5e330a8d59b14781078",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Pinterest, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",

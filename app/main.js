@@ -2839,8 +2839,9 @@ function translateTool(toolName, input) {
       'openai-ads-account':     { label: 'Check your OpenAI Ads account', cost: 'Free' },
       'openai-ads-campaigns':   { label: 'List your ChatGPT ad campaigns', cost: 'Free' },
       'openai-ads-insights':    { label: 'Pull ChatGPT ads performance', cost: 'Free' },
-      'openai-ads-push':        { label: 'Launch a ChatGPT ad', cost: 'Sets ad spend' },
-      'openai-ads-pause':       { label: 'Pause a ChatGPT ad/campaign', cost: 'Free' },
+      'openai-ads-push':        { label: 'Build ChatGPT ads (paused unless set to launch live)', cost: 'Sets ad spend' },
+      'openai-ads-activate':    { label: 'Turn on a ChatGPT campaign, ad group or ad', cost: 'Starts ad spend' },
+      'openai-ads-pause':       { label: 'Pause a ChatGPT campaign, ad group or ad', cost: 'Free' },
       // No 'openai-ads-kill' label: the MCP tool exposes pause, not kill. The
       // binary's kill action (archive — terminal) stays CLI-reachable; if it is
       // ever exposed via MCP it needs a destructive-confirm card (it has no
@@ -6073,39 +6074,48 @@ ipcMain.handle('discover-meta-ids', async (_, brandName) => {
 // cross-check test in oauth-persist.test.js blocks CI if they drift.
 const { vaultScopeFor, planUniversalKeyMigration, resolveKeyScopes } = require('./universal-key-scope');
 
+// persistConfigField is the write half of save-config-field, shared with the
+// verify-then-save tiles (verify-openai-ads-key) so a verified key lands
+// through exactly the same vault + placeholder + brand-scope path. Callers
+// check CONFIG_FIELD_ALLOWLIST first. Throws on failure; callers map that to a
+// friendly message (Rule 6).
+function persistConfigField(key, value, brandName) {
+  // Sensitive keys: write the real value to the vault (brand-scoped, or
+  // _global for brandless writes) and persist the @@VAULT:...@@ placeholder
+  // into the JSON config. An empty / non-string value clears both so a
+  // "blank out the field" flow can't resurrect an old token via a stale
+  // placeholder.
+  let persistValue = value;
+  if (isSensitiveConfigKey(key)) {
+    // REGRESSION GUARD (2026-08-30): universal keys ignore the active brand.
+    // The API-key tiles always pass activeBrand, so `brandName || '_global'`
+    // filed workspace-wide keys under whichever brand was selected. The write
+    // succeeded and the placeholder looked right, while every reader resolves
+    // universal keys at _global and got nothing. See universal-key-scope.js.
+    const vaultBrand = vaultScopeFor(key, brandName, UNIVERSAL_KEYS);
+    if (typeof value === 'string' && value.length > 0) {
+      vaultPut(vaultBrand, key, value);
+      persistValue = `@@VAULT:${key}@@`;
+    } else {
+      vaultDelete(vaultBrand, key);
+      persistValue = '';
+    }
+  }
+  if (brandName) {
+    writeBrandTokens(brandName, { [key]: persistValue });
+  } else {
+    const cfg = readConfig();
+    cfg[key] = persistValue;
+    writeConfig(cfg);
+  }
+}
+
 ipcMain.handle('save-config-field', (_, key, value, brandName) => {
   try {
     if (!key || typeof key !== 'string' || key.startsWith('_') || !CONFIG_FIELD_ALLOWLIST.has(key)) {
       return { success: false, error: 'Unknown config field' };
     }
-    // Sensitive keys: write the real value to the vault (brand-scoped, or
-    // _global for brandless writes) and persist the @@VAULT:...@@ placeholder
-    // into the JSON config. An empty / non-string value clears both so a
-    // "blank out the field" flow can't resurrect an old token via a stale
-    // placeholder.
-    let persistValue = value;
-    if (isSensitiveConfigKey(key)) {
-      // REGRESSION GUARD (2026-08-30): universal keys ignore the active brand.
-      // The API-key tiles always pass activeBrand, so `brandName || '_global'`
-      // filed workspace-wide keys under whichever brand was selected. The write
-      // succeeded and the placeholder looked right, while every reader resolves
-      // universal keys at _global and got nothing. See universal-key-scope.js.
-      const vaultBrand = vaultScopeFor(key, brandName, UNIVERSAL_KEYS);
-      if (typeof value === 'string' && value.length > 0) {
-        vaultPut(vaultBrand, key, value);
-        persistValue = `@@VAULT:${key}@@`;
-      } else {
-        vaultDelete(vaultBrand, key);
-        persistValue = '';
-      }
-    }
-    if (brandName) {
-      writeBrandTokens(brandName, { [key]: persistValue });
-    } else {
-      const cfg = readConfig();
-      cfg[key] = persistValue;
-      writeConfig(cfg);
-    }
+    persistConfigField(key, value, brandName);
     if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
     return { success: true };
   } catch (err) {
@@ -6115,6 +6125,73 @@ ipcMain.handle('save-config-field', (_, key, value, brandName) => {
     console.error('[save-config-field] failed:', key, err && err.message ? err.message : err);
     return { success: false, error: 'Could not save that. Please try again.' };
   }
+});
+
+// ── OpenAI Ads tile: verify the pasted key, then save it ─────────────
+//
+// REGRESSION GUARD (2026-11-14, openai-ads-push): the OpenAI Ads tile used to
+// save whatever was pasted through save-config-field, so a typo, a ChatGPT
+// (not Ads) key, or a revoked key turned the tile green and only failed at the
+// first push. This handler runs the engine's openai-ads-verify (GET
+// /ad_account with the pasted key) and persists the key and the resolved
+// account id ONLY when that succeeds. A failure returns the engine's friendly
+// message, which the renderer passes through friendlyErrorPlain (Rule 6).
+//
+// The engine is pointed at a throwaway temp config inside .claude/tools/
+// (same pattern as discover-meta-ids) so its own updateConfigField writes land
+// on a file deleted right after, never on the global config; the
+// authoritative save is persistConfigField below. stdout carries the key in
+// the login-result JSON, so it is parsed for the account id only and never
+// logged or returned.
+ipcMain.handle('verify-openai-ads-key', async (_, apiKey, brandName) => {
+  const key = typeof apiKey === 'string' ? apiKey.trim() : '';
+  if (key.length < 5 || key.length > 2000) return { success: false, error: 'That key looks too short. Paste the full Ads API key from ads.openai.com.' };
+  let binaryPath = getBinaryPath();
+  try { fs.accessSync(binaryPath); } catch { return { success: false, error: 'Engine not found. Restart Merlin to download it.' }; }
+  try { await maybeHydrateBinaryLicenseToken('openai-ads-verify'); } catch {}
+  const toolsDir = path.join(appRoot, '.claude', 'tools');
+  try { fs.mkdirSync(toolsDir, { recursive: true }); } catch {}
+  const tmpPath = path.join(toolsDir, `.merlin-config-tmp-${require('crypto').randomBytes(16).toString('hex')}.json`);
+  try {
+    fs.writeFileSync(tmpPath, '{}', { mode: 0o600 });
+  } catch (e) {
+    console.error('[openai-ads-verify] temp config write failed:', e && e.message);
+    return { success: false, error: 'Could not check that key. Please try again.' };
+  }
+  const { execFile } = require('child_process');
+  const outcome = await new Promise((resolve) => {
+    const cmd = JSON.stringify({ action: 'openai-ads-verify', brand: brandName || '', apiKey: key });
+    const child = execFile(binaryPath, ['--config', tmpPath, '--cmd', cmd], {
+      timeout: 30000, cwd: appRoot, maxBuffer: 2 * 1024 * 1024,
+    }, (err, stdout, stderr) => {
+      try { fs.unlinkSync(tmpPath); } catch {}
+      activeChildProcesses.delete(child);
+      resolve({ err, stdout: String(stdout || ''), stderr: String(stderr || '') });
+    });
+    activeChildProcesses.add(child);
+  });
+  if (outcome.err) {
+    // The engine's fatal line is "[ERROR] Could not verify that OpenAI Ads
+    // key: <friendly reason>". Surface only that line; the sanitized
+    // "[openai_ads] HTTP <status>" diagnostic stays in the console.
+    const lines = outcome.stderr.split(/\r?\n/);
+    const errLine = lines.map((l) => l.replace(/^.*\[ERROR\]\s*/, '')).filter((l, i) => /\[ERROR\]/.test(lines[i])).pop();
+    console.error('[openai-ads-verify] verify failed:', lines.filter((l) => /\[openai_ads\] HTTP/.test(l)).join(' | ') || 'no HTTP detail');
+    return { success: false, error: errLine || 'OpenAI Ads did not accept that key. Check it is an Ads API key from ads.openai.com.' };
+  }
+  let accountId = '';
+  const m = outcome.stdout.match(/"openaiAdsAccountId"\s*:\s*"([^"]*)"/);
+  if (m) accountId = m[1];
+  if (!accountId) return { success: false, error: 'OpenAI Ads accepted the key but returned no ad account. Confirm the key belongs to an active advertiser account at ads.openai.com.' };
+  try {
+    persistConfigField('openaiAdsApiKey', key, brandName);
+    persistConfigField('openaiAdsAccountId', accountId, brandName);
+  } catch (e) {
+    console.error('[openai-ads-verify] save failed:', e && e.message);
+    return { success: false, error: 'Could not save that. Please try again.' };
+  }
+  if (win && !win.isDestroyed()) win.webContents.send('connections-changed');
+  return { success: true };
 });
 
 // ── Bulk upload (drag-drop + multi-select) ──────────────────────────
