@@ -519,6 +519,14 @@ function resolveMerlinAction(toolName, input) {
     if (rawAction === 'dpa-setup') {
       return { effectiveAction: (input && input.dryRun === false) ? 'duplicate' : 'dry-run', label: null };
     }
+    // REGRESSION GUARD (2026-11-16, snapchat-dpa-template): profiles lists the
+    // organization's Public Profiles (one GET) and routes to 'list'.
+    // create-dynamic-template changes ad account state without spend, so it
+    // routes to the always-carded 'setup', the same slot as
+    // create-product-set. A real dpa-setup that creates a template on the way
+    // is already carded as 'duplicate' above.
+    if (rawAction === 'profiles') return { effectiveAction: 'list', label: null };
+    if (rawAction === 'create-dynamic-template') return { effectiveAction: 'setup', label: null };
   }
   // REGRESSION GUARD (2026-10-20, klaviyo-bulk-subscribe): subscribe-bulk is
   // a dry run unless dryRun is literally false (the engine applies the same

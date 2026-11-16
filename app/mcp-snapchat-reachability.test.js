@@ -119,8 +119,8 @@ const TOOL_ACTIONS = byName('snapchat').schema.action.__enum;
 test('snapchat tool exposes exactly the read, status-flip, build, ad-creation and DPA surface', () => {
   assert.deepEqual([...TOOL_ACTIONS].sort(), [
     'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'batch-status', 'build-architecture', 'bulk-push', 'campaigns',
-    'catalogs', 'create-ad', 'create-ad-squad', 'create-audience', 'create-campaign', 'create-creative', 'create-product-set',
-    'dpa-setup', 'insights', 'kill', 'pixel-stats', 'pixels', 'status', 'upload-media',
+    'catalogs', 'create-ad', 'create-ad-squad', 'create-audience', 'create-campaign', 'create-creative', 'create-dynamic-template',
+    'create-product-set', 'dpa-setup', 'insights', 'kill', 'pixel-stats', 'pixels', 'profiles', 'status', 'upload-media',
   ]);
   assert.ok(!TOOL_ACTIONS.includes('push'), 'there is no auto-approvable single push; ads go through bulk-push or create-ad');
 });
@@ -128,7 +128,7 @@ test('snapchat tool exposes exactly the read, status-flip, build, ad-creation an
 test('engine -> MCP: every snapchat-* engine action is reachable', () => {
   if (!MAIN_GO) return;
   const engine = engineSnapchatActions();
-  assert.ok(engine.length >= 24, `expected the 24 snapchat-* cases in main.go, got ${engine.join(', ')}`);
+  assert.ok(engine.length >= 26, `expected the 26 snapchat-* cases in main.go, got ${engine.join(', ')}`);
   const loginEnum = byName('platform_login').schema.platform.__enum;
   for (const action of engine) {
     if (action === 'snapchat-login') {
@@ -204,7 +204,7 @@ test('batch-status typed id lists and status reach the engine end to end', async
 
 test('every snapchat write always cards; reads and a dry-run build never do (Rule 19)', () => {
   const resolve = (input) => approvalPolicy.resolveMerlinAction('mcp__merlin__snapchat', input).effectiveAction;
-  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push', 'create-product-set']) {
+  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push', 'create-product-set', 'create-dynamic-template']) {
     const a = resolve({ action });
     assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), `snapchat ${action} must route through the approval card (got '${a}')`);
     assert.notEqual(a, 'push', `snapchat ${action} must never be eligible for in-cap auto-approve`);
@@ -232,14 +232,14 @@ test('every snapchat write always cards; reads and a dry-run build never do (Rul
     assert.equal(a, 'dry-run', `only dryRun:false builds; input ${JSON.stringify(input)} must plan (got '${a}')`);
     assert.ok(approvalPolicy.READ_ONLY_ACTIONS.has(a));
   }
-  for (const action of ['status', 'ad-accounts', 'campaigns', 'insights', 'pixels', 'audiences', 'ad-squads', 'ads', 'catalogs', 'pixel-stats']) {
+  for (const action of ['status', 'ad-accounts', 'campaigns', 'insights', 'pixels', 'audiences', 'ad-squads', 'ads', 'catalogs', 'pixel-stats', 'profiles']) {
     const a = resolve({ action });
     assert.ok(!approvalPolicy.SPEND_ACTIONS.has(a), `snapchat ${action} is a read and must not card`);
   }
   // The reads added with the build surface are named read-only explicitly
   // rather than riding the catch-all. (ad-accounts can switch the selected
   // account, a local config write, so it stays on the catch-all as before.)
-  for (const action of ['insights', 'campaigns', 'status', 'pixels', 'audiences', 'ad-squads', 'ads', 'catalogs', 'pixel-stats']) {
+  for (const action of ['insights', 'campaigns', 'status', 'pixels', 'audiences', 'ad-squads', 'ads', 'catalogs', 'pixel-stats', 'profiles']) {
     const a = resolve({ action });
     assert.ok(approvalPolicy.READ_ONLY_ACTIONS.has(a), `snapchat ${action} must be named read-only (got '${a}')`);
   }
@@ -402,6 +402,40 @@ test('DPA params reach the engine end to end under the engine json keys (no auto
   assert.deepEqual(cmd.dpaSquads, dpaSquads);
   assert.equal(cmd.dryRun, undefined, 'the handler must not default dryRun; the engine treats unset as a dry run');
   assert.equal(cmd.approved, undefined, 'the handler must not auto-approve');
+});
+
+test('dynamic template and Public Profile params reach the engine end to end', async () => {
+  execFileCalls.length = 0;
+  const snap = byName('snapchat');
+  await snap.handler({
+    action: 'create-dynamic-template', brand: 'forever21', dynamicTemplateName: 'F21 Catalog Default',
+    dynamicTemplateLayout: 'FILL_WIDTH', dynamicTemplateTextFields: ['title', 'price'], approved: true,
+  });
+  let cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-create-dynamic-template');
+  assert.equal(cmd.dynamicTemplateName, 'F21 Catalog Default');
+  assert.equal(cmd.dynamicTemplateLayout, 'FILL_WIDTH');
+  assert.deepEqual(cmd.dynamicTemplateTextFields, ['title', 'price']);
+  assert.equal(cmd.approved, true);
+
+  await snap.handler({ action: 'profiles', brand: 'forever21' });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-profiles');
+  assert.equal(cmd.approved, undefined, 'a read must not carry approval');
+
+  await snap.handler({ action: 'dpa-setup', brand: 'forever21', campaignName: 'Snap_DPA', dynamicTemplateLayout: 'FIT' });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-dpa-setup');
+  assert.equal(cmd.dynamicTemplateLayout, 'FIT');
+  assert.equal(cmd.dryRun, undefined);
+
+  const resolve = (input) => approvalPolicy.resolveMerlinAction('mcp__merlin__snapchat', input).effectiveAction;
+  assert.equal(resolve({ action: 'create-dynamic-template' }), 'setup', 'create-dynamic-template must route to the always-carded setup');
+  assert.equal(resolve({ action: 'profiles' }), 'list');
+  if (!MAIN_GO) return;
+  for (const key of ['dynamicTemplateName', 'dynamicTemplateLayout', 'dynamicTemplateTextFields']) {
+    assert.ok(new RegExp(`json:"${key}[,"]`).test(MAIN_GO), `Command must decode ${key}`);
+  }
 });
 
 test('dpaSquads[] keys and top-level DPA keys match the engine json tags', () => {

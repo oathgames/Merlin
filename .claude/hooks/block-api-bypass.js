@@ -39,6 +39,8 @@ const BANNED_HOSTS = [
   'a.klaviyo.com',
   'api.klaviyo.com',
   'adsapi.snapchat.com',
+  // Snap Business API host (Public Profiles lookup in snapchat_dpa_read.go).
+  'businessapi.snapchat.com',
   'ads-api.pinterest.com',
   // Pinterest API v5 host. Every Pinterest call must route through the
   // binary (pinterest.go) so rate-limit preflight and the approval gate on

@@ -2682,6 +2682,9 @@ const BANNED_API_HOSTS = [
   'sellingpartnerapi-eu.amazon.com', 'sellingpartnerapi-fe.amazon.com',
   'api.klaviyo.com', 'a.klaviyo.com',
   'adsapi.snapchat.com', 'ads-api.pinterest.com', 'api.pinterest.com',
+  // Snap Business API host: snapchat-profiles and the dpa-setup Public
+  // Profile lookup (snapchat_dpa_read.go) run through the binary's preflight.
+  'businessapi.snapchat.com',
   // X Ads API (twitter_ads.go). Every call is OAuth 1.0a signed by the
   // landing Worker and must run through the binary's preflight + approval.
   'ads-api.x.com', 'ads-api.twitter.com',
@@ -2887,6 +2890,8 @@ function translateTool(toolName, input) {
       'snapchat-catalogs':        { label: 'Check Snapchat product catalogs', cost: 'Free' },
       'snapchat-pixel-stats':     { label: 'Check Snapchat pixel events', cost: 'Free' },
       'snapchat-create-product-set': { label: 'Create a Snapchat product set', cost: 'Free' },
+      'snapchat-create-dynamic-template': { label: 'Create a Snapchat dynamic template', cost: 'Free' },
+      'snapchat-profiles':        { label: 'Check Snapchat Public Profiles', cost: 'Free' },
       'snapchat-dpa-setup':       { label: 'Build Snapchat product catalog ads (paused)', cost: 'No spend until activated' },
       'twitter-login':            { label: 'Connect X Ads', cost: 'Free' },
       'twitter-status':           { label: 'Check the X Ads connection', cost: 'Free' },
