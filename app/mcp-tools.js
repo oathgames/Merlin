@@ -3491,7 +3491,7 @@ function buildTools(tool, z, ctx) {
   // Ads tile (never in chat — it authorizes spend); 'verify' tests it.
   tools.push(defineTool({
     name: 'openai_ads',
-    description: 'OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (builds campaign + ad group + ads, created PAUSED unless the brand sets openaiAdsLaunchStatus ACTIVE; always pass campaignName, adSetName and an ad name; one ad via adHeadline + adImagePath, or up to 50 ads into ONE ad group via ads[]; campaignId adds a new ad group to an existing campaign, targetAdSetId adds ads to an existing ad group; titles 3-50 chars, body up to 100, images PNG/JPEG at least 640x640, checked before anything is created; spend action, approval card), activate (turn ON a campaignId, adSetId or adId; pass the parent campaignId with an ad group or ad so the budget gates use its real budget; spend action, approval card), pause (pause a campaignId, adSetId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.',
+    description: 'OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (builds campaign + ad group + ads, created PAUSED unless the brand sets openaiAdsLaunchStatus ACTIVE; always pass campaignName, adSetName and an ad name; one ad via adHeadline + adImagePath, or up to 50 ads into ONE ad group via ads[]; campaignId adds a new ad group to an existing campaign, targetAdSetId adds ads to an existing ad group; titles 3-50 chars, body up to 100, images PNG/JPEG at least 640x640, checked before anything is created; spend action, approval card), activate (turn ON a campaignId, adSetId or adId; pass the parent campaignId with an ad group or ad so the budget gates use its real budget; spend action, approval card), budget (change an existing campaignId\'s DAILY budget to dailyBudget dollars, minimum $1; an increase runs the budget caps, a lifetime-budget campaign is refused, the stored budget is verified by read-back; spend action, approval card), pause (pause a campaignId, adSetId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.',
     destructive: true,
     idempotent: false,
     preview: false,
@@ -3499,7 +3499,7 @@ function buildTools(tool, z, ctx) {
     brandRequired: true,
     concurrency: { platform: 'openai_ads' },
     input: {
-      action: z.enum(['account', 'campaigns', 'insights', 'push', 'activate', 'pause', 'connect', 'verify']).describe('account/campaigns/insights → read. push → create campaign/ad group/ads (PAUSED by default; spend action, approval card). activate → turn a campaign/ad group/ad on (spend action, approval card). pause → pause a campaignId/adSetId/adId. connect → how to paste the API key. verify → test a saved key.'),
+      action: z.enum(['account', 'campaigns', 'insights', 'push', 'activate', 'budget', 'pause', 'connect', 'verify']).describe('account/campaigns/insights → read. push → create campaign/ad group/ads (PAUSED by default; spend action, approval card). activate → turn a campaign/ad group/ad on (spend action, approval card). budget → set a campaignId\'s daily budget to dailyBudget (spend action, approval card). pause → pause a campaignId/adSetId/adId. connect → how to paste the API key. verify → test a saved key.'),
       brand: brandSchema,
       apiKey: z.string().optional().describe('OpenAI Ads API key to validate (verify only); from ads.openai.com.'),
       campaignName: z.string().optional().describe('push: name for a NEW campaign (3-1000 chars). Always pass one; "Merlin <headline>" is only a last-resort fallback. Ignored with campaignId/targetAdSetId.'),
@@ -3516,12 +3516,12 @@ function buildTools(tool, z, ctx) {
         body: z.string().optional().describe('Ad body, up to 100 chars (defaults to the title).'),
         link: z.string().optional().describe('Destination URL (defaults to adLink, then the brand productUrl).'),
       })).optional().describe('push (bulk): up to 50 ads created in ONE ad group in one call. Every ad is validated first; one bad ad fails the whole call before anything is created. Do not combine with adHeadline/adImagePath.'),
-      dailyBudget: z.coerce.number().optional().describe('Daily budget in dollars (push/activate). A new campaign gets a lifetime budget of dailyBudget × 30. With an existing campaign, its own budget is what is validated against your caps.'),
-      campaignId: z.string().optional().describe('push: existing campaign to add a new ad group to (no new campaign, no new budget; its status is never changed). activate/pause: the campaign to act on, or the parent of adSetId/adId. insights: scope.'),
+      dailyBudget: z.coerce.number().optional().describe('Daily budget in dollars (push/activate/budget). A new campaign gets a lifetime budget of dailyBudget × 30. With an existing campaign, its own budget is what is validated against your caps. budget: required, the new daily budget for campaignId, at least 1.'),
+      campaignId: z.string().optional().describe('push: existing campaign to add a new ad group to (no new campaign, no new budget; its status is never changed). activate/pause: the campaign to act on, or the parent of adSetId/adId. budget: required, the campaign whose daily budget changes. insights: scope.'),
       targetAdSetId: z.string().optional().describe('push: existing ad group to add the new ads to (creates only ads). Pass its campaignId too so membership and the real budget are checked.'),
       adSetId: z.string().optional().describe('activate/pause: the ad group to act on.'),
       adId: z.string().optional().describe('Ad id (activate/pause/insights).'),
-      approved: z.boolean().optional().describe('Approval flag for push and activate. The Merlin approval card asks the user to confirm before it runs; the engine REFUSES both without it. Pass true only when the user asked for this exact launch or activation.'),
+      approved: z.boolean().optional().describe('Approval flag for push, activate and budget. The Merlin approval card asks the user to confirm before it runs; the engine REFUSES each without it. Pass true only when the user asked for this exact launch or activation.'),
       batchCount: z.coerce.number().int().optional().describe('Insights: trailing days of data ending YESTERDAY in the ad account timezone (default 30). Ignored when startDate + endDate are set.'),
       // REGRESSION GUARD (2026-09-27, Hard-Won Rule 23): the engine reads
       // Command.StartDate/EndDate for openai-ads-insights (exact window, both or
@@ -3545,6 +3545,7 @@ function buildTools(tool, z, ctx) {
         insights: 'openai-ads-insights',
         push: 'openai-ads-push',
         activate: 'openai-ads-activate',
+        budget: 'openai-ads-budget',
         pause: 'openai-ads-pause',
         verify: 'openai-ads-verify',
       };

@@ -2841,6 +2841,7 @@ function translateTool(toolName, input) {
       'openai-ads-insights':    { label: 'Pull ChatGPT ads performance', cost: 'Free' },
       'openai-ads-push':        { label: 'Build ChatGPT ads (paused unless set to launch live)', cost: 'Sets ad spend' },
       'openai-ads-activate':    { label: 'Turn on a ChatGPT campaign, ad group or ad', cost: 'Starts ad spend' },
+      'openai-ads-budget':      { label: 'Change a ChatGPT campaign daily budget', cost: 'Changes ad spend' },
       'openai-ads-pause':       { label: 'Pause a ChatGPT campaign, ad group or ad', cost: 'Free' },
       // No 'openai-ads-kill' label: the MCP tool exposes pause, not kill. The
       // binary's kill action (archive — terminal) stays CLI-reachable; if it is
