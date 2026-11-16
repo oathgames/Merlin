@@ -4782,16 +4782,17 @@
         "idempotent": false,
         "preview": false
       },
-      "description": "OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (builds campaign + ad group + ads, created PAUSED unless the brand sets openaiAdsLaunchStatus ACTIVE; always pass campaignName, adSetName and an ad name; one ad via adHeadline + adImagePath, or up to 50 ads into ONE ad group via ads[]; campaignId adds a new ad group to an existing campaign, targetAdSetId adds ads to an existing ad group; titles 3-50 chars, body up to 100, images PNG/JPEG at least 640x640, checked before anything is created; spend action, approval card), activate (turn ON a campaignId, adSetId or adId; pass the parent campaignId with an ad group or ad so the budget gates use its real budget; spend action, approval card), pause (pause a campaignId, adSetId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.",
+      "description": "OpenAI / ChatGPT Ads: run and manage paid ads on the ChatGPT ads platform. Actions: account (ad-account info), campaigns (list), insights (daily impressions/clicks/spend plus totals and CTR/CPC/CPM; startDate + endDate for an exact window such as the Sun-Sat reporting week, otherwise batchCount days ending yesterday in the ad account timezone; campaignId/adId to scope), push (builds campaign + ad group + ads, created PAUSED unless the brand sets openaiAdsLaunchStatus ACTIVE; always pass campaignName, adSetName and an ad name; one ad via adHeadline + adImagePath, or up to 50 ads into ONE ad group via ads[]; campaignId adds a new ad group to an existing campaign, targetAdSetId adds ads to an existing ad group; titles 3-50 chars, body up to 100, images PNG/JPEG at least 640x640, checked before anything is created; spend action, approval card), activate (turn ON a campaignId, adSetId or adId; pass the parent campaignId with an ad group or ad so the budget gates use its real budget; spend action, approval card), budget (change an existing campaignId's DAILY budget to dailyBudget dollars, minimum $1; an increase runs the budget caps, a lifetime-budget campaign is refused, the stored budget is verified by read-back; spend action, approval card), pause (pause a campaignId, adSetId or adId), connect (how to paste your Ads API key), verify (test a saved key). Connect by pasting the key from ads.openai.com into the OpenAI Ads tile (masked, it authorizes ad spend). US beta.",
       "input": {
         "action": {
-          "description": "account/campaigns/insights → read. push → create campaign/ad group/ads (PAUSED by default; spend action, approval card). activate → turn a campaign/ad group/ad on (spend action, approval card). pause → pause a campaignId/adSetId/adId. connect → how to paste the API key. verify → test a saved key.",
+          "description": "account/campaigns/insights → read. push → create campaign/ad group/ads (PAUSED by default; spend action, approval card). activate → turn a campaign/ad group/ad on (spend action, approval card). budget → set a campaignId's daily budget to dailyBudget (spend action, approval card). pause → pause a campaignId/adSetId/adId. connect → how to paste the API key. verify → test a saved key.",
           "enum": [
             "account",
             "campaigns",
             "insights",
             "push",
             "activate",
+            "budget",
             "pause",
             "connect",
             "verify"
@@ -4868,7 +4869,7 @@
           "type": "string"
         },
         "approved": {
-          "description": "Approval flag for push and activate. The Merlin approval card asks the user to confirm before it runs; the engine REFUSES both without it. Pass true only when the user asked for this exact launch or activation.",
+          "description": "Approval flag for push, activate and budget. The Merlin approval card asks the user to confirm before it runs; the engine REFUSES each without it. Pass true only when the user asked for this exact launch or activation.",
           "type": "boolean"
         },
         "batchCount": {
@@ -4882,7 +4883,7 @@
           "type": "string"
         },
         "campaignId": {
-          "description": "push: existing campaign to add a new ad group to (no new campaign, no new budget; its status is never changed). activate/pause: the campaign to act on, or the parent of adSetId/adId. insights: scope.",
+          "description": "push: existing campaign to add a new ad group to (no new campaign, no new budget; its status is never changed). activate/pause: the campaign to act on, or the parent of adSetId/adId. budget: required, the campaign whose daily budget changes. insights: scope.",
           "type": "string"
         },
         "campaignName": {
@@ -4890,7 +4891,7 @@
           "type": "string"
         },
         "dailyBudget": {
-          "description": "Daily budget in dollars (push/activate). A new campaign gets a lifetime budget of dailyBudget × 30. With an existing campaign, its own budget is what is validated against your caps.",
+          "description": "Daily budget in dollars (push/activate/budget). A new campaign gets a lifetime budget of dailyBudget × 30. With an existing campaign, its own budget is what is validated against your caps. budget: required, the new daily budget for campaignId, at least 1.",
           "type": "number"
         },
         "endDate": {
@@ -7067,8 +7068,8 @@
       "owner": "ryan"
     },
     {
-      "bodyBytes": 46190,
-      "bodySha256": "f8abfddce918d3ff41b7c10d2a9aae56e0063e581185d5e330a8d59b14781078",
+      "bodyBytes": 46482,
+      "bodySha256": "61d176cda8ae8f6291c3a87fa0cc1a524c27dfc6d716a26755569c867c858730",
       "bytes_justification": "~30KB — this skill is the strategic core of Merlin's paid media brain. It covers seven ad platforms (Meta/TikTok/Google/Amazon/Reddit/LinkedIn/Etsy) plus margin-derived target ROAS, a statistical Promotion Gate, fatigue/frequency rules, CBO vs ABO scale logic, Decision Fact emission contract (kill/scale chain into merlin-daily), and platform-specific playbooks (Google brand-vs-non-brand, TikTok Spark Ads, etc.). Splitting by platform would duplicate the shared triage/Promotion Gate/margin/decision-fact sections and hide cross-platform reasoning (e.g. moving a Meta winner into TikTok Spark). Kept inside the Tier C 50KB budget.",
       "description": "Use when the user wants to push, publish, pause, kill, scale, duplicate, activate, lookalike, retarget, or set up paid ads on Meta, TikTok, Google Ads, Amazon, Reddit, LinkedIn, Pinterest, or Etsy. Also covers ad performance decisions (margin-derived target ROAS, Promotion Gate with Mann-Whitney U, kill thresholds, CBO vs ABO scale rules, frequency-based fatigue detection), budget caps, the daily Meta autonomous loop (merlin-daily → merlin-optimize → merlin-digest), ad intelligence rules (70/15/10 split, hook archetypes, format diversity, learning phase gate, attribution windows), and platform-specific playbooks (Meta ASC/CBO, TikTok Spark Ads, Google Ads brand/non-brand split + PMax hygiene).",
       "dir": "merlin-ads",

@@ -193,6 +193,28 @@ test('openai_ads activate is SPEND-class, never in-cap auto-approved', () => {
   assert.ok(!policy.READ_ONLY_ACTIONS.has('activate'));
 });
 
+test('openai_ads budget routes to openai-ads-budget with campaignId and dailyBudget', async () => {
+  const schema = byName('openai_ads').schema;
+  assert.ok(schema.action.__enum.includes('budget'), 'budget must be an openai_ads action');
+  assert.ok(Object.prototype.hasOwnProperty.call(schema, 'dailyBudget'), 'openai_ads.dailyBudget must be declared');
+  execFileCalls.length = 0;
+  await byName('openai_ads').handler({ action: 'budget', brand: 'apotheke', approved: true, campaignId: 'camp_1', dailyBudget: 25 });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'openai-ads-budget');
+  assert.equal(cmd.campaignId, 'camp_1');
+  assert.equal(cmd.dailyBudget, 25);
+  assert.equal(cmd.approved, true);
+});
+
+test('openai_ads budget is SPEND-class, never in-cap auto-approved', () => {
+  const policy = require('./mcp-approval-policy');
+  assert.ok(policy.SPEND_ACTIONS.has('budget'), 'budget must card as a spend action');
+  assert.ok(!policy.READ_ONLY_ACTIONS.has('budget'));
+  const fs = require('node:fs');
+  const main = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
+  assert.match(main, /'openai-ads-budget':\s*\{\s*label:\s*'[^']+',\s*cost:\s*'Changes ad spend'\s*\}/, 'openai-ads-budget needs a plain-English approval label');
+});
+
 test('OpenAI Ads tile verifies the key before saving (no blind save)', () => {
   const fs = require('node:fs');
   const renderer = fs.readFileSync(path.join(__dirname, 'renderer.js'), 'utf8');
