@@ -181,11 +181,13 @@ test('plain and compound safe commands stay auto-allowed', () => {
     'ls', 'ls -la results/', 'pwd', 'echo hello', 'cp a.png b.png', 'mkdir -p results/x',
     'cd /d/x && ls', 'cd /d/x; ls -la', 'mkdir -p out && cp a.png out/',
     'cd ~/Merlin && ls', 'cd "C:/Users/u/Merlin" && ls -la', 'ls .claude/tools/Merlin.exe',
-    'test -f .claude/tools/Merlin.exe && echo yes', 'chmod +x .claude/tools/Merlin',
+    'test -f .claude/tools/Merlin.exe && echo yes',
     'ls results 2>&1', 'grep -r "action" results | wc -l', 'find results -name "*.json"',
     `echo '{"action":"snapchat-budget"}' > c.json`,
   ];
   for (const command of safe) assert.equal(r(command).route, 'safe', command);
+  // Review 7: chmod can arm a staged wrapper, so with an engine signal it cards.
+  assert.equal(r('chmod +x .claude/tools/Merlin').route, 'card-unreadable');
 });
 
 test('read-only engine calls keep their non-carded behavior, alone and behind cd', () => {

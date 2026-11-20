@@ -632,7 +632,8 @@ const INERT_COMMANDS = new Set([
   'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'ls', 'dir', 'grep', 'egrep', 'fgrep',
   'findstr', 'pwd', 'true', 'test', '[', 'basename', 'dirname', 'uniq', 'cut', 'tr',
   // No-exec file utilities that cannot stage the engine under another name.
-  'cd', 'mkdir', 'touch', 'chmod', 'stat', 'du', 'which', 'realpath', 'readlink',
+  // chmod is NOT here (review 7): `chmod +x merlin` arms a staged wrapper.
+  'cd', 'mkdir', 'touch', 'stat', 'du', 'which', 'realpath', 'readlink',
   'sha256sum', 'shasum', 'md5sum',
 ]);
 const STRONG_DIR_RE = /(?:^|[\s\\/"'`=(;&|<>])\.claude[\\/]tools(?=$|[\\/\s;&|)"'`<>])|merlin[\\/]bin(?=$|[\\/\s;&|)"'`<>])/i;
@@ -651,6 +652,42 @@ function strongEngineSignal(raw) {
 }
 
 // A redirection that writes a file (not /dev/null or an fd duplicate).
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 7): every `>&`
+// was read as an fd duplicate, but bash writes stdout and stderr to FILE
+// `word` for `>&word` / `>& word` unless word is all digits or `-`. So
+//   echo 'xargs -0 ./.claude/tools/Merlin.exe --cmd' >&merlin; chmod +x merlin; printf %s '{...meta-budgeX...}' | tr X t | ./merlin
+// staged a wrapper with no write seen and ran meta-budget uncarded (verified
+// in real bash). Forms read here, all outside quotes: `>`, `>>`, `>|`, `N>`,
+// `{fd}>`, `&>`, `&>>`, `<>` always name a file (only /dev/null, /dev/stdout,
+// /dev/stderr, /dev/fd/N, /dev/tty and nul do not count); `>&word` and
+// `N>&word` are a duplicate only when the de-quoted word is digits, `-` or
+// digits followed by `-`; anything else, an expansion, or a missing word is
+// a write. tee, dd, cp, mv, ln and install are not inert programs at all.
+const NON_FILE_TARGET_RE = /^(?:\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)|nul)$/i;
+function redirectTarget(s, j) {
+  while (s[j] === ' ' || s[j] === '\t') j++;
+  let word = '';
+  let q = '';
+  let expands = false;
+  for (; j < s.length; j++) {
+    const c = s[j];
+    if (q === "'") { if (c === "'") q = ''; else word += c; continue; }
+    if (q === '"') {
+      if (c === '"') { q = ''; continue; }
+      if (c === '$' || c === '`') expands = true;
+      if (c === '\\' && j + 1 < s.length) { word += s[++j]; continue; }
+      word += c;
+      continue;
+    }
+    if (c === '\\') { if (j + 1 < s.length) word += s[++j]; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (/[\s;&|()<>]/.test(c)) break;
+    if (/[$`*?[{]/.test(c)) expands = true;
+    word += c;
+  }
+  return { word, expands, end: j };
+}
 function segmentWritesFile(segment) {
   const s = String(segment || '');
   let state = '';
@@ -660,16 +697,109 @@ function segmentWritesFile(segment) {
     if (c === '\\') { i++; continue; }
     if (state === '"') { if (c === '"') state = ''; continue; }
     if (c === "'" || c === '"') { state = c; continue; }
-    if (c !== '>') continue;
-    let j = i + 1;
-    if (s[j] === '>' || s[j] === '|') j++;
-    while (s[j] === ' ' || s[j] === '\t') j++;
-    const m = /^[^\s;&|()<>]*/.exec(s.slice(j));
-    const target = m[0].replace(/['"]/g, '');
-    if (s[j] === '&' || /^(?:\/dev\/(?:null|stdout|stderr)|nul)$/i.test(target)) { i = j; continue; }
+    let j;
+    let dup = false;
+    if (c === '<' && s[i + 1] === '>') j = i + 2;
+    else if (c === '&' && s[i + 1] === '>') j = s[i + 2] === '>' ? i + 3 : i + 2;
+    else if (c === '>') {
+      j = i + 1;
+      if (s[j] === '&') { dup = true; j++; } else if (s[j] === '>' || s[j] === '|') j++;
+    } else continue;
+    const t = redirectTarget(s, j);
+    i = Math.max(i, t.end - 1);
+    if (t.expands || !t.word) return true;
+    if (dup && /^(?:\d+-?|-)$/.test(t.word)) continue;
+    if (NON_FILE_TARGET_RE.test(t.word)) continue;
     return true;
   }
   return false;
+}
+
+// ── Literal engine calls (review 7) ────────────────────────────────────
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 7): TIER 1
+// trusted ANY command word whose basename is merlin / merlin.exe as "the
+// literal engine call", so a wrapper staged under that name (the >&merlin
+// reproducer above) ran a budget change with no card. A segment is the
+// literal engine call only when literalEngineSegment says so: no variable
+// prefix, the command word is the engine name, readSegmentCall reads the
+// --cmd value exactly as the shell passes it, and that value parses to one
+// action (it then routes by that action: spend actions card). A version /
+// help probe (every argument is --version / --help / -h) also counts. An
+// engine-named command word with the payload on stdin, in a file, in a
+// variable or absent is NOT a literal call: in a command with a strong
+// signal it cards as unreadable.
+//
+// The hidden-engine readings (strongSignalUngated, splicedEngineSignal,
+// shellCodeBuiltAtRunTime) are computed on the command with each literal
+// engine segment replaced by the inert word `echo`
+// (withoutLiteralEngineCalls), so the engine path and flag in
+// `.claude/tools/Merlin.exe --cmd '{"action":"dashboard"}' | jq .` no longer
+// count against jq; the literal segment routes by its own action and the
+// most restrictive result wins. The replacement is refused (the command is
+// read whole, as before) whenever another lexer could place the segment
+// boundaries differently: any $' , #-comment quote stripping, backslash
+// continuation, CR, here-doc, backtick, $( or <( / >( substitution, an
+// unbalanced quote, or segment spans that do not reproduce splitSegments.
+const VERSION_PROBE_ARGS = new Set(['--version', '-version', '--help', '-help', '-h']);
+function literalEngineSegment(seg, raw) {
+  if (segmentShellRewrites(seg)) return false;
+  const words = shellWords(seg);
+  if (!words.length || commandWordIndex(words) !== 0 || !ENGINE_BIN_RE.test(baseName(words[0]))) return false;
+  const call = readSegmentCall(seg, raw);
+  if (call.unreadable) return false;
+  if (call.cmdText === null) return words.length > 1 && words.slice(1).every((w) => VERSION_PROBE_ARGS.has(w.toLowerCase()));
+  const parsed = bashMerlinAction.parseAction(call.cmdText);
+  return !parsed.ambiguous && !!parsed.action;
+}
+
+// segmentSpans -> [{ start, end }] | null: where each splitSegments segment
+// sits in the text, by the same lexing. null when it cannot be mapped.
+function segmentSpans(command) {
+  const s = String(command || '');
+  const spans = [];
+  let start = -1;
+  let last = -1;
+  let state = '';
+  const add = (i, n) => { if (start < 0 && /\S/.test(s[i])) start = i; if (start >= 0) last = i + n - 1; };
+  const push = () => { if (start >= 0) spans.push({ start, end: last + 1 }); start = -1; last = -1; };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === "'") { add(i, 1); if (c === "'") state = ''; continue; }
+    if (c === '\\') { add(i, i + 1 < s.length ? 2 : 1); i++; continue; }
+    if (c === '`' || (c === '$' && s[i + 1] === '(')) return null;
+    if (state === '"') { add(i, 1); if (c === '"') state = ''; continue; }
+    if (c === "'" || c === '"') { state = c; add(i, 1); continue; }
+    if ((c === '<' || c === '>') && s[i + 1] === '(') return null;
+    if (c === '&') {
+      const prev = s[i - 1];
+      if (prev === '>' || prev === '<' || s[i + 1] === '>') { add(i, 1); continue; }
+      push(); continue;
+    }
+    if (c === ';' || c === '|' || c === '\n' || c === '\r' || c === '(' || c === ')') { push(); continue; }
+    add(i, 1);
+  }
+  if (state !== '') return null;
+  push();
+  return spans;
+}
+
+function withoutLiteralEngineCalls(command) {
+  const raw = String(command || '');
+  if (/\$'|\\\r?\n|\r|<<|`|\$\(|[<>]\(/.test(raw)) return raw;
+  const dec = decodeAnsiC(raw);
+  if (dec.failed || dec.text !== raw) return raw;
+  const { segments, substitution, unbalanced } = splitSegments(raw);
+  if (substitution || unbalanced) return raw;
+  const spans = segmentSpans(raw);
+  if (!spans || spans.length !== segments.length) return raw;
+  if (spans.some((sp, k) => raw.slice(sp.start, sp.end).trim() !== segments[k])) return raw;
+  let out = raw;
+  for (let k = spans.length - 1; k >= 0; k--) {
+    if (!literalEngineSegment(segments[k], raw)) continue;
+    out = out.slice(0, spans[k].start) + 'echo' + out.slice(spans[k].end);
+  }
+  return out;
 }
 
 function inertBase(word) {
@@ -685,7 +815,12 @@ function tier1Exempt(raw) {
       if (ci > 0) return false;
       const w = words[0] || '';
       if (!w || wordUnresolvable(w)) return false;
-      if (ENGINE_BIN_RE.test(baseName(w))) continue; // read by classifyEngineCall
+      // Only a fully read literal call (review 7); any other engine-named
+      // command word is a program whose input cannot be read.
+      if (ENGINE_BIN_RE.test(baseName(w))) {
+        if (v === raw && literalEngineSegment(seg, raw)) continue;
+        return false;
+      }
       if (/[\\/]/.test(w) || !INERT_COMMANDS.has(inertBase(w))) return false;
       const args = words.slice(1);
       if (args.some((a) => CMD_FLAG_WORD_RE.test(a))) return false;
@@ -702,7 +837,7 @@ function strongSignalUngated(command) {
 }
 
 // TIER 2 helpers.
-const DANGEROUS_ENV_ASSIGN_RE = /(?:^|[^\w$])(?:PATH|PATHEXT|BASH_ENV|ENV|PAGER|MANPAGER|EDITOR|VISUAL|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|RIPGREP_CONFIG_PATH|ACK_OPTIONS|ACKRC|GIT_\w*|LESS\w*|LD_\w+|DYLD_\w+|BASH_FUNC_[^\s=]*)\+?=/;
+const DANGEROUS_ENV_ASSIGN_RE = /(?:^|[^\w$])(?:PATH|PATHEXT|BASH_ENV|ENV|PAGER|MANPAGER|EDITOR|VISUAL|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|RIPGREP_CONFIG_PATH|ACK_OPTIONS|ACKRC|ACK_PAGER\w*|GIT_\w*|LESS\w*|LD_\w+|DYLD_\w+|BASH_FUNC_[^\s=]*)\+?=/;
 const GIT_TEXT_SUBCOMMANDS = new Set([
   'commit', 'log', 'show', 'diff', 'status', 'add', 'branch', 'checkout', 'switch', 'restore',
   'stash', 'tag', 'rev-parse', 'grep', 'blame', 'ls-files', 'merge-base', 'fetch', 'pull', 'push', 'remote',
@@ -764,7 +899,12 @@ function textOnlyProgram(word, segment, raw) {
   if (base === 'sed') return sedTextOnly(args) && !SED_EXEC_RE.test(args.join(' '));
   if (base === 'git') return gitTextOnly(args);
   if (base === 'rg' && args.some((a) => /^--(?:pre|pre-glob|hostname-bin)(?:=|$)/.test(a))) return false;
-  if ((base === 'ag' || base === 'ack') && args.some((a) => /^--(?:pager|ackrc)(?:=|$)/.test(a))) return false;
+  // ack (Getopt::Long) and ag (getopt_long) accept any unambiguous prefix of
+  // a long option (--pag=x is --pager=x), so match prefixes, as for git.
+  if ((base === 'ag' || base === 'ack') && args.some((a) => {
+    const m = /^--([^=]+)/.exec(a);
+    return !!m && m[1].length >= 2 && ['pager', 'ackrc', 'output'].some((d) => d.startsWith(m[1].toLowerCase()));
+  })) return false;
   if (['printf', 'test', '['].includes(base) && args.some((a) => /^-[vR]/.test(a))) return false;
   return TEXT_ONLY_COMMANDS.has(baseName(word)) || TEXT_ONLY_COMMANDS.has(base);
 }
@@ -950,6 +1090,28 @@ function assignmentReadings(raw) {
   return [sub, seq.join(''), seq.join(' ')];
 }
 
+// withoutCdOperands (review 7): `cd DIR` hands DIR to no program, so a weak
+// signal in it (the trailing `Merlin` of "$HOME/Merlin", HIDDEN_BIN_RE) is not
+// an engine call by another segment. Each segment that is exactly `cd DIR`,
+// with no redirection and no strong signal in DIR, is read as a bare `cd` by
+// splicedEngineSignal only. Every other reading keeps the operand, and a
+// strong signal (engine dir, merlin.exe, cmd flag) is never dropped.
+function withoutCdOperands(command) {
+  const raw = String(command || '');
+  const { segments } = splitSegments(raw);
+  const spans = segmentSpans(raw);
+  if (!spans || spans.length !== segments.length) return raw;
+  let out = raw;
+  for (let k = spans.length - 1; k >= 0; k--) {
+    const seg = segments[k];
+    if (raw.slice(spans[k].start, spans[k].end).trim() !== seg) return raw;
+    const words = shellWords(seg);
+    if (words.length !== 2 || words[0] !== 'cd' || /[<>]/.test(seg) || strongEngineSignal(seg)) continue;
+    out = out.slice(0, spans[k].start) + 'cd' + out.slice(spans[k].end);
+  }
+  return out;
+}
+
 function splicedEngineSignal(command) {
   const raw = String(command || '');
   if (!/[$`]/.test(raw)) return false;
@@ -961,7 +1123,7 @@ function splicedEngineSignal(command) {
   });
   if (allTextOnly) return false;
   const texts = [];
-  for (const v of new Set([raw, joinAllContinuations(raw)])) {
+  for (const v of new Set([withoutCdOperands(raw), withoutCdOperands(joinAllContinuations(raw))])) {
     texts.push(eraseExpansions(v, false), eraseExpansions(v, true));
     for (const a of assignmentReadings(v)) texts.push(eraseExpansions(a, false));
   }
@@ -1267,8 +1429,28 @@ function stripLineContinuationsOutsideComments(command) {
 function routeBash(command) {
   const raw = String(command || '');
   let out = routeAllReadings(raw);
-  if (!CARDED_ROUTES.has(out.route) && (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(raw) || splicedEngineSignal(raw) || strongSignalUngated(raw))) out = unreadableRoute(raw);
+  if (CARDED_ROUTES.has(out.route)) return out;
+  // Literal engine segments route by their own action (out); the hidden-engine
+  // readings look at everything else (review 7, withoutLiteralEngineCalls).
+  const rest = withoutLiteralEngineCalls(raw);
+  if (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(rest) || splicedEngineSignal(rest) || strongSignalUngated(rest) ||
+      chmodWithStrongSignal(raw)) out = unreadableRoute(raw);
   return out;
+}
+
+// chmod anywhere in a command whose WHOLE text carries a strong signal cards
+// (review 7): it can arm a file the same command staged, even one written
+// from a literal engine call's output.
+function chmodWithStrongSignal(raw) {
+  if (!/chmod/i.test(raw.replace(/['"\\]/g, ''))) return false;
+  const progs = [];
+  for (const v of new Set([raw, joinAllContinuations(raw)])) {
+    for (const seg of splitSegments(v).segments) {
+      const words = shellWords(seg);
+      progs.push(inertBase(words[commandWordIndex(words)] || ''));
+    }
+  }
+  return progs.includes('chmod') && strongEngineSignal(raw);
 }
 
 // shellCodeBuiltAtRunTime (review 4 self-attack): a program that re-lexes its

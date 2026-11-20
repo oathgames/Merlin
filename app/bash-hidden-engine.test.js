@@ -182,6 +182,8 @@ const TIERED_GATED = [
   `sed -e 's/a/b/' -e '1e date' ${BUDGET}`,
   `PATH=.:$PATH grep -c""md ${BUDGET}`,
   `git commit -m "bump Merlin.exe --cmd parsing"`,
+  // review 7: chmod arms a staged wrapper, so it is not inert.
+  'chmod +x .claude/tools/Merlin',
 ];
 const TIERED_UNGATED = [
   'cd "$HOME" && ls', 'echo $PATH', 'git commit -m "fix meta-push action"', 'git commit -m "don\'t break # things"',
@@ -192,7 +194,7 @@ const TIERED_UNGATED = [
   'npm test', "echo $'a\\tb'", 'ls .claude/tools/*.exe', 'ls "$LOCALAPPDATA/Merlin/bin"', 'node script.js',
   'node "$SCRIPT"', 'go build ./... && go vet ./...', 'gh pr view 12 --json state',
   "cat > notes.md <<'EOF'\n# Notes\nIt's Ryan's plan, don't skip.\n## Next\nEOF",
-  'chmod +x .claude/tools/Merlin', 'cd .claude/tools && ls',
+  'cd .claude/tools && ls',
 ];
 
 test('git, sed, rg, find and xargs forms with engine text card', () => {

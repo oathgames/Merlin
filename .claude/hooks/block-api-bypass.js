@@ -1000,7 +1000,8 @@ function hookSplicedInvokes(raw) {
 const HOOK_INERT = new Set([
   'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'ls', 'dir', 'grep', 'egrep', 'fgrep',
   'findstr', 'pwd', 'true', 'test', '[', 'basename', 'dirname', 'uniq', 'cut', 'tr',
-  'cd', 'mkdir', 'touch', 'chmod', 'stat', 'du', 'which', 'realpath', 'readlink',
+  // chmod is NOT inert (review 7): `chmod +x merlin` arms a staged wrapper.
+  'cd', 'mkdir', 'touch', 'stat', 'du', 'which', 'realpath', 'readlink',
   'sha256sum', 'shasum', 'md5sum',
 ]);
 function hookSegments(s) {
@@ -1044,6 +1045,33 @@ function hookWords(seg) {
   if (inWord) words.push(cur);
   return words;
 }
+// Mirror of the router's segmentWritesFile (review 7): `>&word` / `>& word`
+// write FILE word unless word is digits, `-` or digits then `-`; `&>`, `&>>`,
+// `>|`, `>>`, `N>`, `{fd}>` and `<>` always name a file. An expansion in the
+// target or a missing target counts as a write.
+function hookRedirectTarget(s, j) {
+  while (s[j] === ' ' || s[j] === '\t') j++;
+  let word = '';
+  let q = '';
+  let expands = false;
+  for (; j < s.length; j++) {
+    const c = s[j];
+    if (q === "'") { if (c === "'") q = ''; else word += c; continue; }
+    if (q === '"') {
+      if (c === '"') { q = ''; continue; }
+      if (c === '$' || c === '`') expands = true;
+      if (c === '\\' && j + 1 < s.length) { word += s[++j]; continue; }
+      word += c;
+      continue;
+    }
+    if (c === '\\') { if (j + 1 < s.length) word += s[++j]; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (/[\s;&|()<>]/.test(c)) break;
+    if (/[$`*?[{]/.test(c)) expands = true;
+    word += c;
+  }
+  return { word, expands, end: j };
+}
 function hookWritesFile(seg) {
   let q = '';
   for (let i = 0; i < seg.length; i++) {
@@ -1052,12 +1080,19 @@ function hookWritesFile(seg) {
     if (c === '\\') { i++; continue; }
     if (q === '"') { if (c === '"') q = ''; continue; }
     if (c === "'" || c === '"') { q = c; continue; }
-    if (c !== '>') continue;
-    let j = i + 1;
-    if (seg[j] === '>' || seg[j] === '|') j++;
-    while (seg[j] === ' ' || seg[j] === '\t') j++;
-    const target = (/^[^\s;&|()<>]*/.exec(seg.slice(j))[0]).replace(/['"]/g, '');
-    if (seg[j] === '&' || /^(?:\/dev\/(?:null|stdout|stderr)|nul)$/i.test(target)) { i = j; continue; }
+    let j;
+    let dup = false;
+    if (c === '<' && seg[i + 1] === '>') j = i + 2;
+    else if (c === '&' && seg[i + 1] === '>') j = seg[i + 2] === '>' ? i + 3 : i + 2;
+    else if (c === '>') {
+      j = i + 1;
+      if (seg[j] === '&') { dup = true; j++; } else if (seg[j] === '>' || seg[j] === '|') j++;
+    } else continue;
+    const t = hookRedirectTarget(seg, j);
+    i = Math.max(i, t.end - 1);
+    if (t.expands || !t.word) return true;
+    if (dup && /^(?:\d+-?|-)$/.test(t.word)) continue;
+    if (/^(?:\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)|nul)$/i.test(t.word)) continue;
     return true;
   }
   return false;
@@ -1069,7 +1104,10 @@ function hookAllInert(raw) {
       const w = words[0] || '';
       if (!w || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(w) || /[$`*?[]/.test(w) && w !== '[') return false;
       const base = w.split(/[\\/]/).pop().toLowerCase();
-      if (/^merlin(?:\.exe)?$/.test(base)) continue;
+      // Review 7: an engine-named command word is never inert here. A literal
+      // chained engine call is already blocked by readMerlinChain; anything
+      // else by that name (a wrapper staged as ./merlin) is unreadable.
+      if (/^merlin(?:\.exe)?$/.test(base)) return false;
       if (/[\\/]/.test(w) || !HOOK_INERT.has(base.replace(/\.exe$/, ''))) return false;
       const args = words.slice(1);
       if (args.some((a) => /^--?cmd(?:-file)?(?:=|$)/i.test(a))) return false;
