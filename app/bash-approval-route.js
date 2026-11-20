@@ -599,12 +599,174 @@ const HIDDEN_BIN_RE = /merlin(?:\.exe)?(?=$|[\s;&|),\]])/i;
 // $D/Merlin/bin/*), so it is an engine signal by itself.
 const ENGINE_DIR_RE = /(?:^|[\\/])\.claude[\\/]tools[\\/]|merlin[\\/]bin(?:[\\/]|$)/i;
 
-function textOnlyProgram(word, segment) {
-  const base = baseName(word);
-  if (base === 'sed' || base === 'sed.exe') {
-    return !SED_EXEC_RE.test(shellWords(segment).slice(1).join(' '));
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 6): the
+// text-only exemption trusted git and sed by name, and both run programs
+// (verified in real bash with a fake engine, routed 'other', hook exit 0):
+//   git -c alias.x='!./.claude/tools/Merl""in.exe --c""md' x '{"action":"meta-budget","adId":"1","dailyBudget":900}'
+//   sed 's/.*\/*/.\/.claude\/tools\/Merl""in.exe --c""md &/eg' <<< "'{...meta-budget...}'"
+// Denylisting exec flags per program is leaky, so the exemption has two
+// tiers:
+//   TIER 1 (strongEngineSignal): the binary name (merlin.exe), a cmd flag, or
+//     an engine directory in ANY reading (raw, de-quoted, erased, decoded,
+//     assignment-substituted). The command cards as unreadable unless every
+//     program is in INERT_COMMANDS (cannot run another program under any
+//     flag) or is the literal engine binary the router reads directly, AND
+//     no segment assigns a variable, writes a file by redirection (a file
+//     that later runs: .bashrc, .git/hooks, s.sh), passes a cmd flag WORD to
+//     an inert program (a same-named copy of the engine earlier on PATH), or
+//     uses printf -v / test -v / [ -v (bash evaluates an array subscript
+//     there, running $(..) inside it: verified). Applied in routeBash, so it
+//     also overrides a 'safe' route. Not inert, on purpose: git, sed, awk,
+//     find, xargs, env, less, man, tee, rg (--pre), sort
+//     (--compress-program), cp / mv / ln (stage the engine under an inert
+//     name).
+//   TIER 2 (textOnlyProgram, rules (b) and splicedEngineSignal): only an
+//     "action" key or a carded action name, no strong signal. The broader
+//     text-only set keeps the exemption, but git only for an allowlisted
+//     subcommand with no exec-capable option, sed only for a single simple
+//     s / p / d script, rg / ag / ack without their program options, and
+//     nothing at all when the command assigns PATH, GIT_*, a pager, an
+//     editor, BASH_ENV or similar.
+// Both tiers only add cards. Pinned by bash-hidden-engine.test.js.
+const INERT_COMMANDS = new Set([
+  'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'ls', 'dir', 'grep', 'egrep', 'fgrep',
+  'findstr', 'pwd', 'true', 'test', '[', 'basename', 'dirname', 'uniq', 'cut', 'tr',
+  // No-exec file utilities that cannot stage the engine under another name.
+  'cd', 'mkdir', 'touch', 'chmod', 'stat', 'du', 'which', 'realpath', 'readlink',
+  'sha256sum', 'shasum', 'md5sum',
+]);
+const STRONG_DIR_RE = /(?:^|[\s\\/"'`=(;&|<>])\.claude[\\/]tools(?=$|[\\/\s;&|)"'`<>])|merlin[\\/]bin(?=$|[\\/\s;&|)"'`<>])/i;
+
+function strongEngineSignal(raw) {
+  const texts = new Set(dequotedForms(raw));
+  for (const v of new Set([raw, joinAllContinuations(raw)])) {
+    texts.add(eraseExpansions(v, false));
+    texts.add(eraseExpansions(v, true));
+    for (const a of assignmentReadings(v)) { texts.add(a); texts.add(eraseExpansions(a, false)); }
   }
-  return TEXT_ONLY_COMMANDS.has(base);
+  for (const t of texts) {
+    if (/merlin\.exe/i.test(t) || HIDDEN_CMD_FLAG_RE.test(t) || STRONG_DIR_RE.test(t)) return true;
+  }
+  return false;
+}
+
+// A redirection that writes a file (not /dev/null or an fd duplicate).
+function segmentWritesFile(segment) {
+  const s = String(segment || '');
+  let state = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === "'") { if (c === "'") state = ''; continue; }
+    if (c === '\\') { i++; continue; }
+    if (state === '"') { if (c === '"') state = ''; continue; }
+    if (c === "'" || c === '"') { state = c; continue; }
+    if (c !== '>') continue;
+    let j = i + 1;
+    if (s[j] === '>' || s[j] === '|') j++;
+    while (s[j] === ' ' || s[j] === '\t') j++;
+    const m = /^[^\s;&|()<>]*/.exec(s.slice(j));
+    const target = m[0].replace(/['"]/g, '');
+    if (s[j] === '&' || /^(?:\/dev\/(?:null|stdout|stderr)|nul)$/i.test(target)) { i = j; continue; }
+    return true;
+  }
+  return false;
+}
+
+function inertBase(word) {
+  return baseName(word).replace(/\.exe$/, '');
+}
+
+// tier1Exempt: every program can be read as text only (see TIER 1 above).
+function tier1Exempt(raw) {
+  for (const v of new Set([raw, joinAllContinuations(raw)])) {
+    for (const seg of splitSegments(v).segments) {
+      const words = shellWords(seg);
+      const ci = commandWordIndex(words);
+      if (ci > 0) return false;
+      const w = words[0] || '';
+      if (!w || wordUnresolvable(w)) return false;
+      if (ENGINE_BIN_RE.test(baseName(w))) continue; // read by classifyEngineCall
+      if (/[\\/]/.test(w) || !INERT_COMMANDS.has(inertBase(w))) return false;
+      const args = words.slice(1);
+      if (args.some((a) => CMD_FLAG_WORD_RE.test(a))) return false;
+      if (['printf', 'test', '['].includes(inertBase(w)) && args.some((a) => /^-[vR]/.test(a))) return false;
+      if (segmentWritesFile(seg)) return false;
+    }
+  }
+  return true;
+}
+
+function strongSignalUngated(command) {
+  const raw = String(command || '');
+  return strongEngineSignal(raw) && !tier1Exempt(raw);
+}
+
+// TIER 2 helpers.
+const DANGEROUS_ENV_ASSIGN_RE = /(?:^|[^\w$])(?:PATH|PATHEXT|BASH_ENV|ENV|PAGER|MANPAGER|EDITOR|VISUAL|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS|RIPGREP_CONFIG_PATH|ACK_OPTIONS|ACKRC|GIT_\w*|LESS\w*|LD_\w+|DYLD_\w+|BASH_FUNC_[^\s=]*)\+?=/;
+const GIT_TEXT_SUBCOMMANDS = new Set([
+  'commit', 'log', 'show', 'diff', 'status', 'add', 'branch', 'checkout', 'switch', 'restore',
+  'stash', 'tag', 'rev-parse', 'grep', 'blame', 'ls-files', 'merge-base', 'fetch', 'pull', 'push', 'remote',
+]);
+const GIT_SAFE_GLOBAL = new Set([
+  '--no-pager', '--bare', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs',
+  '--icase-pathspecs', '--no-optional-locks', '--no-replace-objects', '--no-lazy-fetch', '--no-advice',
+]);
+// git accepts any unambiguous prefix of a long option (--upload-p, --open).
+const GIT_EXEC_LONG = ['upload-pack', 'receive-pack', 'exec', 'open-files-in-pager', 'ext-diff', 'textconv'];
+function gitTextOnly(args) {
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) {
+    const a = args[i];
+    if (a === '-C' || /^--(?:git-dir|work-tree|namespace)$/.test(a)) { i += 2; continue; }
+    if (/^--(?:git-dir|work-tree|namespace)=/.test(a) || GIT_SAFE_GLOBAL.has(a)) { i++; continue; }
+    return false; // -c, --config-env, --exec-path, -p / --paginate, anything unknown
+  }
+  const sub = args[i];
+  if (!GIT_TEXT_SUBCOMMANDS.has(sub)) return false;
+  for (const w of args.slice(i + 1)) {
+    if (w === '--') break;
+    const long = /^--([^=]+)/.exec(w);
+    if (long && GIT_EXEC_LONG.some((d) => d.startsWith(long[1]) && long[1].length >= 2 || long[1].startsWith(d))) return false;
+    if (sub === 'grep' && /^-[^-]*O/.test(w)) return false;
+  }
+  return true;
+}
+const SED_ADDR1 = String.raw`(?:\d+|\$|/(?:\\.|[^/\\\n])*/I?)`;
+const SED_ADDR = `${SED_ADDR1}(?:,${SED_ADDR1})?`;
+const SED_SIMPLE_S_RE = new RegExp(String.raw`^\s*(?:${SED_ADDR})?s([^\w\s\\])((?:\\.|(?!\1)[^\\\n])*)\1((?:\\.|(?!\1)[^\\\n])*)\1[gpiI0-9]*\s*$`);
+const SED_SIMPLE_PD_RE = new RegExp(String.raw`^\s*${SED_ADDR}[pd]\s*$`);
+function sedTextOnly(args) {
+  const scripts = [];
+  const operands = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--') { operands.push(...args.slice(i + 1)); break; }
+    if (a === '-e' || a === '--expression') { if (i + 1 >= args.length) return false; scripts.push(args[++i]); continue; }
+    if (a.startsWith('--expression=')) { scripts.push(a.slice(13)); continue; }
+    if (/^-e./.test(a)) { scripts.push(a.slice(2)); continue; }
+    if (/^-[nErsuz]+$/.test(a) || /^--(?:quiet|silent|regexp-extended|separate|unbuffered|null-data|posix|sandbox)$/.test(a)) continue;
+    if (/^-[nErsuz]*i/.test(a) || /^--in-place(?:=|$)/.test(a)) continue;
+    if (a.startsWith('-') && a !== '-') return false; // -f, --file, -l, anything unknown
+    operands.push(a);
+  }
+  if (!scripts.length) {
+    if (!operands.length) return false;
+    scripts.push(operands[0]);
+  }
+  return scripts.every((s) => SED_SIMPLE_S_RE.test(s) || SED_SIMPLE_PD_RE.test(s));
+}
+
+function textOnlyProgram(word, segment, raw) {
+  if (DANGEROUS_ENV_ASSIGN_RE.test(String(raw === undefined ? segment : raw))) return false;
+  const words = shellWords(segment);
+  const args = words.slice(commandWordIndex(words) + 1);
+  const base = inertBase(word);
+  if (base === 'sed') return sedTextOnly(args) && !SED_EXEC_RE.test(args.join(' '));
+  if (base === 'git') return gitTextOnly(args);
+  if (base === 'rg' && args.some((a) => /^--(?:pre|pre-glob|hostname-bin)(?:=|$)/.test(a))) return false;
+  if ((base === 'ag' || base === 'ack') && args.some((a) => /^--(?:pager|ackrc)(?:=|$)/.test(a))) return false;
+  if (['printf', 'test', '['].includes(base) && args.some((a) => /^-[vR]/.test(a))) return false;
+  return TEXT_ONLY_COMMANDS.has(baseName(word)) || TEXT_ONLY_COMMANDS.has(base);
 }
 
 function wordUnresolvable(word) {
@@ -698,7 +860,7 @@ function hiddenEngineCall(command) {
   });
   if (programs.some((w) => wordUnresolvable(w) && ENGINE_DIR_RE.test(w))) return true;
   if (programs.some((w) => wordUnresolvable(w) || wordRunsScript(w)) && engineSignal(raw)) return true;
-  const allTextOnly = programs.every((w, i) => w === '' || (!wordUnresolvable(w) && textOnlyProgram(w, segments[i])));
+  const allTextOnly = programs.every((w, i) => w === '' || (!wordUnresolvable(w) && textOnlyProgram(w, segments[i], raw)));
   return !allTextOnly && carriesCardedAction(raw);
 }
 
@@ -795,7 +957,7 @@ function splicedEngineSignal(command) {
   const allTextOnly = segments.every((seg) => {
     const words = shellWords(seg);
     const w = words[commandWordIndex(words)] || '';
-    return w === '' || (!wordUnresolvable(w) && textOnlyProgram(w, seg));
+    return w === '' || (!wordUnresolvable(w) && textOnlyProgram(w, seg, raw));
   });
   if (allTextOnly) return false;
   const texts = [];
@@ -1105,7 +1267,7 @@ function stripLineContinuationsOutsideComments(command) {
 function routeBash(command) {
   const raw = String(command || '');
   let out = routeAllReadings(raw);
-  if (!CARDED_ROUTES.has(out.route) && (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(raw) || splicedEngineSignal(raw))) out = unreadableRoute(raw);
+  if (!CARDED_ROUTES.has(out.route) && (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(raw) || splicedEngineSignal(raw) || strongSignalUngated(raw))) out = unreadableRoute(raw);
   return out;
 }
 
@@ -1344,6 +1506,9 @@ module.exports = {
   ansiCCharCodeBackstop,
   eraseExpansions,
   splicedEngineSignal,
+  strongSignalUngated,
+  sedTextOnly,
+  gitTextOnly,
   routeBash,
   isShellTool,
   routeShellTool,

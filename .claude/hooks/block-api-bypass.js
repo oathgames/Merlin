@@ -987,6 +987,120 @@ function hookSplicedInvokes(raw) {
     /(?:^|[\s=])--?cmd(?:-file)?(?:=|\b)/i.test(t));
 }
 
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 6): mirror of
+// the router's TIER 1 (bash-approval-route.js strongEngineSignal /
+// tier1Exempt) for chained commands. A program that is not inert (git with
+// an alias, sed with s///e, find -exec, xargs, a shell) can run the engine
+// from text that spells it with splices, so a chained command whose text, in
+// any reading, carries the binary name, a cmd flag or an engine directory
+// blocks unless every program is inert (cannot run another program) or is
+// the literal engine binary. Single (unchained) commands are left to the
+// router, which cards them: blocking them here would also block the plain
+// engine call and `git commit -m "...Merlin.exe..."`. Only ADDS blocks.
+const HOOK_INERT = new Set([
+  'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'ls', 'dir', 'grep', 'egrep', 'fgrep',
+  'findstr', 'pwd', 'true', 'test', '[', 'basename', 'dirname', 'uniq', 'cut', 'tr',
+  'cd', 'mkdir', 'touch', 'chmod', 'stat', 'du', 'which', 'realpath', 'readlink',
+  'sha256sum', 'shasum', 'md5sum',
+]);
+function hookSegments(s) {
+  const out = [];
+  let cur = '';
+  let q = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { cur += c; if (c === "'") q = ''; continue; }
+    if (c === '\\') { cur += c + (s[i + 1] || ''); i++; continue; }
+    if (c === '`' || (c === '$' && s[i + 1] === '(') || ((c === '<' || c === '>') && s[i + 1] === '(')) {
+      out.push(cur); cur = ''; if (c !== '`') i++; continue;
+    }
+    if (q === '"') { cur += c; if (c === '"') q = ''; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (c === '&' && (s[i - 1] === '>' || s[i - 1] === '<' || s[i + 1] === '>')) { cur += c; continue; }
+    if (';&|\n\r()'.includes(c)) { out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+function hookWords(seg) {
+  const words = [];
+  let cur = '';
+  let inWord = false;
+  let q = '';
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (q === "'") { if (c === "'") q = ''; else cur += c; continue; }
+    if (q === '"') {
+      if (c === '\\' && '$`"\\\n'.includes(seg[i + 1] || '')) { if (seg[i + 1] !== '\n') cur += seg[i + 1]; i++; continue; }
+      if (c === '"') q = ''; else cur += c;
+      continue;
+    }
+    if (c === '\\') { if (seg[i + 1] !== '\n' && i + 1 < seg.length) { cur += seg[i + 1]; inWord = true; } i++; continue; }
+    if (c === "'" || c === '"') { q = c; inWord = true; continue; }
+    if (/\s/.test(c)) { if (inWord) words.push(cur); cur = ''; inWord = false; continue; }
+    cur += c; inWord = true;
+  }
+  if (inWord) words.push(cur);
+  return words;
+}
+function hookWritesFile(seg) {
+  let q = '';
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (q === "'") { if (c === "'") q = ''; continue; }
+    if (c === '\\') { i++; continue; }
+    if (q === '"') { if (c === '"') q = ''; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (c !== '>') continue;
+    let j = i + 1;
+    if (seg[j] === '>' || seg[j] === '|') j++;
+    while (seg[j] === ' ' || seg[j] === '\t') j++;
+    const target = (/^[^\s;&|()<>]*/.exec(seg.slice(j))[0]).replace(/['"]/g, '');
+    if (seg[j] === '&' || /^(?:\/dev\/(?:null|stdout|stderr)|nul)$/i.test(target)) { i = j; continue; }
+    return true;
+  }
+  return false;
+}
+function hookAllInert(raw) {
+  for (const v of new Set([raw, hookJoinAllContinuations(raw)])) {
+    for (const seg of hookSegments(v)) {
+      const words = hookWords(seg);
+      const w = words[0] || '';
+      if (!w || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(w) || /[$`*?[]/.test(w) && w !== '[') return false;
+      const base = w.split(/[\\/]/).pop().toLowerCase();
+      if (/^merlin(?:\.exe)?$/.test(base)) continue;
+      if (/[\\/]/.test(w) || !HOOK_INERT.has(base.replace(/\.exe$/, ''))) return false;
+      const args = words.slice(1);
+      if (args.some((a) => /^--?cmd(?:-file)?(?:=|$)/i.test(a))) return false;
+      if (['printf', 'test', '['].includes(base) && args.some((a) => /^-[vR]/.test(a))) return false;
+      if (hookWritesFile(seg)) return false;
+    }
+  }
+  return true;
+}
+function hookStrongSignal(raw) {
+  const texts = [raw, raw.replace(/['"\\]/g, ''), hookDecodeEscapesLoose(raw), hookDecodeEscapesLoose(raw).replace(/['"\\+^`]/g, '')];
+  for (const v of new Set([raw, hookJoinAllContinuations(raw)])) {
+    texts.push(hookEraseExpansions(v, false), hookEraseExpansions(v, true));
+    const vals = new Map();
+    const seq = [];
+    for (const m of v.matchAll(HOOK_SIMPLE_ASSIGN_RE)) {
+      if (seq.length >= 64) break;
+      const val = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+      vals.set(m[1], val);
+      seq.push(val);
+    }
+    if (seq.length) {
+      texts.push(hookEraseExpansions(v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+        (all, a, b) => (vals.has(a || b) ? vals.get(a || b) : all)), false), seq.join(''), seq.join(' '));
+    }
+  }
+  return texts.some((t) => /merlin\.exe/i.test(t) ||
+    /(?:^|[\s"'`=(\[,])--?cmd(?:-file)?(?:=|(?=$|[\s"'`;&|),\]]))/i.test(t) ||
+    /(?:^|[\s\\/"'`=(;&|<>])\.claude[\\/]tools(?=$|[\\/\s;&|)"'`<>])|merlin[\\/]bin(?=$|[\\/\s;&|)"'`<>])/i.test(t));
+}
+
 function matchesMerlinShellOperator(rawCmd) {
   const raw = String(rawCmd || '');
   const joinedAll = hookJoinAllContinuations(raw);
@@ -1024,6 +1138,7 @@ function matchesMerlinShellOperator(rawCmd) {
     chained = chained || r.chained;
   }
   if (chained && !invokes) invokes = hookSplicedInvokes(raw);
+  if (chained && !invokes) invokes = hookStrongSignal(raw) && !hookAllInert(raw);
   return invokes && chained;
 }
 

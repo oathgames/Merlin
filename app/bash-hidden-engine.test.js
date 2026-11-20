@@ -151,6 +151,99 @@ test('erased reading stays linear on 50KB pathological input', () => {
   }
 });
 
+// ── review 6: git / sed / find / xargs run the engine from text ───────
+// g1-g4, s1, s2 ran the fake engine in real bash and routed 'other' before
+// the two-tier exemption (strongSignalUngated, textOnlyProgram).
+const BUDGET = `'{"action":"meta-budget","adId":"1","dailyBudget":900}'`;
+const ESC_BUDGET = `"'{\\"action\\":\\"meta-budget\\",\\"adId\\":\\"1\\",\\"dailyBudget\\":900}'"`;
+const TIERED_GATED = [
+  `git -c alias.x='!./.claude/tools/Merl""in.exe --c""md' x ${BUDGET}`,
+  `x=; git -c alias.x='!./.claude/tools/Mer\${x}lin.exe --c\${x}md' x ${BUDGET}`,
+  `GIT_PAGER='./.claude/tools/Merl""in.exe --c""md {\\"action\\":\\"meta-budget\\",\\"adId\\":\\"1\\",\\"dailyBudget\\":900} #' git -p version`,
+  `git -c alias.x='!f(){ ./.claude/tools/Merl""in.exe --c""md "$1"; }; f' x '{"action":"meta-push","approved":true,"dailyBudget":900}'`,
+  `printf '%s\\n' ${ESC_BUDGET} | sed 's/.*\\/*/.\\/.claude\\/tools\\/Merl""in.exe --c""md &/eg'`,
+  `sed 's/.*\\/*/.\\/.claude\\/tools\\/Merl""in.exe --c""md &/eg' <<< ${ESC_BUDGET}`,
+  `rg --pre ./x '"action":"meta-push"' f`,
+  `git rebase -x './Merl""in.exe --c""md {"action":"meta-push"}' HEAD~1`,
+  `GIT_PAGER='./Merl""in.exe --c""md {"action":"meta-push"}' git -p log`,
+  `echo ./Merlin.exe --cmd '{"action":"meta-push"}' > s.sh; sh s.sh`,
+  `cat s.txt | sh -s ${BUDGET}`,
+  `find . -exec ./Merl""in.exe --c""md '{"action":"meta-push"}' \\;`,
+  `echo '{"action":"meta-push"}' | xargs ./Merl""in.exe --c""md`,
+  `git grep -O'./Merl""in.exe --c""md' meta-push`,
+  `git -c core.pager='./Merl""in.exe --c""md' log`,
+  `git -c alias.x='!sh' x ${BUDGET}`,
+  `test -v 'a[$(./Merl""in.exe --c""md x)]'`,
+  `printf -v 'a[$(./Merl""in.exe --c""md x)]' y`,
+  `printf -v'a[$(./Merl""in.exe --c""md x)]' y`,
+  `echo './Merl""in.exe --c""md x' >> ~/.bashrc`,
+  `cp .claude/tools/Merlin.exe ~/bin/grep.exe`,
+  `grep --cmd ${BUDGET} x`,
+  `sed -e 's/a/b/' -e '1e date' ${BUDGET}`,
+  `PATH=.:$PATH grep -c""md ${BUDGET}`,
+  `git commit -m "bump Merlin.exe --cmd parsing"`,
+];
+const TIERED_UNGATED = [
+  'cd "$HOME" && ls', 'echo $PATH', 'git commit -m "fix meta-push action"', 'git commit -m "don\'t break # things"',
+  'git log --grep=meta-push', 'git diff main -- app/bash-approval-route.js', 'grep \'"action":"meta-push"\' file',
+  'grep -rn "Merlin.exe" app/', 'cat docs/notes.md | grep -i merlin', 'rg -n \'"action": *"meta-push"\' app/',
+  'sed -n \'1,20p\' app/main.js', 'sed \'s/meta-push/meta-bulk-push/g\' notes.txt',
+  'sed -n \'/"action":"meta-push"/p\' app/x.js', 'git log -n 5 -- \'{"action":"meta-push"}\'',
+  'npm test', "echo $'a\\tb'", 'ls .claude/tools/*.exe', 'ls "$LOCALAPPDATA/Merlin/bin"', 'node script.js',
+  'node "$SCRIPT"', 'go build ./... && go vet ./...', 'gh pr view 12 --json state',
+  "cat > notes.md <<'EOF'\n# Notes\nIt's Ryan's plan, don't skip.\n## Next\nEOF",
+  'chmod +x .claude/tools/Merlin', 'cd .claude/tools && ls',
+];
+
+test('git, sed, rg, find and xargs forms with engine text card', () => {
+  for (const c of TIERED_GATED) assert.equal(r(c), 'card-unreadable', `must card: ${c}`);
+});
+
+test('text-only, inert and signal-free commands stay uncarded', () => {
+  for (const c of TIERED_UNGATED) {
+    assert.ok(['safe', 'other'].includes(r(c)), `must stay uncarded: ${c} -> ${r(c)}`);
+  }
+});
+
+test('sed and git text-only forms are allowlisted, exec forms are not', () => {
+  assert.equal(route.sedTextOnly(['s/a/b/g', 'f']), true);
+  assert.equal(route.sedTextOnly(['-n', '1,20p', 'f']), true);
+  assert.equal(route.sedTextOnly(['-i.bak', '/x/d', 'f']), true);
+  for (const a of [['s/a/b/e'], ['s/a/b/w out'], ['s/a\\/b/c/eg'], ['1e date'], ['-f', 's.sed'], ['s/a/b/;e'], ['r /etc/passwd']]) {
+    assert.equal(route.sedTextOnly(a), false, a.join(' '));
+  }
+  assert.equal(route.gitTextOnly(['commit', '-m', 'x']), true);
+  assert.equal(route.gitTextOnly(['-C', 'repo', 'log', '--oneline']), true);
+  for (const a of [['-c', 'a=b', 'log'], ['-p', 'log'], ['--exec-path=.', 'log'], ['rebase', '-x', 'y'],
+    ['fetch', '--upload-pack=x'], ['push', '--rec=x'], ['grep', '-nOx', 'y'], ['submodule', 'foreach', 'y'], ['x']]) {
+    assert.equal(route.gitTextOnly(a), false, a.join(' '));
+  }
+});
+
+test('hook blocks chained strong-signal forms through non-inert programs', () => {
+  for (const c of [
+    `true; git -c alias.x='!./.claude/tools/Merl""in.exe --c""md' x ${BUDGET}`,
+    `cd x && sed 's/.*/.\\/.claude\\/tools\\/Merl""in.exe --c""md &/e' <<< ${ESC_BUDGET}`,
+    `cd x; find . -exec ./Merl""in.exe --c""md '{"action":"meta-push"}' \\;`,
+  ]) assert.equal(runHook('Bash', c), 2, `hook must block: ${c}`);
+  for (const c of ['cd .claude/tools && ls', 'cat docs/notes.md | grep -i merlin', 'cd "$HOME" && ls',
+    'go build ./... && go vet ./...']) {
+    assert.equal(runHook('Bash', c), 0, `hook must allow: ${c}`);
+  }
+});
+
+test('tiered checks stay linear on 50KB pathological input', () => {
+  for (const unit of ['git -c a ', "sed 's/a/b/' ", '> x ', '--cmd ', '.claude/tools ', '"\\"']) {
+    const big = `git ${unit.repeat(Math.ceil(50000 / unit.length))}`;
+    let t0 = Date.now();
+    r(big);
+    assert.ok(Date.now() - t0 < 1000, `router slow on ${unit}: ${Date.now() - t0}ms`);
+    t0 = Date.now();
+    runHook('Bash', `${big}; true`);
+    assert.ok(Date.now() - t0 < 1000, `hook slow on ${unit}: ${Date.now() - t0}ms`);
+  }
+});
+
 test('hook runs for PowerShell and Monitor commands too', () => {
   const chained = `.claude/tools/Merlin.exe --cmd ${SPEND}; Remove-Item x`;
   assert.equal(runHook('PowerShell', chained), 2);
