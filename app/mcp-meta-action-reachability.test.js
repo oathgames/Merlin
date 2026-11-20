@@ -724,6 +724,14 @@ test('meta_audit inspect-ads routes targetAdSetId to meta-inspect-ads', async ()
   assert.equal(cmd.targetAdSetId, '120253990199360580');
 });
 
+test('meta_audit inspect-campaign routes campaignId to meta-inspect-campaign', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_audit').handler({ brand: 'acme', action: 'inspect-campaign', campaignId: '120253990199090580' });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-inspect-campaign');
+  assert.equal(cmd.campaignId, '120253990199090580');
+});
+
 test('meta_ads bulk-push carries the partner identity through to --cmd', async () => {
   execFileCalls.length = 0;
   await tool('meta_ads').handler({

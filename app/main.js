@@ -3153,6 +3153,15 @@ function getBudgetContext(inputBrand) {
 // through this exact decision; see REGRESSION GUARD (2026-09-28) and
 // (2026-10-04) above resolveExternalOriginCard and at the startMcpIpc call site.
 async function handleToolApproval(toolName, input, opts) {
+  // REGRESSION GUARD (2026-11-20, bash-approval-followup): PowerShell, Monitor
+  // and any other shell-shaped tool take the Bash tiers below (hard deny,
+  // safe shortcut, spend / destructive cards), never the long tail. See
+  // bash-approval-route.js "Other shell tools".
+  if (toolName !== 'Bash' && bashApprovalRoute.isShellTool(toolName, input)) {
+    const shellCommand = input && typeof input.command === 'string' ? input.command : '';
+    return handleToolApproval('Bash', { ...input, command: shellCommand }, { ...(opts || {}), shellTool: toolName })
+      .then((d) => (d && d.behavior === 'allow' ? { ...d, updatedInput: input } : d));
+  }
   // SECURITY: hard-deny bypass attempts BEFORE any auto-approve logic.
   // This duplicates the PreToolUse hook as defense in depth.
   const deny = checkHardDeny(toolName, input);
@@ -3379,7 +3388,9 @@ async function handleToolApproval(toolName, input, opts) {
   // segment is independently safe and none invokes the engine; an engine
   // call anywhere is classified by its own action, and one whose action
   // cannot be read cards. Never add a Bash allow above this line.
-  const bashRoute = toolName === 'Bash' ? bashApprovalRoute.routeBash(input && input.command) : null;
+  const bashRoute = toolName === 'Bash'
+    ? bashApprovalRoute.routeShellTool((opts && opts.shellTool) || 'Bash', input && input.command)
+    : null;
 
   // Auto-approve safe Bash commands (read-only, setup, file management)
   if (bashRoute && bashRoute.route === 'safe') {
@@ -3573,7 +3584,13 @@ async function handleToolApproval(toolName, input, opts) {
       }
       if (bashForceRequested) budgetDetail = (budgetDetail ? budgetDetail + ' · ' : '') + FORCE_CARD_NOTE;
       const toolUseID = newApprovalId();
-      const payload = { toolUseID, label: translated.label, cost: translated.cost, budget: budgetDetail };
+      // The object the engine changes, read from its own JSON and sanitized
+      // like the MCP budget card (bash-approval-route.js bashSpendCard).
+      const spendCard = bashApprovalRoute.bashSpendCard(bashAction, bashCmdText);
+      let spendLabel = translated.label;
+      if (spendCard.label) spendLabel = spendCard.label;
+      else if (spendCard.target) spendLabel = `${translated.label}: ${spendCard.target}`;
+      const payload = { toolUseID, label: spendLabel, cost: translated.cost, budget: budgetDetail };
       if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
       wsServer.broadcast('approval-request', payload);
       nudgeForApproval();
@@ -4337,8 +4354,15 @@ async function startSession(brandOverride) {
     permissionMode: resolvedPermissionMode,
     includePartialMessages: true,
     settingSources: ['project'],
-    canUseTool: handleToolApproval,
-    env: { ...sessionEnv, CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '360000' },
+    // An exception in the approval path denies the call (fail closed).
+    canUseTool: bashApprovalRoute.failClosedApproval(handleToolApproval, (e, t) => {
+      console.error('[approval] decision threw, denying', t, e && e.message);
+    }),
+    // The SDK's PowerShell tool is on by default on Windows. Merlin's hook and
+    // approval tiers are written for Bash syntax, so the tool stays off; its
+    // calls are still routed fail closed if it is ever re-enabled.
+    disallowedTools: ['PowerShell'],
+    env: { ...sessionEnv, CLAUDE_CODE_STREAM_CLOSE_TIMEOUT: '360000', CLAUDE_CODE_USE_POWERSHELL_TOOL: '0' },
     mcpServers: mcpConfig,
     systemPrompt: {
       type: 'preset',

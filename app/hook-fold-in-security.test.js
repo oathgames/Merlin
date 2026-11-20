@@ -70,7 +70,8 @@ test('settings.json still runs block-api-bypass.js on Bash and on Read|Edit|Writ
   const cfg = JSON.parse(settingsSrc());
   const pre = cfg.hooks.PreToolUse;
   const forMatcher = (m) => pre.find((h) => h.matcher === m);
-  for (const matcher of ['Bash', 'Read|Edit|Write|NotebookEdit|Grep|Glob']) {
+  // PowerShell and Monitor run shell commands too (bash-approval-followup).
+  for (const matcher of ['Bash|PowerShell|Monitor', 'Read|Edit|Write|NotebookEdit|Grep|Glob']) {
     const entry = forMatcher(matcher);
     assert.ok(entry, `PreToolUse matcher ${matcher} must exist`);
     const cmds = entry.hooks.map((h) => h.command).join('\n');

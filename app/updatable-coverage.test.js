@@ -52,6 +52,9 @@ const PWA_DIR = path.join(REPO_ROOT, 'pwa');
 // contributor knows why it's excluded. If the list grows beyond ~15
 // entries, rethink the scan predicate instead of padding this list.
 const EXCLUDED_FILES = new Set([
+  // Test-only manifest generated in autocmo-core (approval_gated_actions.json);
+  // read by bash-engine-approval-manifest.test.js, never loaded at runtime.
+  'app/engine-approval-actions.json',
   // Dev-only preview harness for Claude Code's preview tools.
   'app/preview-harness.html',
   'app/preview-stub.js',

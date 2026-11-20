@@ -636,15 +636,661 @@ function matchesDestructiveCommand(cmd) {
 // also missed a quoted path (`".claude/tools/Merlin" --cmd`) and the
 // single-dash flag Go's flag package accepts (`Merlin -cmd`). The app-side
 // chokepoint is bash-approval-route.js; this hook is the earlier layer.
-function matchesMerlinShellOperator(cmd) {
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup): the binary check read
+// only the literal text, so a binary name the shell assembles passed it:
+// `B=.claude/tools/Mer; A=-cmd; ${B}lin.exe $A '{...}'` (variables) and
+// `echo "Mer""lin.ex""e -c""md {...}" > s.sh && . s.sh` (quote splicing into
+// a script that is then sourced). The check now also reads the command with
+// every shell quote and backslash removed, and treats a --cmd / -cmd flag in
+// a command that has $ or backtick expansion as an engine call. Each form
+// only ADDS a block; nothing that was blocked before is allowed now.
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review): bash ANSI-C
+// strings ($'Merl\x69n.exe', $'\055\055cmd') were read literally, so a chained
+// engine call spelled with them passed. The command is now decoded the same
+// way the app router decodes it (bash-approval-route.js decodeAnsiC; this
+// hook is standalone, so the decoder is duplicated here and pinned by
+// bash-ansi-c-fold.test.js) before every check, and a glob command word under
+// .claude/tools/ (M?rlin.exe, M*.exe) counts as the binary. An ANSI-C string
+// this decoder cannot reproduce exactly fails closed when the command also
+// mentions the engine or a cmd flag in any decoded form.
+const HOOK_ANSI_C_SIMPLE = {
+  a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v',
+  '\\': '\\', "'": "'", '"': '"', '?': '?',
+};
+function hookDecodeAnsiCBody(s, i) {
+  let out = '';
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "'") return { value: out, end: i + 1 };
+    if (c !== '\\') { out += c; i++; continue; }
+    const n = s[i + 1];
+    if (n === undefined) return null;
+    if (Object.prototype.hasOwnProperty.call(HOOK_ANSI_C_SIMPLE, n)) { out += HOOK_ANSI_C_SIMPLE[n]; i += 2; continue; }
+    let m = /^[0-7]{1,3}/.exec(s.slice(i + 1));
+    if (m) {
+      const v = parseInt(m[0], 8);
+      if (v === 0 || v > 0x7f) return null;
+      out += String.fromCharCode(v); i += 1 + m[0].length; continue;
+    }
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const max = n === 'x' ? 2 : n === 'u' ? 4 : 8;
+      m = new RegExp('^[0-9A-Fa-f]{1,' + max + '}').exec(s.slice(i + 2));
+      if (!m) return null;
+      const v = parseInt(m[0], 16);
+      if (v === 0 || (n === 'x' && v > 0x7f) || v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff)) return null;
+      out += String.fromCodePoint(v); i += 2 + m[0].length; continue;
+    }
+    if (n === 'c') {
+      const x = s[i + 2];
+      if (x === undefined || x.charCodeAt(0) < 0x21 || x.charCodeAt(0) > 0x7e) return null;
+      const v = x.charCodeAt(0) & 0x1f;
+      if (v === 0) return null;
+      out += String.fromCharCode(v); i += 3; continue;
+    }
+    out += '\\' + n; i += 2;
+  }
+  return null;
+}
+function hookDecodeAnsiC(command) {
+  const s = String(command || '');
+  const hasAnsi = s.includes("$'");
+  if (!hasAnsi && !s.includes('#')) return { text: s, failed: false };
+  // residue(t): a $' whose body (up to the next unescaped ') holds a
+  // backslash, found with no quote or comment context at all.
+  const residue = (t) => {
+    for (let k = t.indexOf("$'"); k >= 0; k = t.indexOf("$'", k + 2)) {
+      for (let j = k + 2; j < t.length && t[j] !== "'"; j++) if (t[j] === '\\') return true;
+    }
+    return false;
+  };
+  // balanced(t): quote pairing as splitSegments reads it.
+  const balanced = (t) => {
+    let q = '';
+    for (let j = 0; j < t.length; j++) {
+      const ch = t[j];
+      if (q === "'") { if (ch === "'") q = ''; continue; }
+      if (ch === '\\') { j++; continue; }
+      if (q === '"') { if (ch === '"') q = ''; continue; }
+      if (ch === "'" || ch === '"') q = ch;
+    }
+    return q === '';
+  };
+  // wordStart(i): s[i] begins a word. A backslash-newline continuation
+  // vanishes before bash splits words, so it is looked through. CR is an
+  // ordinary character to bash, not a separator.
+  const wordStart = (i) => {
+    let p = i - 1;
+    while (p >= 1 && s[p] === '\n') {
+      let b = 0;
+      while (p - 1 - b >= 0 && s[p - 1 - b] === '\\') b++;
+      if (b % 2 === 0) break;
+      p -= 2;
+    }
+    return p < 0 || /[ \t\n;&|()<>]/.test(s[p]);
+  };
+  // Lexing this decoder does not model exactly (here-docs, << shifts,
+  // backticks, $( or ${..} with quotes inside double quotes) means the
+  // quote state below may be wrong. Then nothing is rewritten: an
+  // escape-bearing $'..' fails closed, anything else is returned as written.
+  const giveUp = () => ({ text: s, failed: hasAnsi && residue(s) });
+  let out = '';
+  let state = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === "'") { out += c; if (c === "'") state = ''; continue; }
+    if (c === '\\') { out += c + (s[i + 1] || ''); i++; continue; }
+    if (state === '"') {
+      if (c === '`' || (c === '$' && s[i + 1] === '(')) return giveUp();
+      if (c === '$' && s[i + 1] === '{') {
+        const close = s.indexOf('}', i);
+        if (close < 0 || /['"`\\]|\$\(/.test(s.slice(i, close))) return giveUp();
+      }
+      out += c;
+      if (c === '"') state = '';
+      continue;
+    }
+    if (c === '`') return giveUp();
+    if (c === '<' && s[i + 1] === '<') {
+      if (s[i + 2] !== '<') return giveUp();
+      out += '<<<'; i += 2; continue;
+    }
+    // A # that begins a word outside quotes comments to end of line, as in
+    // bash. Its quote and escape characters are dropped so no later lexer
+    // reads a quote that bash never sees.
+    if (c === '#' && wordStart(i)) {
+      let j = i;
+      while (j < s.length && s[j] !== '\n') j++;
+      out += s.slice(i, j).replace(/['"`\\]/g, '');
+      i = j - 1;
+      continue;
+    }
+    if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
+    if (c === '$' && s[i + 1] === "'") {
+      const d = hookDecodeAnsiCBody(s, i + 2);
+      if (!d) return { text: s, failed: true };
+      out += "'" + d.value.replace(/'/g, "'\\''") + "'";
+      i = d.end - 1;
+      continue;
+    }
+    if (c === "'" || c === '"') state = c;
+    out += c;
+  }
+  // Fail-closed backstop: an unterminated quote, a result whose quote
+  // pairing splitSegments would read differently, or an escape-bearing $'
+  // left anywhere in the result means the lexing above went wrong.
+  if (state !== '' || !balanced(out) || residue(out)) return { text: s, failed: hasAnsi };
+  return { text: out, failed: false };
+}
+function hookLooseCodePoint(m, h) {
+  if (!h) return m;
+  const v = parseInt(h, 16);
+  return v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff) ? m : String.fromCodePoint(v);
+}
+function hookDecodeEscapesLoose(text) {
+  let s = String(text);
+  // Whole backslash runs, escape optional: linear, unlike /\\+u.../ (see
+  // decodeEscapesLoose in bash-approval-route.js, including bash's short
+  // and long forms).
+  for (let i = 0; i < 4; i++) {
+    s = s
+      .replace(/\\+(?:U([0-9A-Fa-f]{1,8}))?/g, hookLooseCodePoint)
+      .replace(/\\+(?:u([0-9A-Fa-f]{1,4}))?/g, hookLooseCodePoint)
+      .replace(/\\+(?:x([0-9A-Fa-f]{1,2}))?/g, hookLooseCodePoint)
+      .replace(/\\+(?:0?([0-7]{1,3}))?/g, (m, o) => (o ? String.fromCharCode(parseInt(o, 8) & 0xff) : m));
+  }
+  return s;
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 3): the
+// decoder's quote / comment lexer was desynced from bash three times
+// (`: ${x:- # } ; ./$'Merl\x69n.exe' ...`, `./$\<newline>'Mer\u6cin.exe'`).
+// The chained-command check no longer rests on that lexer: backslash-newline
+// is removed first (bash's own first step), then the command is read two ways
+// (the context-aware decode, and a context-free worst case that decodes
+// every $' anywhere) and blocked when ANY reading shows an engine call and ANY reading
+// shows a separator. Same functions as bash-approval-route.js
+// (stripLineContinuations, worstCaseAnsiC), pinned identical by
+// bash-ansi-c-fold.test.js.
+function hookStripLineContinuations(command) {
+  const s = String(command || '');
+  if (!s.includes('\\')) return s;
+  // A linear scan, not /(\\+)\r?\n/: that regex is quadratic on a long
+  // backslash run with no newline.
+  let out = '';
+  let from = 0;
+  for (let nl = s.indexOf('\n'); nl >= 0; nl = s.indexOf('\n', nl + 1)) {
+    let p = nl - 1;
+    if (p >= 0 && s[p] === '\r') p--;
+    let b = 0;
+    while (p - b >= 0 && s[p - b] === '\\') b++;
+    if (b % 2 === 1) { out += s.slice(from, p); from = nl + 1; }
+  }
+  return out + s.slice(from);
+}
+function hookWorstCaseAnsiC(command, start) {
+  const s = String(command || '');
+  let out = '';
+  let from = 0;
+  let failed = false;
+  const starts = [];
+  for (let k = s.indexOf("$'", start || 0); k >= 0; k = s.indexOf("$'", k)) {
+    starts.push(k);
+    const d = hookDecodeAnsiCBody(s, k + 2);
+    if (!d) { failed = true; k += 2; continue; }
+    out += s.slice(from, k) + "'" + d.value.replace(/'/g, "'\\''") + "'";
+    from = d.end;
+    k = d.end;
+  }
+  return { text: out + s.slice(from), failed, starts };
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 4): a
+// backslash-ended # comment was joined with the next line (bash never
+// continues a comment), and the sequential worst case let the $' inside '$'
+// swallow the real $' body, so
+//   echo hi # note \<newline>eval $'\U2e/Mer\U6cin.exe \U2d\U2d\U63md \x27{...}\x27'
+// passed this hook. Mirrors bash-approval-route.js review 4 (layers A, B, C):
+//   A. the text as given, or with every backslash-newline removed, holding
+//      $' and a character-code escape at or after the first $' is blocked
+//      when it has any separator or newline; a single simple command keeps
+//      the single-command policy (the app router cards it);
+//   B. the worst case runs from every $' alignment, on every variant;
+//   C. readings with continuations joined by parity, outside comments and
+//      quotes only, everywhere, and not at all.
+// Any reading showing an engine call and any reading showing a separator
+// blocks. The helpers are pinned identical to the router's by
+// bash-ansi-c-fold.test.js.
+const HOOK_ANSI_C_CHAR_CODE_RE = /\\(?:x[0-9A-Fa-f]|u[0-9A-Fa-f]|U[0-9A-Fa-f]|[0-7]|c[\s\S])/;
+const HOOK_MAX_ANSI_C_STARTS = 8;
+function hookJoinAllContinuations(command) {
+  return String(command || '').replace(/\\\r?\n/g, '');
+}
+function hookAnsiCCharCodeBackstop(command) {
+  const raw = String(command || '');
+  for (const v of [raw, hookJoinAllContinuations(raw)]) {
+    const k = v.indexOf("$'");
+    if (k >= 0 && HOOK_ANSI_C_CHAR_CODE_RE.test(v.slice(k))) return true;
+  }
+  return false;
+}
+function hookStripLineContinuationsOutsideComments(command) {
+  const s = String(command || '');
+  if (!s.includes('\\')) return s;
+  let out = '';
+  let state = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === '#') { out += c; if (c === '\n') state = ''; continue; }
+    if (state === "'") { out += c; if (c === "'") state = ''; continue; }
+    if (state === '$') {
+      out += c;
+      if (c === '\\' && i + 1 < s.length) { out += s[++i]; continue; }
+      if (c === "'") state = '';
+      continue;
+    }
+    if (c === '\\') {
+      if (s[i + 1] === '\n') { i++; continue; }
+      if (s[i + 1] === '\r' && s[i + 2] === '\n') { i += 2; continue; }
+      out += c;
+      if (i + 1 < s.length) out += s[++i];
+      continue;
+    }
+    if (state === '"') { out += c; if (c === '"') state = ''; continue; }
+    if (c === '#' && (out === '' || /[ \t\n;&|()<>]/.test(out[out.length - 1]))) { state = '#'; out += c; continue; }
+    if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
+    if (c === '$' && s[i + 1] === "'") { state = '$'; out += "$'"; i++; continue; }
+    if (c === "'" || c === '"') state = c;
+    out += c;
+  }
+  return out;
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 5): an EMPTY
+// expansion spliced into every signal (x=; ./Mer${x}lin.exe --c${x}md ...)
+// hid the binary and the flag from every reading below. Mirrors
+// bash-approval-route.js splicedEngineSignal: the text is also read with
+// every expansion erased (${..}, $name, $1, $( .. ), backticks deleted whole;
+// quotes and \x backslashes dropped), with substitution bodies and ${x:-word}
+// operands kept, and with simple name=value assignments in the same command
+// substituted (a=Mer; b=lin.exe; ./$a$b). In a command holding $ or a
+// backtick, the binary name or a cmd flag in any of those readings counts as
+// invoking the engine; with a separator, block.
+function hookEraseExpansions(text, keepBodies) {
+  const s = String(text || '');
+  let out = '';
+  let open = 0;
+  const close = (i, o, c) => {
+    let depth = 1;
+    for (let j = i; j < s.length; j++) {
+      if (s[j] === '\\') { j++; continue; }
+      if (s[j] === o) depth++;
+      else if (s[j] === c && --depth === 0) return j;
+    }
+    return s.length;
+  };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\') { if (i + 1 < s.length && s[i + 1] !== '\n') out += s[i + 1]; i++; continue; }
+    if (c === "'" || c === '"') continue;
+    if (c === '`') {
+      if (keepBodies) continue;
+      let j = i + 1;
+      while (j < s.length && s[j] !== '`') j += s[j] === '\\' ? 2 : 1;
+      i = j;
+      continue;
+    }
+    if (c === '}' && open > 0) { open--; continue; }
+    if (c !== '$') { out += c; continue; }
+    const n = s[i + 1];
+    if (n === '{') {
+      if (!keepBodies) { i = close(i + 2, '{', '}'); continue; }
+      const m = /^[!#]?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])?(?:\[[^\]]*\])?:?[-+=?#%/^,@]*/.exec(s.slice(i + 2, i + 130));
+      i += 1 + m[0].length;
+      open++;
+      continue;
+    }
+    if (n === '(') {
+      if (!keepBodies) i = close(i + 2, '(', ')');
+      else i++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(n || '')) { while (/[A-Za-z0-9_]/.test(s[i + 1] || '')) i++; continue; }
+    if (/[0-9@*#?$!-]/.test(n || '')) { i++; continue; }
+    if (n === "'" || n === '"') continue;
+    out += c;
+  }
+  return out;
+}
+
+const HOOK_SIMPLE_ASSIGN_RE = /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=(?:'([^']*)'|"([^"$`\\]*)"|([^\s;&|()'"$`\\<>]*))/g;
+function hookSplicedInvokes(raw) {
+  if (!/[$`]/.test(raw)) return false;
+  const texts = [];
+  for (const v of new Set([raw, hookJoinAllContinuations(raw)])) {
+    texts.push(hookEraseExpansions(v, false), hookEraseExpansions(v, true));
+    const vals = new Map();
+    const seq = [];
+    for (const m of v.matchAll(HOOK_SIMPLE_ASSIGN_RE)) {
+      if (seq.length >= 64) break;
+      const val = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+      vals.set(m[1], val);
+      seq.push(val);
+    }
+    if (seq.length) {
+      texts.push(hookEraseExpansions(v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+        (all, a, b) => (vals.has(a || b) ? vals.get(a || b) : all)), false), seq.join(''), seq.join(' '));
+    }
+  }
+  return texts.some((t) => /merlin\.exe/i.test(t) || /\bmerlin\s+--?(cmd|config)\b/i.test(t) ||
+    /(?:^|[\s=])--?cmd(?:-file)?(?:=|\b)/i.test(t));
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 6): mirror of
+// the router's TIER 1 (bash-approval-route.js strongEngineSignal /
+// tier1Exempt) for chained commands. A program that is not inert (git with
+// an alias, sed with s///e, find -exec, xargs, a shell) can run the engine
+// from text that spells it with splices, so a chained command whose text, in
+// any reading, carries the binary name, a cmd flag or an engine directory
+// blocks unless every program is inert (cannot run another program) or is
+// the literal engine binary. Single (unchained) commands are left to the
+// router, which cards them: blocking them here would also block the plain
+// engine call and `git commit -m "...Merlin.exe..."`. Only ADDS blocks.
+const HOOK_INERT = new Set([
+  'echo', 'printf', 'cat', 'head', 'tail', 'wc', 'ls', 'dir', 'grep', 'egrep', 'fgrep',
+  'findstr', 'pwd', 'true', 'test', '[', 'basename', 'dirname', 'uniq', 'cut', 'tr',
+  // chmod is NOT inert (review 7): `chmod +x merlin` arms a staged wrapper.
+  'cd', 'mkdir', 'touch', 'stat', 'du', 'which', 'realpath', 'readlink',
+  'sha256sum', 'shasum', 'md5sum',
+]);
+function hookSegments(s) {
+  const out = [];
+  let cur = '';
+  let q = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { cur += c; if (c === "'") q = ''; continue; }
+    if (c === '\\') { cur += c + (s[i + 1] || ''); i++; continue; }
+    if (c === '`' || (c === '$' && s[i + 1] === '(') || ((c === '<' || c === '>') && s[i + 1] === '(')) {
+      out.push(cur); cur = ''; if (c !== '`') i++; continue;
+    }
+    if (q === '"') { cur += c; if (c === '"') q = ''; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (c === '&' && (s[i - 1] === '>' || s[i - 1] === '<' || s[i + 1] === '>')) { cur += c; continue; }
+    if (';&|\n\r()'.includes(c)) { out.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean);
+}
+function hookWords(seg) {
+  const words = [];
+  let cur = '';
+  let inWord = false;
+  let q = '';
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (q === "'") { if (c === "'") q = ''; else cur += c; continue; }
+    if (q === '"') {
+      if (c === '\\' && '$`"\\\n'.includes(seg[i + 1] || '')) { if (seg[i + 1] !== '\n') cur += seg[i + 1]; i++; continue; }
+      if (c === '"') q = ''; else cur += c;
+      continue;
+    }
+    if (c === '\\') { if (seg[i + 1] !== '\n' && i + 1 < seg.length) { cur += seg[i + 1]; inWord = true; } i++; continue; }
+    if (c === "'" || c === '"') { q = c; inWord = true; continue; }
+    if (/\s/.test(c)) { if (inWord) words.push(cur); cur = ''; inWord = false; continue; }
+    cur += c; inWord = true;
+  }
+  if (inWord) words.push(cur);
+  return words;
+}
+// Mirror of the router's segmentWritesFile (review 7): `>&word` / `>& word`
+// write FILE word unless word is digits, `-` or digits then `-`; `&>`, `&>>`,
+// `>|`, `>>`, `N>`, `{fd}>` and `<>` always name a file. An expansion in the
+// target or a missing target counts as a write.
+function hookRedirectTarget(s, j) {
+  while (s[j] === ' ' || s[j] === '\t') j++;
+  let word = '';
+  let q = '';
+  let expands = false;
+  for (; j < s.length; j++) {
+    const c = s[j];
+    if (q === "'") { if (c === "'") q = ''; else word += c; continue; }
+    if (q === '"') {
+      if (c === '"') { q = ''; continue; }
+      if (c === '$' || c === '`') expands = true;
+      if (c === '\\' && j + 1 < s.length) { word += s[++j]; continue; }
+      word += c;
+      continue;
+    }
+    if (c === '\\') { if (j + 1 < s.length) word += s[++j]; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    if (/[\s;&|()<>]/.test(c)) break;
+    if (/[$`*?[{]/.test(c)) expands = true;
+    word += c;
+  }
+  return { word, expands, end: j };
+}
+function hookWritesFile(seg) {
+  let q = '';
+  for (let i = 0; i < seg.length; i++) {
+    const c = seg[i];
+    if (q === "'") { if (c === "'") q = ''; continue; }
+    if (c === '\\') { i++; continue; }
+    if (q === '"') { if (c === '"') q = ''; continue; }
+    if (c === "'" || c === '"') { q = c; continue; }
+    let j;
+    let dup = false;
+    if (c === '<' && seg[i + 1] === '>') j = i + 2;
+    else if (c === '&' && seg[i + 1] === '>') j = seg[i + 2] === '>' ? i + 3 : i + 2;
+    else if (c === '>') {
+      j = i + 1;
+      if (seg[j] === '&') { dup = true; j++; } else if (seg[j] === '>' || seg[j] === '|') j++;
+    } else continue;
+    const t = hookRedirectTarget(seg, j);
+    i = Math.max(i, t.end - 1);
+    if (t.expands || !t.word) return true;
+    if (dup && /^(?:\d+-?|-)$/.test(t.word)) continue;
+    if (/^(?:\/dev\/(?:null|stdout|stderr|tty|fd\/\d+)|nul)$/i.test(t.word)) continue;
+    return true;
+  }
+  return false;
+}
+function hookAllInert(raw) {
+  for (const v of new Set([raw, hookJoinAllContinuations(raw)])) {
+    for (const seg of hookSegments(v)) {
+      const words = hookWords(seg);
+      const w = words[0] || '';
+      if (!w || /^[A-Za-z_][A-Za-z0-9_]*\+?=/.test(w) || /[$`*?[]/.test(w) && w !== '[') return false;
+      const base = w.split(/[\\/]/).pop().toLowerCase();
+      // Review 7: an engine-named command word is never inert here. A literal
+      // chained engine call is already blocked by readMerlinChain; anything
+      // else by that name (a wrapper staged as ./merlin) is unreadable.
+      if (/^merlin(?:\.exe)?$/.test(base)) return false;
+      if (/[\\/]/.test(w) || !HOOK_INERT.has(base.replace(/\.exe$/, ''))) return false;
+      const args = words.slice(1);
+      if (args.some((a) => /^--?cmd(?:-file)?(?:=|$)/i.test(a))) return false;
+      if (['printf', 'test', '['].includes(base) && args.some((a) => /^-[vR]/.test(a))) return false;
+      if (hookWritesFile(seg)) return false;
+    }
+  }
+  return true;
+}
+function hookStrongSignal(raw) {
+  const texts = [raw, raw.replace(/['"\\]/g, ''), hookDecodeEscapesLoose(raw), hookDecodeEscapesLoose(raw).replace(/['"\\+^`]/g, '')];
+  for (const v of new Set([raw, hookJoinAllContinuations(raw)])) {
+    texts.push(hookEraseExpansions(v, false), hookEraseExpansions(v, true));
+    const vals = new Map();
+    const seq = [];
+    for (const m of v.matchAll(HOOK_SIMPLE_ASSIGN_RE)) {
+      if (seq.length >= 64) break;
+      const val = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+      vals.set(m[1], val);
+      seq.push(val);
+    }
+    if (seq.length) {
+      texts.push(hookEraseExpansions(v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+        (all, a, b) => (vals.has(a || b) ? vals.get(a || b) : all)), false), seq.join(''), seq.join(' '));
+    }
+  }
+  return texts.some((t) => /merlin\.exe/i.test(t) ||
+    /(?:^|[\s"'`=(\[,])--?cmd(?:-file)?(?:=|(?=$|[\s"'`;&|),\]]))/i.test(t) ||
+    /(?:^|[\s\\/"'`=(;&|<>])\.claude[\\/]tools(?=$|[\\/\s;&|)"'`<>])|merlin[\\/]bin(?=$|[\\/\s;&|)"'`<>])/i.test(t));
+}
+
+function matchesMerlinShellOperator(rawCmd) {
+  const raw = String(rawCmd || '');
+  const joinedAll = hookJoinAllContinuations(raw);
+  const SEPARATOR = /[;&|`\r\n]|\$\(/;
+  const separated = SEPARATOR.test(raw) || SEPARATOR.test(joinedAll);
+  if (hookAnsiCCharCodeBackstop(raw) && separated) return true;
+  // A shell-code runner re-lexes text the shell assembled, so a $' built from
+  // a variable (d=\$; eval "$d'./Mer\U6cin.exe'") is ANSI-C to it: with a
+  // character-code escape anywhere and a separator, block (router:
+  // shellCodeBuiltAtRunTime).
+  if (separated && HOOK_ANSI_C_CHAR_CODE_RE.test(joinedAll) &&
+      /(?:^|[\s;&|(`])(?:eval|sh|bash|zsh|dash|ksh|fish|busybox|source)(?=[\s;&|)]|$)|(?:^|[;&|(]\s*)\.\s/.test(joinedAll)) {
+    return true;
+  }
+  const joined = [...new Set([hookStripLineContinuations(raw), hookStripLineContinuationsOutsideComments(raw), joinedAll])];
+  const readings = [];
+  let alignments = 0;
+  for (const v of joined.includes(raw) ? joined : [...joined, raw]) {
+    if (joined.includes(v)) readings.push(hookDecodeAnsiC(v));
+    const covered = new Set();
+    for (let k = v.indexOf("$'"); k >= 0; k = v.indexOf("$'", k + 1)) {
+      if (covered.has(k)) continue;
+      if (alignments === HOOK_MAX_ANSI_C_STARTS) { readings.push({ text: v, failed: true }); break; }
+      alignments++;
+      const w = hookWorstCaseAnsiC(v, k);
+      for (const j of w.starts) covered.add(j);
+      readings.push(w);
+    }
+  }
+  let invokes = false;
+  let chained = false;
+  for (const reading of readings) {
+    const r = readMerlinChain(reading, raw);
+    invokes = invokes || r.invokes;
+    chained = chained || r.chained;
+  }
+  if (chained && !invokes) invokes = hookSplicedInvokes(raw);
+  if (chained && !invokes) invokes = hookStrongSignal(raw) && !hookAllInert(raw);
+  if (chained && !invokes) invokes = hookEngineOutputExecuted(raw) || hookEngineOutputExecuted(joinedAll);
+  return invokes && chained;
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 8): mirror of
+// the router's engineOutputExecuted for chained commands. The engine echoes
+// argument text in its output, so engine output piped into something that
+// runs stdin as code (a shell, source / . / eval, any xargs, env / nohup /
+// sudo style wrappers, an interpreter with no script file), or written to a
+// file that a later segment runs (a shell or script runner, chmod, ./path),
+// blocks. A literal Merlin.exe in a chain is already blocked above; this
+// covers an engine-named command word the literal readers do not see
+// (./merlin --setup | sh). Only ADDS blocks.
+const HOOK_EXEC_PROGRAMS = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'busybox', 'source', '.', 'eval', 'exec', 'xargs', 'env', 'command',
+  'builtin', 'nohup', 'time', 'sudo', 'doas', 'su', 'stdbuf', 'timeout', 'nice', 'setsid', 'parallel', 'watch',
+  'script', 'cmd', 'powershell', 'pwsh', 'wsl', 'ssh', 'docker', 'podman', 'kubectl', 'at', 'batch', 'crontab',
+  'dc', 'ed', 'ex', 'vi', 'vim', 'nvim', 'gdb', 'sqlite3', 'mysql', 'psql', 'expect', 'm4', 'make',
+]);
+const HOOK_COMPOUND_WORDS = new Set(['{', '}', '!', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for', 'case', 'esac', 'time', 'coproc']);
+const HOOK_STDIN_INTERPRETERS = new Set(['python', 'python3', 'python2', 'py', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua']);
+function hookEngineOutputExecuted(raw) {
+  // Segments with whether each reads a pipe; an unplaceable substitution
+  // makes every later segment count as piped.
+  const segs = [];
+  let cur = '';
+  let q = '';
+  let pipedNext = false;
+  let opaque = false;
+  const push = (nextPiped) => { if (cur.trim()) segs.push({ text: cur.trim(), piped: pipedNext || opaque }); cur = ''; pipedNext = nextPiped; };
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (q === "'") { cur += c; if (c === "'") q = ''; continue; }
+    if (c === '\\') { cur += c + (raw[i + 1] || ''); i++; continue; }
+    if (c === '`' || (c === '$' && raw[i + 1] === '(') || ((c === '<' || c === '>') && raw[i + 1] === '(')) {
+      opaque = true; push(true); if (c !== '`') i++; continue;
+    }
+    if (q === '"') { cur += c; if (c === '"') q = ''; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (c === '&' && (raw[i - 1] === '>' || raw[i - 1] === '<' || raw[i + 1] === '>')) { cur += c; continue; }
+    if (c === '|') {
+      if (raw[i + 1] === '|') { push(false); i++; continue; }
+      push(true); if (raw[i + 1] === '&') i++; continue;
+    }
+    if (';&\n\r()'.includes(c)) { push(pipedNext && (c === '(' || c === ')')); continue; }
+    cur += c;
+  }
+  push(false);
+  let engineSeen = false;
+  let wrote = false;
+  let compound = false;
+  for (const seg of segs) {
+    const words = hookWords(seg.text);
+    let k = 0;
+    const skip = () => { while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) k++; };
+    skip();
+    let inCompound = false;
+    while (k < words.length && HOOK_COMPOUND_WORDS.has(words[k])) { k++; inCompound = true; }
+    skip();
+    const w = words[k] || '';
+    const base = w.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+    const args = words.slice(k + 1);
+    if (engineSeen) {
+      compound = compound || inCompound;
+      const interp = HOOK_STDIN_INTERPRETERS.has(base);
+      const stdinCode = /[$`*?[]/.test(w) && w !== '[' || HOOK_EXEC_PROGRAMS.has(base) ||
+        (interp || /^[gnm]?awk$|^sed$/.test(base)) && args.some((a) => /^(?:\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/.test(a)) ||
+        /^[gnm]?awk$/.test(base) && /system|getline|\|/.test(args.join(' ')) ||
+        interp && (args.some((a) => a === '-' || /^-[A-Za-z]*[ce]$/.test(a) || /^--?(?:eval|print|command)$/i.test(a)) ||
+          !args.includes('-m') && !args.some((a) => !a.startsWith('-')));
+      if ((seg.piped || compound) && stdinCode) return true;
+      if (wrote && (HOOK_EXEC_PROGRAMS.has(base) || interp || base === 'chmod' || /[\\/]/.test(w))) return true;
+    }
+    if (base === 'merlin' || words.some((x) => /merlin\.exe$/i.test(x) || /^--?cmd(?:-file)?(?:=|$)/i.test(x))) engineSeen = true;
+    // A write before the engine counts too (exec 3>s.sh, then the engine's >&3).
+    if (hookWritesFile(seg.text) || ['tee', 'dd', 'cp', 'mv', 'ln', 'install', 'sponge', 'exec'].includes(base)) wrote = true;
+  }
+  return false;
+}
+
+// readMerlinChain(reading, rawCmd) -> { invokes, chained } for one reading.
+function readMerlinChain(ansi, rawCmd) {
+  const cmd = ansi.text;
+  const quoteless = cmd.replace(/['"\\]/g, '');
+  const assembledFlag = /[$`]/.test(cmd) && /(?:^|[\s=])--?cmd(?:-file)?(?:=|\b)/i.test(quoteless);
+  const undecodable = ansi.failed &&
+    /merlin|--?cmd/i.test(hookDecodeEscapesLoose(rawCmd).replace(/['"\\$]/g, '') + ' ' + quoteless);
   const invokesMerlinBinary =
-    /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin["']?\s+--?(cmd|config)\b/i.test(cmd);
-  if (!invokesMerlinBinary) return false;
+    /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin["']?\s+--?(cmd|config)\b/i.test(cmd) ||
+    /\bmerlin\.exe\b/i.test(quoteless) || /\bmerlin\s+--?(cmd|config)\b/i.test(quoteless) ||
+    /(?:^|[;&|(\r\n])\s*[^\s;&|()]*\.claude[\\/]tools[\\/][^\s;&|()]*[*?[]/i.test(quoteless) ||
+    assembledFlag || undecodable;
   const stripped = cmd
     .replace(/"(?:[^"\\]|\\.)*"/g, '')
     .replace(/'[^']*'/g, '')
     .replace(/\\\r?\n/g, ' '); // backslash-newline is a line continuation, not a separator
-  return /[&|;`\r\n]|\$\(/.test(stripped);
+  // The regexes above are not escape-aware: in `echo don\'t; Merlin.exe ...`
+  // the escaped quote opened a "quoted region" that swallowed the `;`. Also
+  // read the separators with a scan that honours backslash escapes the way
+  // bash does. Either reading finding a separator blocks.
+  let lexed = '';
+  let q = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (q === "'") { if (ch === "'") q = ''; continue; }
+    if (q === '"') { if (ch === '\\') i++; else if (ch === '"') q = ''; continue; }
+    if (ch === '\\') { lexed += cmd[i + 1] === '\n' || cmd[i + 1] === '\r' ? ' ' : ''; i += cmd[i + 1] === '\r' && cmd[i + 2] === '\n' ? 2 : 1; continue; }
+    if (ch === "'" || ch === '"') { q = ch; continue; }
+    lexed += ch;
+  }
+  return {
+    invokes: invokesMerlinBinary,
+    chained: /[&|;`\r\n]|\$\(/.test(stripped) || /[&|;`\r\n]|\$\(/.test(lexed),
+  };
 }
 
 function matchesAppSourceWrite(filePath) {

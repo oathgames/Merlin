@@ -1,0 +1,326 @@
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review)
+//
+//   1. Bash ANSI-C strings ($'\x69', $'\055', $'a') are decoded before
+//      the router detects the engine or reads its action, in the router AND
+//      in the PreToolUse hook. An undecodable one fails closed.
+//   2. A glob command word under .claude/tools/ is an engine signal.
+//   3. JSON keys are matched the way Go's encoding/json folds them: ASCII
+//      case plus U+017F (long s) -> s and U+212A (Kelvin) -> k, for every
+//      lookup (action, batchStatus, ids, amounts).
+//   4. Interpreters are script runners, but need an engine signal to card.
+//   5. Text-search programs (rg, ag, ack, findstr, Select-String, a sed with
+//      no exec command) do not card on an action name in their pattern.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { spawnSync } = require('child_process');
+const route = require('./bash-approval-route');
+const action = require('./bash-merlin-action');
+
+const r = (command) => route.routeBash(command).route;
+const LONG_S = 'ſ';
+const KELVIN = 'K';
+
+// ── (1) ANSI-C decoding ──────────────────────────────────────────────
+
+test('ANSI-C engine calls card as the real spend action', () => {
+  const budget = String.raw`.claude/tools/$'Merl\x69n.exe' $'\x2d\x2dcmd' $'{"\x61ction":"meta-budget","adId":"1","dailyBudget":900}'`;
+  const out = route.routeBash(budget);
+  assert.equal(out.route, 'spend');
+  assert.equal(out.action, 'meta-budget');
+  assert.equal(action.lastNumber(out.cmdText, 'dailyBudget'), 900);
+  assert.equal(r(String.raw`$'\056claude/tools/\115erlin.exe' $'\055\055cmd' $'{"\141ction":"meta-push","approved":true,"dailyBudget":900}'`), 'spend');
+  assert.equal(r(String.raw`.claude/tools/Merl$'\x69'n.exe $'\x2d'-cmd '{"action":"meta-push","approved":true}'`), 'spend');
+  assert.equal(r(String.raw`.claude/tools/Merlin.exe --cmd $'{"action":"meta-push"}'`), 'spend');
+  assert.equal(r(String.raw`cd x && .claude/tools/Merlin.exe --cmd $'{"action":"meta\x2dpush"}'`), 'spend');
+});
+
+test('an ANSI-C string that cannot be decoded exactly fails closed', () => {
+  for (const c of [
+    String.raw`.claude/tools/Merl$'\c' --cmd x`,
+    String.raw`$'\x00' --cmd '{"action":"meta-push"}'`,
+    String.raw`$'\xff' x`,
+    String.raw`$'\u' x`,
+    String.raw`$'\ud800' x`,
+    String.raw`$'unterminated`,
+  ]) {
+    assert.equal(r(c), 'card-unreadable', c);
+  }
+});
+
+test('decodeAnsiC follows bash escape rules', () => {
+  const d = (s) => route.decodeAnsiC(s);
+  assert.deepEqual(d(String.raw`echo $'a\tb'`), { text: "echo 'a\tb'", failed: false });
+  assert.equal(d(String.raw`x $'\101\x42C\U00000044\cA\z'`).text, "x 'ABCD\x01\\z'");
+  assert.equal(d(String.raw`x $'it\'s'`).text, "x 'it'\\''s'");
+  // Not special inside quotes, after an escaped $, or after $$.
+  assert.equal(d(String.raw`x "$'\x41'" '$'`).text, String.raw`x "$'\x41'" '$'`);
+  assert.equal(d(String.raw`x \$'\x41'`).text, String.raw`x \$'\x41'`);
+  assert.equal(d('no ansi here').text, 'no ansi here');
+});
+
+test('ordinary ANSI-C use stays uncarded', () => {
+  assert.equal(r(String.raw`echo $'a\tb'`), 'safe');
+  assert.equal(r(String.raw`grep $'\t' file.tsv`), 'safe');
+  // A character-code escape after $' always cards (review 4 blunt backstop):
+  // accepted over-carding.
+  assert.equal(r(String.raw`printf $'\x41\n'`), 'card-unreadable');
+});
+
+// ── (2) glob command word under the engine directory ─────────────────
+
+test('a glob binary name with an ANSI-C flag cards', () => {
+  assert.equal(r(String.raw`.claude/tools/M?rlin.exe $'\055cmd' $'{"\141ction":"meta-push"}'`), 'card-unreadable');
+  assert.equal(r('.claude/tools/M*.exe'), 'card-unreadable');
+  assert.equal(r('"$LOCALAPPDATA"/Merlin/bin/M?rlin.exe --version'), 'card-unreadable');
+  // A glob in an ARGUMENT is not a command word.
+  assert.equal(r('ls .claude/tools/*.exe'), 'safe');
+});
+
+// ── (3) Go encoding/json key folding ─────────────────────────────────
+
+test('foldKey mirrors Go: ASCII case plus long s and Kelvin only', () => {
+  assert.equal(action.foldKey('BatchStatu' + LONG_S), 'batchstatus');
+  assert.equal(action.foldKey(KELVIN + 'ey'), 'key');
+  // Turkish dotted / dotless i do not fold to i in Go.
+  assert.notEqual(action.foldKey('actİon'), 'action');
+  assert.notEqual(action.foldKey('actıon'), 'action');
+});
+
+test('a folded duplicate batchStatus binds the LAST value, as Go does, and cards', () => {
+  for (const a of ['meta-batch-status', 'snapchat-batch-status']) {
+    const json = `{"action":"${a}","batchStatus":"PAUSED","batchStatu${LONG_S}":"ACTIVE"}`;
+    assert.equal(action.lastString(json, 'batchStatus'), 'ACTIVE');
+    assert.equal(r(`.claude/tools/Merlin.exe --cmd '${json}'`), 'spend', json);
+    const k = `{"action":"${a}","batchStatus":"PAUSED","batch${LONG_S}tatus":"ACTIVE"}`;
+    assert.equal(r(`.claude/tools/Merlin.exe --cmd '${k}'`), 'spend', k);
+  }
+  // A real pause still skips the card.
+  assert.equal(r(`.claude/tools/Merlin.exe --cmd '{"action":"meta-batch-status","batchStatus":"PAUSED"}'`), 'other');
+});
+
+test('action and other keys bind exactly where Go binds them', () => {
+  // "action" has no s or k, so only ASCII case folds onto it.
+  assert.equal(r(`.claude/tools/Merlin.exe --cmd '{"ACTION":"meta-push"}'`), 'spend');
+  const two = `{"action":"meta-insights","acti${LONG_S}n":"x"}`;
+  // U+017F folds to s, so "actiſn" is "actisn", not "action": no match.
+  assert.equal(action.parseAction(two).count, 1);
+  const dup = `{"action":"meta-insights","\\u0041CTION":"meta-push"}`;
+  assert.equal(r(`.claude/tools/Merlin.exe --cmd '${dup}'`), 'deny-ambiguous');
+  // A key that Go binds to "status" via long s.
+  assert.equal(action.lastString(`{"${LONG_S}tatus":"x"}`, 'status'), 'x');
+  // A folded key that Go binds to a "kind"-like field via Kelvin.
+  assert.equal(action.lastString(`{"${KELVIN}ind":"y"}`, 'kind'), 'y');
+});
+
+test('the budget card id and amount follow the folded LAST key', () => {
+  const j = `{"action":"snapchat-budget","targetAdSetId":"111","targetAd${LONG_S}etId":"999","dailyBudget":20,"dailyBudget":20}`;
+  const card = route.bashSpendCard('snapchat-budget', j);
+  assert.match(card.target, /999/);
+  assert.doesNotMatch(card.target, /111/);
+  const amt = `{"action":"meta-budget","adId":"1","dailyBudget":5,"daily${'B'}udget":7}`;
+  assert.equal(action.lastNumber(amt, 'dailyBudget'), 7);
+  const ids = `{"action":"meta-budget","ad${'I'}d":"1","AD${'I'}D":"2","dailyBudget":5}`;
+  assert.equal(action.lastString(ids, 'adId'), '2');
+  const campaign = `{"campaignId":"1","campaign${'I'}d":"2","campaignI${'D'}":"3"}`;
+  assert.equal(action.lastString(campaign, 'campaignId'), '3');
+});
+
+// ── (4) interpreters as script runners ───────────────────────────────
+
+test('interpreters that build an engine call card; plain scripts do not', () => {
+  for (const c of [
+    String.raw`node -e 'require("child_process").execFileSync(".claude/tools/Mer"+"lin.exe",["-"+"-c"+"md","{}"])'`,
+    String.raw`python -c "import subprocess;subprocess.run(['.claude/tools/Mer'+'lin.exe','-'+'-c'+'md','{}'])"`,
+    String.raw`python3 -c "import os;os.system('.claude/tools/Mer'+'lin.exe -'+'-cmd x')"`,
+    String.raw`powershell -c "& (gci .claude/tools/M*.exe) ('-'+'-c'+'md') ('{}')"`,
+    String.raw`pwsh -c "& (gci .claude/tools/M*.exe) ('-'+'-c'+'md') ('{}')"`,
+    String.raw`cmd /c ".claude\tools\Mer^lin.exe -^-c^md {}"`,
+    String.raw`printf '\056claude/tools/\115erlin.exe \055\055c\155d {}' | sh`,
+    'echo LmNsYXVkZS90b29scy9NZXJsaW4uZXhlIC0tY21kICd7fSc= | base64 -d | sh',
+  ]) {
+    assert.equal(r(c), 'card-unreadable', c);
+  }
+  for (const c of ['node script.js', 'python x.py', 'python3 -m pytest', 'node --test app/x.test.js',
+    'powershell -c Get-Date', 'cmd /c dir', 'pwsh ./build.ps1']) {
+    assert.notEqual(r(c), 'card-unreadable', c);
+  }
+});
+
+// ── (5) text-only search programs ────────────────────────────────────
+
+test('text searches for an action name are not carded', () => {
+  for (const c of [
+    `rg -n '"action": *"meta-push"' app/`,
+    `ag '"action":"meta-push"'`,
+    `ack '"action":"meta-push"' app`,
+    `findstr '"action":"meta-push"' f`,
+    `sed -n '/"action":"meta-push"/p' f | grep x`,
+    `rg '"action":"meta-push"' | sed 's/x/y/g' | grep z`,
+  ]) {
+    assert.equal(r(c), 'other', c);
+  }
+  // sed that can execute is not text-only.
+  assert.equal(r(`sed 's/x/y/e' '{"action":"meta-push"}'`), 'card-unreadable');
+  assert.equal(r(`sed -n '1e ls' f '"action":"meta-push"'`), 'card-unreadable');
+});
+
+test('must-stay-uncarded commands keep their route', () => {
+  for (const [c, want] of [
+    ['cd "$HOME" && ls', 'safe'], ['echo $PATH', 'safe'],
+    ['git commit -m "fix meta-push action"', 'other'], [`grep '"action":"meta-push"' file`, 'safe'],
+    ['npm test', 'other'], ['git log --grep=meta-push', 'other'],
+  ]) {
+    assert.equal(r(c), want, c);
+  }
+});
+
+// ── hook ─────────────────────────────────────────────────────────────
+
+const HOOK = path.join(__dirname, '..', '.claude', 'hooks', 'block-api-bypass.js');
+const HOOK_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'merlin-hook-ansi-'));
+test.after(() => { try { fs.rmSync(HOOK_CWD, { recursive: true, force: true }); } catch {} });
+function runHook(command) {
+  const env = { ...process.env };
+  delete env.TOOL_INPUT;
+  delete env.TOOL_NAME;
+  return spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+    env, cwd: HOOK_CWD, encoding: 'utf8',
+  }).status;
+}
+
+test('hook decodes ANSI-C and blocks a chained engine call spelled with it', () => {
+  for (const c of [
+    String.raw`cd x && .claude/tools/$'Merl\x69n.exe' $'\x2d\x2dcmd' '{"action":"meta-push"}'`,
+    String.raw`cd x; $'\056claude/tools/\115erlin.exe' --cmd '{}'`,
+    String.raw`cd x && .claude/tools/M?rlin.exe $'\055cmd' $'{"\141ction":"meta-push"}'`,
+    String.raw`ls; .claude/tools/Merl$'\c' --cmd x`,
+  ]) {
+    assert.equal(runHook(c), 2, `hook must block: ${c}`);
+  }
+  for (const c of [String.raw`echo $'a\tb' && ls`, String.raw`printf $'\x41\n'`, 'cd "$HOME" && ls',
+    'ls .claude/tools/*.exe | wc -l', `rg -n '"action": *"meta-push"' app/ | head`]) {
+    assert.equal(runHook(c), 0, `hook must allow: ${c}`);
+  }
+});
+
+test('the hook decoder matches the router decoder', () => {
+  const src = fs.readFileSync(HOOK, 'utf8');
+  const routeSrc = fs.readFileSync(path.join(__dirname, 'bash-approval-route.js'), 'utf8');
+  const body = (s, name) => {
+    const i = s.indexOf('function ' + name);
+    assert.ok(i >= 0, name);
+    return s.slice(s.indexOf('{', i), s.indexOf('\n}\n', i)).replace(/hookDecodeAnsiCBody|decodeAnsiCBody/g, 'B')
+      .replace(/HOOK_ANSI_C_SIMPLE|ANSI_C_SIMPLE/g, 'T')
+      .replace(/hookJoinAllContinuations|joinAllContinuations/g, 'J')
+      .replace(/HOOK_ANSI_C_CHAR_CODE_RE|ANSI_C_CHAR_CODE_RE/g, 'R');
+  };
+  // Review 4 layers A and C, and the constants they use.
+  for (const name of ['JoinAllContinuations(', 'AnsiCCharCodeBackstop(', 'StripLineContinuationsOutsideComments(']) {
+    const routeName = name[0].toLowerCase() + name.slice(1);
+    assert.equal(body(src.replace(/\r\n/g, '\n'), 'hook' + name), body(routeSrc.replace(/\r\n/g, '\n'), routeName), name);
+  }
+  const constant = (s, name) => (s.match(new RegExp('const ' + name + ' = (.*);')) || [])[1];
+  assert.equal(constant(src, 'HOOK_ANSI_C_CHAR_CODE_RE'), constant(routeSrc, 'ANSI_C_CHAR_CODE_RE'));
+  assert.equal(constant(src, 'HOOK_MAX_ANSI_C_STARTS'), constant(routeSrc, 'MAX_ANSI_C_STARTS'));
+  assert.ok(constant(routeSrc, 'ANSI_C_CHAR_CODE_RE'));
+  assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiCBody'), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiCBody'));
+  assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiC('), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiC('));
+  assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookStripLineContinuations('), body(routeSrc.replace(/\r\n/g, '\n'), 'stripLineContinuations('));
+  assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookWorstCaseAnsiC('), body(routeSrc.replace(/\r\n/g, '\n'), 'worstCaseAnsiC('));
+});
+
+// ── (6) Decoder lexing: comments, desync backstop ─────────────────────
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review): an
+// apostrophe inside a # comment was read as an opening quote, so every later
+// $'..' stayed undecoded, the call routed 'other' and the hook exited 0. The
+// decoder is now comment-aware as bash is, gives up on lexing it does not
+// model, and a naive residue scan fails closed on any escape-bearing $' left
+// over, whatever the decoder believed about quote state.
+
+const S = String.raw;
+const BUDGET = S`.claude/tools/$'Merl\x69n.exe' $'\x2d\x2dcmd' $'{"\x61ction":"meta-budget","adId":"1","dailyBudget":900}'`;
+const PUSH = S`$'\056claude/tools/\115erlin.exe' $'\055\055cmd' $'{"\141ction":"meta-push"}'`;
+const CARDED = new Set(['spend', 'destructive', 'card-unreadable', 'deny-ambiguous']);
+const cards = (c) => CARDED.has(r(c));
+
+test('an apostrophe in a comment does not hide later ANSI-C strings', () => {
+  for (const c of ["echo hi # don't\n" + BUDGET, "ls # '\n" + PUSH, "echo hi # don't\r\n" + BUDGET,
+    "true # it's\n" + S`.claude/tools/M?rlin.exe $'\055\055cmd' $'{"\141ction":"meta-push","approved":true}'`]) {
+    assert.ok(cards(c), `must card: ${JSON.stringify(c)}`);
+    assert.equal(runHook(c), 2, `hook must block: ${JSON.stringify(c)}`);
+  }
+  // The context-free worst-case reading (bash-ansi-c-worst-case.test.js)
+  // sees the comment's apostrophe as an open quote and cannot read the call,
+  // so the stricter unreadable card wins over the spend card.
+  assert.equal(r("echo hi # don't\n" + BUDGET), 'card-unreadable');
+  assert.equal(r("ls # '\n" + PUSH), 'card-unreadable');
+});
+
+test('the decoder comments exactly where bash does', () => {
+  const d = (c) => route.decodeAnsiC(c);
+  // # that begins a word, outside quotes, comments to end of line.
+  assert.deepEqual(d(S`echo a # it's` + '\n' + S`echo $'\x41'`), { text: "echo a # its\necho 'A'", failed: false });
+  assert.deepEqual(d(S`echo a;#'` + '\n' + S`echo $'\x41'`), { text: "echo a;#\necho 'A'", failed: false });
+  // # mid-word, $#, ${x#y}, quoted or escaped # are not comments.
+  assert.deepEqual(d(S`echo a#'b' $'\x41'`), { text: "echo a#'b' 'A'", failed: false });
+  assert.deepEqual(d(S`echo $# $'\x41'`), { text: "echo $# 'A'", failed: false });
+  assert.deepEqual(d('echo $' + S`{x#y} $'\x41'`), { text: "echo ${x#y} 'A'", failed: false });
+  assert.deepEqual(d(S`echo "#'" \#' $'\x41'`).failed, true); // \#' opens a real quote: unterminated
+  assert.deepEqual(d(S`echo "#'" $'\x41'`), { text: `echo "#'" 'A'`, failed: false });
+  // Backslash-newline vanishes before word splitting.
+  const BSNL = String.fromCharCode(92, 10);
+  assert.deepEqual(d('echo a ' + BSNL + "# don't\n" + S`echo $'\x41'`), { text: 'echo a ' + BSNL + "# dont\necho 'A'", failed: false });
+  assert.equal(d('echo a' + BSNL + "#'x' " + S`$'\x41'`).text, 'echo a' + BSNL + "#'x' 'A'");
+  // CR is not a separator to bash, so CR# is mid-word.
+  assert.equal(d("echo a\r#'x' " + S`$'\x41'`).text, "echo a\r#'x' 'A'");
+  // Router and hook copies stay comment-aware for commands with no $'.
+  assert.ok(cards("echo hi # don't\n" + `.claude/tools/Merlin.exe --cmd '{"action":"meta-budget","adId":"1","dailyBudget":900}'`));
+});
+
+test('lexing the decoder does not model fails closed or decodes correctly', () => {
+  const cases = {
+    heredoc: "cat <<EOF\ndon't\nEOF\n" + BUDGET,
+    heredocDash: "cat <<-EOF\n\tdon't\n\tEOF\n" + BUDGET,
+    escapedQuote: S`echo don\'t; ` + BUDGET,
+    dquoteApostrophe: `echo "it's"; ` + BUDGET,
+    dquoteSubst: `echo "$(echo ')"; ` + BUDGET,
+    dquoteBacktick: 'echo "`echo \'`"; ' + BUDGET,
+    backtick: 'echo `echo \'`; ' + BUDGET,
+    dollarBrace: `echo "\${x:-'}"; ` + BUDGET,
+    ansiInDquote: S`.claude/tools/Merlin.exe "$'\x2d\x2dcmd'" '{"action":"meta-push"}'`,
+    crlf: 'cd x\r\n' + BUDGET,
+    continuation: 'cd x && ' + String.fromCharCode(92, 10) + BUDGET,
+  };
+  for (const [name, c] of Object.entries(cases)) {
+    assert.ok(cards(c), `${name} must card, got ${r(c)}`);
+    if (/[;\n]|&&/.test(c)) assert.equal(runHook(c), 2, `${name}: hook must block`);
+  }
+  // The ones it models decode to the real action.
+  for (const name of ['escapedQuote', 'dquoteApostrophe', 'crlf', 'continuation']) {
+    assert.equal(route.routeBash(cases[name]).action, 'meta-budget', name);
+  }
+  // A heredoc or substitution with no escape-bearing $' is left as written.
+  assert.deepEqual(route.decodeAnsiC("cat <<EOF\n$'x'\nEOF"), { text: "cat <<EOF\n$'x'\nEOF", failed: false });
+  assert.deepEqual(route.decodeAnsiC('cat <<EOF\n' + S`$'\x41'` + '\nEOF').failed, true);
+  // $'..' inside double quotes is literal to bash; one with an escape fails closed.
+  assert.equal(route.decodeAnsiC(`echo "$'abc'"`).failed, false);
+  assert.equal(route.decodeAnsiC(S`echo "$'\x41'"`).failed, true);
+});
+
+test('comment-aware decoding keeps ordinary commands uncarded', () => {
+  for (const c of ['cd "$HOME" && ls', 'echo $PATH', 'git commit -m "fix meta-push action"',
+    `git commit -m "don't break # things"`, `grep '"action":"meta-push"' file`,
+    `rg -n '"action": *"meta-push"' app/`, 'npm test', S`echo $'a\tb'`,
+    `echo "it's" # fine`, 'ls .claude/tools/*.exe', 'echo hi # see .claude/tools/Merlin.exe docs']) {
+    assert.ok(!cards(c), `must not card: ${c} (got ${r(c)})`);
+  }
+  for (const c of [`echo "it's" # fine`, `git commit -m "don't break # things"`, S`printf $'\x41\n'`]) {
+    assert.equal(runHook(c), 0, `hook must allow: ${c}`);
+  }
+});
