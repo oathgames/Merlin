@@ -217,6 +217,8 @@ test('the hook decoder matches the router decoder', () => {
   };
   assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiCBody'), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiCBody'));
   assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiC('), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiC('));
+  assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookStripLineContinuations('), body(routeSrc.replace(/\r\n/g, '\n'), 'stripLineContinuations('));
+  assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookWorstCaseAnsiC('), body(routeSrc.replace(/\r\n/g, '\n'), 'worstCaseAnsiC('));
 });
 
 // ── (6) Decoder lexing: comments, desync backstop ─────────────────────
@@ -240,8 +242,11 @@ test('an apostrophe in a comment does not hide later ANSI-C strings', () => {
     assert.ok(cards(c), `must card: ${JSON.stringify(c)}`);
     assert.equal(runHook(c), 2, `hook must block: ${JSON.stringify(c)}`);
   }
-  assert.equal(route.routeBash("echo hi # don't\n" + BUDGET).action, 'meta-budget');
-  assert.equal(route.routeBash("ls # '\n" + PUSH).action, 'meta-push');
+  // The context-free worst-case reading (bash-ansi-c-worst-case.test.js)
+  // sees the comment's apostrophe as an open quote and cannot read the call,
+  // so the stricter unreadable card wins over the spend card.
+  assert.equal(r("echo hi # don't\n" + BUDGET), 'card-unreadable');
+  assert.equal(r("ls # '\n" + PUSH), 'card-unreadable');
 });
 
 test('the decoder comments exactly where bash does', () => {

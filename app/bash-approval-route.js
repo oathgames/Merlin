@@ -627,13 +627,18 @@ function wordRunsScript(word) {
 // cmd caret escapes squeezed out ("Mer"+"lin.exe", Mer^lin.exe), and long
 // base64 tokens decoded (echo LmNs... | base64 -d | sh). Each form only
 // adds signals.
+// Each pattern matches a WHOLE backslash run, with the escape optional, so a
+// long run with no escape after it is consumed once instead of being retried
+// from every backslash (/\\+u.../ was quadratic: 50KB of backslashes took
+// ~10s). A run with no escape is returned unchanged, so the result is the
+// same as the plain /\\+u(....)/g replace.
 function decodeEscapesLoose(text) {
   let s = String(text);
   for (let i = 0; i < 4; i++) {
     s = s
-      .replace(/\\+u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-      .replace(/\\+x([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-      .replace(/\\+0?([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8) & 0xff));
+      .replace(/\\+(?:u([0-9A-Fa-f]{4}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
+      .replace(/\\+(?:x([0-9A-Fa-f]{2}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
+      .replace(/\\+(?:0?([0-7]{3}))?/g, (m, o) => (o ? String.fromCharCode(parseInt(o, 8) & 0xff) : m));
   }
   return s;
 }
@@ -799,10 +804,137 @@ function goNormalizeBatchStatus(s) {
 //   'destructive'      BASH_CARDED_DESTRUCTIVE action: generic card
 //   'other'            falls through to the long tail
 // main.js handleToolApproval dispatches on exactly this value.
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 3): three
+// review rounds each desynced decodeAnsiC's quote / comment lexer from real
+// bash, and every desync hid an ANSI-C engine call:
+//   cd .claude/tools && : ${x:- # } ; ./$'Merl\x69n.exe' $'\x2d\x2dcmd' $'{"\x61ction":"meta-budget","adId":"1","dailyBudget":900}'
+// (the # inside ${..} is not a comment to bash, but the decoder dropped the
+// rest of the line's quotes), and
+//   ./$\<newline>'Mer\u6cin.exe' ...
+// (bash removes backslash-newline before lexing, so this IS $'..'). The
+// decision therefore no longer rests on lexing bash right. Backslash-newline
+// is removed first (stripLineContinuations, bash's own first step; an
+// escaped backslash before the newline is kept), then routeBash reads the
+// command two ways and keeps the most restrictive result:
+//   1. the context-aware decode (decodeAnsiC),
+//   2. a CONTEXT-FREE worst case (worstCaseAnsiC): every $' anywhere,
+//      whatever quote, comment, here-doc or expansion it sits in, decoded
+//      with full bash ANSI-C rules and substituted.
+// Reading 2 can only ADD a card, never remove one or downgrade a card to
+// 'safe' / 'other'. If reading 2 shows an engine call or engine signal
+// reading 1 does not, the command cards (as reading 2's spend / destructive
+// action when it parses cleanly to one, otherwise unreadable). Two carded
+// readings that disagree on the action card as unreadable.
+// If any naive $' body cannot be decoded exactly and the text carries an
+// engine signal in either reading or an unresolvable command word, it cards
+// as unreadable. An attacker who desyncs the lexer still meets reading 3.
+// Mirrored in .claude/hooks/block-api-bypass.js; pinned by
+// bash-ansi-c-worst-case.test.js.
+
+// stripLineContinuations: remove backslash-newline (and backslash-CRLF)
+// where the backslash is not itself escaped (an odd run of backslashes), as
+// bash does before tokenising. `a\\<newline>b` keeps its newline.
+function stripLineContinuations(command) {
+  const s = String(command || '');
+  if (!s.includes('\\')) return s;
+  // A linear scan, not /(\\+)\r?\n/: that regex is quadratic on a long
+  // backslash run with no newline.
+  let out = '';
+  let from = 0;
+  for (let nl = s.indexOf('\n'); nl >= 0; nl = s.indexOf('\n', nl + 1)) {
+    let p = nl - 1;
+    if (p >= 0 && s[p] === '\r') p--;
+    let b = 0;
+    while (p - b >= 0 && s[p - b] === '\\') b++;
+    if (b % 2 === 1) { out += s.slice(from, p); from = nl + 1; }
+  }
+  return out + s.slice(from);
+}
+
+// worstCaseAnsiC -> { text, failed }: every $' in the text, with no quote,
+// comment, here-doc or expansion context at all, has its body (up to the next
+// unescaped ') decoded and substituted as a single-quoted word. failed is
+// true when any such body cannot be decoded exactly (unterminated, NUL, a byte
+// >= 0x80, an escape with no digits); that body is left as written.
+function worstCaseAnsiC(command) {
+  const s = String(command || '');
+  let out = '';
+  let from = 0;
+  let failed = false;
+  for (let k = s.indexOf("$'"); k >= 0; k = s.indexOf("$'", k)) {
+    const d = decodeAnsiCBody(s, k + 2);
+    if (!d) { failed = true; k += 2; continue; }
+    out += s.slice(from, k) + "'" + d.value.replace(/'/g, "'\\''") + "'";
+    from = d.end;
+    k = d.end;
+  }
+  return { text: out + s.slice(from), failed };
+}
+
+const ROUTE_RANK = Object.freeze({
+  safe: 0, other: 1, spend: 2, destructive: 2, 'card-unreadable': 3, 'deny-ambiguous': 4,
+});
+const CARDED_ROUTES = new Set(['spend', 'destructive', 'card-unreadable', 'deny-ambiguous']);
+
+function unreadableRoute(command) {
+  return { route: 'card-unreadable', action: '', cmdText: String(command || ''), reason: 'shell' };
+}
+
+// stricter(base, extra, raw): extra may only escalate base to a carded route.
+// Two different carded readings (another action, or spend vs destructive)
+// card as unreadable: the readings disagree on what runs.
+function stricter(base, extra, raw) {
+  if (!CARDED_ROUTES.has(extra.route)) return base;
+  const rb = ROUTE_RANK[base.route];
+  const re = ROUTE_RANK[extra.route];
+  if (re > rb) return extra;
+  if (re < rb) return base;
+  if (re === 2 && (base.route !== extra.route || base.action !== extra.action)) return unreadableRoute(raw);
+  return base;
+}
+
+function engineSignals(text) {
+  return {
+    invocation: isEngineInvocation(text),
+    hidden: hiddenEngineCall(text),
+    signal: engineSignal(text),
+    carded: carriesCardedAction(text),
+    dir: ENGINE_DIR_RE.test(text),
+  };
+}
+
+function anyUnresolvableCommandWord(text) {
+  return splitSegments(text).segments.some((seg) => {
+    const words = shellWords(seg);
+    return wordUnresolvable(words[commandWordIndex(words)] || '');
+  });
+}
+
 function routeBash(command) {
-  const ansi = decodeAnsiC(command);
-  if (ansi.failed) return { route: 'card-unreadable', action: '', cmdText: String(command || ''), reason: 'shell' };
-  return routeDecodedBash(ansi.text);
+  const raw = String(command || '');
+  const norm = stripLineContinuations(raw);
+  const ctx = decodeAnsiC(norm);
+  if (ctx.failed) return unreadableRoute(raw);
+  const worst = worstCaseAnsiC(norm);
+
+  let out = routeDecodedBash(ctx.text);
+  if (worst.text === ctx.text && !worst.failed) return out;
+
+  const worstRoute = worst.text === ctx.text ? out : routeDecodedBash(worst.text);
+  out = stricter(out, worstRoute, raw);
+  const sCtx = engineSignals(ctx.text);
+  const sWorst = worst.text === ctx.text ? sCtx : engineSignals(worst.text);
+  if (Object.keys(sWorst).some((k) => sWorst[k] && !sCtx[k]) && !CARDED_ROUTES.has(out.route)) {
+    out = unreadableRoute(raw);
+  }
+  if (worst.failed) {
+    const sig = (s) => s.invocation || s.hidden || s.signal || s.carded;
+    if (sig(sCtx) || sig(sWorst) || anyUnresolvableCommandWord(ctx.text) || anyUnresolvableCommandWord(worst.text)) {
+      out = stricter(out, unreadableRoute(raw), raw);
+    }
+  }
+  return out;
 }
 
 function routeDecodedBash(command) {
@@ -946,6 +1078,8 @@ module.exports = {
   classifyEngineCall,
   hiddenEngineCall,
   decodeAnsiC,
+  stripLineContinuations,
+  worstCaseAnsiC,
   routeBash,
   isShellTool,
   routeShellTool,

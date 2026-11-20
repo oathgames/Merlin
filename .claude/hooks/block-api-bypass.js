@@ -785,28 +785,84 @@ function hookDecodeAnsiC(command) {
 }
 function hookDecodeEscapesLoose(text) {
   let s = String(text);
+  // Whole backslash runs, escape optional: linear, unlike /\\+u.../ (see
+  // decodeEscapesLoose in bash-approval-route.js).
   for (let i = 0; i < 4; i++) {
     s = s
-      .replace(/\\+u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-      .replace(/\\+x([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-      .replace(/\\+0?([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8) & 0xff));
+      .replace(/\\+(?:u([0-9A-Fa-f]{4}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
+      .replace(/\\+(?:x([0-9A-Fa-f]{2}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
+      .replace(/\\+(?:0?([0-7]{3}))?/g, (m, o) => (o ? String.fromCharCode(parseInt(o, 8) & 0xff) : m));
   }
   return s;
 }
 
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 3): the
+// decoder's quote / comment lexer was desynced from bash three times
+// (`: ${x:- # } ; ./$'Merl\x69n.exe' ...`, `./$\<newline>'Mer\u6cin.exe'`).
+// The chained-command check no longer rests on that lexer: backslash-newline
+// is removed first (bash's own first step), then the command is read two ways
+// (the context-aware decode, and a context-free worst case that decodes
+// every $' anywhere) and blocked when ANY reading shows an engine call and ANY reading
+// shows a separator. Same functions as bash-approval-route.js
+// (stripLineContinuations, worstCaseAnsiC), pinned identical by
+// bash-ansi-c-fold.test.js.
+function hookStripLineContinuations(command) {
+  const s = String(command || '');
+  if (!s.includes('\\')) return s;
+  // A linear scan, not /(\\+)\r?\n/: that regex is quadratic on a long
+  // backslash run with no newline.
+  let out = '';
+  let from = 0;
+  for (let nl = s.indexOf('\n'); nl >= 0; nl = s.indexOf('\n', nl + 1)) {
+    let p = nl - 1;
+    if (p >= 0 && s[p] === '\r') p--;
+    let b = 0;
+    while (p - b >= 0 && s[p - b] === '\\') b++;
+    if (b % 2 === 1) { out += s.slice(from, p); from = nl + 1; }
+  }
+  return out + s.slice(from);
+}
+function hookWorstCaseAnsiC(command) {
+  const s = String(command || '');
+  let out = '';
+  let from = 0;
+  let failed = false;
+  for (let k = s.indexOf("$'"); k >= 0; k = s.indexOf("$'", k)) {
+    const d = hookDecodeAnsiCBody(s, k + 2);
+    if (!d) { failed = true; k += 2; continue; }
+    out += s.slice(from, k) + "'" + d.value.replace(/'/g, "'\\''") + "'";
+    from = d.end;
+    k = d.end;
+  }
+  return { text: out + s.slice(from), failed };
+}
+
 function matchesMerlinShellOperator(rawCmd) {
-  const ansi = hookDecodeAnsiC(rawCmd);
+  const raw = String(rawCmd || '');
+  const norm = hookStripLineContinuations(raw);
+  const readings = [hookDecodeAnsiC(norm), hookWorstCaseAnsiC(norm)];
+  let invokes = false;
+  let chained = false;
+  for (const reading of readings) {
+    const r = readMerlinChain(reading, raw);
+    invokes = invokes || r.invokes;
+    chained = chained || r.chained;
+  }
+  return invokes && chained;
+}
+
+// readMerlinChain(reading, rawCmd) -> { invokes, chained } for one reading.
+function readMerlinChain(ansi, rawCmd) {
   const cmd = ansi.text;
   const quoteless = cmd.replace(/['"\\]/g, '');
   const assembledFlag = /[$`]/.test(cmd) && /(?:^|[\s=])--?cmd(?:-file)?(?:=|\b)/i.test(quoteless);
   const undecodable = ansi.failed &&
-    /merlin|--?cmd/i.test(hookDecodeEscapesLoose(rawCmd).replace(/['"\\$]/g, ''));
+    /merlin|--?cmd/i.test(hookDecodeEscapesLoose(rawCmd).replace(/['"\\$]/g, '') + ' ' + quoteless);
   const invokesMerlinBinary =
     /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin["']?\s+--?(cmd|config)\b/i.test(cmd) ||
     /\bmerlin\.exe\b/i.test(quoteless) || /\bmerlin\s+--?(cmd|config)\b/i.test(quoteless) ||
     /(?:^|[;&|(\r\n])\s*[^\s;&|()]*\.claude[\\/]tools[\\/][^\s;&|()]*[*?[]/i.test(quoteless) ||
     assembledFlag || undecodable;
-  if (!invokesMerlinBinary) return false;
   const stripped = cmd
     .replace(/"(?:[^"\\]|\\.)*"/g, '')
     .replace(/'[^']*'/g, '')
@@ -825,7 +881,10 @@ function matchesMerlinShellOperator(rawCmd) {
     if (ch === "'" || ch === '"') { q = ch; continue; }
     lexed += ch;
   }
-  return /[&|;`\r\n]|\$\(/.test(stripped) || /[&|;`\r\n]|\$\(/.test(lexed);
+  return {
+    invokes: invokesMerlinBinary,
+    chained: /[&|;`\r\n]|\$\(/.test(stripped) || /[&|;`\r\n]|\$\(/.test(lexed),
+  };
 }
 
 function matchesAppSourceWrite(filePath) {
