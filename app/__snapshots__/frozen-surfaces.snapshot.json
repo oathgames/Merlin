@@ -5764,10 +5764,10 @@
         "idempotent": true,
         "preview": false
       },
-      "description": "Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, turn many campaigns, ad squads and ads on or off at once (batch-status; ad squads and ads are created PAUSED, so after a build or bulk-push use batch-status ACTIVE on the ad squads and ads, then the campaign), list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads: bulk-push uploads vertical 9:16 images or videos (1080x1920; images JPG/PNG under 5MB, videos MP4 H.264 3 to 180 seconds), creates one Web View creative per ad (headline up to 34 characters, link tagged with UTMs) and one PAUSED ad per creative in an existing ad squad, skipping ad names that already exist there. upload-media, create-creative and create-ad do the same steps one at a time. Every creative needs the brand Snapchat Public Profile id (snapchatProfileId, remembered for the brand after first use). Dynamic Product Ads (catalog ads): catalogs reports each catalog with its feeds, latest feed upload, product sets with product counts, dynamic templates and whether a pixel is linked, plus the problems that block DPA; pixel-stats breaks pixel events down by event type for one domain; create-product-set creates one product set from a filter; dpa-setup plans (dry run, default) or, with dryRun:false and approval, builds a PAUSED catalog campaign with one dynamic product ad per ad squad (prospecting, add-to-cart without purchase, or viewed without add-to-cart), every ad squad and ad PAUSED. dpa-setup creates the dynamic template when the ad account has none and finds the Public Profile itself when the organization has exactly one, so Snap Ads Manager is not needed; create-dynamic-template makes a template on its own, and profiles lists the Public Profiles.",
+      "description": "Snapchat Ads: check the connection, list or switch ad accounts, list campaigns, pull spend/impressions/swipes/purchases/ROAS for campaigns, ad squads or ads over a date range, pause (kill) or resume (activate) a campaign, turn many campaigns, ad squads and ads on or off at once (batch-status; ad squads and ads are created PAUSED, so after a build or bulk-push use batch-status ACTIVE on the ad squads and ads, then the campaign), change the daily budget of one ad squad or campaign (budget; verified after the change, and it warns when an ad squad budget is above its campaign daily budget), list pixels (with 7-day event counts), audiences (size and targetable status), ad squads and ads, and build a full prospecting + retargeting structure. build-architecture plans pixel audiences (30D site visitors, 30D add-to-cart, 30D and 180D purchasers), an optional customer-list lookalike, a Broad_Prospecting_ABO campaign (purchasers and customers excluded) and a Retargeting_ABO campaign (visitors and cart abandoners, purchasers excluded). It is a DRY RUN by default and writes nothing; pass dryRun:false with approval to create it, all PAUSED. create-audience, create-campaign and create-ad-squad build single objects, PAUSED. Ads: bulk-push uploads vertical 9:16 images or videos (1080x1920; images JPG/PNG under 5MB, videos MP4 H.264 3 to 180 seconds), creates one Web View creative per ad (headline up to 34 characters, link tagged with UTMs) and one PAUSED ad per creative in an existing ad squad, skipping ad names that already exist there. upload-media, create-creative and create-ad do the same steps one at a time. Every creative needs the brand Snapchat Public Profile id (snapchatProfileId, remembered for the brand after first use). Dynamic Product Ads (catalog ads): catalogs reports each catalog with its feeds, latest feed upload, product sets with product counts, dynamic templates and whether a pixel is linked, plus the problems that block DPA; pixel-stats breaks pixel events down by event type for one domain; create-product-set creates one product set from a filter; dpa-setup plans (dry run, default) or, with dryRun:false and approval, builds a PAUSED catalog campaign with one dynamic product ad per ad squad (prospecting, add-to-cart without purchase, or viewed without add-to-cart), every ad squad and ad PAUSED. dpa-setup creates the dynamic template when the ad account has none and finds the Public Profile itself when the organization has exactly one, so Snap Ads Manager is not needed; create-dynamic-template makes a template on its own, and profiles lists the Public Profiles.",
       "input": {
         "action": {
-          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. batch-status = set batchStatus (ACTIVE or PAUSED) on up to 50 objects listed by id in campaignIds, adSquadIds and adIds; activation is checked against maxDailyAdBudget (ad squads add their budget, ads add none) and is refused as a whole if over it, pausing never is; each object is verified after the change. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure. upload-media = upload one 9:16 image or video and wait until Snapchat has processed it. create-creative = create one Web View creative from uploaded media. create-ad = create one PAUSED ad from a creative in an ad squad. bulk-push = upload, create creatives and create PAUSED ads for up to 50 ads in one ad squad. catalogs = list product catalogs with feeds, product sets, templates, linked pixels and DPA readiness problems (optionally one catalogId). pixel-stats = pixel events by event type for a domain over the last days (default 7, max 28). create-product-set = create one product set (productSetName + productSetFilter) in a catalog; a set with the same name is reused. dpa-setup = plan (dry run, default) or build a PAUSED Dynamic Product Ads campaign from dpaSquads; with no dynamic template on the ad account it plans one and, on a real run, creates and re-reads it before anything else; with no snapchatProfileId it looks up the Public Profile and uses it when there is exactly one. create-dynamic-template = create one dynamic template (default name \"<brand> Catalog Default\", layout FILL_WIDTH, text fields title and price); a template with the same name is reused. profiles = list the Public Profiles (id, display name, username) of the organization that owns the ad account.",
+          "description": "status = connection + selected ad account. ad-accounts = list accounts the login can see (pass snapchatAdAccountId to switch). campaigns = list campaigns. insights = performance over a date range. kill = pause a campaign. activate = resume a paused campaign. batch-status = set batchStatus (ACTIVE or PAUSED) on up to 50 objects listed by id in campaignIds, adSquadIds and adIds; activation is checked against maxDailyAdBudget (ad squads add their budget, ads add none) and is refused as a whole if over it, pausing never is; each object is verified after the change. budget = set the daily budget (dailyBudget, dollars) of ONE ad squad (targetAdSetId) or ONE campaign (campaignId), never both; only that budget changes, it is checked against maxDailyAdBudget (also as the account total), maxMonthlyAdSpend and the cross-platform monthly cap, and it is re-read to confirm; dryRun:true shows the current and new budget and writes nothing. pixels = list pixels with 7-day event counts. audiences = list audiences (segments) with size and targetable status. ad-squads = list ad squads (optionally one campaign). ads = list ads (optionally one ad squad via targetAdSetId). create-audience = create one audience (audienceType pixel, customer-list or lookalike). create-campaign = create one PAUSED campaign. create-ad-squad = create one PAUSED ad squad. build-architecture = plan (dry run, default) or build the full prospecting + retargeting structure. upload-media = upload one 9:16 image or video and wait until Snapchat has processed it. create-creative = create one Web View creative from uploaded media. create-ad = create one PAUSED ad from a creative in an ad squad. bulk-push = upload, create creatives and create PAUSED ads for up to 50 ads in one ad squad. catalogs = list product catalogs with feeds, product sets, templates, linked pixels and DPA readiness problems (optionally one catalogId). pixel-stats = pixel events by event type for a domain over the last days (default 7, max 28). create-product-set = create one product set (productSetName + productSetFilter) in a catalog; a set with the same name is reused. dpa-setup = plan (dry run, default) or build a PAUSED Dynamic Product Ads campaign from dpaSquads; with no dynamic template on the ad account it plans one and, on a real run, creates and re-reads it before anything else; with no snapchatProfileId it looks up the Public Profile and uses it when there is exactly one. create-dynamic-template = create one dynamic template (default name \"<brand> Catalog Default\", layout FILL_WIDTH, text fields title and price); a template with the same name is reused. profiles = list the Public Profiles (id, display name, username) of the organization that owns the ad account.",
           "enum": [
             "status",
             "ad-accounts",
@@ -5776,6 +5776,7 @@
             "kill",
             "activate",
             "batch-status",
+            "budget",
             "pixels",
             "audiences",
             "ad-squads",
@@ -5872,7 +5873,7 @@
           "type": "array"
         },
         "approved": {
-          "description": "Approval flag for kill, activate, batch-status, the create actions (including create-product-set and create-dynamic-template), and a real (dryRun:false) build or dpa-setup. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.",
+          "description": "Approval flag for kill, activate, batch-status, budget (unless dryRun:true), the create actions (including create-product-set and create-dynamic-template), and a real (dryRun:false) build or dpa-setup. Pass true only when the user asked for that write; the Merlin approval card still asks them to confirm before it runs.",
           "type": "boolean"
         },
         "audienceDescription": {
@@ -5942,7 +5943,7 @@
           "type": "string"
         },
         "campaignId": {
-          "description": "Snapchat campaign id (UUID) for kill, activate, campaign-level insights, ad-squads (scope to one campaign), or create-ad-squad (the parent campaign)",
+          "description": "Snapchat campaign id (UUID) for kill, activate, budget (the campaign whose daily budget changes), campaign-level insights, ad-squads (scope to one campaign), or create-ad-squad (the parent campaign)",
           "type": "string"
         },
         "campaignIds": {
@@ -5965,7 +5966,7 @@
           "type": "string"
         },
         "dailyBudget": {
-          "description": "Daily budget in dollars per ad squad (create-ad-squad, build-architecture; minimum 5, default 5 for the build). Validated against maxDailyAdBudget.",
+          "description": "Daily budget in dollars per ad squad (create-ad-squad, build-architecture; minimum 5, default 5 for the build). budget: the new daily budget in dollars for the ad squad or campaign (minimum 5). Validated against maxDailyAdBudget.",
           "type": "number"
         },
         "days": {
@@ -6029,7 +6030,7 @@
           "type": "array"
         },
         "dryRun": {
-          "description": "build-architecture and dpa-setup. Defaults to true: returns the full plan and payloads and writes nothing. Pass false (with approved:true) only when the user has reviewed the plan and asked to build it.",
+          "description": "build-architecture and dpa-setup. Defaults to true: returns the full plan and payloads and writes nothing. Pass false (with approved:true) only when the user has reviewed the plan and asked to build it. budget is the opposite: it writes unless dryRun is true, which previews the current and new budget and writes nothing.",
           "type": "boolean"
         },
         "dynamicTemplateLayout": {
@@ -6065,6 +6066,10 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "force": {
+          "description": "Override an engine spend guard whose refusal explicitly says \"pass force=true\" (the spend-anomaly guard on a large single-action budget jump, the monthly-cap projection, the landing-page grade gate, the push quality gates). Only set true AFTER that refusal was shown to the user and the user explicitly confirmed the large budget jump is intentional. Never set it on a first attempt. It ALSO bypasses the ad quality gates (forbidden brand words, unverified stats, landing grade), so never set it to get past a copy or creative refusal: fix the ad instead. It does not skip the approval card (which flags the override), the spend-pause flag, or the daily budget cap, and every forced override is logged.",
+          "type": "boolean"
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
@@ -6189,7 +6194,7 @@
           "type": "string"
         },
         "targetAdSetId": {
-          "description": "ads: scope to one ad squad id. create-ad / bulk-push: the ad squad that receives the ads.",
+          "description": "ads: scope to one ad squad id. create-ad / bulk-push: the ad squad that receives the ads. budget: the ad squad whose daily budget changes.",
           "type": "string"
         }
       },

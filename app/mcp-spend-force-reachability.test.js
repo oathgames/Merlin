@@ -121,6 +121,7 @@ const FORCE_TOOLS = [
   { tool: 'reddit_ads', args: { action: 'create-campaign', brand: 'ripit', dailyBudget: 200 }, engine: 'reddit-create-campaign' },
   { tool: 'linkedin_ads', args: { action: 'setup', brand: 'ripit', dailyBudget: 200 }, engine: 'linkedin-setup' },
   { tool: 'openai_ads', args: { action: 'push', brand: 'ripit', dailyBudget: 200 }, engine: 'openai-ads-push' },
+  { tool: 'snapchat', args: { action: 'budget', brand: 'ripit', targetAdSetId: '50000000-0000-4000-8000-000000000001', dailyBudget: 200 }, engine: 'snapchat-budget' },
   { tool: 'meta_adjust_budget', args: { brand: 'ripit', adId: '123', dailyBudget: 200 }, engine: 'meta-budget' },
   { tool: 'meta_launch_test_ad', args: null },
   { tool: 'meta_launch_test_batch', args: null },
@@ -170,6 +171,7 @@ test('force never changes the approval classification: forced spend calls still 
     ['mcp__merlin__meta_ads', { action: 'push', force: true }],
     ['mcp__merlin__meta_ads', { action: 'budget', force: true }],
     ['mcp__merlin__meta_adjust_budget', { force: true }],
+    ['mcp__merlin__snapchat', { action: 'budget', force: true }],
     ['mcp__merlin__meta_launch_test_ad', { force: true }],
     ['mcp__merlin__meta_scale_winner', { force: true }],
   ];

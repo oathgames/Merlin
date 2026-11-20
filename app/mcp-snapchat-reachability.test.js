@@ -118,7 +118,7 @@ const TOOL_ACTIONS = byName('snapchat').schema.action.__enum;
 
 test('snapchat tool exposes exactly the read, status-flip, build, ad-creation and DPA surface', () => {
   assert.deepEqual([...TOOL_ACTIONS].sort(), [
-    'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'batch-status', 'build-architecture', 'bulk-push', 'campaigns',
+    'activate', 'ad-accounts', 'ad-squads', 'ads', 'audiences', 'batch-status', 'budget', 'build-architecture', 'bulk-push', 'campaigns',
     'catalogs', 'create-ad', 'create-ad-squad', 'create-audience', 'create-campaign', 'create-creative', 'create-dynamic-template',
     'create-product-set', 'dpa-setup', 'insights', 'kill', 'pixel-stats', 'pixels', 'profiles', 'status', 'upload-media',
   ]);
@@ -128,7 +128,7 @@ test('snapchat tool exposes exactly the read, status-flip, build, ad-creation an
 test('engine -> MCP: every snapchat-* engine action is reachable', () => {
   if (!MAIN_GO) return;
   const engine = engineSnapchatActions();
-  assert.ok(engine.length >= 26, `expected the 26 snapchat-* cases in main.go, got ${engine.join(', ')}`);
+  assert.ok(engine.length >= 27, `expected the 27 snapchat-* cases in main.go, got ${engine.join(', ')}`);
   const loginEnum = byName('platform_login').schema.platform.__enum;
   for (const action of engine) {
     if (action === 'snapchat-login') {
@@ -202,9 +202,42 @@ test('batch-status typed id lists and status reach the engine end to end', async
   assert.equal(cmd.approved, true);
 });
 
+test('budget target, amount, dryRun and force reach the engine end to end', async () => {
+  execFileCalls.length = 0;
+  await byName('snapchat').handler({
+    action: 'budget', brand: 'apotheke', targetAdSetId: 's1', dailyBudget: 40, approved: true, force: true,
+  });
+  let cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-budget');
+  assert.equal(cmd.targetAdSetId, 's1');
+  assert.equal(cmd.dailyBudget, 40);
+  assert.equal(cmd.approved, true);
+  assert.equal(cmd.force, true);
+
+  await byName('snapchat').handler({ action: 'budget', brand: 'apotheke', campaignId: 'c1', dailyBudget: 100, dryRun: true });
+  cmd = lastCmd();
+  assert.equal(cmd.action, 'snapchat-budget');
+  assert.equal(cmd.campaignId, 'c1');
+  assert.equal(cmd.dryRun, true);
+  assert.equal(cmd.approved, undefined, 'the handler must never auto-approve a budget change');
+});
+
+// budget writes unless dryRun is literally true (the engine applies the same
+// rule), so only that exact value skips the card.
+test('snapchat budget always cards unless it is an explicit dry run', () => {
+  const resolve = (input) => approvalPolicy.resolveMerlinAction('mcp__merlin__snapchat', input).effectiveAction;
+  for (const input of [{}, { dryRun: false }, { dryRun: undefined }, { dryRun: 'true' }, { approved: true }]) {
+    const a = resolve({ action: 'budget', ...input });
+    assert.equal(a, 'budget', `snapchat budget ${JSON.stringify(input)} must card as 'budget' (got '${a}')`);
+    assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), 'a real snapchat budget change must always card');
+  }
+  const dry = resolve({ action: 'budget', dryRun: true });
+  assert.ok(approvalPolicy.READ_ONLY_ACTIONS.has(dry), `an explicit dry-run budget preview is read-only (got '${dry}')`);
+});
+
 test('every snapchat write always cards; reads and a dry-run build never do (Rule 19)', () => {
   const resolve = (input) => approvalPolicy.resolveMerlinAction('mcp__merlin__snapchat', input).effectiveAction;
-  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push', 'create-product-set', 'create-dynamic-template']) {
+  for (const action of ['kill', 'activate', 'create-audience', 'create-campaign', 'create-ad-squad', 'upload-media', 'create-creative', 'create-ad', 'bulk-push', 'create-product-set', 'create-dynamic-template', 'budget']) {
     const a = resolve({ action });
     assert.ok(approvalPolicy.SPEND_ACTIONS.has(a), `snapchat ${action} must route through the approval card (got '${a}')`);
     assert.notEqual(a, 'push', `snapchat ${action} must never be eligible for in-cap auto-approve`);

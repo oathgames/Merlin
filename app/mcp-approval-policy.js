@@ -506,6 +506,15 @@ function resolveMerlinAction(toolName, input) {
     if (rawAction === 'batch-status') {
       return { effectiveAction: (input && input.batchStatus === 'PAUSED') ? 'kill' : 'duplicate', label: null };
     }
+    // REGRESSION GUARD (2026-11-20, snapchat-budget): budget changes the
+    // daily budget of one ad squad or campaign. It is the OPPOSITE of
+    // build-architecture: the engine writes unless dryRun is literally true,
+    // so only that exact value routes to the read-only 'dry-run'; anything
+    // else (missing, false, a string) routes to the always-carded 'budget'
+    // (SPEND_ACTIONS), never the in-cap auto-approvable 'push'.
+    if (rawAction === 'budget') {
+      return { effectiveAction: (input && input.dryRun === true) ? 'dry-run' : 'budget', label: null };
+    }
     // REGRESSION GUARD (2026-10-26, snapchat-dpa): Dynamic Product Ads.
     // catalogs and pixel-stats are reads (GETs plus Snap's two read-only
     // POST search endpoints) and route to 'list'. create-product-set changes
