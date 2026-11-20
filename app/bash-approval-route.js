@@ -770,7 +770,23 @@ function segmentWritesFile(segment) {
 // (engineOutputExecuted). Pinned by bash-literal-engine-args.test.js.
 // main.go: --version prints and exits; Go's flag package answers -h / -help
 // itself; --setup prints setup instructions and reads no command.
-const VERSION_PROBE_ARGS = new Set(['--version', '-version', '--help', '-help', '-h', '--setup', '-setup']);
+const VERSION_PROBE_ARGS = new Set(['--version', '-version', '--help', '-help', '-h', '--h', '--setup', '-setup']);
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 9): Go's flag
+// package stops at the first positional argument or `--`, so
+//   Merlin.exe x --cmd '{"action":"dashboard"}'
+//   Merlin.exe -- --cmd ...     Merlin.exe --image x --cmd ...
+// ignore --cmd and run the default (paid) generation pipeline while the
+// router read `dashboard`. A literal call is trusted only when every argument
+// is one of these flags (main.go flag definitions, read 2026-11-20), in the
+// form Go parses: value flags take `=v` or the next word, boolean flags take
+// no value (`--dry-run false` makes `false` a positional). dry-run, test and
+// image are harmless only beside --cmd (it overrides them); without --cmd
+// only the probe flags are trusted. Any positional, `--`, cmd-file, install,
+// config-stdin or unknown flag: not a literal call (cards under the strong
+// signal). Names are case sensitive, as in Go. Pinned by
+// bash-literal-engine-args.test.js.
+const LITERAL_GO_BOOL_FLAGS = new Set(['version', 'help', 'h', 'setup', 'dry-run', 'test', 'image']);
+const LITERAL_GO_FLAGS = new Set([...LITERAL_GO_BOOL_FLAGS, 'config', 'brand', 'cmd']);
 const LITERAL_CONFIG_PATH_RE = /^[A-Za-z0-9/\\:._~ -]+$/;
 const LITERAL_BRAND_SLUG_RE = /^[A-Za-z0-9._-]+$/;
 const LITERAL_ARG_META_RE = /[;|&$`()<>\n\r]/;
@@ -853,7 +869,23 @@ function literalEngineCall(seg, raw, pipedIn) {
       continue;
     }
     const v = t.value;
-    const cm = /^--?cmd(-file)?(?:=([\s\S]*))?$/i.exec(v);
+    // A redirect target follows an op token; the shell removes it from argv.
+    const prev = toks[k - 1];
+    if (prev && prev.op && !/[\d-]$/.test(prev.value)) {
+      if (literalArgSignal(v)) return null;
+      continue;
+    }
+    // Go's flag package (review 9): the first positional argument or `--`
+    // ends flag parsing and every later --cmd is ignored, so the default
+    // pipeline runs. Only flags known to Go and known harmless are trusted.
+    const gm = /^--?([^-=][^=]*)(?:=[\s\S]*)?$/.exec(v);
+    if (!gm || !LITERAL_GO_FLAGS.has(gm[1])) return null;
+    if (LITERAL_GO_BOOL_FLAGS.has(gm[1])) {
+      if (v.includes('=')) return null;
+      if (!VERSION_PROBE_ARGS.has(v)) probeOnly = false;
+      continue;
+    }
+    const cm = /^--?cmd(-file)?(?:=([\s\S]*))?$/.exec(v);
     if (cm) {
       if (cm[1] || ++cmdFlags > 1) return null;
       if (cm[2] !== undefined) {
@@ -868,7 +900,7 @@ function literalEngineCall(seg, raw, pipedIn) {
       probeOnly = false;
       continue;
     }
-    const fm = /^(--?(?:config|brand))(?:=([\s\S]*))?$/i.exec(v);
+    const fm = /^(--?(?:config|brand))(?:=([\s\S]*))?$/.exec(v);
     if (fm) {
       probeOnly = false;
       let val = fm[2];
@@ -890,16 +922,11 @@ function literalEngineCall(seg, raw, pipedIn) {
       }
       continue;
     }
-    if (literalArgSignal(v)) return null;
-    // A redirect target follows an op token; anything else must be a probe
-    // flag for a call with no --cmd.
-    const prev = toks[k - 1];
-    const isTarget = prev && prev.op && !/[\d-]$/.test(prev.value);
-    if (!isTarget && !VERSION_PROBE_ARGS.has(v.toLowerCase())) probeOnly = false;
+    return null;
   }
   if (call.cmdText === null) {
     if (pipedIn !== false || !probeOnly) return null;
-    if (!toks.slice(1).some((t) => !t.op && VERSION_PROBE_ARGS.has(t.value.toLowerCase()))) return null;
+    if (!toks.slice(1).some((t) => !t.op && VERSION_PROBE_ARGS.has(t.value))) return null;
   }
   let text = seg;
   for (const e of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, e.start) + e.text + text.slice(e.end);
@@ -946,11 +973,40 @@ function segmentSpans(command) {
   return spans;
 }
 
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 9): the swap
+// refusal below tested the raw text, so a backtick or $( INSIDE the
+// single-quoted --cmd JSON (inert: bash expands nothing in '..') refused it
+// and ordinary content calls that route 'other' on main carded:
+//   .claude/tools/Merlin.exe --cmd '{"action":"blog-post","body":"use `code` here"}'
+// literalCmdSpan finds that JSON as one single-quoted word in a fixed simple
+// shape, matched on the raw text, and only then are the refusal checks run
+// with the quoted content left out. The shape, whole command:
+//   [cd WORD &&] ENGINE WORD* --cmd '<anything but '>' WORD* [2>&1] [| tail|head|jq|tee|grep WORD*]
+// where WORD is [A-Za-z0-9_./:=~,+-]+ (no quote, $, backslash, #, glob or
+// operator character) and separators are spaces or tabs, so no quote can
+// open before the JSON, nothing is glued to it, and no comment, continuation,
+// CR, newline, here-doc or $' exists outside it. Anything else (double-quoted
+// --cmd, --cmd=, the '\'' apostrophe idioms, quoted paths) keeps the stricter
+// reading. The content is still read by literalEngineCall (one action, no
+// strong signal) and the segment must actually be swapped, or the text is
+// read whole as before. Pinned by bash-literal-engine-args.test.js.
+const LITERAL_SPAN_WORD = String.raw`[A-Za-z0-9_./:=~,+-]+`;
+const LITERAL_SPAN_RE = new RegExp(String.raw`^[ \t]*(?:cd[ \t]+${LITERAL_SPAN_WORD}[ \t]*&&[ \t]*)?${LITERAL_SPAN_WORD}(?:[ \t]+${LITERAL_SPAN_WORD})*?[ \t]+--?cmd[ \t]+'([^']*)'` +
+  String.raw`((?:[ \t]+${LITERAL_SPAN_WORD})*[ \t]*(?:2>&1[ \t]*)?(?:\|[ \t]*(?:tail|head|jq|tee|grep)(?:[ \t]+${LITERAL_SPAN_WORD})*[ \t]*)?)$`);
+function literalCmdSpan(raw) {
+  const m = LITERAL_SPAN_RE.exec(raw);
+  if (!m) return null;
+  const end = raw.length - m[2].length - 1;
+  return { start: end - m[1].length, end };
+}
+
 function withoutLiteralEngineCalls(command) {
   const raw = String(command || '');
-  if (/\$'|\\\r?\n|\r|<<|`|\$\(|[<>]\(/.test(raw)) return raw;
-  const dec = decodeAnsiC(raw);
-  if (dec.failed || dec.text !== raw) return raw;
+  const span = literalCmdSpan(raw);
+  const view = span ? raw.slice(0, span.start) + raw.slice(span.end) : raw;
+  if (/\$'|\\\r?\n|\r|<<|`|\$\(|[<>]\(/.test(view)) return raw;
+  const dec = decodeAnsiC(view);
+  if (dec.failed || dec.text !== view) return raw;
   const { segments, substitution, unbalanced } = splitSegments(raw);
   if (substitution || unbalanced) return raw;
   const spans = segmentSpans(raw);
