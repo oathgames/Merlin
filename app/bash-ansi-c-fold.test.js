@@ -218,3 +218,91 @@ test('the hook decoder matches the router decoder', () => {
   assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiCBody'), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiCBody'));
   assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiC('), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiC('));
 });
+
+// ── (6) Decoder lexing: comments, desync backstop ─────────────────────
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review): an
+// apostrophe inside a # comment was read as an opening quote, so every later
+// $'..' stayed undecoded, the call routed 'other' and the hook exited 0. The
+// decoder is now comment-aware as bash is, gives up on lexing it does not
+// model, and a naive residue scan fails closed on any escape-bearing $' left
+// over, whatever the decoder believed about quote state.
+
+const S = String.raw;
+const BUDGET = S`.claude/tools/$'Merl\x69n.exe' $'\x2d\x2dcmd' $'{"\x61ction":"meta-budget","adId":"1","dailyBudget":900}'`;
+const PUSH = S`$'\056claude/tools/\115erlin.exe' $'\055\055cmd' $'{"\141ction":"meta-push"}'`;
+const CARDED = new Set(['spend', 'destructive', 'card-unreadable', 'deny-ambiguous']);
+const cards = (c) => CARDED.has(r(c));
+
+test('an apostrophe in a comment does not hide later ANSI-C strings', () => {
+  for (const c of ["echo hi # don't\n" + BUDGET, "ls # '\n" + PUSH, "echo hi # don't\r\n" + BUDGET,
+    "true # it's\n" + S`.claude/tools/M?rlin.exe $'\055\055cmd' $'{"\141ction":"meta-push","approved":true}'`]) {
+    assert.ok(cards(c), `must card: ${JSON.stringify(c)}`);
+    assert.equal(runHook(c), 2, `hook must block: ${JSON.stringify(c)}`);
+  }
+  assert.equal(route.routeBash("echo hi # don't\n" + BUDGET).action, 'meta-budget');
+  assert.equal(route.routeBash("ls # '\n" + PUSH).action, 'meta-push');
+});
+
+test('the decoder comments exactly where bash does', () => {
+  const d = (c) => route.decodeAnsiC(c);
+  // # that begins a word, outside quotes, comments to end of line.
+  assert.deepEqual(d(S`echo a # it's` + '\n' + S`echo $'\x41'`), { text: "echo a # its\necho 'A'", failed: false });
+  assert.deepEqual(d(S`echo a;#'` + '\n' + S`echo $'\x41'`), { text: "echo a;#\necho 'A'", failed: false });
+  // # mid-word, $#, ${x#y}, quoted or escaped # are not comments.
+  assert.deepEqual(d(S`echo a#'b' $'\x41'`), { text: "echo a#'b' 'A'", failed: false });
+  assert.deepEqual(d(S`echo $# $'\x41'`), { text: "echo $# 'A'", failed: false });
+  assert.deepEqual(d('echo $' + S`{x#y} $'\x41'`), { text: "echo ${x#y} 'A'", failed: false });
+  assert.deepEqual(d(S`echo "#'" \#' $'\x41'`).failed, true); // \#' opens a real quote: unterminated
+  assert.deepEqual(d(S`echo "#'" $'\x41'`), { text: `echo "#'" 'A'`, failed: false });
+  // Backslash-newline vanishes before word splitting.
+  const BSNL = String.fromCharCode(92, 10);
+  assert.deepEqual(d('echo a ' + BSNL + "# don't\n" + S`echo $'\x41'`), { text: 'echo a ' + BSNL + "# dont\necho 'A'", failed: false });
+  assert.equal(d('echo a' + BSNL + "#'x' " + S`$'\x41'`).text, 'echo a' + BSNL + "#'x' 'A'");
+  // CR is not a separator to bash, so CR# is mid-word.
+  assert.equal(d("echo a\r#'x' " + S`$'\x41'`).text, "echo a\r#'x' 'A'");
+  // Router and hook copies stay comment-aware for commands with no $'.
+  assert.ok(cards("echo hi # don't\n" + `.claude/tools/Merlin.exe --cmd '{"action":"meta-budget","adId":"1","dailyBudget":900}'`));
+});
+
+test('lexing the decoder does not model fails closed or decodes correctly', () => {
+  const cases = {
+    heredoc: "cat <<EOF\ndon't\nEOF\n" + BUDGET,
+    heredocDash: "cat <<-EOF\n\tdon't\n\tEOF\n" + BUDGET,
+    escapedQuote: S`echo don\'t; ` + BUDGET,
+    dquoteApostrophe: `echo "it's"; ` + BUDGET,
+    dquoteSubst: `echo "$(echo ')"; ` + BUDGET,
+    dquoteBacktick: 'echo "`echo \'`"; ' + BUDGET,
+    backtick: 'echo `echo \'`; ' + BUDGET,
+    dollarBrace: `echo "\${x:-'}"; ` + BUDGET,
+    ansiInDquote: S`.claude/tools/Merlin.exe "$'\x2d\x2dcmd'" '{"action":"meta-push"}'`,
+    crlf: 'cd x\r\n' + BUDGET,
+    continuation: 'cd x && ' + String.fromCharCode(92, 10) + BUDGET,
+  };
+  for (const [name, c] of Object.entries(cases)) {
+    assert.ok(cards(c), `${name} must card, got ${r(c)}`);
+    if (/[;\n]|&&/.test(c)) assert.equal(runHook(c), 2, `${name}: hook must block`);
+  }
+  // The ones it models decode to the real action.
+  for (const name of ['escapedQuote', 'dquoteApostrophe', 'crlf', 'continuation']) {
+    assert.equal(route.routeBash(cases[name]).action, 'meta-budget', name);
+  }
+  // A heredoc or substitution with no escape-bearing $' is left as written.
+  assert.deepEqual(route.decodeAnsiC("cat <<EOF\n$'x'\nEOF"), { text: "cat <<EOF\n$'x'\nEOF", failed: false });
+  assert.deepEqual(route.decodeAnsiC('cat <<EOF\n' + S`$'\x41'` + '\nEOF').failed, true);
+  // $'..' inside double quotes is literal to bash; one with an escape fails closed.
+  assert.equal(route.decodeAnsiC(`echo "$'abc'"`).failed, false);
+  assert.equal(route.decodeAnsiC(S`echo "$'\x41'"`).failed, true);
+});
+
+test('comment-aware decoding keeps ordinary commands uncarded', () => {
+  for (const c of ['cd "$HOME" && ls', 'echo $PATH', 'git commit -m "fix meta-push action"',
+    `git commit -m "don't break # things"`, `grep '"action":"meta-push"' file`,
+    `rg -n '"action": *"meta-push"' app/`, 'npm test', S`echo $'a\tb'`, S`printf $'\x41\n'`,
+    `echo "it's" # fine`, 'ls .claude/tools/*.exe', 'echo hi # see .claude/tools/Merlin.exe docs']) {
+    assert.ok(!cards(c), `must not card: ${c} (got ${r(c)})`);
+  }
+  for (const c of [`echo "it's" # fine`, `git commit -m "don't break # things"`, S`printf $'\x41\n'`]) {
+    assert.equal(runHook(c), 0, `hook must allow: ${c}`);
+  }
+});

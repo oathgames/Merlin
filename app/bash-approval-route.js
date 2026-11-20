@@ -298,6 +298,18 @@ function splitSegments(command) {
 // \UHHHHHHHH (1-8), \cX (X & 0x1f); any other backslash pair stays as
 // written. $'..' is not special inside double or single quotes.
 // Pinned by bash-ansi-c-fold.test.js.
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 2): the
+// decoder kept its own quote state and did not know # comments, so the
+// apostrophe in `echo hi # don't` opened a quote and every later $'..' was
+// left undecoded (routed 'other', hook exit 0). The decoder now comments
+// exactly as bash does (a # beginning a word outside quotes; not a#b, $#,
+// ${x#y}), looking through backslash-newline, and drops quote characters
+// from comment text. Lexing it does not model (here-docs, << , backticks,
+// $( / quoted ${..} inside double quotes) rewrites nothing. Backstop, whatever
+// the decoder believed: an unterminated quote, an output that splitSegments
+// would pair differently, or any $' whose body holds a backslash left in the
+// output (naive scan, no quote or comment context) fails closed.
 const ANSI_C_SIMPLE = Object.freeze({
   a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v',
   '\\': '\\', "'": "'", '"': '"', '?': '?',
@@ -343,14 +355,77 @@ function decodeAnsiCBody(s, i) {
 // a plain single-quoted word holding its decoded value.
 function decodeAnsiC(command) {
   const s = String(command || '');
-  if (!s.includes("$'")) return { text: s, failed: false };
+  const hasAnsi = s.includes("$'");
+  if (!hasAnsi && !s.includes('#')) return { text: s, failed: false };
+  // residue(t): a $' whose body (up to the next unescaped ') holds a
+  // backslash, found with no quote or comment context at all.
+  const residue = (t) => {
+    for (let k = t.indexOf("$'"); k >= 0; k = t.indexOf("$'", k + 2)) {
+      for (let j = k + 2; j < t.length && t[j] !== "'"; j++) if (t[j] === '\\') return true;
+    }
+    return false;
+  };
+  // balanced(t): quote pairing as splitSegments reads it.
+  const balanced = (t) => {
+    let q = '';
+    for (let j = 0; j < t.length; j++) {
+      const ch = t[j];
+      if (q === "'") { if (ch === "'") q = ''; continue; }
+      if (ch === '\\') { j++; continue; }
+      if (q === '"') { if (ch === '"') q = ''; continue; }
+      if (ch === "'" || ch === '"') q = ch;
+    }
+    return q === '';
+  };
+  // wordStart(i): s[i] begins a word. A backslash-newline continuation
+  // vanishes before bash splits words, so it is looked through. CR is an
+  // ordinary character to bash, not a separator.
+  const wordStart = (i) => {
+    let p = i - 1;
+    while (p >= 1 && s[p] === '\n') {
+      let b = 0;
+      while (p - 1 - b >= 0 && s[p - 1 - b] === '\\') b++;
+      if (b % 2 === 0) break;
+      p -= 2;
+    }
+    return p < 0 || /[ \t\n;&|()<>]/.test(s[p]);
+  };
+  // Lexing this decoder does not model exactly (here-docs, << shifts,
+  // backticks, $( or ${..} with quotes inside double quotes) means the
+  // quote state below may be wrong. Then nothing is rewritten: an
+  // escape-bearing $'..' fails closed, anything else is returned as written.
+  const giveUp = () => ({ text: s, failed: hasAnsi && residue(s) });
   let out = '';
   let state = '';
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (state === "'") { out += c; if (c === "'") state = ''; continue; }
     if (c === '\\') { out += c + (s[i + 1] || ''); i++; continue; }
-    if (state === '"') { out += c; if (c === '"') state = ''; continue; }
+    if (state === '"') {
+      if (c === '`' || (c === '$' && s[i + 1] === '(')) return giveUp();
+      if (c === '$' && s[i + 1] === '{') {
+        const close = s.indexOf('}', i);
+        if (close < 0 || /['"`\\]|\$\(/.test(s.slice(i, close))) return giveUp();
+      }
+      out += c;
+      if (c === '"') state = '';
+      continue;
+    }
+    if (c === '`') return giveUp();
+    if (c === '<' && s[i + 1] === '<') {
+      if (s[i + 2] !== '<') return giveUp();
+      out += '<<<'; i += 2; continue;
+    }
+    // A # that begins a word outside quotes comments to end of line, as in
+    // bash. Its quote and escape characters are dropped so no later lexer
+    // reads a quote that bash never sees.
+    if (c === '#' && wordStart(i)) {
+      let j = i;
+      while (j < s.length && s[j] !== '\n') j++;
+      out += s.slice(i, j).replace(/['"`\\]/g, '');
+      i = j - 1;
+      continue;
+    }
     if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
     if (c === '$' && s[i + 1] === "'") {
       const d = decodeAnsiCBody(s, i + 2);
@@ -362,6 +437,10 @@ function decodeAnsiC(command) {
     if (c === "'" || c === '"') state = c;
     out += c;
   }
+  // Fail-closed backstop: an unterminated quote, a result whose quote
+  // pairing splitSegments would read differently, or an escape-bearing $'
+  // left anywhere in the result means the lexing above went wrong.
+  if (state !== '' || !balanced(out) || residue(out)) return { text: s, failed: hasAnsi };
   return { text: out, failed: false };
 }
 
@@ -689,7 +768,27 @@ function classifyEngineCall(command) {
 // is the value exactly as the shell passes it (readSegmentCall verifies it),
 // so no shell rewrite changes it after this check.
 function onlyPauses(cmdText) {
-  return bashMerlinAction.lastString(cmdText, 'batchStatus') === 'PAUSED';
+  const v = bashMerlinAction.lastString(cmdText, 'batchStatus');
+  return typeof v === 'string' && goNormalizeBatchStatus(v) === 'PAUSED';
+}
+
+// goNormalizeBatchStatus mirrors autocmo-core normalizeBatchStatus
+// (meta_batch_status.go, used by meta- and snapchat-batch-status):
+// strings.ToUpper(strings.TrimSpace(s)). TrimSpace trims unicode.IsSpace
+// runes (not U+FEFF, which String.prototype.trim also strips), and ToUpper
+// is the simple per-rune mapping, so a JS mapping that expands one rune into
+// several (as for U+00DF) leaves that rune unchanged, as Go does.
+const GO_SPACE = /^[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]$/u;
+function goNormalizeBatchStatus(s) {
+  const runes = Array.from(String(s));
+  let a = 0;
+  let b = runes.length;
+  while (a < b && GO_SPACE.test(runes[a])) a++;
+  while (b > a && GO_SPACE.test(runes[b - 1])) b--;
+  return runes.slice(a, b).map((ch) => {
+    const up = ch.toUpperCase();
+    return Array.from(up).length === 1 ? up : ch;
+  }).join('');
 }
 
 // routeBash -> { route, action, cmdText, reason }, route one of:

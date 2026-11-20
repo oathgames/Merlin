@@ -695,14 +695,77 @@ function hookDecodeAnsiCBody(s, i) {
 }
 function hookDecodeAnsiC(command) {
   const s = String(command || '');
-  if (!s.includes("$'")) return { text: s, failed: false };
+  const hasAnsi = s.includes("$'");
+  if (!hasAnsi && !s.includes('#')) return { text: s, failed: false };
+  // residue(t): a $' whose body (up to the next unescaped ') holds a
+  // backslash, found with no quote or comment context at all.
+  const residue = (t) => {
+    for (let k = t.indexOf("$'"); k >= 0; k = t.indexOf("$'", k + 2)) {
+      for (let j = k + 2; j < t.length && t[j] !== "'"; j++) if (t[j] === '\\') return true;
+    }
+    return false;
+  };
+  // balanced(t): quote pairing as splitSegments reads it.
+  const balanced = (t) => {
+    let q = '';
+    for (let j = 0; j < t.length; j++) {
+      const ch = t[j];
+      if (q === "'") { if (ch === "'") q = ''; continue; }
+      if (ch === '\\') { j++; continue; }
+      if (q === '"') { if (ch === '"') q = ''; continue; }
+      if (ch === "'" || ch === '"') q = ch;
+    }
+    return q === '';
+  };
+  // wordStart(i): s[i] begins a word. A backslash-newline continuation
+  // vanishes before bash splits words, so it is looked through. CR is an
+  // ordinary character to bash, not a separator.
+  const wordStart = (i) => {
+    let p = i - 1;
+    while (p >= 1 && s[p] === '\n') {
+      let b = 0;
+      while (p - 1 - b >= 0 && s[p - 1 - b] === '\\') b++;
+      if (b % 2 === 0) break;
+      p -= 2;
+    }
+    return p < 0 || /[ \t\n;&|()<>]/.test(s[p]);
+  };
+  // Lexing this decoder does not model exactly (here-docs, << shifts,
+  // backticks, $( or ${..} with quotes inside double quotes) means the
+  // quote state below may be wrong. Then nothing is rewritten: an
+  // escape-bearing $'..' fails closed, anything else is returned as written.
+  const giveUp = () => ({ text: s, failed: hasAnsi && residue(s) });
   let out = '';
   let state = '';
   for (let i = 0; i < s.length; i++) {
     const c = s[i];
     if (state === "'") { out += c; if (c === "'") state = ''; continue; }
     if (c === '\\') { out += c + (s[i + 1] || ''); i++; continue; }
-    if (state === '"') { out += c; if (c === '"') state = ''; continue; }
+    if (state === '"') {
+      if (c === '`' || (c === '$' && s[i + 1] === '(')) return giveUp();
+      if (c === '$' && s[i + 1] === '{') {
+        const close = s.indexOf('}', i);
+        if (close < 0 || /['"`\\]|\$\(/.test(s.slice(i, close))) return giveUp();
+      }
+      out += c;
+      if (c === '"') state = '';
+      continue;
+    }
+    if (c === '`') return giveUp();
+    if (c === '<' && s[i + 1] === '<') {
+      if (s[i + 2] !== '<') return giveUp();
+      out += '<<<'; i += 2; continue;
+    }
+    // A # that begins a word outside quotes comments to end of line, as in
+    // bash. Its quote and escape characters are dropped so no later lexer
+    // reads a quote that bash never sees.
+    if (c === '#' && wordStart(i)) {
+      let j = i;
+      while (j < s.length && s[j] !== '\n') j++;
+      out += s.slice(i, j).replace(/['"`\\]/g, '');
+      i = j - 1;
+      continue;
+    }
     if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
     if (c === '$' && s[i + 1] === "'") {
       const d = hookDecodeAnsiCBody(s, i + 2);
@@ -714,6 +777,10 @@ function hookDecodeAnsiC(command) {
     if (c === "'" || c === '"') state = c;
     out += c;
   }
+  // Fail-closed backstop: an unterminated quote, a result whose quote
+  // pairing splitSegments would read differently, or an escape-bearing $'
+  // left anywhere in the result means the lexing above went wrong.
+  if (state !== '' || !balanced(out) || residue(out)) return { text: s, failed: hasAnsi };
   return { text: out, failed: false };
 }
 function hookDecodeEscapesLoose(text) {
@@ -744,7 +811,21 @@ function matchesMerlinShellOperator(rawCmd) {
     .replace(/"(?:[^"\\]|\\.)*"/g, '')
     .replace(/'[^']*'/g, '')
     .replace(/\\\r?\n/g, ' '); // backslash-newline is a line continuation, not a separator
-  return /[&|;`\r\n]|\$\(/.test(stripped);
+  // The regexes above are not escape-aware: in `echo don\'t; Merlin.exe ...`
+  // the escaped quote opened a "quoted region" that swallowed the `;`. Also
+  // read the separators with a scan that honours backslash escapes the way
+  // bash does. Either reading finding a separator blocks.
+  let lexed = '';
+  let q = '';
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (q === "'") { if (ch === "'") q = ''; continue; }
+    if (q === '"') { if (ch === '\\') i++; else if (ch === '"') q = ''; continue; }
+    if (ch === '\\') { lexed += cmd[i + 1] === '\n' || cmd[i + 1] === '\r' ? ' ' : ''; i += cmd[i + 1] === '\r' && cmd[i + 2] === '\n' ? 2 : 1; continue; }
+    if (ch === "'" || ch === '"') { q = ch; continue; }
+    lexed += ch;
+  }
+  return /[&|;`\r\n]|\$\(/.test(stripped) || /[&|;`\r\n]|\$\(/.test(lexed);
 }
 
 function matchesAppSourceWrite(filePath) {

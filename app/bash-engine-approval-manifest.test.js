@@ -100,8 +100,14 @@ test('kills stay uncarded (Bash meta-kill policy) and reads stay uncarded', () =
 test('batch status cards unless it can only pause', () => {
   for (const action of route.BASH_PAUSE_ONLY_STATUS) {
     assert.equal(route.routeBash(call(action, ',"batchStatus":"PAUSED","adIds":["1"]')).route, 'other');
-    // Only the exact PAUSED spelling is uncarded; anything else fails closed.
-    assert.equal(route.routeBash(call(action, ',"batchStatus":"paused","adIds":["1"]')).route, 'spend');
+    // Only what Go's normalizeBatchStatus reads as PAUSED (ToUpper of
+    // TrimSpace) is uncarded; anything else fails closed.
+    assert.equal(route.routeBash(call(action, ',"batchStatus":"paused","adIds":["1"]')).route, 'other');
+    assert.equal(route.routeBash(call(action, ',"batchStatus":" Paused\\n","adIds":["1"]')).route, 'other');
+    assert.equal(route.routeBash(call(action, ',"batchStatus":"pauſed","adIds":["1"]')).route, 'other');
+    assert.equal(route.routeBash(call(action, ',"batchStatus":"\\ufeffPAUSED","adIds":["1"]')).route, 'spend');
+    assert.equal(route.routeBash(call(action, ',"batchStatus":"PAUSED X","adIds":["1"]')).route, 'spend');
+    assert.equal(route.routeBash(call(action, ',"batchStatus":"active ","adIds":["1"]')).route, 'spend');
     assert.equal(route.routeBash(call(action, ',"batchStatus":"ACTIVE","adIds":["1"]')).route, 'spend');
     assert.equal(route.routeBash(call(action, ',"adIds":["1"]')).route, 'spend');
     // Go binds the LAST key in any case: a trailing ACTIVE wins.
