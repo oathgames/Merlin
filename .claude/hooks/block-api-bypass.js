@@ -645,13 +645,100 @@ function matchesDestructiveCommand(cmd) {
 // every shell quote and backslash removed, and treats a --cmd / -cmd flag in
 // a command that has $ or backtick expansion as an engine call. Each form
 // only ADDS a block; nothing that was blocked before is allowed now.
-function matchesMerlinShellOperator(cmd) {
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review): bash ANSI-C
+// strings ($'Merl\x69n.exe', $'\055\055cmd') were read literally, so a chained
+// engine call spelled with them passed. The command is now decoded the same
+// way the app router decodes it (bash-approval-route.js decodeAnsiC; this
+// hook is standalone, so the decoder is duplicated here and pinned by
+// bash-ansi-c-fold.test.js) before every check, and a glob command word under
+// .claude/tools/ (M?rlin.exe, M*.exe) counts as the binary. An ANSI-C string
+// this decoder cannot reproduce exactly fails closed when the command also
+// mentions the engine or a cmd flag in any decoded form.
+const HOOK_ANSI_C_SIMPLE = {
+  a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v',
+  '\\': '\\', "'": "'", '"': '"', '?': '?',
+};
+function hookDecodeAnsiCBody(s, i) {
+  let out = '';
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "'") return { value: out, end: i + 1 };
+    if (c !== '\\') { out += c; i++; continue; }
+    const n = s[i + 1];
+    if (n === undefined) return null;
+    if (Object.prototype.hasOwnProperty.call(HOOK_ANSI_C_SIMPLE, n)) { out += HOOK_ANSI_C_SIMPLE[n]; i += 2; continue; }
+    let m = /^[0-7]{1,3}/.exec(s.slice(i + 1));
+    if (m) {
+      const v = parseInt(m[0], 8);
+      if (v === 0 || v > 0x7f) return null;
+      out += String.fromCharCode(v); i += 1 + m[0].length; continue;
+    }
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const max = n === 'x' ? 2 : n === 'u' ? 4 : 8;
+      m = new RegExp('^[0-9A-Fa-f]{1,' + max + '}').exec(s.slice(i + 2));
+      if (!m) return null;
+      const v = parseInt(m[0], 16);
+      if (v === 0 || (n === 'x' && v > 0x7f) || v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff)) return null;
+      out += String.fromCodePoint(v); i += 2 + m[0].length; continue;
+    }
+    if (n === 'c') {
+      const x = s[i + 2];
+      if (x === undefined || x.charCodeAt(0) < 0x21 || x.charCodeAt(0) > 0x7e) return null;
+      const v = x.charCodeAt(0) & 0x1f;
+      if (v === 0) return null;
+      out += String.fromCharCode(v); i += 3; continue;
+    }
+    out += '\\' + n; i += 2;
+  }
+  return null;
+}
+function hookDecodeAnsiC(command) {
+  const s = String(command || '');
+  if (!s.includes("$'")) return { text: s, failed: false };
+  let out = '';
+  let state = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === "'") { out += c; if (c === "'") state = ''; continue; }
+    if (c === '\\') { out += c + (s[i + 1] || ''); i++; continue; }
+    if (state === '"') { out += c; if (c === '"') state = ''; continue; }
+    if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
+    if (c === '$' && s[i + 1] === "'") {
+      const d = hookDecodeAnsiCBody(s, i + 2);
+      if (!d) return { text: s, failed: true };
+      out += "'" + d.value.replace(/'/g, "'\\''") + "'";
+      i = d.end - 1;
+      continue;
+    }
+    if (c === "'" || c === '"') state = c;
+    out += c;
+  }
+  return { text: out, failed: false };
+}
+function hookDecodeEscapesLoose(text) {
+  let s = String(text);
+  for (let i = 0; i < 4; i++) {
+    s = s
+      .replace(/\\+u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+x([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+0?([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8) & 0xff));
+  }
+  return s;
+}
+
+function matchesMerlinShellOperator(rawCmd) {
+  const ansi = hookDecodeAnsiC(rawCmd);
+  const cmd = ansi.text;
   const quoteless = cmd.replace(/['"\\]/g, '');
   const assembledFlag = /[$`]/.test(cmd) && /(?:^|[\s=])--?cmd(?:-file)?(?:=|\b)/i.test(quoteless);
+  const undecodable = ansi.failed &&
+    /merlin|--?cmd/i.test(hookDecodeEscapesLoose(rawCmd).replace(/['"\\$]/g, ''));
   const invokesMerlinBinary =
     /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin["']?\s+--?(cmd|config)\b/i.test(cmd) ||
     /\bmerlin\.exe\b/i.test(quoteless) || /\bmerlin\s+--?(cmd|config)\b/i.test(quoteless) ||
-    assembledFlag;
+    /(?:^|[;&|(\r\n])\s*[^\s;&|()]*\.claude[\\/]tools[\\/][^\s;&|()]*[*?[]/i.test(quoteless) ||
+    assembledFlag || undecodable;
   if (!invokesMerlinBinary) return false;
   const stripped = cmd
     .replace(/"(?:[^"\\]|\\.)*"/g, '')

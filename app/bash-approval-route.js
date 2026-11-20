@@ -279,6 +279,92 @@ function splitSegments(command) {
   return { segments, substitution, unbalanced };
 }
 
+// ── ANSI-C quoting ($'...') ───────────────────────────────────────────
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review): bash decodes
+// $'..' strings (\xHH, \NNN octal, \uHHHH, \n, \cX ...) before the program
+// sees its arguments, and nothing here did. So
+//   .claude/tools/$'Merl\x69n.exe' $'\x2d\x2dcmd' $'{"\x61ction":"meta-budget","adId":"1","dailyBudget":900}'
+// routed 'other' and ran a budget change uncarded, and
+//   .claude/tools/M?rlin.exe $'\055cmd' $'{"\141ction":"meta-push"}'
+// hid its --cmd flag from the glob rule. routeBash now decodes every $'..'
+// string into an equivalent single-quoted word FIRST, so the engine detector,
+// the action reader and the spend card all read what bash passes. An escape
+// this decoder cannot reproduce exactly (a NUL, a raw byte >= 0x80, \c with
+// no printable letter, \x / \u / \U with no digits, an invalid code point,
+// an unterminated string) makes the whole command fail closed as an
+// unreadable engine call. Bash rules mirrored: \a \b \e \E \f \n \r \t \v
+// \\ \' \" \?, \NNN (1-3 octal digits), \xHH (1-2 hex), \uHHHH (1-4),
+// \UHHHHHHHH (1-8), \cX (X & 0x1f); any other backslash pair stays as
+// written. $'..' is not special inside double or single quotes.
+// Pinned by bash-ansi-c-fold.test.js.
+const ANSI_C_SIMPLE = Object.freeze({
+  a: '\x07', b: '\b', e: '\x1b', E: '\x1b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v',
+  '\\': '\\', "'": "'", '"': '"', '?': '?',
+});
+
+// decodeAnsiCBody(s, i) -> { value, end } | null. s[i] is the first char after $'.
+function decodeAnsiCBody(s, i) {
+  let out = '';
+  while (i < s.length) {
+    const c = s[i];
+    if (c === "'") return { value: out, end: i + 1 };
+    if (c !== '\\') { out += c; i++; continue; }
+    const n = s[i + 1];
+    if (n === undefined) return null;
+    if (Object.prototype.hasOwnProperty.call(ANSI_C_SIMPLE, n)) { out += ANSI_C_SIMPLE[n]; i += 2; continue; }
+    let m = /^[0-7]{1,3}/.exec(s.slice(i + 1));
+    if (m) {
+      const v = parseInt(m[0], 8);
+      if (v === 0 || v > 0x7f) return null;
+      out += String.fromCharCode(v); i += 1 + m[0].length; continue;
+    }
+    if (n === 'x' || n === 'u' || n === 'U') {
+      const max = n === 'x' ? 2 : n === 'u' ? 4 : 8;
+      m = new RegExp('^[0-9A-Fa-f]{1,' + max + '}').exec(s.slice(i + 2));
+      if (!m) return null;
+      const v = parseInt(m[0], 16);
+      if (v === 0 || (n === 'x' && v > 0x7f) || v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff)) return null;
+      out += String.fromCodePoint(v); i += 2 + m[0].length; continue;
+    }
+    if (n === 'c') {
+      const x = s[i + 2];
+      if (x === undefined || x.charCodeAt(0) < 0x21 || x.charCodeAt(0) > 0x7e) return null;
+      const v = x.charCodeAt(0) & 0x1f;
+      if (v === 0) return null;
+      out += String.fromCharCode(v); i += 3; continue;
+    }
+    out += '\\' + n; i += 2;
+  }
+  return null;
+}
+
+// decodeAnsiC -> { text, failed }: the command with every $'..' rewritten as
+// a plain single-quoted word holding its decoded value.
+function decodeAnsiC(command) {
+  const s = String(command || '');
+  if (!s.includes("$'")) return { text: s, failed: false };
+  let out = '';
+  let state = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === "'") { out += c; if (c === "'") state = ''; continue; }
+    if (c === '\\') { out += c + (s[i + 1] || ''); i++; continue; }
+    if (state === '"') { out += c; if (c === '"') state = ''; continue; }
+    if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
+    if (c === '$' && s[i + 1] === "'") {
+      const d = decodeAnsiCBody(s, i + 2);
+      if (!d) return { text: s, failed: true };
+      out += "'" + d.value.replace(/'/g, "'\\''") + "'";
+      i = d.end - 1;
+      continue;
+    }
+    if (c === "'" || c === '"') state = c;
+    out += c;
+  }
+  return { text: out, failed: false };
+}
+
 // shellWords -> string[]: the words the shell would pass, quotes removed,
 // escapes applied. Expansions are NOT performed; callers check
 // segmentShellRewrites first when they need exact words.
@@ -411,10 +497,36 @@ function isSafeBash(command) {
 // '"action":"meta-push"' f.js`, `git commit -m "fix meta-push"`) never
 // trips (b), and (a) needs both an unresolvable or script-running program
 // and an engine signal, so `cd "$HOME" && ls` and `echo $PATH` are unchanged.
-const SCRIPT_RUNNERS = new Set(['.', 'source', 'eval', 'exec', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'busybox']);
-const TEXT_ONLY_COMMANDS = new Set([...NON_EXEC_COMMANDS, 'git']);
-const HIDDEN_CMD_FLAG_RE = /(?:^|[\s"'`=])--?cmd(?:-file)?(?:=|(?=$|[\s"'`;&|]))/i;
-const HIDDEN_BIN_RE = /merlin(?:\.exe)?(?=$|[\s;&|)])/i;
+// Interpreters (node, python, powershell, cmd) run code that can build the
+// engine path and flag by string concatenation ("Mer"+"lin.exe",
+// "-"+"-c"+"md") or cmd's ^ escape. Rule (a) still needs an engine signal,
+// so `node script.js` and `python x.py` with no signal are not carded.
+const SCRIPT_RUNNERS = new Set([
+  '.', 'source', 'eval', 'exec', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'busybox',
+  'node', 'node.exe', 'python', 'python.exe', 'python3', 'python3.exe',
+  'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe', 'cmd', 'cmd.exe',
+]);
+// Programs that only search or print text: a carded action NAME in their
+// arguments is a search pattern, not an engine call (rule (b)). sed counts
+// only while its script cannot execute: GNU sed's `e` command and the s///e
+// flag hand text to /bin/sh (SED_EXEC_RE). awk is not here (system()).
+const TEXT_SEARCH_COMMANDS = ['rg', 'rg.exe', 'ag', 'ack', 'findstr', 'findstr.exe', 'select-string', 'sls'];
+const TEXT_ONLY_COMMANDS = new Set([...NON_EXEC_COMMANDS, 'git', ...TEXT_SEARCH_COMMANDS]);
+const SED_EXEC_RE = /(?:^|[\s;{}0-9$\/!])e(?:\s|;|}|$)|s(.)(?:(?!\1).)*\1(?:(?!\1).)*\1[gpiImMw0-9]*e/;
+const HIDDEN_CMD_FLAG_RE = /(?:^|[\s"'`=(\[,])--?cmd(?:-file)?(?:=|(?=$|[\s"'`;&|),\]]))/i;
+const HIDDEN_BIN_RE = /merlin(?:\.exe)?(?=$|[\s;&|),\]])/i;
+// A glob or variable command word under the engine's own directories picks
+// the engine binary however it is spelled (.claude/tools/M?rlin.exe,
+// $D/Merlin/bin/*), so it is an engine signal by itself.
+const ENGINE_DIR_RE = /(?:^|[\\/])\.claude[\\/]tools[\\/]|merlin[\\/]bin(?:[\\/]|$)/i;
+
+function textOnlyProgram(word, segment) {
+  const base = baseName(word);
+  if (base === 'sed' || base === 'sed.exe') {
+    return !SED_EXEC_RE.test(shellWords(segment).slice(1).join(' '));
+  }
+  return TEXT_ONLY_COMMANDS.has(base);
+}
 
 function wordUnresolvable(word) {
   const w = String(word || '');
@@ -431,11 +543,38 @@ function wordRunsScript(word) {
 
 // The command as the shell would see it after quote removal, in several
 // forms, so a signal split across quotes or escapes is still seen.
+// Extra forms (2026-11-20 review): printf / echo -e escapes decoded at any
+// backslash depth (\115erlin.exe, \055\055cmd), string concatenation and
+// cmd caret escapes squeezed out ("Mer"+"lin.exe", Mer^lin.exe), and long
+// base64 tokens decoded (echo LmNs... | base64 -d | sh). Each form only
+// adds signals.
+function decodeEscapesLoose(text) {
+  let s = String(text);
+  for (let i = 0; i < 4; i++) {
+    s = s
+      .replace(/\\+u([0-9A-Fa-f]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+x([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+      .replace(/\\+0?([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8) & 0xff));
+  }
+  return s;
+}
+function base64Decodings(text) {
+  const out = [];
+  for (const tok of String(text).match(/[A-Za-z0-9+/]{12,}={0,2}/g) || []) {
+    const d = Buffer.from(tok, 'base64').toString('latin1');
+    if (/^[\x09\x0a\x0d\x20-\x7e]+$/.test(d)) out.push(d);
+    else if (/^(?:[\x20-\x7e]\x00)+$/.test(d)) out.push(d.replace(/\x00/g, '')); // UTF-16LE (-EncodedCommand)
+  }
+  return out;
+}
 function dequotedForms(raw) {
   const { segments } = splitSegments(raw);
   const joined = segments.map((seg) => shellWords(seg).join(' ')).join(' ; ');
   const stripped = raw.replace(/['"\\]/g, '');
-  return [raw, raw.replace(/\\"/g, '"'), joined, stripped];
+  const escDecoded = decodeEscapesLoose(raw);
+  const squeezed = escDecoded.replace(/['"\\+^`]/g, '');
+  const b64 = base64Decodings(stripped);
+  return [raw, raw.replace(/\\"/g, '"'), joined, stripped, escDecoded, squeezed, ...b64, ...b64.map(decodeEscapesLoose)];
 }
 
 function engineSignal(raw) {
@@ -464,8 +603,9 @@ function hiddenEngineCall(command) {
     const words = shellWords(seg);
     return words[commandWordIndex(words)] || '';
   });
+  if (programs.some((w) => wordUnresolvable(w) && ENGINE_DIR_RE.test(w))) return true;
   if (programs.some((w) => wordUnresolvable(w) || wordRunsScript(w)) && engineSignal(raw)) return true;
-  const allTextOnly = programs.every((w) => w === '' || (!wordUnresolvable(w) && TEXT_ONLY_COMMANDS.has(baseName(w))));
+  const allTextOnly = programs.every((w, i) => w === '' || (!wordUnresolvable(w) && textOnlyProgram(w, segments[i])));
   return !allTextOnly && carriesCardedAction(raw);
 }
 
@@ -561,6 +701,12 @@ function onlyPauses(cmdText) {
 //   'other'            falls through to the long tail
 // main.js handleToolApproval dispatches on exactly this value.
 function routeBash(command) {
+  const ansi = decodeAnsiC(command);
+  if (ansi.failed) return { route: 'card-unreadable', action: '', cmdText: String(command || ''), reason: 'shell' };
+  return routeDecodedBash(ansi.text);
+}
+
+function routeDecodedBash(command) {
   if (isSafeBash(command)) return { route: 'safe', action: '', cmdText: String(command || ''), reason: '' };
   const c = classifyEngineCall(command);
   const out = { action: c.action, cmdText: c.cmdText, reason: c.reason };
@@ -700,6 +846,7 @@ module.exports = {
   isSafeBash,
   classifyEngineCall,
   hiddenEngineCall,
+  decodeAnsiC,
   routeBash,
   isShellTool,
   routeShellTool,

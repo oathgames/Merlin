@@ -30,18 +30,41 @@ function decodeJSONString(lit) {
   }
 }
 
+// foldKey -> the key as Go's encoding/json compares it.
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup): Go matches a JSON key
+// to a struct field with bytes.EqualFold semantics (encoding/json foldName:
+// ASCII letters fold by case, every other rune folds to the smallest rune of
+// its unicode.SimpleFold orbit). Exactly two non-ASCII runes land on an ASCII
+// letter that way: U+017F LATIN SMALL LETTER LONG S (orbit S, s, U+017F) and
+// U+212A KELVIN SIGN (orbit K, k, U+212A). JS toLowerCase() maps the Kelvin
+// sign to k but leaves the long s alone, so
+//   {"batchStatus":"PAUSED","batchStatuſ":"ACTIVE"}
+// read PAUSED here (pause-only, no card) while Go bound the LAST key, ACTIVE,
+// and the same trick spoofed the id on the budget card (targetAdſetId).
+// Every key lookup (action, batchStatus, ids, budgets, override flags) goes
+// through this one function: ASCII-only lowercasing plus those two folds, so
+// a key matches here exactly when Go binds it. Non-ASCII runes are left as
+// they are; they can never equal an ASCII field name in Go either.
+function foldKey(key) {
+  return String(key)
+    .replace(/ſ/g, 's')
+    .replace(/K/g, 'k')
+    .replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
 function scanKeys(text, wantKey) {
   const hits = []; // { valueText, undecodable }
-  const want = wantKey.toLowerCase();
+  const want = foldKey(wantKey);
   STRING_KEY_RE.lastIndex = 0;
   let m;
   while ((m = STRING_KEY_RE.exec(text)) !== null) {
     const key = decodeJSONString(m[1]);
     if (key === null) {
-      if (m[1].toLowerCase().includes(want.slice(0, 3))) hits.push({ valueText: null, undecodable: true });
+      if (foldKey(m[1]).includes(want.slice(0, 3))) hits.push({ valueText: null, undecodable: true });
       continue;
     }
-    if (key.toLowerCase() !== want) continue;
+    if (foldKey(key) !== want) continue;
     hits.push({ valueText: text.slice(m.index + m[0].length), undecodable: false });
   }
   return hits;
@@ -149,7 +172,7 @@ function lettersOnly(text) {
       .replace(/\\+x([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
       .replace(/\\+([0-7]{3})/g, (_, o) => String.fromCharCode(parseInt(o, 8)));
   }
-  return s.toLowerCase().replace(/[^a-z]/g, '');
+  return foldKey(s).toLowerCase().replace(/[^a-z]/g, '');
 }
 function countOccurrences(hay, needle) {
   if (!needle) return 0;
@@ -172,4 +195,4 @@ function requestsOverride(command, key) {
   return countOccurrences(lettersOnly(raw), lettersOnly(key)) > falseHits;
 }
 
-module.exports = { parseAction, lastNumber, lastString, requestsOverride };
+module.exports = { parseAction, lastNumber, lastString, requestsOverride, foldKey };
