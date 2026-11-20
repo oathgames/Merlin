@@ -215,10 +215,10 @@ test('with a job store, subscribe-bulk runs as a background job that is not rest
 });
 
 test('main.js cards the Bash path for both actions', () => {
-  const src = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8');
-  const m = src.match(/const BASH_CARDED_DESTRUCTIVE = new Set\(\[([\s\S]*?)\]\)/);
-  assert.ok(m, 'BASH_CARDED_DESTRUCTIVE must exist in main.js');
+  // The set lives in bash-approval-route.js (2026-11-20); drive the real route.
+  const bashRoute = require('./bash-approval-route');
   for (const a of ['klaviyo-subscribe-bulk', 'klaviyo-list-create']) {
-    assert.ok(m[1].includes(`'${a}'`), `${a} must be in BASH_CARDED_DESTRUCTIVE`);
+    assert.ok(bashRoute.BASH_CARDED_DESTRUCTIVE.has(a), `${a} must be in BASH_CARDED_DESTRUCTIVE`);
+    assert.equal(bashRoute.routeBash(`cd /d/x && .claude/tools/Merlin.exe --cmd '{"action":"${a}"}'`).route, 'destructive');
   }
 });

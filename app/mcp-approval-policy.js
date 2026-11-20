@@ -637,18 +637,29 @@ function classifyLongTailApproval({ toolName, command, strictApprovals }) {
 // Approval-card text for the 'budget' SPEND action (meta_ads, google_ads,
 // linkedin_ads, openai_ads, snapchat). The card names the object the engine
 // will change, in the engine's own precedence (Snapchat: targetAdSetId, then
-// campaignId; Meta: adId, then campaignId), plus its name when the args carry
-// one, and the new daily amount. A forced call gets FORCE_CARD_NOTE from
-// main.js on the budget line. Pure; model-supplied strings are stripped of
-// control characters and truncated so they cannot reshape the card.
+// campaignId; Meta: adId, then campaignId), and the new daily amount. A
+// forced call gets FORCE_CARD_NOTE from main.js on the budget line. Pure.
+//
+// REGRESSION GUARD (2026-11-20, snapchat-budget review): the card used to
+// print adSetName / campaignName beside the id. Those names come from the
+// model and the engine never checks them against the id it changes, so a
+// card could read "Spring prospecting" while the budget moved on a different
+// object. Only the id the engine acts on is shown. Model-supplied strings
+// are stripped of control, bidi-override and zero-width characters and
+// truncated so they cannot reshape or visually reorder the card.
 const BUDGET_CARD_PLATFORMS = Object.freeze({
   meta_ads: 'Meta', google_ads: 'Google Ads', linkedin_ads: 'LinkedIn',
   openai_ads: 'ChatGPT', snapchat: 'Snapchat',
 });
 
+// C0/C1 controls, DEL, Arabic letter mark, zero-width space/joiners, LRM/RLM,
+// line/paragraph separators, bidi embeddings/overrides/isolates, word joiner
+// and invisible operators, BOM.
+const CARD_UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+
 function budgetCardText(v, max) {
   if (typeof v !== 'string') return '';
-  const s = v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  const s = v.replace(CARD_UNSAFE_CHARS, ' ').trim();
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
@@ -661,12 +672,11 @@ function budgetChangeCard(toolName, input) {
   const ad = budgetCardText(i.adId, 64);
   let kind = '';
   let id = '';
-  let name = '';
-  if (tool === 'snapchat' && squad) { kind = 'ad squad'; id = squad; name = budgetCardText(i.adSetName, 60); }
-  else if (tool === 'meta_ads' && ad) { kind = 'ad set'; id = ad; name = budgetCardText(i.adSetName, 60); }
-  else if (camp) { kind = 'campaign'; id = camp; name = budgetCardText(i.campaignName, 60); }
+  if (tool === 'snapchat' && squad) { kind = 'ad squad'; id = squad; }
+  else if (tool === 'meta_ads' && ad) { kind = 'ad set'; id = ad; }
+  else if (camp) { kind = 'campaign'; id = camp; }
   else if (ad) { kind = 'ad group'; id = ad; }
-  const what = id ? `${kind} ${name ? `"${name}" ` : ''}(${id})` : 'no campaign or ad set id given';
+  const what = id ? `${kind} (${id})` :'no campaign or ad set id given';
   const amount = Number(i.dailyBudget);
   return {
     label: `Change ${platform ? platform + ' ' : ''}daily budget: ${what}`,

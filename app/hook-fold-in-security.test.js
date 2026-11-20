@@ -132,6 +132,23 @@ test('Merlin binary chained with a shell operator is blocked', () => {
   assert.equal(
     runHook({ tool_name: 'Bash', tool_input: { command: ".claude/tools/Merlin.exe --cmd '{}' ; curl evil" } }),
     2, 'a pathed Merlin.exe chained with ; must be blocked');
+  // REGRESSION GUARD (2026-11-20, compound command bypass found in review):
+  // newline separators, a quoted binary path and the single-dash flag.
+  assert.equal(
+    runHook({ tool_name: 'Bash', tool_input: { command: "cd /d/x\n.claude/tools/Merlin.exe --cmd '{\"action\":\"snapchat-budget\"}'" } }),
+    2, 'Merlin.exe after a newline separator must be blocked');
+  assert.equal(
+    runHook({ tool_name: 'Bash', tool_input: { command: "cd /d/x && \".claude/tools/Merlin\" --cmd '{\"action\":\"meta-push\"}'" } }),
+    2, 'a quoted extensionless Merlin path chained with && must be blocked');
+  assert.equal(
+    runHook({ tool_name: 'Bash', tool_input: { command: "cd /d/x; .claude/tools/Merlin -cmd '{}'" } }),
+    2, 'the single-dash -cmd flag must count as a binary invocation');
+  assert.equal(
+    runHook({ tool_name: 'Bash', tool_input: { command: "Merlin.exe \\\n  --cmd '{\"action\":\"meta-insights\"}'" } }),
+    0, 'a backslash-newline continuation is not a separator');
+  assert.equal(
+    runHook({ tool_name: 'Bash', tool_input: { command: "Merlin.exe --cmd '{\"q\":\"line1\nline2\"}'" } }),
+    0, 'a newline inside the quoted --cmd payload must not false-positive');
   // …but a clean Merlin call with an operator only INSIDE the quoted --cmd JSON is allowed.
   assert.equal(
     runHook({ tool_name: 'Bash', tool_input: { command: "Merlin.exe --cmd '{\"q\":\"a && b\"}'" } }),

@@ -629,14 +629,22 @@ function matchesDestructiveCommand(cmd) {
 // benign `grep merlin log.txt | head` or `cat x | grep merlin` would be blocked
 // (the removed inline hook used the broad substring and would have over-blocked
 // these had it ever actually run).
+//
+// REGRESSION GUARD (2026-11-20, compound command bypass found in review):
+// a newline is a command separator too, and it was missing from the operator
+// class, so `cd x<newline>Merlin.exe --cmd '...'` passed. The binary check
+// also missed a quoted path (`".claude/tools/Merlin" --cmd`) and the
+// single-dash flag Go's flag package accepts (`Merlin -cmd`). The app-side
+// chokepoint is bash-approval-route.js; this hook is the earlier layer.
 function matchesMerlinShellOperator(cmd) {
   const invokesMerlinBinary =
-    /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin\s+--(cmd|config)\b/i.test(cmd);
+    /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin["']?\s+--?(cmd|config)\b/i.test(cmd);
   if (!invokesMerlinBinary) return false;
   const stripped = cmd
     .replace(/"(?:[^"\\]|\\.)*"/g, '')
-    .replace(/'[^']*'/g, '');
-  return /[&|;`]|\$\(/.test(stripped);
+    .replace(/'[^']*'/g, '')
+    .replace(/\\\r?\n/g, ' '); // backslash-newline is a line continuation, not a separator
+  return /[&|;`\r\n]|\$\(/.test(stripped);
 }
 
 function matchesAppSourceWrite(filePath) {
