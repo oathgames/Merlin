@@ -93,6 +93,64 @@ test('hook still allows the must-stay-allowed commands', () => {
   }
 });
 
+// ── review 5: empty expansions spliced into every signal ─────────────
+// Each ran the engine in real bash (fake echo-args Merlin.exe) and routed
+// 'other' before splicedEngineSignal.
+const SPLICED = [
+  `x=; ./Mer\${x}lin.exe --c\${x}md '{"act'\${x}'ion":"meta-push"}'`,
+  `x=; ./Mer"\${x}"lin.exe --c\${x}md '{"act'\${x}'ion":"meta-push"}'`,
+  `x=; ./Mer\`true\`lin.exe --c\${x}md x`,
+  `x=; env ./Mer\${x}lin.exe --c\${x}md x`,
+  `a=Mer; b=lin.exe; c=--c; d=md; ./$a$b $c$d "$json"`,
+  `a=Mer; b=lin.exe; ./$a$b --cmd '{"action":"meta-push"}'`,
+];
+const SPLICED_UNCHAINED = [
+  `./Mer$(true)lin.exe --cmd '{"action":"meta-push"}'`,
+  `./Mer\${x:-}lin.exe --c\${x}md x`,
+];
+const STAY_UNCARDED = [
+  ['cd "$HOME" && ls', 'safe'],
+  ['echo $PATH', 'safe'],
+  ['echo "$USER uses merlin"', 'safe'],
+  ['git commit -m "fix meta-push action for $BRAND"', 'other'],
+  ['grep \'"action":"meta-push"\' "$FILE"', 'safe'],
+  ['rg -n \'"action": *"meta-push"\' app/', 'other'],
+  ['npm test', 'other'],
+  ['node "$SCRIPT"', 'other'],
+  ['for f in *.js; do node --check "$f"; done', 'other'],
+  ['export PATH="$PATH:/usr/local/bin"', 'other'],
+  ['ls "$LOCALAPPDATA/Merlin/bin"', 'safe'],
+  ['git log --oneline -n "$N"', 'other'],
+];
+
+test('expansions spliced into the binary name, flag and action key card', () => {
+  for (const c of [...SPLICED, ...SPLICED_UNCHAINED]) assert.equal(r(c), 'card-unreadable', `must card: ${c}`);
+  assert.equal(route.eraseExpansions(`./Mer\${x}lin.exe --c\${x}md '{"act'\${x}'ion":1}'`, false),
+    './Merlin.exe --cmd {action:1}');
+  assert.equal(route.eraseExpansions('./Mer$(echo a)lin.exe', false), './Merlin.exe');
+  assert.equal(route.eraseExpansions('./${x:-Mer}lin.exe', true), './Merlin.exe');
+});
+
+test('text-only and signal-free commands with expansions stay uncarded', () => {
+  for (const [c, want] of STAY_UNCARDED) {
+    assert.equal(r(c), want, c);
+    assert.equal(runHook('Bash', c), 0, `hook must allow: ${c}`);
+  }
+});
+
+test('hook blocks chained spliced engine calls', () => {
+  for (const c of SPLICED) assert.equal(runHook('Bash', c), 2, `hook must block: ${c}`);
+});
+
+test('erased reading stays linear on 50KB pathological input', () => {
+  for (const unit of ['${', '$(', '`', '${x:-', 'a=$b; ', '\\$']) {
+    const big = `x=; node ${unit.repeat(Math.ceil(50000 / unit.length))} ./Mer\${x}lin.exe`;
+    const t0 = Date.now();
+    r(big);
+    assert.ok(Date.now() - t0 < 1000, `slow on ${unit}: ${Date.now() - t0}ms`);
+  }
+});
+
 test('hook runs for PowerShell and Monitor commands too', () => {
   const chained = `.claude/tools/Merlin.exe --cmd ${SPEND}; Remove-Item x`;
   assert.equal(runHook('PowerShell', chained), 2);

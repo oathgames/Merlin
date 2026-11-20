@@ -907,6 +907,86 @@ function hookStripLineContinuationsOutsideComments(command) {
   return out;
 }
 
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 5): an EMPTY
+// expansion spliced into every signal (x=; ./Mer${x}lin.exe --c${x}md ...)
+// hid the binary and the flag from every reading below. Mirrors
+// bash-approval-route.js splicedEngineSignal: the text is also read with
+// every expansion erased (${..}, $name, $1, $( .. ), backticks deleted whole;
+// quotes and \x backslashes dropped), with substitution bodies and ${x:-word}
+// operands kept, and with simple name=value assignments in the same command
+// substituted (a=Mer; b=lin.exe; ./$a$b). In a command holding $ or a
+// backtick, the binary name or a cmd flag in any of those readings counts as
+// invoking the engine; with a separator, block.
+function hookEraseExpansions(text, keepBodies) {
+  const s = String(text || '');
+  let out = '';
+  let open = 0;
+  const close = (i, o, c) => {
+    let depth = 1;
+    for (let j = i; j < s.length; j++) {
+      if (s[j] === '\\') { j++; continue; }
+      if (s[j] === o) depth++;
+      else if (s[j] === c && --depth === 0) return j;
+    }
+    return s.length;
+  };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\') { if (i + 1 < s.length && s[i + 1] !== '\n') out += s[i + 1]; i++; continue; }
+    if (c === "'" || c === '"') continue;
+    if (c === '`') {
+      if (keepBodies) continue;
+      let j = i + 1;
+      while (j < s.length && s[j] !== '`') j += s[j] === '\\' ? 2 : 1;
+      i = j;
+      continue;
+    }
+    if (c === '}' && open > 0) { open--; continue; }
+    if (c !== '$') { out += c; continue; }
+    const n = s[i + 1];
+    if (n === '{') {
+      if (!keepBodies) { i = close(i + 2, '{', '}'); continue; }
+      const m = /^[!#]?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])?(?:\[[^\]]*\])?:?[-+=?#%/^,@]*/.exec(s.slice(i + 2, i + 130));
+      i += 1 + m[0].length;
+      open++;
+      continue;
+    }
+    if (n === '(') {
+      if (!keepBodies) i = close(i + 2, '(', ')');
+      else i++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(n || '')) { while (/[A-Za-z0-9_]/.test(s[i + 1] || '')) i++; continue; }
+    if (/[0-9@*#?$!-]/.test(n || '')) { i++; continue; }
+    if (n === "'" || n === '"') continue;
+    out += c;
+  }
+  return out;
+}
+
+const HOOK_SIMPLE_ASSIGN_RE = /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=(?:'([^']*)'|"([^"$`\\]*)"|([^\s;&|()'"$`\\<>]*))/g;
+function hookSplicedInvokes(raw) {
+  if (!/[$`]/.test(raw)) return false;
+  const texts = [];
+  for (const v of new Set([raw, hookJoinAllContinuations(raw)])) {
+    texts.push(hookEraseExpansions(v, false), hookEraseExpansions(v, true));
+    const vals = new Map();
+    const seq = [];
+    for (const m of v.matchAll(HOOK_SIMPLE_ASSIGN_RE)) {
+      if (seq.length >= 64) break;
+      const val = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+      vals.set(m[1], val);
+      seq.push(val);
+    }
+    if (seq.length) {
+      texts.push(hookEraseExpansions(v.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+        (all, a, b) => (vals.has(a || b) ? vals.get(a || b) : all)), false), seq.join(''), seq.join(' '));
+    }
+  }
+  return texts.some((t) => /merlin\.exe/i.test(t) || /\bmerlin\s+--?(cmd|config)\b/i.test(t) ||
+    /(?:^|[\s=])--?cmd(?:-file)?(?:=|\b)/i.test(t));
+}
+
 function matchesMerlinShellOperator(rawCmd) {
   const raw = String(rawCmd || '');
   const joinedAll = hookJoinAllContinuations(raw);
@@ -943,6 +1023,7 @@ function matchesMerlinShellOperator(rawCmd) {
     invokes = invokes || r.invokes;
     chained = chained || r.chained;
   }
+  if (chained && !invokes) invokes = hookSplicedInvokes(raw);
   return invokes && chained;
 }
 

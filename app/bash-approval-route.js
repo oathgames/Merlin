@@ -702,6 +702,110 @@ function hiddenEngineCall(command) {
   return !allTextOnly && carriesCardedAction(raw);
 }
 
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 5): every
+// signal above reads the text with expansions in place, so splicing an EMPTY
+// expansion into each one hid them all (verified in real bash, routed
+// 'other', hook exit 0):
+//   x=; ./Mer${x}lin.exe --c${x}md '{"act'${x}'ion":"meta-push"}'
+// splicedEngineSignal reads the text with every expansion ERASED
+// (eraseExpansions): ${..} (nested, any operator), $name, $1, $@ style, and
+// every $( .. ) / backtick span deleted whole; quote characters and the
+// backslash of a \x escape dropped. A second erased reading keeps the text of
+// a substitution body and of a ${x:-word} operand, since either can be the
+// literal characters. A third substitutes the right-hand side of each simple
+// name=value assignment in the same command (a=Mer; b=lin.exe; ./$a$b), and
+// the assignment values concatenated are read too. Any engine signal in one
+// of those readings, in a command holding any $ or backtick, cards as
+// unreadable unless every program in the command is text-only (echo, grep,
+// git, rg, ls ... the rule (b) set), so `grep '"action":"meta-push"' "$F"`
+// and `git commit -m "fix meta-push for $BRAND"` stay uncarded. This only
+// adds cards. Note: lower-case "merlin" followed by a space or end of text is
+// already a binary-name signal (HIDDEN_BIN_RE), so `node "$S" merlin` cards,
+// while `echo "$USER uses merlin"` does not (echo is text-only).
+// Out of scope: a variable holding real characters that no assignment in the
+// same command shows (a value from the environment or a file).
+// Pinned by bash-hidden-engine.test.js.
+function eraseExpansions(text, keepBodies) {
+  const s = String(text || '');
+  let out = '';
+  let open = 0; // ${ opened in keepBodies mode, whose } is dropped
+  const close = (i, o, c) => {
+    let depth = 1;
+    for (let j = i; j < s.length; j++) {
+      if (s[j] === '\\') { j++; continue; }
+      if (s[j] === o) depth++;
+      else if (s[j] === c && --depth === 0) return j;
+    }
+    return s.length;
+  };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\') { if (i + 1 < s.length && s[i + 1] !== '\n') out += s[i + 1]; i++; continue; }
+    if (c === "'" || c === '"') continue;
+    if (c === '`') {
+      if (keepBodies) continue;
+      let j = i + 1;
+      while (j < s.length && s[j] !== '`') j += s[j] === '\\' ? 2 : 1;
+      i = j;
+      continue;
+    }
+    if (c === '}' && open > 0) { open--; continue; }
+    if (c !== '$') { out += c; continue; }
+    const n = s[i + 1];
+    if (n === '{') {
+      if (!keepBodies) { i = close(i + 2, '{', '}'); continue; }
+      const m = /^[!#]?(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])?(?:\[[^\]]*\])?:?[-+=?#%/^,@]*/.exec(s.slice(i + 2, i + 130));
+      i += 1 + m[0].length;
+      open++;
+      continue;
+    }
+    if (n === '(') {
+      if (!keepBodies) i = close(i + 2, '(', ')');
+      else i++;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(n || '')) { while (/[A-Za-z0-9_]/.test(s[i + 1] || '')) i++; continue; }
+    if (/[0-9@*#?$!-]/.test(n || '')) { i++; continue; }
+    if (n === "'" || n === '"') continue;
+    out += c;
+  }
+  return out;
+}
+
+const SIMPLE_ASSIGN_RE = /(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)=(?:'([^']*)'|"([^"$`\\]*)"|([^\s;&|()'"$`\\<>]*))/g;
+function assignmentReadings(raw) {
+  const vals = new Map();
+  const seq = [];
+  for (const m of raw.matchAll(SIMPLE_ASSIGN_RE)) {
+    if (seq.length >= 64) break;
+    const v = m[2] !== undefined ? m[2] : m[3] !== undefined ? m[3] : m[4];
+    vals.set(m[1], v);
+    seq.push(v);
+  }
+  if (!seq.length) return [];
+  const sub = raw.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (all, a, b) => (vals.has(a || b) ? vals.get(a || b) : all));
+  return [sub, seq.join(''), seq.join(' ')];
+}
+
+function splicedEngineSignal(command) {
+  const raw = String(command || '');
+  if (!/[$`]/.test(raw)) return false;
+  const { segments } = splitSegments(raw);
+  const allTextOnly = segments.every((seg) => {
+    const words = shellWords(seg);
+    const w = words[commandWordIndex(words)] || '';
+    return w === '' || (!wordUnresolvable(w) && textOnlyProgram(w, seg));
+  });
+  if (allTextOnly) return false;
+  const texts = [];
+  for (const v of new Set([raw, joinAllContinuations(raw)])) {
+    texts.push(eraseExpansions(v, false), eraseExpansions(v, true));
+    for (const a of assignmentReadings(v)) texts.push(eraseExpansions(a, false));
+  }
+  return texts.some((t) => /merlin\.exe/i.test(t) || isEngineInvocation(t) || engineSignal(t) || carriesCardedAction(t));
+}
+
 // readSegmentCall -> { cmdText: string|null, unreadable: '' | 'file' | 'shell' | 'no-action' }
 // cmdText is the --cmd value exactly as Go receives it (last flag wins, as
 // Go's flag package does). null with unreadable '' means the segment runs the
@@ -1001,7 +1105,7 @@ function stripLineContinuationsOutsideComments(command) {
 function routeBash(command) {
   const raw = String(command || '');
   let out = routeAllReadings(raw);
-  if (!CARDED_ROUTES.has(out.route) && (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(raw))) out = unreadableRoute(raw);
+  if (!CARDED_ROUTES.has(out.route) && (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(raw) || splicedEngineSignal(raw))) out = unreadableRoute(raw);
   return out;
 }
 
@@ -1238,6 +1342,8 @@ module.exports = {
   joinAllContinuations,
   stripLineContinuationsOutsideComments,
   ansiCCharCodeBackstop,
+  eraseExpansions,
+  splicedEngineSignal,
   routeBash,
   isShellTool,
   routeShellTool,
