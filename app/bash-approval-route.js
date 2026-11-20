@@ -732,8 +732,9 @@ function segmentWritesFile(segment) {
 //
 // The hidden-engine readings (strongSignalUngated, splicedEngineSignal,
 // shellCodeBuiltAtRunTime) are computed on the command with each literal
-// engine segment replaced by the inert word `echo`
-// (withoutLiteralEngineCalls), so the engine path and flag in
+// engine segment's command word replaced by the inert word `echo` and its
+// --cmd flag and value removed, every other argument kept (review 8,
+// withoutLiteralEngineCalls), so the engine path and flag in
 // `.claude/tools/Merlin.exe --cmd '{"action":"dashboard"}' | jq .` no longer
 // count against jq; the literal segment routes by its own action and the
 // most restrictive result wins. The replacement is refused (the command is
@@ -741,16 +742,177 @@ function segmentWritesFile(segment) {
 // boundaries differently: any $' , #-comment quote stripping, backslash
 // continuation, CR, here-doc, backtick, $( or <( / >( substitution, an
 // unbalanced quote, or segment spans that do not reproduce splitSegments.
-const VERSION_PROBE_ARGS = new Set(['--version', '-version', '--help', '-help', '-h']);
-function literalEngineSegment(seg, raw) {
-  if (segmentShellRewrites(seg)) return false;
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 8): the swap
+// replaced the WHOLE literal segment, so attacker text in its OTHER
+// arguments vanished from every hidden-engine reading. The engine echoes its
+// --config path in an error, so (verified in real bash, routed 'other')
+//   ./.claude/tools/Merlin.exe --config 'x; printf %s "{\"action\":\"meta-budgeX\",...}" | tr X t | xargs -0 ./.claude/tools/Merlin.exe --cmd; #' --cmd '{"action":"dashboard"}' 2>&1 | sh
+// ran meta-budget uncarded. Now (literalEngineCall):
+//   - only the command word (-> echo) and the --cmd flag and its value are
+//     neutralised; every other argument, redirect target and operator stays
+//     in the text the hidden-engine readings see;
+//   - trust is refused (the segment is not a literal call, so it cards under
+//     a strong signal) when any other argument carries a strong signal, an
+//     "action" key, a carded action name, a binary-name signal, or a shell
+//     metacharacter ; | & $ ` ( ) < > or a newline in its value. Exceptions:
+//     a --config value that is a plain path ([A-Za-z0-9 / \ : . _ - ~ space],
+//     no cmd flag, no binary name, no carded action name) may name the engine
+//     directory (.claude/tools/merlin-config.json is normal) and is reduced
+//     to an inert placeholder when it does; a --brand value must be a simple
+//     slug. $VAR forms never reach here (segmentShellRewrites), as on main;
+//   - a --cmd JSON value with a strong signal (binary name, cmd flag, engine
+//     directory) anywhere in it is not trusted either;
+//   - a call without --cmd is trusted only when every argument is a probe
+//     flag (--version, --help, -h, --setup: main.go flags that run no JSON
+//     command), nothing is piped into it and it reads no < / << input.
+// Engine output fed to anything that executes it is a separate rule
+// (engineOutputExecuted). Pinned by bash-literal-engine-args.test.js.
+// main.go: --version prints and exits; Go's flag package answers -h / -help
+// itself; --setup prints setup instructions and reads no command.
+const VERSION_PROBE_ARGS = new Set(['--version', '-version', '--help', '-help', '-h', '--setup', '-setup']);
+const LITERAL_CONFIG_PATH_RE = /^[A-Za-z0-9/\\:._~ -]+$/;
+const LITERAL_BRAND_SLUG_RE = /^[A-Za-z0-9._-]+$/;
+const LITERAL_ARG_META_RE = /[;|&$`()<>\n\r]/;
+let cardedActionNames = null;
+function namesCardedAction(v) {
+  if (!cardedActionNames) cardedActionNames = [...BASH_SPEND, ...BASH_CARDED_DESTRUCTIVE].map((n) => n.toLowerCase());
+  const l = String(v || '').toLowerCase();
+  return cardedActionNames.some((n) => l.includes(n));
+}
+function literalArgSignal(v) {
+  return LITERAL_ARG_META_RE.test(v) || namesCardedAction(v) || strongEngineSignal(v) || engineSignal(v);
+}
+function literalConfigPathOk(v) {
+  return LITERAL_CONFIG_PATH_RE.test(v) && !HIDDEN_CMD_FLAG_RE.test(v) && !/merlin\.exe/i.test(v) &&
+    !HIDDEN_BIN_RE.test(v) && !namesCardedAction(v);
+}
+
+// segmentTokens -> [{ start, end, value, op }]: the words of one segment with
+// their offsets, de-quoted the way shellWords de-quotes them, and every
+// unquoted redirect operator (optional fd number or {name}, then < > <> >>
+// >| &> &>> << <<< <& >& with an fd-duplicate target) as its own op token.
+const REDIRECT_OP_RE = /(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:&>>?|<<<|<<-?|<>|[<>]&(?:\d+-?|-)?|>>|>\||<|>)/y;
+function segmentTokens(seg) {
+  const s = String(seg || '');
+  const toks = [];
+  let i = 0;
+  while (i < s.length) {
+    if (/\s/.test(s[i])) { i++; continue; }
+    const start = i;
+    REDIRECT_OP_RE.lastIndex = i;
+    const m = REDIRECT_OP_RE.exec(s);
+    if (m) { i += m[0].length; toks.push({ start, end: i, value: m[0], op: true }); continue; }
+    let val = '';
+    let q = '';
+    for (; i < s.length; i++) {
+      const c = s[i];
+      if (q === "'") { if (c === "'") q = ''; else val += c; continue; }
+      if (q === '"') {
+        if (c === '\\' && i + 1 < s.length && '$`"\\\n'.includes(s[i + 1])) { if (s[i + 1] !== '\n') val += s[i + 1]; i++; continue; }
+        if (c === '"') q = ''; else val += c;
+        continue;
+      }
+      if (c === '\\') { if (s[i + 1] === '\n') { i++; continue; } if (i + 1 < s.length) { val += s[i + 1]; i++; } continue; }
+      if (c === "'" || c === '"') { q = c; continue; }
+      if (/\s/.test(c) || c === '<' || c === '>' || c === '&') break;
+      val += c;
+    }
+    if (i === start) { i++; toks.push({ start, end: i, value: s[start], op: true }); continue; }
+    toks.push({ start, end: i, value: val, op: false });
+  }
+  return toks;
+}
+
+// literalEngineCall -> null | { text }: text is the segment with the command
+// word replaced by `echo` and the --cmd flag and value removed (see above).
+// pipedIn: true when the segment may read a pipe (unknown counts as true).
+function literalEngineCall(seg, raw, pipedIn) {
+  if (segmentShellRewrites(seg)) return null;
   const words = shellWords(seg);
-  if (!words.length || commandWordIndex(words) !== 0 || !ENGINE_BIN_RE.test(baseName(words[0]))) return false;
+  if (!words.length || commandWordIndex(words) !== 0 || !ENGINE_BIN_RE.test(baseName(words[0]))) return null;
   const call = readSegmentCall(seg, raw);
-  if (call.unreadable) return false;
-  if (call.cmdText === null) return words.length > 1 && words.slice(1).every((w) => VERSION_PROBE_ARGS.has(w.toLowerCase()));
-  const parsed = bashMerlinAction.parseAction(call.cmdText);
-  return !parsed.ambiguous && !!parsed.action;
+  if (call.unreadable) return null;
+  if (call.cmdText !== null) {
+    const parsed = bashMerlinAction.parseAction(call.cmdText);
+    if (parsed.ambiguous || !parsed.action || strongEngineSignal(call.cmdText)) return null;
+  }
+  const toks = segmentTokens(seg);
+  if (!toks.length || toks[0].op || toks[0].value !== words[0]) return null;
+  // Go's usage text echoes argv[0]: the command word must be a plain path.
+  if (!LITERAL_CONFIG_PATH_RE.test(words[0])) return null;
+  const edits = [{ start: toks[0].start, end: toks[0].end, text: 'echo' }];
+  let cmdFlags = 0;
+  let probeOnly = true;
+  for (let k = 1; k < toks.length; k++) {
+    const t = toks[k];
+    if (t.op) {
+      // Input redirection could carry a payload; output and fd duplicates
+      // are fine (the target word is checked as an argument below).
+      if (t.value.includes('<')) { if (call.cmdText === null) return null; }
+      continue;
+    }
+    const v = t.value;
+    const cm = /^--?cmd(-file)?(?:=([\s\S]*))?$/i.exec(v);
+    if (cm) {
+      if (cm[1] || ++cmdFlags > 1) return null;
+      if (cm[2] !== undefined) {
+        if (cm[2] !== call.cmdText) return null;
+        edits.push({ start: t.start, end: t.end, text: '' });
+      } else {
+        const next = toks[k + 1];
+        if (!next || next.op || next.value !== call.cmdText) return null;
+        edits.push({ start: t.start, end: next.end, text: '' });
+        k++;
+      }
+      probeOnly = false;
+      continue;
+    }
+    const fm = /^(--?(?:config|brand))(?:=([\s\S]*))?$/i.exec(v);
+    if (fm) {
+      probeOnly = false;
+      let val = fm[2];
+      let valTok = null;
+      if (val === undefined) {
+        valTok = toks[k + 1];
+        if (!valTok || valTok.op) return null;
+        val = valTok.value;
+        k++;
+      }
+      if (/brand/i.test(fm[1])) {
+        if (!LITERAL_BRAND_SLUG_RE.test(val) || literalArgSignal(val)) return null;
+        continue;
+      }
+      if (!literalConfigPathOk(val)) return null;
+      if (strongEngineSignal(val)) {
+        const tok = valTok || t;
+        edits.push({ start: tok.start, end: tok.end, text: valTok ? 'cfg.json' : `${fm[1]}=cfg.json` });
+      }
+      continue;
+    }
+    if (literalArgSignal(v)) return null;
+    // A redirect target follows an op token; anything else must be a probe
+    // flag for a call with no --cmd.
+    const prev = toks[k - 1];
+    const isTarget = prev && prev.op && !/[\d-]$/.test(prev.value);
+    if (!isTarget && !VERSION_PROBE_ARGS.has(v.toLowerCase())) probeOnly = false;
+  }
+  if (call.cmdText === null) {
+    if (pipedIn !== false || !probeOnly) return null;
+    if (!toks.slice(1).some((t) => !t.op && VERSION_PROBE_ARGS.has(t.value.toLowerCase()))) return null;
+  }
+  let text = seg;
+  for (const e of edits.sort((a, b) => b.start - a.start)) text = text.slice(0, e.start) + e.text + text.slice(e.end);
+  return { text };
+}
+function literalEngineSegment(seg, raw, pipedIn) {
+  return literalEngineCall(seg, raw, pipedIn) !== null;
+}
+
+// pipedInFlags(raw, spans) -> boolean[]: whether each segment may read a
+// pipe (a single | in the text between it and the previous segment).
+function pipedInFlags(raw, spans) {
+  return spans.map((sp, k) => k > 0 && /(?:^|[^|])\|(?!\|)/.test(raw.slice(spans[k - 1].end, sp.start)));
 }
 
 // segmentSpans -> [{ start, end }] | null: where each splitSegments segment
@@ -794,12 +956,25 @@ function withoutLiteralEngineCalls(command) {
   const spans = segmentSpans(raw);
   if (!spans || spans.length !== segments.length) return raw;
   if (spans.some((sp, k) => raw.slice(sp.start, sp.end).trim() !== segments[k])) return raw;
+  const piped = pipedInFlags(raw, spans);
   let out = raw;
   for (let k = spans.length - 1; k >= 0; k--) {
-    if (!literalEngineSegment(segments[k], raw)) continue;
-    out = out.slice(0, spans[k].start) + 'echo' + out.slice(spans[k].end);
+    const lit = literalEngineCall(segments[k], raw, piped[k]);
+    if (!lit) continue;
+    // spans[k] starts at the segment's first character (segmentSpans).
+    out = out.slice(0, spans[k].start) + lit.text + out.slice(spans[k].start + segments[k].length);
   }
   return out;
+}
+
+// Per-segment pipe flags for the raw text, or null when its spans do not
+// reproduce splitSegments (callers then treat every segment as piped).
+function rawPipedIn(raw) {
+  const spans = segmentSpans(raw);
+  const { segments } = splitSegments(raw);
+  if (!spans || spans.length !== segments.length) return null;
+  if (spans.some((sp, k) => raw.slice(sp.start, sp.end).trim() !== segments[k])) return null;
+  return pipedInFlags(raw, spans);
 }
 
 function inertBase(word) {
@@ -808,8 +983,11 @@ function inertBase(word) {
 
 // tier1Exempt: every program can be read as text only (see TIER 1 above).
 function tier1Exempt(raw) {
+  const piped = rawPipedIn(raw);
   for (const v of new Set([raw, joinAllContinuations(raw)])) {
-    for (const seg of splitSegments(v).segments) {
+    const segs = splitSegments(v).segments;
+    for (let k = 0; k < segs.length; k++) {
+      const seg = segs[k];
       const words = shellWords(seg);
       const ci = commandWordIndex(words);
       if (ci > 0) return false;
@@ -818,7 +996,7 @@ function tier1Exempt(raw) {
       // Only a fully read literal call (review 7); any other engine-named
       // command word is a program whose input cannot be read.
       if (ENGINE_BIN_RE.test(baseName(w))) {
-        if (v === raw && literalEngineSegment(seg, raw)) continue;
+        if (v === raw && literalEngineSegment(seg, raw, piped ? piped[k] : true)) continue;
         return false;
       }
       if (/[\\/]/.test(w) || !INERT_COMMANDS.has(inertBase(w))) return false;
@@ -1434,8 +1612,124 @@ function routeBash(command) {
   // readings look at everything else (review 7, withoutLiteralEngineCalls).
   const rest = withoutLiteralEngineCalls(raw);
   if (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(rest) || splicedEngineSignal(rest) || strongSignalUngated(rest) ||
-      chmodWithStrongSignal(raw)) out = unreadableRoute(raw);
+      chmodWithStrongSignal(raw) || engineOutputExecuted(raw)) out = unreadableRoute(raw);
   return out;
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 8): the engine
+// echoes argument text (a --config path, an unknown key, a brand or outputDir
+// value) in its output and errors, so engine output handed to something that
+// runs it as code executes text the router never read as a command:
+//   ./.claude/tools/Merlin.exe --config 'x; ...meta-budget...' --cmd '{"action":"dashboard"}' 2>&1 | sh
+// also `| bash -s`, `| source /dev/stdin`, `| xargs -0 bash -c`, and
+// `> s.sh 2>&1; sh s.sh` (all verified in real bash with a fake engine).
+// engineOutputExecuted cards, whatever the engine call is (trusted literal
+// or not), when a segment after the first engine segment
+//   - reads a pipe and runs its stdin: a shell, source / . / eval / exec, any
+//     xargs, a wrapper that runs another program (env, nohup, time, sudo,
+//     timeout ...), an interpreter with no script file (python, node, perl,
+//     ruby, php, pwsh ... reading stdin, `-`, or -c / -e / -p code), awk with
+//     system / getline / a pipe, sed with an exec command, or a program the
+//     text cannot resolve;
+//   - or, once any segment from the engine on wrote a file (a redirect, tee,
+//     dd, cp, mv, ln, install, sponge), runs or sources a file: a shell or
+//     script runner, chmod, a wrapper, or a path-named program (./s.sh);
+//   - or the command holds a substitution the segment map cannot place
+//     (process substitution, $( ), backticks) and any of those programs.
+// jq, tee, tail, head, grep, python -m json.tool, node script.js and a plain
+// `> out.json` route as on main. Only adds cards. Pinned by
+// bash-literal-engine-args.test.js.
+const OUTPUT_EXEC_WRAPPERS = new Set([
+  'xargs', 'env', 'exec', 'command', 'builtin', 'nohup', 'time', 'sudo', 'doas', 'su', 'runuser', 'stdbuf',
+  'timeout', 'nice', 'ionice', 'setsid', 'parallel', 'watch', 'script', 'unbuffer', 'chroot', 'flock',
+  'strace', 'ltrace', 'busybox', 'start', 'wsl', 'wsl.exe',
+]);
+const STDIN_INTERPRETERS = new Set([
+  'python', 'python3', 'python2', 'py', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua', 'tclsh',
+  'osascript', 'pwsh', 'powershell', 'cmd', 'rscript', 'irb', 'jshell', 'groovy', 'java',
+]);
+// Programs that run commands read from stdin: a remote or scheduled shell,
+// editors and REPLs with a shell escape (ed / ex / vi `!`, sqlite3 .shell,
+// psql / mysql \!, gdb shell, m4 syscmd, dc !), and make -f -.
+const STDIN_COMMAND_PROGRAMS = new Set([
+  'ssh', 'docker', 'podman', 'kubectl', 'at', 'batch', 'crontab', 'dc', 'ed', 'ex', 'vi', 'vim', 'nvim', 'emacs',
+  'gdb', 'lldb', 'sqlite3', 'mysql', 'psql', 'expect', 'wish', 'm4', 'make', 'gnuplot', 'r',
+]);
+const FILE_WRITERS = new Set(['tee', 'dd', 'cp', 'mv', 'ln', 'install', 'sponge', 'rsync', 'scp', 'exec']);
+// A file some program runs later without being named as a script.
+const EXEC_SENSITIVE_TARGET_RE = /(?:^|[\s\\/>'"=])(?:\.git[\\/](?:hooks|config)|\.(?:bash|zsh|ksh|mksh)rc|\.(?:bash_)?profile|\.zshenv|\.zprofile|\.envrc|\.npmrc|[Mm]akefile|GNUmakefile|package\.json)(?=$|[\s\\/'";&|<>])/;
+const STDIN_PATH_RE = /^(?:\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0|-)$/;
+// Words that open a compound command; the command after them runs with the
+// compound's stdin.
+const COMPOUND_WORDS = new Set(['{', '}', '!', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for', 'select', 'case', 'esac', 'time', 'coproc']);
+function programOf(seg) {
+  const words = shellWords(seg);
+  let idx = commandWordIndex(words);
+  let compound = false;
+  while (idx < words.length && COMPOUND_WORDS.has(words[idx])) { idx++; compound = true; }
+  idx += commandWordIndex(words.slice(idx));
+  return { words, idx, word: words[idx] || '', prog: inertBase(words[idx] || ''), compound };
+}
+function runsStdinAsCode(seg) {
+  const { words, idx, word, prog } = programOf(seg);
+  if (!word) return false;
+  if (wordUnresolvable(word)) return true;
+  if (SHELL_CODE_RUNNERS.has(prog) || ['eval', 'exec'].includes(prog) || OUTPUT_EXEC_WRAPPERS.has(prog) ||
+      STDIN_COMMAND_PROGRAMS.has(prog) || SCRIPT_RUNNERS.has(baseName(word)) && !STDIN_INTERPRETERS.has(prog)) return true;
+  const args = words.slice(idx + 1);
+  if ((STDIN_INTERPRETERS.has(prog) || /^[gnm]?awk$/.test(prog) || prog === 'sed') && args.some((a) => STDIN_PATH_RE.test(a))) return true;
+  if (STDIN_INTERPRETERS.has(prog)) {
+    // Code from stdin (`-`, no script argument) or from an argument (-c, -e,
+    // --eval, -Command, /c) that can read stdin; -m runs a named module.
+    if (args.some((a) => /^(?:-|--?(?:eval|print|command|encodedcommand|ec|r)|\/[ck])$/i.test(a) || /^-[A-Za-z]*[ce]$/.test(a))) return true;
+    if (args.includes('-m')) return false;
+    return !args.some((a) => !a.startsWith('-'));
+  }
+  if (/^[gnm]?awk$/.test(prog)) return /system|getline|\|/.test(args.join(' '));
+  if (prog === 'sed') return SED_EXEC_RE.test(args.join(' '));
+  return false;
+}
+function runsFile(seg) {
+  const { word, prog } = programOf(seg);
+  if (!word) return false;
+  return wordUnresolvable(word) || /[\\/]/.test(word) || prog === 'chmod' || SCRIPT_RUNNERS.has(baseName(word)) ||
+    SHELL_CODE_RUNNERS.has(prog) || OUTPUT_EXEC_WRAPPERS.has(prog) || STDIN_INTERPRETERS.has(prog) ||
+    STDIN_COMMAND_PROGRAMS.has(prog);
+}
+function engineOutputExecuted(command) {
+  const raw = String(command || '');
+  for (const v of new Set([raw, joinAllContinuations(raw)])) {
+    const { segments, substitution, unbalanced } = splitSegments(v);
+    const first = segments.findIndex((seg) => segmentInvokesEngine(seg, { noNonExecExemption: substitution || unbalanced }));
+    if (first < 0) continue;
+    const spans = segmentSpans(v);
+    const mapped = !substitution && !unbalanced && spans && spans.length === segments.length &&
+      spans.every((sp, k) => v.slice(sp.start, sp.end).trim() === segments[k]);
+    if (!mapped) {
+      // The segment map is unknown: any program that runs code it is handed.
+      if (segments.some((seg) => runsStdinAsCode(seg) || ['chmod', ...SHELL_CODE_RUNNERS].includes(programOf(seg).prog))) return true;
+      continue;
+    }
+    const piped = pipedInFlags(v, spans);
+    // A write before the engine counts too: `exec 3>s.sh` opens a file the
+    // engine's `>&3` then fills.
+    let wrote = false;
+    let compound = false;
+    for (let j = 0; j < segments.length; j++) {
+      const seg = segments[j];
+      const p = programOf(seg);
+      if (j > first) {
+        // Inside a group or compound command (or after a subshell paren)
+        // every command may read the engine's output.
+        compound = compound || p.compound || /[()]/.test(v.slice(spans[j - 1].end, spans[j].start));
+        if ((piped[j] || compound) && runsStdinAsCode(seg)) return true;
+        if (wrote && runsFile(seg)) return true;
+      }
+      if (segmentWritesFile(seg) || FILE_WRITERS.has(p.prog)) wrote = true;
+      if (j >= first && wrote && EXEC_SENSITIVE_TARGET_RE.test(seg)) return true;
+    }
+  }
+  return false;
 }
 
 // chmod anywhere in a command whose WHOLE text carries a strong signal cards

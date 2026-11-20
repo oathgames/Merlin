@@ -1177,7 +1177,84 @@ function matchesMerlinShellOperator(rawCmd) {
   }
   if (chained && !invokes) invokes = hookSplicedInvokes(raw);
   if (chained && !invokes) invokes = hookStrongSignal(raw) && !hookAllInert(raw);
+  if (chained && !invokes) invokes = hookEngineOutputExecuted(raw) || hookEngineOutputExecuted(joinedAll);
   return invokes && chained;
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 8): mirror of
+// the router's engineOutputExecuted for chained commands. The engine echoes
+// argument text in its output, so engine output piped into something that
+// runs stdin as code (a shell, source / . / eval, any xargs, env / nohup /
+// sudo style wrappers, an interpreter with no script file), or written to a
+// file that a later segment runs (a shell or script runner, chmod, ./path),
+// blocks. A literal Merlin.exe in a chain is already blocked above; this
+// covers an engine-named command word the literal readers do not see
+// (./merlin --setup | sh). Only ADDS blocks.
+const HOOK_EXEC_PROGRAMS = new Set([
+  'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'busybox', 'source', '.', 'eval', 'exec', 'xargs', 'env', 'command',
+  'builtin', 'nohup', 'time', 'sudo', 'doas', 'su', 'stdbuf', 'timeout', 'nice', 'setsid', 'parallel', 'watch',
+  'script', 'cmd', 'powershell', 'pwsh', 'wsl', 'ssh', 'docker', 'podman', 'kubectl', 'at', 'batch', 'crontab',
+  'dc', 'ed', 'ex', 'vi', 'vim', 'nvim', 'gdb', 'sqlite3', 'mysql', 'psql', 'expect', 'm4', 'make',
+]);
+const HOOK_COMPOUND_WORDS = new Set(['{', '}', '!', 'if', 'then', 'else', 'elif', 'fi', 'do', 'done', 'while', 'until', 'for', 'case', 'esac', 'time', 'coproc']);
+const HOOK_STDIN_INTERPRETERS = new Set(['python', 'python3', 'python2', 'py', 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'lua']);
+function hookEngineOutputExecuted(raw) {
+  // Segments with whether each reads a pipe; an unplaceable substitution
+  // makes every later segment count as piped.
+  const segs = [];
+  let cur = '';
+  let q = '';
+  let pipedNext = false;
+  let opaque = false;
+  const push = (nextPiped) => { if (cur.trim()) segs.push({ text: cur.trim(), piped: pipedNext || opaque }); cur = ''; pipedNext = nextPiped; };
+  for (let i = 0; i < raw.length; i++) {
+    const c = raw[i];
+    if (q === "'") { cur += c; if (c === "'") q = ''; continue; }
+    if (c === '\\') { cur += c + (raw[i + 1] || ''); i++; continue; }
+    if (c === '`' || (c === '$' && raw[i + 1] === '(') || ((c === '<' || c === '>') && raw[i + 1] === '(')) {
+      opaque = true; push(true); if (c !== '`') i++; continue;
+    }
+    if (q === '"') { cur += c; if (c === '"') q = ''; continue; }
+    if (c === "'" || c === '"') { q = c; cur += c; continue; }
+    if (c === '&' && (raw[i - 1] === '>' || raw[i - 1] === '<' || raw[i + 1] === '>')) { cur += c; continue; }
+    if (c === '|') {
+      if (raw[i + 1] === '|') { push(false); i++; continue; }
+      push(true); if (raw[i + 1] === '&') i++; continue;
+    }
+    if (';&\n\r()'.includes(c)) { push(pipedNext && (c === '(' || c === ')')); continue; }
+    cur += c;
+  }
+  push(false);
+  let engineSeen = false;
+  let wrote = false;
+  let compound = false;
+  for (const seg of segs) {
+    const words = hookWords(seg.text);
+    let k = 0;
+    const skip = () => { while (k < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k])) k++; };
+    skip();
+    let inCompound = false;
+    while (k < words.length && HOOK_COMPOUND_WORDS.has(words[k])) { k++; inCompound = true; }
+    skip();
+    const w = words[k] || '';
+    const base = w.split(/[\\/]/).pop().toLowerCase().replace(/\.exe$/, '');
+    const args = words.slice(k + 1);
+    if (engineSeen) {
+      compound = compound || inCompound;
+      const interp = HOOK_STDIN_INTERPRETERS.has(base);
+      const stdinCode = /[$`*?[]/.test(w) && w !== '[' || HOOK_EXEC_PROGRAMS.has(base) ||
+        (interp || /^[gnm]?awk$|^sed$/.test(base)) && args.some((a) => /^(?:\/dev\/stdin|\/dev\/fd\/0|\/proc\/self\/fd\/0)$/.test(a)) ||
+        /^[gnm]?awk$/.test(base) && /system|getline|\|/.test(args.join(' ')) ||
+        interp && (args.some((a) => a === '-' || /^-[A-Za-z]*[ce]$/.test(a) || /^--?(?:eval|print|command)$/i.test(a)) ||
+          !args.includes('-m') && !args.some((a) => !a.startsWith('-')));
+      if ((seg.piped || compound) && stdinCode) return true;
+      if (wrote && (HOOK_EXEC_PROGRAMS.has(base) || interp || base === 'chmod' || /[\\/]/.test(w))) return true;
+    }
+    if (base === 'merlin' || words.some((x) => /merlin\.exe$/i.test(x) || /^--?cmd(?:-file)?(?:=|$)/i.test(x))) engineSeen = true;
+    // A write before the engine counts too (exec 3>s.sh, then the engine's >&3).
+    if (hookWritesFile(seg.text) || ['tee', 'dd', 'cp', 'mv', 'ln', 'install', 'sponge', 'exec'].includes(base)) wrote = true;
+  }
+  return false;
 }
 
 // readMerlinChain(reading, rawCmd) -> { invokes, chained } for one reading.
