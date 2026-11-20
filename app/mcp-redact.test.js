@@ -20,7 +20,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { redactText, redactJsonObj, redactOutput, isLikelyToken } = require('./mcp-redact');
+const { redactText, redactJsonObj, redactOutput, isLikelyToken, collectSafeLabelRuns } = require('./mcp-redact');
 
 const fake = (...parts) => parts.join('');
 
@@ -696,4 +696,57 @@ test('mutation: removing the identifier exemption masks report ids again', () =>
     'const identifier = false;',
   );
   assert.equal(m.redactJsonObj({ reports: [{ id: LONG_REPORT_IDS[0] }] }).reports[0].id, '[REDACTED]');
+});
+
+// ── Labels quoted in prose (2026-10-26, Snapchat DPA blocker) ─────────
+
+const DPA_SQUAD = '10262026_Snap_DPA_Prospecting_Sale_Women';
+const DPA_BLOCKER = `${DPA_SQUAD} is a prospecting squad but the brand declares no purchaser audience to exclude: set snapchatProspectingExclusions in the brand config`;
+
+function dpaDryRun(squadName, blocker) {
+  const plan = { campaignName: '10262026_Snap_DPA', squads: [{ name: squadName, audience: 'prospecting' }], blockers: [blocker] };
+  return JSON.stringify(plan, null, 2) + '\n\n  Dry run: nothing was created.\n  BLOCKER: ' + blocker + '\n';
+}
+
+test('a squad name quoted in a blocker survives when the output prints it as a label', () => {
+  const out = redactOutput(dpaDryRun(DPA_SQUAD, DPA_BLOCKER), '');
+  assert.ok(!out.includes('[REDACTED]'), out);
+  assert.equal(out.split(`${DPA_SQUAD} is a prospecting squad`).length - 1, 2, 'blockers[] and the BLOCKER line both keep the name');
+});
+
+test('a label run is safe only in the same output, not on its own', () => {
+  assert.ok(redactText(DPA_BLOCKER).includes('[REDACTED]'), 'bare prose without the label still sweeps the run');
+  assert.ok(!redactText(DPA_BLOCKER, new Set([DPA_SQUAD])).includes('[REDACTED]'));
+});
+
+test('a credential-shaped label never makes its run safe elsewhere', () => {
+  const key = 'pk_live_51H8xKjE2eZvKYlo2C0abcdefghij';
+  const out = redactOutput(dpaDryRun(key, `${key} is a prospecting squad`), '');
+  assert.ok(!out.includes(key), out);
+  assert.equal(collectSafeLabelRuns({ name: key }).size, 0);
+});
+
+test('a run that differs from a label by one character is still swept', () => {
+  const near = DPA_SQUAD.slice(0, -1) + 'X';
+  const out = redactOutput(dpaDryRun(DPA_SQUAD, `${near} is a prospecting squad`), '');
+  assert.ok(!out.includes(`${near} is`), out);
+});
+
+test('sensitive fields and non-label fields never seed safe runs', () => {
+  const wordy = 'Alpha_Bravo_Charlie_Delta_Echo_Foxtrot';
+  assert.equal(collectSafeLabelRuns({ secret: wordy, note: wordy, token: wordy }).size, 0);
+  assert.equal(collectSafeLabelRuns({ name: wordy }).has(wordy), true);
+  const out = redactOutput(JSON.stringify({ token: wordy, note: `uses ${wordy}` }, null, 2), '');
+  assert.ok(!out.includes(wordy), out);
+});
+
+test('deterministic credential rules still run inside a prose string with a safe label', () => {
+  const tok = 'sk-' + 'a'.repeat(40);
+  const out = redactOutput(dpaDryRun(DPA_SQUAD, `${DPA_BLOCKER} ${tok}`), '');
+  assert.ok(out.includes(DPA_SQUAD) && !out.includes(tok), out);
+});
+
+test('mutation: dropping the safe-run check masks the blocker squad name again', () => {
+  const m = loadMutant('if (safeRuns && safeRuns.has(match)) return match;', '');
+  assert.ok(m.redactOutput(dpaDryRun(DPA_SQUAD, DPA_BLOCKER), '').includes('[REDACTED]'));
 });
