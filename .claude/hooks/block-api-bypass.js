@@ -783,15 +783,22 @@ function hookDecodeAnsiC(command) {
   if (state !== '' || !balanced(out) || residue(out)) return { text: s, failed: hasAnsi };
   return { text: out, failed: false };
 }
+function hookLooseCodePoint(m, h) {
+  if (!h) return m;
+  const v = parseInt(h, 16);
+  return v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff) ? m : String.fromCodePoint(v);
+}
 function hookDecodeEscapesLoose(text) {
   let s = String(text);
   // Whole backslash runs, escape optional: linear, unlike /\\+u.../ (see
-  // decodeEscapesLoose in bash-approval-route.js).
+  // decodeEscapesLoose in bash-approval-route.js, including bash's short
+  // and long forms).
   for (let i = 0; i < 4; i++) {
     s = s
-      .replace(/\\+(?:u([0-9A-Fa-f]{4}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
-      .replace(/\\+(?:x([0-9A-Fa-f]{2}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
-      .replace(/\\+(?:0?([0-7]{3}))?/g, (m, o) => (o ? String.fromCharCode(parseInt(o, 8) & 0xff) : m));
+      .replace(/\\+(?:U([0-9A-Fa-f]{1,8}))?/g, hookLooseCodePoint)
+      .replace(/\\+(?:u([0-9A-Fa-f]{1,4}))?/g, hookLooseCodePoint)
+      .replace(/\\+(?:x([0-9A-Fa-f]{1,2}))?/g, hookLooseCodePoint)
+      .replace(/\\+(?:0?([0-7]{1,3}))?/g, (m, o) => (o ? String.fromCharCode(parseInt(o, 8) & 0xff) : m));
   }
   return s;
 }
@@ -822,25 +829,113 @@ function hookStripLineContinuations(command) {
   }
   return out + s.slice(from);
 }
-function hookWorstCaseAnsiC(command) {
+function hookWorstCaseAnsiC(command, start) {
   const s = String(command || '');
   let out = '';
   let from = 0;
   let failed = false;
-  for (let k = s.indexOf("$'"); k >= 0; k = s.indexOf("$'", k)) {
+  const starts = [];
+  for (let k = s.indexOf("$'", start || 0); k >= 0; k = s.indexOf("$'", k)) {
+    starts.push(k);
     const d = hookDecodeAnsiCBody(s, k + 2);
     if (!d) { failed = true; k += 2; continue; }
     out += s.slice(from, k) + "'" + d.value.replace(/'/g, "'\\''") + "'";
     from = d.end;
     k = d.end;
   }
-  return { text: out + s.slice(from), failed };
+  return { text: out + s.slice(from), failed, starts };
+}
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 4): a
+// backslash-ended # comment was joined with the next line (bash never
+// continues a comment), and the sequential worst case let the $' inside '$'
+// swallow the real $' body, so
+//   echo hi # note \<newline>eval $'\U2e/Mer\U6cin.exe \U2d\U2d\U63md \x27{...}\x27'
+// passed this hook. Mirrors bash-approval-route.js review 4 (layers A, B, C):
+//   A. the text as given, or with every backslash-newline removed, holding
+//      $' and a character-code escape at or after the first $' is blocked
+//      when it has any separator or newline; a single simple command keeps
+//      the single-command policy (the app router cards it);
+//   B. the worst case runs from every $' alignment, on every variant;
+//   C. readings with continuations joined by parity, outside comments and
+//      quotes only, everywhere, and not at all.
+// Any reading showing an engine call and any reading showing a separator
+// blocks. The helpers are pinned identical to the router's by
+// bash-ansi-c-fold.test.js.
+const HOOK_ANSI_C_CHAR_CODE_RE = /\\(?:x[0-9A-Fa-f]|u[0-9A-Fa-f]|U[0-9A-Fa-f]|[0-7]|c[\s\S])/;
+const HOOK_MAX_ANSI_C_STARTS = 8;
+function hookJoinAllContinuations(command) {
+  return String(command || '').replace(/\\\r?\n/g, '');
+}
+function hookAnsiCCharCodeBackstop(command) {
+  const raw = String(command || '');
+  for (const v of [raw, hookJoinAllContinuations(raw)]) {
+    const k = v.indexOf("$'");
+    if (k >= 0 && HOOK_ANSI_C_CHAR_CODE_RE.test(v.slice(k))) return true;
+  }
+  return false;
+}
+function hookStripLineContinuationsOutsideComments(command) {
+  const s = String(command || '');
+  if (!s.includes('\\')) return s;
+  let out = '';
+  let state = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === '#') { out += c; if (c === '\n') state = ''; continue; }
+    if (state === "'") { out += c; if (c === "'") state = ''; continue; }
+    if (state === '$') {
+      out += c;
+      if (c === '\\' && i + 1 < s.length) { out += s[++i]; continue; }
+      if (c === "'") state = '';
+      continue;
+    }
+    if (c === '\\') {
+      if (s[i + 1] === '\n') { i++; continue; }
+      if (s[i + 1] === '\r' && s[i + 2] === '\n') { i += 2; continue; }
+      out += c;
+      if (i + 1 < s.length) out += s[++i];
+      continue;
+    }
+    if (state === '"') { out += c; if (c === '"') state = ''; continue; }
+    if (c === '#' && (out === '' || /[ \t\n;&|()<>]/.test(out[out.length - 1]))) { state = '#'; out += c; continue; }
+    if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
+    if (c === '$' && s[i + 1] === "'") { state = '$'; out += "$'"; i++; continue; }
+    if (c === "'" || c === '"') state = c;
+    out += c;
+  }
+  return out;
 }
 
 function matchesMerlinShellOperator(rawCmd) {
   const raw = String(rawCmd || '');
-  const norm = hookStripLineContinuations(raw);
-  const readings = [hookDecodeAnsiC(norm), hookWorstCaseAnsiC(norm)];
+  const joinedAll = hookJoinAllContinuations(raw);
+  const SEPARATOR = /[;&|`\r\n]|\$\(/;
+  const separated = SEPARATOR.test(raw) || SEPARATOR.test(joinedAll);
+  if (hookAnsiCCharCodeBackstop(raw) && separated) return true;
+  // A shell-code runner re-lexes text the shell assembled, so a $' built from
+  // a variable (d=\$; eval "$d'./Mer\U6cin.exe'") is ANSI-C to it: with a
+  // character-code escape anywhere and a separator, block (router:
+  // shellCodeBuiltAtRunTime).
+  if (separated && HOOK_ANSI_C_CHAR_CODE_RE.test(joinedAll) &&
+      /(?:^|[\s;&|(`])(?:eval|sh|bash|zsh|dash|ksh|fish|busybox|source)(?=[\s;&|)]|$)|(?:^|[;&|(]\s*)\.\s/.test(joinedAll)) {
+    return true;
+  }
+  const joined = [...new Set([hookStripLineContinuations(raw), hookStripLineContinuationsOutsideComments(raw), joinedAll])];
+  const readings = [];
+  let alignments = 0;
+  for (const v of joined.includes(raw) ? joined : [...joined, raw]) {
+    if (joined.includes(v)) readings.push(hookDecodeAnsiC(v));
+    const covered = new Set();
+    for (let k = v.indexOf("$'"); k >= 0; k = v.indexOf("$'", k + 1)) {
+      if (covered.has(k)) continue;
+      if (alignments === HOOK_MAX_ANSI_C_STARTS) { readings.push({ text: v, failed: true }); break; }
+      alignments++;
+      const w = hookWorstCaseAnsiC(v, k);
+      for (const j of w.starts) covered.add(j);
+      readings.push(w);
+    }
+  }
   let invokes = false;
   let chained = false;
   for (const reading of readings) {

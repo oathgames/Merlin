@@ -157,7 +157,7 @@ test('ordinary commands stay uncarded', () => {
   const heredoc2 = "cat > notes.md <<EOF\n# Heading\nit's fine, isn't it\nEOF";
   for (const c of ['cd "$HOME" && ls', 'echo $PATH', 'git commit -m "fix meta-push action"',
     `git commit -m "don't break # things"`, `grep '"action":"meta-push"' file`,
-    `rg -n '"action": *"meta-push"' app/`, 'npm test', S`echo $'a\tb'`, S`printf $'\x41\n'`,
+    `rg -n '"action": *"meta-push"' app/`, 'npm test', S`echo $'a\tb'`,
     `echo "it's" # fine`, 'ls .claude/tools/*.exe', 'node script.js', "git log --oneline # what's new",
     heredoc, heredoc2]) {
     assert.ok(!cards(c), `must not card: ${JSON.stringify(c)} (got ${r(c)})`);
@@ -167,6 +167,104 @@ test('ordinary commands stay uncarded', () => {
   assert.equal(r(S`echo $'a\tb'`), 'safe');
   assert.equal(r(`echo "it's" # fine`), 'safe');
   for (const c of [`echo "it's" # fine`, "git log --oneline # what's new", heredoc, S`printf $'\x41\n'`, 'cd "$HOME" && ls']) {
+    assert.equal(runHook(c), 0, `hook must allow: ${JSON.stringify(c)}`);
+  }
+});
+
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 4): a1 / a3
+// were verified in real bash against the echo-args fake engine; both reach
+// it. a1 routed 'other' and passed the hook; a3 carded but passed the hook.
+const U_ENGINE = S`eval $'\U2e/Mer\U6cin.exe \U2d\U2d\U63md \x27{"\U61\U63tion":"meta-budget","adId":"1","dailyBudget":900}\x27'`;
+const REVIEW4 = {
+  a1: 'echo hi # note ' + BSNL + ": '$' ; " + U_ENGINE,
+  a2: ": '$' ; " + U_ENGINE,
+  a3: 'echo hi # note ' + BSNL + U_ENGINE,
+};
+
+test('review 4: a comment continuation and an overlapping $\' cannot hide an engine call', () => {
+  for (const [name, c] of Object.entries(REVIEW4)) {
+    assert.ok(cards(c), `${name} must card (got ${r(c)})`);
+    assert.equal(runHook(c), 2, `${name}: hook must block`);
+  }
+});
+
+test('review 4 layer A: $\' with a character-code escape always cards', () => {
+  for (const c of [
+    S`printf $'\x41\n'`, S`echo $'\u00e9'`, S`echo $'\U41'`, S`echo $'\101'`, S`echo $'\cA'`,
+    S`echo '$' \x41`, // context does not matter: $' then an escape anywhere after it
+    'echo $' + BSNL + S`'\x41'`, // only visible once backslash-newline is removed
+  ]) {
+    assert.equal(route.ansiCCharCodeBackstop(c), true, c);
+    assert.ok(cards(c), `must card: ${JSON.stringify(c)} (got ${r(c)})`);
+  }
+  // Separator or newline: the hook blocks; a single simple command keeps the
+  // hook's single-command policy (the router cards it).
+  for (const c of [S`printf $'\x41\n'; ls`, S`echo $'\x41'` + NL + 'ls', S`ls && echo $'\101'`]) {
+    assert.equal(runHook(c), 2, `hook must block: ${JSON.stringify(c)}`);
+  }
+  assert.equal(runHook(S`printf $'\x41\n'`), 0);
+  for (const c of [S`echo $'\n'`, S`echo $'a\tb'`, S`IFS=$'\n'`, S`git commit -m $'line1\nline2'`,
+    S`grep -P '\x41|\d+' file`, S`echo $'it\'s'`]) {
+    assert.equal(route.ansiCCharCodeBackstop(c), false, c);
+    assert.ok(!cards(c), `must not card: ${JSON.stringify(c)} (got ${r(c)})`);
+  }
+  assert.equal(runHook(S`IFS=$'\n'; ls`), 0);
+});
+
+test('review 4 layer B: the worst case is read from every $\' alignment', () => {
+  // The $' inside '$' swallows the real body in the reading from the first $'.
+  const w0 = route.worstCaseAnsiC(": '$' ; ./$'Mer\\x6cin.exe' x");
+  assert.ok(!/Merlin\.exe/.test(w0.text));
+  const w1 = route.worstCaseAnsiC(": '$' ; ./$'Mer\\x6cin.exe' x", 10);
+  assert.ok(/'Merlin\.exe'/.test(w1.text), w1.text);
+  // Readings that disagree (the misaligned one sees an unresolvable program,
+  // the aligned ones the real action) card as unreadable.
+  const c = ": '$' ; .claude/tools/$'Mer\\x6cin.exe' --cmd '{\"action\":\"meta-push\"}'";
+  assert.equal(r(c), 'card-unreadable');
+  assert.equal(runHook(c), 2);
+  // One alignment per distinct body boundary: a $' the first reading already
+  // decoded as a body start adds no reading.
+  assert.deepEqual(route.worstCaseAnsiC(S`$'\x41' $'\x42'`).starts, [0, 8]);
+  assert.deepEqual(route.worstCaseAnsiC("$'$'$'").starts, [0, 4]);
+});
+
+test('review 4 layer C: continuations are not joined inside a comment or quote', () => {
+  assert.equal(route.stripLineContinuationsOutsideComments('a # c ' + BSNL + 'b'), 'a # c ' + BSNL + 'b');
+  assert.equal(route.stripLineContinuationsOutsideComments("echo 'x" + BSNL + "y'"), "echo 'x" + BSNL + "y'");
+  assert.equal(route.stripLineContinuationsOutsideComments('a' + BSNL + 'b # c'), 'ab # c');
+  assert.equal(route.stripLineContinuationsOutsideComments('a' + BSNL + '#b'), 'a#b');
+  assert.equal(route.joinAllContinuations('a\\\\' + NL + 'b' + '\\\r\nc'), 'a\\bc');
+  const push = `.claude/tools/Merlin.exe --cmd '{"action":"meta-push"}'`;
+  // Joined, line 2 is comment text; not joined (as bash reads it), it runs
+  // the engine. The readings disagree, so the command cards.
+  const c = 'true # c ' + BSNL + push;
+  assert.equal(r(c), 'card-unreadable');
+  assert.equal(runHook(c), 2);
+});
+
+test('review 4: ordinary multi-line and commented commands stay uncarded', () => {
+  const heredoc = "cat > notes.md <<'EOF'\n# Release notes\n\nIt's the team's build. Don't ship.\n## What's new\nEOF";
+  for (const c of ['git log ' + BSNL + ' --oneline', "git log --oneline # what's new", heredoc,
+    S`grep -P '\x41|\d+' file`, 'echo hi # note ' + BSNL + 'ls']) {
+    assert.ok(!cards(c), `must not card: ${JSON.stringify(c)} (got ${r(c)})`);
+    assert.equal(runHook(c), 0, `hook must allow: ${JSON.stringify(c)}`);
+  }
+});
+
+test('review 4 self-attack: shell code assembled at run time cards', () => {
+  const built = {
+    s1: S`d=\$; eval "$d'./Mer\U6cin.exe' $d'\U2d\U2d\U63md' $d'{\"\U61ction\":\"meta-push\"}'"`,
+    s3: S`eval "$(printf '\44')'./Mer\U6cin.exe' $(printf '\44')'\U2d\U2d\U63md' x"`,
+    s4: S`e=eval; d=\$; $e "@{d}'./Mer\U6cin.exe' @{d}'\U2d\U2d\U63md' @{d}'{\"\U61\U63tion\":\"meta-\U70ush\"}'"`.replace(/@{/g, DOLLAR + "{"),
+    s7: S`x=; eval "./Mer@{x}lin.exe --c@{x}md '{\"act@{x}ion\":\"meta-push\"}'"`.replace(/@{/g, DOLLAR + "{"),
+    s8: S`x=; bash -c "./Mer@{x}lin.exe --c@{x}md x"`.replace(/@{/g, DOLLAR + "{"),
+  };
+  for (const [k, c] of Object.entries(built)) {
+    assert.ok(cards(c), `${k} must card (got ${r(c)})`);
+  }
+  assert.equal(runHook(built.s1), 2);
+  assert.equal(runHook(built.s3), 2);
+  for (const c of ['eval "$(ssh-agent -s)"', 'bash -c "echo $HOME"', 'sh scripts/build.sh', S`printf '\x41\n'`]) {
     assert.equal(runHook(c), 0, `hook must allow: ${JSON.stringify(c)}`);
   }
 });
@@ -182,6 +280,10 @@ test('pathological 50KB inputs finish well under a second', () => {
     ('\\\n').repeat(25000) + "$'x",
     ('"${').repeat(16000),
     "$'" + 'a'.repeat(50000),
+    ("'$'" + S` $'\x41' `).repeat(5000),
+    ('# c ' + BSNL + S`$'$'\U41'`).repeat(4000),
+    ("$'$" + "'$$'").repeat(8000),
+    (REVIEW4.a1 + NL).repeat(250),
   ];
   for (const c of inputs) {
     const t0 = process.hrtime.bigint();

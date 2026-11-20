@@ -632,13 +632,22 @@ function wordRunsScript(word) {
 // from every backslash (/\\+u.../ was quadratic: 50KB of backslashes took
 // ~10s). A run with no escape is returned unchanged, so the result is the
 // same as the plain /\\+u(....)/g replace.
+// Review 4: bash's own short and long forms too (\U6c, \u6c, \x6, \55),
+// since eval re-lexes a $' the shell assembled from a variable
+// (d=\$; eval "$d'./Mer\U6cin.exe'") and bash decodes those forms.
+function looseCodePoint(m, h) {
+  if (!h) return m;
+  const v = parseInt(h, 16);
+  return v > 0x10ffff || (v >= 0xd800 && v <= 0xdfff) ? m : String.fromCodePoint(v);
+}
 function decodeEscapesLoose(text) {
   let s = String(text);
   for (let i = 0; i < 4; i++) {
     s = s
-      .replace(/\\+(?:u([0-9A-Fa-f]{4}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
-      .replace(/\\+(?:x([0-9A-Fa-f]{2}))?/g, (m, h) => (h ? String.fromCharCode(parseInt(h, 16)) : m))
-      .replace(/\\+(?:0?([0-7]{3}))?/g, (m, o) => (o ? String.fromCharCode(parseInt(o, 8) & 0xff) : m));
+      .replace(/\\+(?:U([0-9A-Fa-f]{1,8}))?/g, looseCodePoint)
+      .replace(/\\+(?:u([0-9A-Fa-f]{1,4}))?/g, looseCodePoint)
+      .replace(/\\+(?:x([0-9A-Fa-f]{1,2}))?/g, looseCodePoint)
+      .replace(/\\+(?:0?([0-7]{1,3}))?/g, (m, o) => (o ? String.fromCharCode(parseInt(o, 8) & 0xff) : m));
   }
   return s;
 }
@@ -852,24 +861,28 @@ function stripLineContinuations(command) {
   return out + s.slice(from);
 }
 
-// worstCaseAnsiC -> { text, failed }: every $' in the text, with no quote,
-// comment, here-doc or expansion context at all, has its body (up to the next
-// unescaped ') decoded and substituted as a single-quoted word. failed is
-// true when any such body cannot be decoded exactly (unterminated, NUL, a byte
-// >= 0x80, an escape with no digits); that body is left as written.
-function worstCaseAnsiC(command) {
+// worstCaseAnsiC(command, start) -> { text, failed }: scanning from index
+// start (default 0), every $' in the text, with no quote, comment, here-doc
+// or expansion context at all, has its body (up to the next unescaped ')
+// decoded and substituted as a single-quoted word. Text before start is kept
+// as written. failed is true when any such body cannot be decoded exactly
+// (unterminated, NUL, a byte >= 0x80, an escape with no digits); that body is
+// left as written.
+function worstCaseAnsiC(command, start) {
   const s = String(command || '');
   let out = '';
   let from = 0;
   let failed = false;
-  for (let k = s.indexOf("$'"); k >= 0; k = s.indexOf("$'", k)) {
+  const starts = [];
+  for (let k = s.indexOf("$'", start || 0); k >= 0; k = s.indexOf("$'", k)) {
+    starts.push(k);
     const d = decodeAnsiCBody(s, k + 2);
     if (!d) { failed = true; k += 2; continue; }
     out += s.slice(from, k) + "'" + d.value.replace(/'/g, "'\\''") + "'";
     from = d.end;
     k = d.end;
   }
-  return { text: out + s.slice(from), failed };
+  return { text: out + s.slice(from), failed, starts };
 }
 
 const ROUTE_RANK = Object.freeze({
@@ -911,29 +924,171 @@ function anyUnresolvableCommandWord(text) {
   });
 }
 
+// REGRESSION GUARD (2026-11-20, bash-approval-followup review 4): two more
+// desyncs hid an engine call (routed 'other', hook exit 0):
+//   echo hi # note \<newline>: '$' ; eval $'\U2e/Mer\U6cin.exe \U2d\U2d\U63md \x27{...meta-budget...}\x27'
+// (1) stripLineContinuations joined the backslash-ended # comment with the
+// next line, which bash never does, so line 2 read as comment text; (2)
+// worstCaseAnsiC scanned sequentially, so the $' inside '$' opened a body
+// that swallowed the real one. Three layers now, all mirrored in the hook:
+//   A. ansiCCharCodeBackstop, independent of every lexer and decoder: the
+//      text as given, or with every backslash-newline removed, holding $'
+//      and a character-code escape (\x \u \U \0-7 \c) anywhere at or after
+//      the first $', always cards. Plain $'\n' / $'\t' stay uncarded;
+//      printf $'\x41\n' cards, on purpose.
+//   B. worstCaseAnsiC runs from EVERY $' alignment (overlapping), on every
+//      variant of the text, and every reading is routed; the most
+//      restrictive wins. When every reading agrees on a spend / destructive
+//      action the card names it; readings that disagree card as unreadable.
+//   C. continuations inside a # comment or quotes are not joined
+//      (stripLineContinuationsOutsideComments); because that is one more
+//      lexer, readings joined by parity, joined everywhere, and (worst case
+//      only) not joined at all are also taken.
+// Pinned by bash-ansi-c-worst-case.test.js.
+const ANSI_C_CHAR_CODE_RE = /\\(?:x[0-9A-Fa-f]|u[0-9A-Fa-f]|U[0-9A-Fa-f]|[0-7]|c[\s\S])/;
+const MAX_ANSI_C_STARTS = 8;
+
+// joinAllContinuations: every backslash-newline / backslash-CRLF removed,
+// whatever precedes it.
+function joinAllContinuations(command) {
+  return String(command || '').replace(/\\\r?\n/g, '');
+}
+
+function ansiCCharCodeBackstop(command) {
+  const raw = String(command || '');
+  for (const v of [raw, joinAllContinuations(raw)]) {
+    const k = v.indexOf("$'");
+    if (k >= 0 && ANSI_C_CHAR_CODE_RE.test(v.slice(k))) return true;
+  }
+  return false;
+}
+
+// stripLineContinuationsOutsideComments: backslash-newline removed only where
+// bash removes it: not inside a # comment, '..' or $'..'. Only one more
+// reading; a desync here cannot remove a card the other readings give.
+function stripLineContinuationsOutsideComments(command) {
+  const s = String(command || '');
+  if (!s.includes('\\')) return s;
+  let out = '';
+  let state = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (state === '#') { out += c; if (c === '\n') state = ''; continue; }
+    if (state === "'") { out += c; if (c === "'") state = ''; continue; }
+    if (state === '$') {
+      out += c;
+      if (c === '\\' && i + 1 < s.length) { out += s[++i]; continue; }
+      if (c === "'") state = '';
+      continue;
+    }
+    if (c === '\\') {
+      if (s[i + 1] === '\n') { i++; continue; }
+      if (s[i + 1] === '\r' && s[i + 2] === '\n') { i += 2; continue; }
+      out += c;
+      if (i + 1 < s.length) out += s[++i];
+      continue;
+    }
+    if (state === '"') { out += c; if (c === '"') state = ''; continue; }
+    if (c === '#' && (out === '' || /[ \t\n;&|()<>]/.test(out[out.length - 1]))) { state = '#'; out += c; continue; }
+    if (c === '$' && s[i + 1] === '$') { out += '$$'; i++; continue; }
+    if (c === '$' && s[i + 1] === "'") { state = '$'; out += "$'"; i++; continue; }
+    if (c === "'" || c === '"') state = c;
+    out += c;
+  }
+  return out;
+}
+
 function routeBash(command) {
   const raw = String(command || '');
-  const norm = stripLineContinuations(raw);
-  const ctx = decodeAnsiC(norm);
-  if (ctx.failed) return unreadableRoute(raw);
-  const worst = worstCaseAnsiC(norm);
+  let out = routeAllReadings(raw);
+  if (!CARDED_ROUTES.has(out.route) && (ansiCCharCodeBackstop(raw) || shellCodeBuiltAtRunTime(raw))) out = unreadableRoute(raw);
+  return out;
+}
 
-  let out = routeDecodedBash(ctx.text);
-  if (worst.text === ctx.text && !worst.failed) return out;
-
-  const worstRoute = worst.text === ctx.text ? out : routeDecodedBash(worst.text);
-  out = stricter(out, worstRoute, raw);
-  const sCtx = engineSignals(ctx.text);
-  const sWorst = worst.text === ctx.text ? sCtx : engineSignals(worst.text);
-  if (Object.keys(sWorst).some((k) => sWorst[k] && !sCtx[k]) && !CARDED_ROUTES.has(out.route)) {
-    out = unreadableRoute(raw);
-  }
-  if (worst.failed) {
-    const sig = (s) => s.invocation || s.hidden || s.signal || s.carded;
-    if (sig(sCtx) || sig(sWorst) || anyUnresolvableCommandWord(ctx.text) || anyUnresolvableCommandWord(worst.text)) {
-      out = stricter(out, unreadableRoute(raw), raw);
+// shellCodeBuiltAtRunTime (review 4 self-attack): a program that re-lexes its
+// argument as shell code (eval, or a shell given -c) runs text the shell
+// assembles first, so no static reading of the command is the code it runs.
+// Verified in real bash: d=\$; eval "$d'./Mer\U6cin.exe' ..." runs the
+// engine ($d' becomes $' only when eval re-lexes it), and so does
+// x=; bash -c "./Mer${x}lin.exe --c${x}md ...". Such a command cards when its
+// text carries a character-code escape or a $ / backtick expansion. Any
+// shell-code runner with a character-code escape anywhere cards too
+// (printf '\x24' | sh). Both raw variants of layer A are read.
+const SHELL_CODE_RUNNERS = new Set(['eval', 'sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'busybox', 'source', '.']);
+function shellCodeBuiltAtRunTime(command) {
+  const raw = String(command || '');
+  for (const v of [raw, joinAllContinuations(raw)]) {
+    for (const seg of splitSegments(v).segments) {
+      const words = shellWords(seg);
+      const idx = commandWordIndex(words);
+      const prog = baseName(words[idx] || '');
+      if (!SHELL_CODE_RUNNERS.has(prog)) continue;
+      if (ANSI_C_CHAR_CODE_RE.test(v)) return true;
+      const relexes = prog === 'eval' || words.slice(idx + 1).some((w) => /^-[A-Za-z]*c[A-Za-z]*$/.test(w));
+      if (relexes && /\$[A-Za-z_{(0-9@*#?!$-]|`/.test(seg)) return true;
     }
   }
+  return false;
+}
+
+// routeAllReadings: the most restrictive route across every reading:
+// for each joined variant (parity, outside comments, everywhere) the
+// context-aware decode and the worst case from every $' alignment, and for
+// the unjoined text the worst case from every alignment. The base reading is
+// the parity-joined decode; another reading only escalates it (stricter).
+// A partial reading (worst case from a later $', or of the unjoined text)
+// that sees two actions cards as unreadable rather than denied, since its
+// alignment may be wrong. A later $' already decoded as a body start by an
+// earlier reading of the same variant gives the same reading from there on
+// and is skipped; past MAX_ANSI_C_STARTS alignments in all the text counts
+// as undecodable (cards alongside any engine signal; layer A still applies).
+function routeAllReadings(raw) {
+  const joined = [...new Set([stripLineContinuations(raw), stripLineContinuationsOutsideComments(raw), joinAllContinuations(raw)])];
+  const complete = new Set();
+  const partial = new Set();
+  let failed = false;
+  let alignments = 0;
+  for (const v of joined.includes(raw) ? joined : [...joined, raw]) {
+    const isJoined = joined.includes(v);
+    if (isJoined) {
+      const ctx = decodeAnsiC(v);
+      if (ctx.failed) return unreadableRoute(raw);
+      complete.add(ctx.text);
+    }
+    const covered = new Set();
+    let first = true;
+    for (let k = v.indexOf("$'"); k >= 0; k = v.indexOf("$'", k + 1)) {
+      if (covered.has(k)) continue;
+      if (alignments === MAX_ANSI_C_STARTS) { failed = true; break; }
+      alignments++;
+      const w = worstCaseAnsiC(v, k);
+      if (w.failed) failed = true;
+      for (const j of w.starts) covered.add(j);
+      (first && isJoined ? complete : partial).add(w.text);
+      first = false;
+    }
+  }
+  const base = complete.values().next().value;
+  complete.delete(base);
+  partial.delete(base);
+  for (const t of complete) partial.delete(t);
+
+  let out = routeDecodedBash(base);
+  if (!complete.size && !partial.size && !failed) return out;
+
+  const sBase = engineSignals(base);
+  const sig = (s) => s.invocation || s.hidden || s.signal || s.carded;
+  let anySignal = sig(sBase) || anyUnresolvableCommandWord(base);
+  const weigh = (t, isPartial) => {
+    const r = routeDecodedBash(t);
+    out = stricter(out, isPartial && r.route === 'deny-ambiguous' ? unreadableRoute(raw) : r, raw);
+    const s = engineSignals(t);
+    if (Object.keys(s).some((k) => s[k] && !sBase[k]) && !CARDED_ROUTES.has(out.route)) out = unreadableRoute(raw);
+    anySignal = anySignal || sig(s) || anyUnresolvableCommandWord(t);
+  };
+  for (const t of complete) weigh(t, false);
+  for (const t of partial) weigh(t, true);
+  if (failed && anySignal) out = stricter(out, unreadableRoute(raw), raw);
   return out;
 }
 
@@ -1080,6 +1235,9 @@ module.exports = {
   decodeAnsiC,
   stripLineContinuations,
   worstCaseAnsiC,
+  joinAllContinuations,
+  stripLineContinuationsOutsideComments,
+  ansiCCharCodeBackstop,
   routeBash,
   isShellTool,
   routeShellTool,

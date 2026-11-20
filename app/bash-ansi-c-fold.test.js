@@ -64,8 +64,10 @@ test('decodeAnsiC follows bash escape rules', () => {
 
 test('ordinary ANSI-C use stays uncarded', () => {
   assert.equal(r(String.raw`echo $'a\tb'`), 'safe');
-  assert.equal(r(String.raw`printf $'\x41\n'`), 'other');
   assert.equal(r(String.raw`grep $'\t' file.tsv`), 'safe');
+  // A character-code escape after $' always cards (review 4 blunt backstop):
+  // accepted over-carding.
+  assert.equal(r(String.raw`printf $'\x41\n'`), 'card-unreadable');
 });
 
 // ── (2) glob command word under the engine directory ─────────────────
@@ -213,8 +215,19 @@ test('the hook decoder matches the router decoder', () => {
     const i = s.indexOf('function ' + name);
     assert.ok(i >= 0, name);
     return s.slice(s.indexOf('{', i), s.indexOf('\n}\n', i)).replace(/hookDecodeAnsiCBody|decodeAnsiCBody/g, 'B')
-      .replace(/HOOK_ANSI_C_SIMPLE|ANSI_C_SIMPLE/g, 'T');
+      .replace(/HOOK_ANSI_C_SIMPLE|ANSI_C_SIMPLE/g, 'T')
+      .replace(/hookJoinAllContinuations|joinAllContinuations/g, 'J')
+      .replace(/HOOK_ANSI_C_CHAR_CODE_RE|ANSI_C_CHAR_CODE_RE/g, 'R');
   };
+  // Review 4 layers A and C, and the constants they use.
+  for (const name of ['JoinAllContinuations(', 'AnsiCCharCodeBackstop(', 'StripLineContinuationsOutsideComments(']) {
+    const routeName = name[0].toLowerCase() + name.slice(1);
+    assert.equal(body(src.replace(/\r\n/g, '\n'), 'hook' + name), body(routeSrc.replace(/\r\n/g, '\n'), routeName), name);
+  }
+  const constant = (s, name) => (s.match(new RegExp('const ' + name + ' = (.*);')) || [])[1];
+  assert.equal(constant(src, 'HOOK_ANSI_C_CHAR_CODE_RE'), constant(routeSrc, 'ANSI_C_CHAR_CODE_RE'));
+  assert.equal(constant(src, 'HOOK_MAX_ANSI_C_STARTS'), constant(routeSrc, 'MAX_ANSI_C_STARTS'));
+  assert.ok(constant(routeSrc, 'ANSI_C_CHAR_CODE_RE'));
   assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiCBody'), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiCBody'));
   assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookDecodeAnsiC('), body(routeSrc.replace(/\r\n/g, '\n'), 'decodeAnsiC('));
   assert.equal(body(src.replace(/\r\n/g, '\n'), 'hookStripLineContinuations('), body(routeSrc.replace(/\r\n/g, '\n'), 'stripLineContinuations('));
@@ -303,7 +316,7 @@ test('lexing the decoder does not model fails closed or decodes correctly', () =
 test('comment-aware decoding keeps ordinary commands uncarded', () => {
   for (const c of ['cd "$HOME" && ls', 'echo $PATH', 'git commit -m "fix meta-push action"',
     `git commit -m "don't break # things"`, `grep '"action":"meta-push"' file`,
-    `rg -n '"action": *"meta-push"' app/`, 'npm test', S`echo $'a\tb'`, S`printf $'\x41\n'`,
+    `rg -n '"action": *"meta-push"' app/`, 'npm test', S`echo $'a\tb'`,
     `echo "it's" # fine`, 'ls .claude/tools/*.exe', 'echo hi # see .claude/tools/Merlin.exe docs']) {
     assert.ok(!cards(c), `must not card: ${c} (got ${r(c)})`);
   }
