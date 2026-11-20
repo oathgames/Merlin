@@ -208,7 +208,8 @@ test('main.js dispatches every Bash call on routeBash before any Bash allow', ()
   assert.ok(!/function isSafeBash\b/.test(SRC) && !/safeBashPatterns/.test(SRC),
     'the prefix-only isSafeBash must not come back in main.js');
   const fn = SRC.indexOf('async function handleToolApproval(');
-  const routeIdx = SRC.indexOf('bashApprovalRoute.routeBash(input && input.command)', fn);
+  // routeShellTool is routeBash for Bash-syntax tools (bash-hidden-engine.test.js).
+  const routeIdx = SRC.indexOf("bashApprovalRoute.routeShellTool((opts && opts.shellTool) || 'Bash', input && input.command)", fn);
   const safeIdx = SRC.indexOf("bashRoute.route === 'safe'", fn);
   const unreadIdx = SRC.indexOf("bashRoute.route === 'card-unreadable'", fn);
   const spendIdx = SRC.indexOf('if (BASH_SPEND.has(bashAction))', fn);

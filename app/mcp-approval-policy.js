@@ -663,20 +663,27 @@ function budgetCardText(v, max) {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
+// budgetCardTarget -> 'ad squad (123)' | '' : the object the engine acts on,
+// in its own precedence, sanitized. Shared by the MCP budget card and the
+// Bash spend card (bash-approval-route.js bashSpendCard).
+function budgetCardTarget(toolName, input) {
+  const i = input || {};
+  const tool = String(toolName || '').replace(/^mcp__merlin__/, '');
+  const squad = budgetCardText(i.targetAdSetId, 64);
+  const camp = budgetCardText(i.campaignId, 64);
+  const ad = budgetCardText(i.adId, 64);
+  if (tool === 'snapchat' && squad) return `ad squad (${squad})`;
+  if (tool === 'meta_ads' && ad) return `ad set (${ad})`;
+  if (camp) return `campaign (${camp})`;
+  if (ad) return `ad group (${ad})`;
+  return '';
+}
+
 function budgetChangeCard(toolName, input) {
   const i = input || {};
   const tool = String(toolName || '').replace(/^mcp__merlin__/, '');
   const platform = BUDGET_CARD_PLATFORMS[tool];
-  const squad = budgetCardText(i.targetAdSetId, 64);
-  const camp = budgetCardText(i.campaignId, 64);
-  const ad = budgetCardText(i.adId, 64);
-  let kind = '';
-  let id = '';
-  if (tool === 'snapchat' && squad) { kind = 'ad squad'; id = squad; }
-  else if (tool === 'meta_ads' && ad) { kind = 'ad set'; id = ad; }
-  else if (camp) { kind = 'campaign'; id = camp; }
-  else if (ad) { kind = 'ad group'; id = ad; }
-  const what = id ? `${kind} (${id})` :'no campaign or ad set id given';
+  const what = budgetCardTarget(tool, i) || 'no campaign or ad set id given';
   const amount = Number(i.dailyBudget);
   return {
     label: `Change ${platform ? platform + ' ' : ''}daily budget: ${what}`,
@@ -699,4 +706,5 @@ module.exports = {
   isDestructiveShell,
   classifyLongTailApproval,
   budgetChangeCard,
+  budgetCardTarget,
 };

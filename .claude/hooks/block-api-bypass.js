@@ -636,9 +636,22 @@ function matchesDestructiveCommand(cmd) {
 // also missed a quoted path (`".claude/tools/Merlin" --cmd`) and the
 // single-dash flag Go's flag package accepts (`Merlin -cmd`). The app-side
 // chokepoint is bash-approval-route.js; this hook is the earlier layer.
+//
+// REGRESSION GUARD (2026-11-20, bash-approval-followup): the binary check read
+// only the literal text, so a binary name the shell assembles passed it:
+// `B=.claude/tools/Mer; A=-cmd; ${B}lin.exe $A '{...}'` (variables) and
+// `echo "Mer""lin.ex""e -c""md {...}" > s.sh && . s.sh` (quote splicing into
+// a script that is then sourced). The check now also reads the command with
+// every shell quote and backslash removed, and treats a --cmd / -cmd flag in
+// a command that has $ or backtick expansion as an engine call. Each form
+// only ADDS a block; nothing that was blocked before is allowed now.
 function matchesMerlinShellOperator(cmd) {
+  const quoteless = cmd.replace(/['"\\]/g, '');
+  const assembledFlag = /[$`]/.test(cmd) && /(?:^|[\s=])--?cmd(?:-file)?(?:=|\b)/i.test(quoteless);
   const invokesMerlinBinary =
-    /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin["']?\s+--?(cmd|config)\b/i.test(cmd);
+    /\bmerlin\.exe\b/i.test(cmd) || /\bmerlin["']?\s+--?(cmd|config)\b/i.test(cmd) ||
+    /\bmerlin\.exe\b/i.test(quoteless) || /\bmerlin\s+--?(cmd|config)\b/i.test(quoteless) ||
+    assembledFlag;
   if (!invokesMerlinBinary) return false;
   const stripped = cmd
     .replace(/"(?:[^"\\]|\\.)*"/g, '')
