@@ -634,6 +634,46 @@ function classifyLongTailApproval({ toolName, command, strictApprovals }) {
   return 'allow';
 }
 
+// Approval-card text for the 'budget' SPEND action (meta_ads, google_ads,
+// linkedin_ads, openai_ads, snapchat). The card names the object the engine
+// will change, in the engine's own precedence (Snapchat: targetAdSetId, then
+// campaignId; Meta: adId, then campaignId), plus its name when the args carry
+// one, and the new daily amount. A forced call gets FORCE_CARD_NOTE from
+// main.js on the budget line. Pure; model-supplied strings are stripped of
+// control characters and truncated so they cannot reshape the card.
+const BUDGET_CARD_PLATFORMS = Object.freeze({
+  meta_ads: 'Meta', google_ads: 'Google Ads', linkedin_ads: 'LinkedIn',
+  openai_ads: 'ChatGPT', snapchat: 'Snapchat',
+});
+
+function budgetCardText(v, max) {
+  if (typeof v !== 'string') return '';
+  const s = v.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+function budgetChangeCard(toolName, input) {
+  const i = input || {};
+  const tool = String(toolName || '').replace(/^mcp__merlin__/, '');
+  const platform = BUDGET_CARD_PLATFORMS[tool];
+  const squad = budgetCardText(i.targetAdSetId, 64);
+  const camp = budgetCardText(i.campaignId, 64);
+  const ad = budgetCardText(i.adId, 64);
+  let kind = '';
+  let id = '';
+  let name = '';
+  if (tool === 'snapchat' && squad) { kind = 'ad squad'; id = squad; name = budgetCardText(i.adSetName, 60); }
+  else if (tool === 'meta_ads' && ad) { kind = 'ad set'; id = ad; name = budgetCardText(i.adSetName, 60); }
+  else if (camp) { kind = 'campaign'; id = camp; name = budgetCardText(i.campaignName, 60); }
+  else if (ad) { kind = 'ad group'; id = ad; }
+  const what = id ? `${kind} ${name ? `"${name}" ` : ''}(${id})` : 'no campaign or ad set id given';
+  const amount = Number(i.dailyBudget);
+  return {
+    label: `Change ${platform ? platform + ' ' : ''}daily budget: ${what}`,
+    cost: Number.isFinite(amount) && amount > 0 ? `New daily budget: $${amount}/day` : 'New daily budget: not given',
+  };
+}
+
 // The 2026-09-28 IPC_APPROVAL_DEADLINE_MS constant was removed on
 // 2026-10-04 (desktop-approval): external MCP calls no longer wait on an
 // in-app card at all, so there is no wait to bound. See the REGRESSION
@@ -648,4 +688,5 @@ module.exports = {
   resolveMerlinAction,
   isDestructiveShell,
   classifyLongTailApproval,
+  budgetChangeCard,
 };

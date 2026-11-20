@@ -2824,6 +2824,7 @@ function translateTool(toolName, input) {
       'meta-setup':    { label: 'Set up your ad campaigns on Facebook', cost: 'Free' },
       'meta-kill':     { label: 'Pause this ad', cost: 'Free' },
       'meta-duplicate':{ label: 'Scale this winning ad', cost: 'Increases budget' },
+      'meta-budget':   { label: 'Change a Facebook campaign or ad set daily budget', cost: 'Changes daily ad spend' },
       'meta-login':    { label: 'Connect to your Facebook Ads account', cost: 'Free' },
       'meta-discover': { label: 'Find your ad accounts', cost: 'Free' },
       'image':         { label: 'Generate an ad image', cost: '~$0.04' },
@@ -3308,6 +3309,9 @@ async function handleToolApproval(toolName, input, opts) {
           label: 'Change TikTok GMV Max ROI target',
           cost: `Campaign ${String(input.campaignId || '?').slice(0, 32)}: ROI target to ${Number.isFinite(Number(input.roasBid)) ? Number(input.roasBid) : '?'}. Lower target = more spend`,
         },
+        // Names the object (id, plus its name when the args carry one) and the
+        // new daily amount; see budgetChangeCard in mcp-approval-policy.js.
+        'budget': approvalPolicy.budgetChangeCard(toolName, input),
       };
       const translated = translations[action] || { label: `Run ${action}`, cost: null };
       // Intent-tool labels override the generic action-based label so the
@@ -3316,7 +3320,7 @@ async function handleToolApproval(toolName, input, opts) {
       // for the per-tool label registry.
       if (intentToolLabel) translated.label = intentToolLabel;
       let budgetDetail = null;
-      if (budgetCtx && budgetCtx.dailyCap > 0 && (action === 'push' || action === 'duplicate')) {
+      if (budgetCtx && budgetCtx.dailyCap > 0 && (action === 'push' || action === 'duplicate' || action === 'budget')) {
         const overBudget = budgetCtx.remaining < adBudget;
         if (action === 'push') {
           translated.cost = overBudget
@@ -3490,7 +3494,14 @@ async function handleToolApproval(toolName, input, opts) {
       return { behavior: 'deny', message: 'This Merlin command names its action more than once (or in a form Merlin cannot read). Run one action per command.' };
     }
     const bashAction = parsedBash.action || '';
-    const BASH_SPEND = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad']);
+    // REGRESSION GUARD (2026-11-20, snapchat-budget): meta-budget,
+    // snapchat-budget and snapchat-activate move ad dollars, and the MCP path
+    // cards them ('budget' / 'activate' in SPEND_ACTIONS). They were missing
+    // here, so in auto mode classifyLongTailApproval let
+    // `Merlin '{"action":"snapchat-budget","approved":true,...}'` run with no
+    // card at all. They go in BASH_SPEND only, never BASH_PUSH_ONLY, so they
+    // always card. Pinned by bash-spend-card.test.js.
+    const BASH_SPEND = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad', 'meta-budget', 'snapchat-budget', 'snapchat-activate']);
     // Push-equivalent actions are the only ones eligible for in-cap auto-
     // approve. Mirrors the MCP path's `action === 'push'` filter (NOT
     // `'push' || 'duplicate'`). If a future edit adds a setup-equivalent
@@ -3554,7 +3565,8 @@ async function handleToolApproval(toolName, input, opts) {
       let budgetDetail = null;
       if (budgetCtx && budgetCtx.dailyCap > 0) {
         const overBudget = budgetCtx.remaining < adBudget;
-        translated.cost = overBudget
+        // No dailyBudget (snapchat-activate): keep the action's own cost line, not the $5 default.
+        if (parsedBudget != null || BASH_PUSH_ONLY.has(bashAction)) translated.cost = overBudget
           ? `⚠ Over budget! This ad: $${adBudget}/day`
           : `$${adBudget}/day · Budget cap: $${budgetCtx.dailyCap}/day`;
         budgetDetail = `$${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
