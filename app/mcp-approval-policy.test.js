@@ -570,11 +570,11 @@ test('the Bash bypass path cards merchant-sync-shopify too', () => {
   // The MCP card is one binary invocation away from being skipped: an agent
   // that knows the engine action name can call it through Bash. main.js
   // mirrors the tier in BASH_CARDED_DESTRUCTIVE for exactly that reason.
-  const i = SRC_MAIN.indexOf('const BASH_CARDED_DESTRUCTIVE');
-  assert.ok(i > 0, 'main.js must define BASH_CARDED_DESTRUCTIVE');
-  const block = SRC_MAIN.slice(i, i + 900);
+  // The set lives in bash-approval-route.js (2026-11-20); drive the real route.
+  const bashRoute = require('./bash-approval-route');
   for (const engineAction of ['mailchimp-campaign-send', 'mailchimp-campaign-schedule', 'merchant-sync-shopify']) {
-    assert.ok(block.includes(`'${engineAction}'`),
+    assert.ok(bashRoute.BASH_CARDED_DESTRUCTIVE.has(engineAction) &&
+      bashRoute.routeBash(`cd /d/x && .claude/tools/Merlin.exe --cmd '{"action":"${engineAction}"}'`).route === 'destructive',
       `${engineAction} must be in BASH_CARDED_DESTRUCTIVE — otherwise the Bash path fires it with no card.`);
   }
 });
@@ -660,14 +660,14 @@ test('the four engine-gated deletes are all carded host-side', () => {
 });
 
 test('the Bash bypass path cards the four engine-gated deletes', () => {
-  const i = SRC_MAIN.indexOf('const BASH_CARDED_DESTRUCTIVE');
-  assert.ok(i > 0, 'main.js must define BASH_CARDED_DESTRUCTIVE');
-  const block = SRC_MAIN.slice(i, i + 1600);
+  // The set lives in bash-approval-route.js (2026-11-20); drive the real route.
+  const bashRoute = require('./bash-approval-route');
   for (const engineAction of [
     'klaviyo-flow-delete', 'klaviyo-template-delete',
     'mailchimp-campaign-delete', 'postscript-automation-delete',
   ]) {
-    assert.ok(block.includes(`'${engineAction}'`),
+    assert.ok(bashRoute.BASH_CARDED_DESTRUCTIVE.has(engineAction) &&
+      bashRoute.routeBash(`cd /d/x && .claude/tools/Merlin.exe --cmd '{"action":"${engineAction}"}'`).route === 'destructive',
       `${engineAction} must be in BASH_CARDED_DESTRUCTIVE — otherwise the Bash path fires it with no card.`);
   }
 });
@@ -833,11 +833,11 @@ test('spend_control resume-all is carded, and pause-all deliberately is NOT', ()
 });
 
 test('the Bash bypass path cards quiz-funnel-gen and resume-all-spend', () => {
-  const i = SRC_MAIN.indexOf('const BASH_CARDED_DESTRUCTIVE');
-  assert.ok(i > 0, 'main.js must define BASH_CARDED_DESTRUCTIVE');
-  const block = SRC_MAIN.slice(i, i + 2600);
+  // The set lives in bash-approval-route.js (2026-11-20); drive the real route.
+  const bashRoute = require('./bash-approval-route');
   for (const engineAction of ['quiz-funnel-gen', 'resume-all-spend']) {
-    assert.ok(block.includes(`'${engineAction}'`),
+    assert.ok(bashRoute.BASH_CARDED_DESTRUCTIVE.has(engineAction) &&
+      bashRoute.routeBash(`cd /d/x && .claude/tools/Merlin.exe --cmd '{"action":"${engineAction}"}'`).route === 'destructive',
       `${engineAction} must be in BASH_CARDED_DESTRUCTIVE , otherwise the Bash path fires it with no card.`);
   }
 });

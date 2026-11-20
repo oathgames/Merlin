@@ -374,7 +374,7 @@ const anchorMcp = SRC_MAIN.indexOf('approvalPolicy.SPEND_ACTIONS.has(action)');
 });
 
 test('handleToolApproval auto-approves in-cap Bash Merlin push (mirrors MCP path)', () => {
-  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  const anchorBash = SRC_MAIN.indexOf('const { BASH_SPEND, BASH_PUSH_ONLY, BASH_CARDED_DESTRUCTIVE } = bashApprovalRoute;');
   assert.ok(anchorBash > 0, 'Bash BASH_SPEND set not found');
   // Window widened 5000 -> 6000 (2026-10-05, google-budget-force): the Bash
   // spend path gained the forced-override check and card note; order is unchanged.
@@ -396,22 +396,24 @@ test('Bash in-cap auto-approve gates on BASH_PUSH_ONLY action set (drift resista
   // actions to BASH_SPEND (e.g. `meta-setup`), they would silently
   // inherit auto-approval. The fix gates on a separate BASH_PUSH_ONLY
   // set so anything not in it cards even if BASH_SPEND grows.
-  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  const anchorBash = SRC_MAIN.indexOf('const { BASH_SPEND, BASH_PUSH_ONLY, BASH_CARDED_DESTRUCTIVE } = bashApprovalRoute;');
   const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
-  assert.match(sliceBash, /const BASH_PUSH_ONLY = new Set\(/);
+  // The sets moved to bash-approval-route.js (2026-11-20); main.js takes
+  // them from there.
+  assert.match(fs.readFileSync(path.join(__dirname, 'bash-approval-route.js'), 'utf8'), /const BASH_PUSH_ONLY = new Set\(/);
   assert.match(sliceBash, /BASH_PUSH_ONLY\.has\(bashAction\)/);
 });
 
 test('Bash in-cap auto-approve fails closed on config read errors', () => {
   // Same Gitar #122 finding 1 fix mirrored on the Bash path.
-  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  const anchorBash = SRC_MAIN.indexOf('const { BASH_SPEND, BASH_PUSH_ONLY, BASH_CARDED_DESTRUCTIVE } = bashApprovalRoute;');
   const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
   assert.match(sliceBash, /let bashRequireSpendApproval = true/);
   assert.match(sliceBash, /\[spend-approval\] bash config read failed/);
 });
 
 test('Bash in-cap auto-approve cards when budget data is unknown', () => {
-  const anchorBash = SRC_MAIN.indexOf("const BASH_SPEND = new Set(['meta-push'");
+  const anchorBash = SRC_MAIN.indexOf('const { BASH_SPEND, BASH_PUSH_ONLY, BASH_CARDED_DESTRUCTIVE } = bashApprovalRoute;');
   const sliceBash = SRC_MAIN.slice(anchorBash, anchorBash + 5000);
   // Same null-sentinel pattern as the MCP path.
   assert.match(sliceBash, /Number\.isFinite\(budgetCtx\.remaining\)\s*\?\s*budgetCtx\.remaining\s*:\s*null/);

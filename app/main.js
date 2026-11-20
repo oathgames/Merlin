@@ -19,6 +19,7 @@ const { scaffoldBrandStub } = require('./brand-scaffold');
 const { listBrandDirs, isBrandDir, isBrandDirName } = require('./brand-dirs');
 const budgetCeiling = require('./budget-ceiling');
 const bashMerlinAction = require('./bash-merlin-action');
+const bashApprovalRoute = require('./bash-approval-route');
 
 // Register merlin:// as a privileged scheme BEFORE app ready. Without this,
 // <video src="merlin://..."> fails two ways:
@@ -2651,24 +2652,11 @@ const autoApproveTools = new Set([
   'Skill', 'Edit', 'Write', 'NotebookEdit', 'Agent',
 ]);
 
-// Safe Bash patterns that can be auto-approved (read-only or setup operations).
-// Removed: /^curl\s.*-[sS]/, /^curl\s.*download/, /^node\s+-e\b/ — all three
-// were blanket auto-approvals that Claude could use to make arbitrary network
-// calls. Curl is now permission-checked via the allow/deny lists + hook, and
-// node -e is blocked by the hook when it contains network intent.
-const safeBashPatterns = [
-  // REMOVED: cat, head, tail — can read decrypted temp config files.
-  // They now require user approval via the approval card.
-  /^ls\b/, /^wc\b/, /^find\b/, /^grep\b/,
-  /^mkdir\b/, /^cp\b/, /^mv\b/, /^echo\b/, /^pwd\b/, /^cd\b/, /^test\b/,
-  /^chmod\b/, /^xattr\b/, /^codesign\b/,
-  // npx REMOVED — auto-approving it lets Claude run arbitrary packages
-];
-
-function isSafeBash(command) {
-  const cmd = (command || '').trim();
-  return safeBashPatterns.some(p => p.test(cmd));
-}
+// Safe Bash shortcut, engine detection and the Bash card tiers live in
+// bash-approval-route.js (pure, so tests drive the real decision). See its
+// REGRESSION GUARD (2026-11-20, compound command bypass found in review):
+// the shortcut used to trust a command's first word, so
+// `cd x && Merlin.exe --cmd '{"action":"snapchat-budget",...}'` ran uncarded.
 
 // ── Security: banned-host check for WebFetch + Bash ────────────────
 // Duplicate of the hook logic for defense in depth. If the hook crashes
@@ -2824,6 +2812,7 @@ function translateTool(toolName, input) {
       'meta-setup':    { label: 'Set up your ad campaigns on Facebook', cost: 'Free' },
       'meta-kill':     { label: 'Pause this ad', cost: 'Free' },
       'meta-duplicate':{ label: 'Scale this winning ad', cost: 'Increases budget' },
+      'meta-budget':   { label: 'Change a Facebook campaign or ad set daily budget', cost: 'Changes daily ad spend' },
       'meta-login':    { label: 'Connect to your Facebook Ads account', cost: 'Free' },
       'meta-discover': { label: 'Find your ad accounts', cost: 'Free' },
       'image':         { label: 'Generate an ad image', cost: '~$0.04' },
@@ -2875,6 +2864,7 @@ function translateTool(toolName, input) {
       'snapchat-kill':            { label: 'Pause a Snapchat campaign', cost: 'Free' },
       'snapchat-activate':        { label: 'Turn a Snapchat campaign back on', cost: 'Resumes ad spend' },
       'snapchat-batch-status':    { label: 'Turn Snapchat campaigns, ad squads or ads on or off', cost: 'May resume ad spend' },
+      'snapchat-budget':          { label: 'Change a Snapchat ad squad or campaign daily budget', cost: 'Changes daily ad spend' },
       'snapchat-pixels':          { label: 'List Snapchat pixels', cost: 'Free' },
       'snapchat-audiences':       { label: 'List Snapchat audiences', cost: 'Free' },
       'snapchat-ad-squads':       { label: 'List Snapchat ad squads', cost: 'Free' },
@@ -3307,6 +3297,9 @@ async function handleToolApproval(toolName, input, opts) {
           label: 'Change TikTok GMV Max ROI target',
           cost: `Campaign ${String(input.campaignId || '?').slice(0, 32)}: ROI target to ${Number.isFinite(Number(input.roasBid)) ? Number(input.roasBid) : '?'}. Lower target = more spend`,
         },
+        // Names the object (id, plus its name when the args carry one) and the
+        // new daily amount; see budgetChangeCard in mcp-approval-policy.js.
+        'budget': approvalPolicy.budgetChangeCard(toolName, input),
       };
       const translated = translations[action] || { label: `Run ${action}`, cost: null };
       // Intent-tool labels override the generic action-based label so the
@@ -3315,7 +3308,7 @@ async function handleToolApproval(toolName, input, opts) {
       // for the per-tool label registry.
       if (intentToolLabel) translated.label = intentToolLabel;
       let budgetDetail = null;
-      if (budgetCtx && budgetCtx.dailyCap > 0 && (action === 'push' || action === 'duplicate')) {
+      if (budgetCtx && budgetCtx.dailyCap > 0 && (action === 'push' || action === 'duplicate' || action === 'budget')) {
         const overBudget = budgetCtx.remaining < adBudget;
         if (action === 'push') {
           translated.cost = overBudget
@@ -3377,8 +3370,19 @@ async function handleToolApproval(toolName, input, opts) {
     return { behavior: 'allow', updatedInput: input };
   }
 
+  // REGRESSION GUARD (2026-11-20, compound command bypass found in review):
+  // this is the single Bash routing chokepoint. The safe shortcut used to
+  // match only the command's FIRST word and ran before the spend tiers, so
+  // `cd /d/x && .claude/tools/Merlin.exe --cmd '{"action":"snapchat-budget","approved":true,"dailyBudget":900}'`
+  // (and meta-push, and `echo '{...}' > c.json && Merlin.exe --cmd-file c.json`)
+  // was auto-allowed with no card. routeBash returns 'safe' only when EVERY
+  // segment is independently safe and none invokes the engine; an engine
+  // call anywhere is classified by its own action, and one whose action
+  // cannot be read cards. Never add a Bash allow above this line.
+  const bashRoute = toolName === 'Bash' ? bashApprovalRoute.routeBash(input && input.command) : null;
+
   // Auto-approve safe Bash commands (read-only, setup, file management)
-  if (toolName === 'Bash' && isSafeBash(input.command)) {
+  if (bashRoute && bashRoute.route === 'safe') {
     return { behavior: 'allow', updatedInput: input };
   }
 
@@ -3478,34 +3482,40 @@ async function handleToolApproval(toolName, input, opts) {
   }
 
   // BUDGET ENFORCEMENT: Bash Merlin push actions — show approval card with full budget context
-  if (toolName === 'Bash' && input.command && input.command.includes('Merlin')) {
+  if (bashRoute && bashRoute.route !== 'other') {
     // REGRESSION GUARD (2026-10-04): the first-match regex used here carded
     // the FIRST "action" key while Go runs the LAST one, so
     // {"action":"rokt-report","action":"meta-push","approved":true}
     // skipped the spend card. A command naming its action more than once, or
     // in a form Merlin cannot decode, is refused outright.
-    const parsedBash = bashMerlinAction.parseAction(input.command);
-    if (parsedBash.ambiguous) {
+    if (bashRoute.route === 'deny-ambiguous') {
       return { behavior: 'deny', message: 'This Merlin command names its action more than once (or in a form Merlin cannot read). Run one action per command.' };
     }
-    const bashAction = parsedBash.action || '';
-    const BASH_SPEND = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad']);
-    // Push-equivalent actions are the only ones eligible for in-cap auto-
-    // approve. Mirrors the MCP path's `action === 'push'` filter (NOT
-    // `'push' || 'duplicate'`). If a future edit adds a setup-equivalent
-    // Bash action to BASH_SPEND, it will still card by default — which is
-    // what we want, since setup actions touch ad-account state without
-    // necessarily moving budget. Keep this set in sync with BASH_SPEND
-    // additions: anything that creates or scales paid ad spend goes here;
-    // anything that touches account configuration stays out.
-    const BASH_PUSH_ONLY = new Set(['meta-push', 'tiktok-push', 'google-ads-push', 'amazon-ads-push', 'reddit-create-campaign', 'reddit-create-ad']);
+    // An engine call whose action cannot be read from the command line
+    // (--cmd-file, shell expansion, quote splicing) always cards, never
+    // auto-approves: it could be any action. See bash-approval-route.js.
+    if (bashRoute.route === 'card-unreadable') {
+      const toolUseID = newApprovalId();
+      const payload = { toolUseID, ...bashApprovalRoute.unreadableEngineCard(bashRoute.reason) };
+      if (win && !win.isDestroyed()) win.webContents.send('approval-request', payload);
+      wsServer.broadcast('approval-request', payload);
+      nudgeForApproval();
+      return awaitApprovalDecision(toolUseID, input);
+    }
+    const bashAction = bashRoute.action || '';
+    // The engine's own --cmd JSON: budget and brand are read from it, not
+    // from other segments of a compound command.
+    const bashCmdText = bashRoute.cmdText || input.command;
+    // Card tiers (and their REGRESSION GUARD history) live in
+    // bash-approval-route.js; routeBash already matched them.
+    const { BASH_SPEND, BASH_PUSH_ONLY, BASH_CARDED_DESTRUCTIVE } = bashApprovalRoute;
     if (BASH_SPEND.has(bashAction)) {
       // Cap is read for the brand the engine will use: last "brand" wins, as in Go.
-      const bashInputBrand = bashMerlinAction.lastString(input.command, 'brand') || undefined;
+      const bashInputBrand = bashMerlinAction.lastString(bashCmdText, 'brand') || undefined;
       const budgetCtx = getBudgetContext(bashInputBrand);
       const translated = translateTool(toolName, input);
       // Last occurrence wins, as in Go's encoding/json (see bash-merlin-action.js).
-      const parsedBudget = bashMerlinAction.lastNumber(input.command, 'dailyBudget');
+      const parsedBudget = bashMerlinAction.lastNumber(bashCmdText, 'dailyBudget');
       const adBudget = parsedBudget != null ? parsedBudget : 5;
 
       // Same hard deny as MCP spend path — catch cents-by-mistake early.
@@ -3553,7 +3563,8 @@ async function handleToolApproval(toolName, input, opts) {
       let budgetDetail = null;
       if (budgetCtx && budgetCtx.dailyCap > 0) {
         const overBudget = budgetCtx.remaining < adBudget;
-        translated.cost = overBudget
+        // No dailyBudget (snapchat-activate): keep the action's own cost line, not the $5 default.
+        if (parsedBudget != null || BASH_PUSH_ONLY.has(bashAction)) translated.cost = overBudget
           ? `⚠ Over budget! This ad: $${adBudget}/day`
           : `$${adBudget}/day · Budget cap: $${budgetCtx.dailyCap}/day`;
         budgetDetail = `$${budgetCtx.dailySpent} spent today · $${budgetCtx.dailyCap}/day cap · $${budgetCtx.remaining} remaining`;
@@ -3574,50 +3585,9 @@ async function handleToolApproval(toolName, input, opts) {
     }
 
     // BUDGET-LESS DESTRUCTIVE BASH ACTIONS: mirror of the MCP path's
-    // CARDED_DESTRUCTIVE_ACTIONS tier (see mcp-approval-policy.js).
-    //
-    // REGRESSION GUARD (2026-05-11, post-audit bash bypass):
-    // The adversarial audit found that an agent could bypass the MCP
-    // CARDED_DESTRUCTIVE card by calling the binary directly via Bash
-    // — e.g. `Merlin '{"action":"mailchimp-campaign-send", ...}'`
-    // would route to the binary, run the CAN-SPAM gate, and ship real
-    // emails to the brand's audience WITHOUT the Electron card. The
-    // MCP tool's destructive-action gate is sufficient for tool-using
-    // agents (Claude on the MCP path); the Bash bypass let any agent
-    // that knows the binary's action names exfiltrate around it.
-    //
-    // Fix: a parallel set of bash actions that require the same
-    // generic card (no budget context — these actions don't move ad
-    // dollars). The card auto-expires in 15 min if ignored.
-    const BASH_CARDED_DESTRUCTIVE = new Set([
-      'mailchimp-campaign-send', 'mailchimp-campaign-schedule',
-      'mailchimp-automation-pause', 'mailchimp-automation-start',
-      // Same bypass shape for the Merchant Center catalog push: the MCP
-      // google_merchant tool cards sync-shopify, so the Bash path has to
-      // card the engine action it maps to or the card is one binary
-      // invocation away from being skipped.
-      'merchant-sync-shopify',
-      // Permanent marketing-asset deletes, gated in the engine by
-      // requireApproval (merlin-core PR #387). Same bypass shape: the MCP
-      // tools card these via CARDED_DESTRUCTIVE_ACTIONS, so the Bash path
-      // has to card the engine action names or the card is one binary
-      // invocation away from being skipped.
-      'klaviyo-flow-delete', 'klaviyo-template-delete',
-      'mailchimp-campaign-delete', 'postscript-automation-delete',
-      // Klaviyo bulk consent import + list create (2026-10-20). Both are
-      // requireApproval-gated in the engine and carded on the MCP path; the
-      // Bash path cards them too (a Bash dry run cards as well, which only
-      // over-protects).
-      'klaviyo-subscribe-bulk', 'klaviyo-list-create',
-      // Same bypass shape again (2026-09-04). Both are requireApproval-gated
-      // in the engine, and both are now carded on the MCP path via
-      // CARDED_DESTRUCTIVE_ACTIONS ('quiz-funnel-gen' on the content tool,
-      // 'resume-all' on spend_control). Without the engine action names here,
-      // the card is one `Merlin '{"action":"resume-all-spend","approved":true}'`
-      // away from being skipped , and resume-all-spend re-arms every
-      // spend-increasing action across every platform for the brand.
-      'quiz-funnel-gen', 'resume-all-spend',
-    ]);
+    // CARDED_DESTRUCTIVE_ACTIONS tier. REGRESSION GUARD (2026-05-11,
+    // post-audit bash bypass): the set and its history are in
+    // bash-approval-route.js.
     if (BASH_CARDED_DESTRUCTIVE.has(bashAction)) {
       const toolUseID = newApprovalId();
       const translated = translateTool(toolName, input);

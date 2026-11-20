@@ -77,5 +77,11 @@ test('main.js routes both Bash approval reads through the parser', () => {
   assert.ok(src.includes("require('./bash-merlin-action')"), 'main.js must require the parser');
   assert.ok(!/match\(\/"action"\\s\*:\\s\*"/.test(src), 'first-match action regex is back in main.js');
   assert.ok(!/match\(\/"dailyBudget"\\s\*:/.test(src), 'first-match dailyBudget regex is back in main.js');
-  assert.ok(src.includes('if (parsedBash.ambiguous)'), 'Bash branch must deny ambiguous commands');
+  // Since 2026-11-20 the Bash branch reads the action through
+  // bash-approval-route.js, which calls parseAction and returns
+  // 'deny-ambiguous'; main.js denies on that route.
+  assert.ok(src.includes("bashRoute.route === 'deny-ambiguous'"), 'Bash branch must deny ambiguous commands');
+  const routeSrc = fs.readFileSync(path.join(__dirname, 'bash-approval-route.js'), 'utf8');
+  assert.ok(routeSrc.includes("require('./bash-merlin-action')") && routeSrc.includes('whole.ambiguous'),
+    'bash-approval-route.js must read the action through the parser');
 });

@@ -42,6 +42,7 @@
     "app/brand-dirs.js",
     "app/budget-ceiling.js",
     "app/bash-merlin-action.js",
+    "app/bash-approval-route.js",
     "app/brand-manifest-scaffolder.js",
     "app/brand-scaffold.js",
     "app/brand-scraper.js",

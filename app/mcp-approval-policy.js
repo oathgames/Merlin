@@ -506,6 +506,15 @@ function resolveMerlinAction(toolName, input) {
     if (rawAction === 'batch-status') {
       return { effectiveAction: (input && input.batchStatus === 'PAUSED') ? 'kill' : 'duplicate', label: null };
     }
+    // REGRESSION GUARD (2026-11-20, snapchat-budget): budget changes the
+    // daily budget of one ad squad or campaign. It is the OPPOSITE of
+    // build-architecture: the engine writes unless dryRun is literally true,
+    // so only that exact value routes to the read-only 'dry-run'; anything
+    // else (missing, false, a string) routes to the always-carded 'budget'
+    // (SPEND_ACTIONS), never the in-cap auto-approvable 'push'.
+    if (rawAction === 'budget') {
+      return { effectiveAction: (input && input.dryRun === true) ? 'dry-run' : 'budget', label: null };
+    }
     // REGRESSION GUARD (2026-10-26, snapchat-dpa): Dynamic Product Ads.
     // catalogs and pixel-stats are reads (GETs plus Snap's two read-only
     // POST search endpoints) and route to 'list'. create-product-set changes
@@ -625,6 +634,56 @@ function classifyLongTailApproval({ toolName, command, strictApprovals }) {
   return 'allow';
 }
 
+// Approval-card text for the 'budget' SPEND action (meta_ads, google_ads,
+// linkedin_ads, openai_ads, snapchat). The card names the object the engine
+// will change, in the engine's own precedence (Snapchat: targetAdSetId, then
+// campaignId; Meta: adId, then campaignId), and the new daily amount. A
+// forced call gets FORCE_CARD_NOTE from main.js on the budget line. Pure.
+//
+// REGRESSION GUARD (2026-11-20, snapchat-budget review): the card used to
+// print adSetName / campaignName beside the id. Those names come from the
+// model and the engine never checks them against the id it changes, so a
+// card could read "Spring prospecting" while the budget moved on a different
+// object. Only the id the engine acts on is shown. Model-supplied strings
+// are stripped of control, bidi-override and zero-width characters and
+// truncated so they cannot reshape or visually reorder the card.
+const BUDGET_CARD_PLATFORMS = Object.freeze({
+  meta_ads: 'Meta', google_ads: 'Google Ads', linkedin_ads: 'LinkedIn',
+  openai_ads: 'ChatGPT', snapchat: 'Snapchat',
+});
+
+// C0/C1 controls, DEL, Arabic letter mark, zero-width space/joiners, LRM/RLM,
+// line/paragraph separators, bidi embeddings/overrides/isolates, word joiner
+// and invisible operators, BOM.
+const CARD_UNSAFE_CHARS = /[\u0000-\u001f\u007f-\u009f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/g;
+
+function budgetCardText(v, max) {
+  if (typeof v !== 'string') return '';
+  const s = v.replace(CARD_UNSAFE_CHARS, ' ').trim();
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+function budgetChangeCard(toolName, input) {
+  const i = input || {};
+  const tool = String(toolName || '').replace(/^mcp__merlin__/, '');
+  const platform = BUDGET_CARD_PLATFORMS[tool];
+  const squad = budgetCardText(i.targetAdSetId, 64);
+  const camp = budgetCardText(i.campaignId, 64);
+  const ad = budgetCardText(i.adId, 64);
+  let kind = '';
+  let id = '';
+  if (tool === 'snapchat' && squad) { kind = 'ad squad'; id = squad; }
+  else if (tool === 'meta_ads' && ad) { kind = 'ad set'; id = ad; }
+  else if (camp) { kind = 'campaign'; id = camp; }
+  else if (ad) { kind = 'ad group'; id = ad; }
+  const what = id ? `${kind} (${id})` :'no campaign or ad set id given';
+  const amount = Number(i.dailyBudget);
+  return {
+    label: `Change ${platform ? platform + ' ' : ''}daily budget: ${what}`,
+    cost: Number.isFinite(amount) && amount > 0 ? `New daily budget: $${amount}/day` : 'New daily budget: not given',
+  };
+}
+
 // The 2026-09-28 IPC_APPROVAL_DEADLINE_MS constant was removed on
 // 2026-10-04 (desktop-approval): external MCP calls no longer wait on an
 // in-app card at all, so there is no wait to bound. See the REGRESSION
@@ -639,4 +698,5 @@ module.exports = {
   resolveMerlinAction,
   isDestructiveShell,
   classifyLongTailApproval,
+  budgetChangeCard,
 };
