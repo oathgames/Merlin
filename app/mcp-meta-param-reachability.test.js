@@ -160,7 +160,9 @@ const BULK_PUSH_COMMAND_KEYS = ['createCampaignIfMissing', 'sharedAdSet', 'adSet
 // videoId / reuseAdId (2026-09-29): read by runMetaBulkPush for months (pre-
 // uploaded video, winner-creative reuse) and declared on neither surface.
 // Section 4 below now derives this contract from the Go struct itself.
-const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name', 'verticalImagePath', 'portraitImagePath', 'videoId', 'reuseAdId'];
+// instagramMediaId / instagramPostUrl added 2026-09-24 with the Instagram
+// existing-post path (autocmo-core/meta_instagram_post.go, BulkAd in main.go).
+const BULK_AD_KEYS = ['imagePath', 'videoPath', 'headline', 'body', 'description', 'link', 'dailyBudget', 'hookStyle', 'postId', 'name', 'verticalImagePath', 'portraitImagePath', 'videoId', 'reuseAdId', 'instagramMediaId', 'instagramPostUrl', 'instagramMediaType'];
 
 // Both surfaces reach the identical 'meta-bulk-push' engine action, so both
 // must declare the identical param set. meta_ads is the legacy multiplexer;
@@ -667,4 +669,169 @@ test('meta_launch_test_batch cents-checks per-ad budgets even with no top-level 
   });
   assert.equal(execFileCalls.length, 0, 'a refused per-ad budget must never reach the engine');
   assert.match(JSON.stringify(res), /ads\[0\]\.dailyBudget=5000/);
+});
+
+// ── Instagram existing-post ads (2026-09-24) ─────────────────────────
+//
+// Engine: autocmo-core/meta_instagram_post.go. Command gains instagramMediaId,
+// instagramPostUrl and adName (meta-push); BulkAd gains instagramMediaId and
+// instagramPostUrl (meta-bulk-push); meta_audit gains the read-only
+// resolve-instagram-post action. Every surface that routes those engine
+// actions must declare the keys, spelled exactly as the Go json tags, and the
+// values must land in the --cmd JSON (Hard-Won Rule 23).
+const IG_PUSH_KEYS = ['instagramMediaId', 'instagramPostUrl', 'adName'];
+
+test('every meta-push surface declares the Instagram post params', () => {
+  for (const toolName of ['meta_ads', 'meta_launch_test_ad']) {
+    const schema = byName(toolName).schema;
+    for (const key of IG_PUSH_KEYS) {
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(schema, key),
+        `${toolName} is missing "${key}": zod strips it, so an Instagram post could never reach Command in autocmo-core/main.go.`,
+      );
+    }
+  }
+  const single = byName('meta_launch_test_ad').schema;
+  for (const key of ['targetAdSetId', 'adSetName']) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(single, key),
+      `meta_launch_test_ad is missing "${key}": the engine's Instagram post branch requires an existing ad set id or an explicit ad set name.`,
+    );
+  }
+});
+
+test('meta_audit declares the resolve-instagram-post action and its params', () => {
+  const schema = byName('meta_audit').schema;
+  assert.ok(schema.action.__enum.includes('resolve-instagram-post'), 'meta_audit.action must offer resolve-instagram-post');
+  for (const key of ['instagramMediaId', 'instagramPostUrl']) {
+    assert.ok(Object.prototype.hasOwnProperty.call(schema, key), `meta_audit.${key} must be declared for resolve-instagram-post`);
+  }
+});
+
+// The exact payload the main session uses to launch an Instagram post into an
+// existing ad set. Mirrors TestMetaInstagramPostCommandUnmarshalsMCPPayload in
+// autocmo-core/meta_mcp_wire_contract_test.go, so the two halves meet.
+test('Instagram post bulk-push params survive runBinary into the --cmd JSON', async () => {
+  execFileCalls.length = 0;
+  await runBinary(makeCtx(), 'meta-bulk-push', {
+    brand: 'forever21',
+    sharedAdSet: true,
+    targetAdSetId: '120200000000000001',
+    ads: [
+      { instagramPostUrl: 'https://www.instagram.com/p/DdrRKFakQ4N/', name: '09242026_IGPost_DdrRKFakQ4N', link: 'https://www.forever21.com/us/shop' },
+      { instagramMediaId: '17900000000000003', instagramMediaType: 'video', name: '09242026_IGPost_Media' },
+    ],
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-bulk-push');
+  assert.equal(cmd.sharedAdSet, true);
+  assert.equal(cmd.targetAdSetId, '120200000000000001');
+  assert.equal(cmd.ads[0].instagramPostUrl, 'https://www.instagram.com/p/DdrRKFakQ4N/', 'ads[].instagramPostUrl must reach BulkAd.InstagramPostURL');
+  assert.equal(cmd.ads[0].name, '09242026_IGPost_DdrRKFakQ4N');
+  assert.equal(cmd.ads[1].instagramMediaId, '17900000000000003', 'ads[].instagramMediaId must reach BulkAd.InstagramMediaID');
+  assert.equal(cmd.ads[1].instagramMediaType, 'video', 'ads[].instagramMediaType must reach BulkAd.InstagramMediaType');
+});
+
+test('meta_launch_test_ad carries an Instagram post to meta-push', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_ad').handler({
+    brand: 'forever21',
+    instagramPostUrl: 'DdrRKFakQ4N',
+    adName: '09242026_IGPost_DdrRKFakQ4N',
+    targetAdSetId: '120200000000000001',
+    adLink: 'https://www.forever21.com/us/shop',
+    dailyBudget: 25,
+  });
+  assert.doesNotMatch(envelopeText(res), /VALIDATION|required/i, 'an Instagram post push without headline/body must not be refused');
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-push');
+  assert.equal(cmd.instagramPostUrl, 'DdrRKFakQ4N');
+  assert.equal(cmd.adName, '09242026_IGPost_DdrRKFakQ4N');
+  assert.equal(cmd.targetAdSetId, '120200000000000001');
+});
+
+test('meta_launch_test_ad still requires headline and body for non-Instagram creatives', async () => {
+  execFileCalls.length = 0;
+  const res = await byName('meta_launch_test_ad').handler({
+    brand: 'acme', adImagePath: '/tmp/a.jpg', adLink: 'https://example.com', dailyBudget: 10,
+  });
+  assert.match(envelopeText(res), /adHeadline and adBody are required/);
+  assert.equal(execFileCalls.length, 0, 'a refused push must never reach the binary');
+});
+
+test('meta_launch_test_ad refuses an Instagram post without adName or an ad set', async () => {
+  execFileCalls.length = 0;
+  const noName = await byName('meta_launch_test_ad').handler({
+    brand: 'acme', instagramPostUrl: 'DdrRKFakQ4N', targetAdSetId: '1', adLink: 'https://example.com', dailyBudget: 10,
+  });
+  assert.match(envelopeText(noName), /explicit adName/);
+  const noSet = await byName('meta_launch_test_ad').handler({
+    brand: 'acme', instagramPostUrl: 'DdrRKFakQ4N', adName: 'n', adLink: 'https://example.com', dailyBudget: 10,
+  });
+  assert.match(envelopeText(noSet), /targetAdSetId/);
+  assert.equal(execFileCalls.length, 0);
+});
+
+test('meta_audit resolve-instagram-post routes to the read-only engine action with its params', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_audit').handler({ action: 'resolve-instagram-post', brand: 'forever21', instagramPostUrl: 'DdrRKFakQ4N' });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-resolve-instagram-post');
+  assert.equal(cmd.instagramPostUrl, 'DdrRKFakQ4N');
+});
+
+// ── Instagram media id and media type hint (2026-11-27 review) ──────
+//
+// instagramMediaId is interpolated into a Graph GET path by the engine's
+// resolver, so every surface pins it to META_NUMERIC_ID like reuseAdId.
+// instagramMediaType is the video/image hint the engine needs while the media
+// read is gated off; its values must match metaNormalizeIGMediaType in
+// autocmo-core/meta_instagram_post.go exactly.
+const { IG_MEDIA_ID_MSG, INSTAGRAM_MEDIA_TYPES } = require('./mcp-meta-intent');
+
+function igMediaShapes() {
+  return [
+    ['meta_ads', byName('meta_ads').schema],
+    ['meta_ads.ads[]', byName('meta_ads').schema.ads.__item.__shape],
+    ['meta_launch_test_ad', byName('meta_launch_test_ad').schema],
+    ['meta_launch_test_batch.ads[]', byName('meta_launch_test_batch').schema.ads.__item.__shape],
+  ];
+}
+
+test('instagramMediaId is pinned to a numeric Graph id on every surface', () => {
+  const shapes = [...igMediaShapes(), ['meta_audit', byName('meta_audit').schema]];
+  for (const [where, shape] of shapes) {
+    assert.ok(shape.instagramMediaId, `${where} must declare instagramMediaId`);
+    assert.equal(shape.instagramMediaId.__regex, META_NUMERIC_ID, `${where}.instagramMediaId must be validated with META_NUMERIC_ID`);
+  }
+  assert.match(IG_MEDIA_ID_MSG, /numeric Graph media id/);
+  assert.ok(META_NUMERIC_ID.test('17900000000000003'));
+  for (const bad of ['17900000000000003/comments', 'DdrRKFakQ4N', '1790?fields=access_token', '']) {
+    assert.ok(!META_NUMERIC_ID.test(bad), `instagramMediaId must refuse ${JSON.stringify(bad)}`);
+  }
+});
+
+test('instagramMediaType is an image/video/carousel enum on every push surface', () => {
+  assert.deepEqual(INSTAGRAM_MEDIA_TYPES, ['image', 'video', 'carousel']);
+  for (const [where, shape] of igMediaShapes()) {
+    assert.ok(shape.instagramMediaType, `${where} must declare instagramMediaType or zod strips the hint`);
+    assert.deepEqual(shape.instagramMediaType.__enum, INSTAGRAM_MEDIA_TYPES, `${where}.instagramMediaType must be the shared enum`);
+  }
+});
+
+test('meta_launch_test_ad carries the instagramMediaType hint to meta-push', async () => {
+  execFileCalls.length = 0;
+  await byName('meta_launch_test_ad').handler({
+    brand: 'forever21',
+    instagramMediaId: '17900000000000003',
+    instagramMediaType: 'video',
+    adName: '11272026_IGPost_Reel',
+    targetAdSetId: '120200000000000001',
+    adLink: 'https://www.forever21.com/us/shop',
+    dailyBudget: 25,
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-push');
+  assert.equal(cmd.instagramMediaId, '17900000000000003');
+  assert.equal(cmd.instagramMediaType, 'video', 'instagramMediaType must reach Command.InstagramMediaType');
 });

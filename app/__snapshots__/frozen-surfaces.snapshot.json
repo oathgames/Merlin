@@ -2899,6 +2899,10 @@
           "description": "Destination URL",
           "type": "string"
         },
+        "adName": {
+          "description": "push with instagramPostUrl / instagramMediaId: the explicit ad name (required there; Merlin does not auto-name these).",
+          "type": "string"
+        },
         "adSetName": {
           "description": "bulk-push shared-ad-set mode only: explicit name for the ad set that gets created. Empty = auto-named.",
           "type": "string"
@@ -2908,7 +2912,7 @@
           "type": "string"
         },
         "ads": {
-          "description": "Array of ads for bulk-push (up to 50). Each ad accepts an optional `name`, the explicit ad name shown in Ads Manager. Omit it and the ad gets an auto-generated name, which makes a batch that reuses several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline) and is separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape's historical default.",
+          "description": "Array of ads for bulk-push (up to 50). An ad with instagramPostUrl (a post or Reel link, or bare shortcode) or instagramMediaId (numeric Graph media id) runs that EXISTING organic Instagram post as the ad, keeping its likes and comments; it needs an explicit name, sharedAdSet:true and targetAdSetId or adSetName, and carries no imagePath/videoPath/postId. Each ad accepts an optional `name`, the explicit ad name shown in Ads Manager. Omit it and the ad gets an auto-generated name, which makes a batch that reuses several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline) and is separate copy from `headline`: an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape's historical default.",
           "items": {
             "properties": {
               "body": {
@@ -2927,6 +2931,22 @@
                 "type": "string"
               },
               "imagePath": {
+                "type": "string"
+              },
+              "instagramMediaId": {
+                "pattern": "^\\d+$",
+                "type": "string"
+              },
+              "instagramMediaType": {
+                "description": "Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+                "enum": [
+                  "image",
+                  "video",
+                  "carousel"
+                ],
+                "type": "string"
+              },
+              "instagramPostUrl": {
                 "type": "string"
               },
               "link": {
@@ -3033,6 +3053,24 @@
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
         },
+        "instagramMediaId": {
+          "description": "push only: numeric Graph media id of an existing Instagram post, alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which is a different id Meta rejects.",
+          "pattern": "^\\d+$",
+          "type": "string"
+        },
+        "instagramMediaType": {
+          "description": "push only: Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+          "enum": [
+            "image",
+            "video",
+            "carousel"
+          ],
+          "type": "string"
+        },
+        "instagramPostUrl": {
+          "description": "push only: run an EXISTING organic Instagram post or Reel as the ad (keeps its likes and comments). A post/reel permalink (instagram.com/p/<code>, /reel/<code>, /tv/<code>) or a bare shortcode. Resolved against the brand Instagram account; refused if another account owns the post, if it is a Story, or Meta reports it ineligible to boost. Requires adName and targetAdSetId or adSetName. Check a post first with meta_audit resolve-instagram-post.",
+          "type": "string"
+        },
         "languages": {
           "description": "ISO 639-1 codes for multi-language variants (e.g. [\"es\",\"fr\",\"de\"])",
           "items": {
@@ -3123,6 +3161,7 @@
             "list-videos",
             "list-catalog-sets",
             "resolve-geo",
+            "resolve-instagram-post",
             "aware-audience",
             "list-boosted-posts",
             "existing-customers",
@@ -3205,6 +3244,15 @@
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "instagramMediaId": {
+          "description": "For resolve-instagram-post: a numeric Graph media id to verify instead of a link.",
+          "pattern": "^\\d+$",
+          "type": "string"
+        },
+        "instagramPostUrl": {
+          "description": "For resolve-instagram-post: an Instagram post or Reel link, or a bare shortcode. Returns the Graph media id, media type, and whether Meta reports it eligible to boost. Read-only.",
           "type": "string"
         },
         "level": {
@@ -3749,7 +3797,7 @@
       "description": "Launch a single Meta test ad (image OR video). Spends money immediately once the platform approves. Idempotent by idempotencyKey — retrying with the same key is safe.",
       "input": {
         "adBody": {
-          "description": "Ad primary text / body",
+          "description": "Ad primary text / body. Required unless instagramPostUrl / instagramMediaId is set.",
           "type": "string"
         },
         "adDescription": {
@@ -3766,7 +3814,7 @@
           "type": "string"
         },
         "adHeadline": {
-          "description": "Ad headline text",
+          "description": "Ad headline text. Required unless instagramPostUrl / instagramMediaId is set.",
           "type": "string"
         },
         "adImagePath": {
@@ -3775,6 +3823,14 @@
         },
         "adLink": {
           "description": "Destination URL",
+          "type": "string"
+        },
+        "adName": {
+          "description": "Explicit ad name. Required with instagramPostUrl / instagramMediaId.",
+          "type": "string"
+        },
+        "adSetName": {
+          "description": "Instagram post ads only: explicit name of the ad set to create (or reuse when one with this name already exists in the campaign) at dailyBudget.",
           "type": "string"
         },
         "adVideoPath": {
@@ -3834,6 +3890,24 @@
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
           "type": "string"
         },
+        "instagramMediaId": {
+          "description": "Numeric Graph media id of an existing Instagram post; alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which Meta rejects.",
+          "pattern": "^\\d+$",
+          "type": "string"
+        },
+        "instagramMediaType": {
+          "description": "Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+          "enum": [
+            "image",
+            "video",
+            "carousel"
+          ],
+          "type": "string"
+        },
+        "instagramPostUrl": {
+          "description": "Run an EXISTING organic Instagram post or Reel as the ad, keeping its likes and comments. A post or reel link (instagram.com/p/<code>, /reel/<code>, /tv/<code>) or a bare shortcode, resolved against the brand Instagram account. Refused if another account owns the post, it is a Story, or Meta reports it ineligible to boost. Requires adName plus targetAdSetId or adSetName. Verify first with meta_audit resolve-instagram-post.",
+          "type": "string"
+        },
         "postId": {
           "description": "Existing Meta post ID to reuse as creative (preserves social proof)",
           "type": "string"
@@ -3844,6 +3918,10 @@
         },
         "publishPageId": {
           "description": "Publish this ad from a second brand or retail Facebook page on the same ad account instead of the configured brand page. Numeric page id, verified publishable by the engine (refused otherwise). Not a partnership ad. See meta_launch_test_batch.",
+          "type": "string"
+        },
+        "targetAdSetId": {
+          "description": "Instagram post ads only: add the ad to this EXISTING ad set; its budget and targeting are untouched and dailyBudget is not applied. Get ids from meta_audit list-adsets.",
           "type": "string"
         }
       },
@@ -3872,7 +3950,7 @@
           "type": "string"
         },
         "ads": {
-          "description": "Array of ads (up to 50). Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline` — an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape's historical default.",
+          "description": "Array of ads (up to 50). An ad with instagramPostUrl (post or Reel link, or bare shortcode) or instagramMediaId (numeric Graph media id) runs that EXISTING organic Instagram post as the ad, keeping its likes and comments; it needs an explicit name, sharedAdSet:true and targetAdSetId or adSetName, and carries no imagePath/videoPath/postId. Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline`: an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape's historical default.",
           "items": {
             "properties": {
               "body": {
@@ -3891,6 +3969,22 @@
                 "type": "string"
               },
               "imagePath": {
+                "type": "string"
+              },
+              "instagramMediaId": {
+                "pattern": "^\\d+$",
+                "type": "string"
+              },
+              "instagramMediaType": {
+                "description": "Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+                "enum": [
+                  "image",
+                  "video",
+                  "carousel"
+                ],
+                "type": "string"
+              },
+              "instagramPostUrl": {
                 "type": "string"
               },
               "link": {

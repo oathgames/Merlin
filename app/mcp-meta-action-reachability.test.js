@@ -319,6 +319,8 @@ test('the account-inventory reads are reachable through meta_audit', () => {
     'inspect-ads':       'meta-inspect-ads',
     'ad-rejections':     'meta-ad-rejections',
     'video-frames':      'meta-video-frames',
+    // Read-only Instagram post check before an existing-post ad (2026-09-24).
+    'resolve-instagram-post': 'meta-resolve-instagram-post',
   };
   for (const [action, engine] of Object.entries(expected)) {
     assert.ok(META_AUDIT_ENUM.includes(action),
