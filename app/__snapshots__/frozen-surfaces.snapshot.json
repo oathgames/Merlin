@@ -2934,6 +2934,16 @@
                 "type": "string"
               },
               "instagramMediaId": {
+                "pattern": "^\\d+$",
+                "type": "string"
+              },
+              "instagramMediaType": {
+                "description": "Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+                "enum": [
+                  "image",
+                  "video",
+                  "carousel"
+                ],
                 "type": "string"
               },
               "instagramPostUrl": {
@@ -3045,6 +3055,16 @@
         },
         "instagramMediaId": {
           "description": "push only: numeric Graph media id of an existing Instagram post, alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which is a different id Meta rejects.",
+          "pattern": "^\\d+$",
+          "type": "string"
+        },
+        "instagramMediaType": {
+          "description": "push only: Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+          "enum": [
+            "image",
+            "video",
+            "carousel"
+          ],
           "type": "string"
         },
         "instagramPostUrl": {
@@ -3228,6 +3248,7 @@
         },
         "instagramMediaId": {
           "description": "For resolve-instagram-post: a numeric Graph media id to verify instead of a link.",
+          "pattern": "^\\d+$",
           "type": "string"
         },
         "instagramPostUrl": {
@@ -3871,6 +3892,16 @@
         },
         "instagramMediaId": {
           "description": "Numeric Graph media id of an existing Instagram post; alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which Meta rejects.",
+          "pattern": "^\\d+$",
+          "type": "string"
+        },
+        "instagramMediaType": {
+          "description": "Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+          "enum": [
+            "image",
+            "video",
+            "carousel"
+          ],
           "type": "string"
         },
         "instagramPostUrl": {
@@ -3941,6 +3972,16 @@
                 "type": "string"
               },
               "instagramMediaId": {
+                "pattern": "^\\d+$",
+                "type": "string"
+              },
+              "instagramMediaType": {
+                "description": "Type of the existing Instagram post: image, video (a Reel is video) or carousel. Pass \"video\" for a Reel or video post so the ad is built with the video creative settings on the first try. Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.",
+                "enum": [
+                  "image",
+                  "video",
+                  "carousel"
+                ],
                 "type": "string"
               },
               "instagramPostUrl": {

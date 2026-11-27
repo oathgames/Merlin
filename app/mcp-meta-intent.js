@@ -43,6 +43,19 @@ const BULK_AD_REUSE_AD_ID_DESC = 'Numeric id of an existing ad whose exact creat
   + 'Keeps the social proof of the source post and, unlike postId, also works for Collection/catalog creatives. '
   + 'Wins over postId, videoId/videoPath and imagePath on the same ad (those are ignored). Refused with publishPageId.';
 
+// Instagram existing-post ads (2026-11-27, pre-merge review). instagramMediaId
+// is a Graph id the engine interpolates into a GET path, so it is pinned to
+// digits at the boundary like reuseAdId. instagramMediaType mirrors the Go
+// json tag on Command and BulkAd (autocmo-core/main.go) and the values
+// metaNormalizeIGMediaType accepts in autocmo-core/meta_instagram_post.go.
+// While the media read is gated off (no instagram_basic), the hint is the
+// only way the engine knows a Reel is a video before it POSTs the creative.
+const IG_MEDIA_ID_MSG = 'instagramMediaId must be a numeric Graph media id';
+const INSTAGRAM_MEDIA_TYPES = ['image', 'video', 'carousel'];
+const INSTAGRAM_MEDIA_TYPE_DESC = 'Type of the existing Instagram post: image, video (a Reel is video) or carousel. '
+  + 'Pass "video" for a Reel or video post so the ad is built with the video creative settings on the first try. '
+  + 'Optional: when omitted and Meta reports the post is a video, the engine retries once with the video settings.';
+
 // REGRESSION GUARD (2026-10-05, google-budget-force, Hard-Won Rules 23 + 25):
 // the engine's spend-anomaly guard (checkSpendAnomaly in
 // autocmo-core/spend_pause.go) refuses a large single-action budget jump and
@@ -263,7 +276,8 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       // Instagram existing-post ads (meta_instagram_post.go). Keys equal the Go
       // json tags on Command in autocmo-core/main.go (Rule 23).
       instagramPostUrl: z.string().optional().describe('Run an EXISTING organic Instagram post or Reel as the ad, keeping its likes and comments. A post or reel link (instagram.com/p/<code>, /reel/<code>, /tv/<code>) or a bare shortcode, resolved against the brand Instagram account. Refused if another account owns the post, it is a Story, or Meta reports it ineligible to boost. Requires adName plus targetAdSetId or adSetName. Verify first with meta_audit resolve-instagram-post.'),
-      instagramMediaId: z.string().optional().describe('Numeric Graph media id of an existing Instagram post; alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which Meta rejects.'),
+      instagramMediaId: z.string().regex(META_NUMERIC_ID, IG_MEDIA_ID_MSG).optional().describe('Numeric Graph media id of an existing Instagram post; alternative to instagramPostUrl (pass exactly one). NOT the number inside an instagram.com URL, which Meta rejects.'),
+      instagramMediaType: z.enum(INSTAGRAM_MEDIA_TYPES).optional().describe(INSTAGRAM_MEDIA_TYPE_DESC),
       adName: z.string().optional().describe('Explicit ad name. Required with instagramPostUrl / instagramMediaId.'),
       targetAdSetId: z.string().optional().describe('Instagram post ads only: add the ad to this EXISTING ad set; its budget and targeting are untouched and dailyBudget is not applied. Get ids from meta_audit list-adsets.'),
       adSetName: z.string().optional().describe('Instagram post ads only: explicit name of the ad set to create (or reuse when one with this name already exists in the campaign) at dailyBudget.'),
@@ -345,7 +359,8 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
         reuseAdId: z.string().regex(META_NUMERIC_ID, 'reuseAdId must be a numeric Meta ad id').optional().describe(BULK_AD_REUSE_AD_ID_DESC),
         // Existing organic Instagram post as the ad (meta_instagram_post.go).
         // Needs name, sharedAdSet:true and targetAdSetId or adSetName.
-        instagramMediaId: z.string().optional(),
+        instagramMediaId: z.string().regex(META_NUMERIC_ID, IG_MEDIA_ID_MSG).optional(),
+        instagramMediaType: z.enum(INSTAGRAM_MEDIA_TYPES).optional().describe(INSTAGRAM_MEDIA_TYPE_DESC),
         instagramPostUrl: z.string().optional(),
       })).describe('Array of ads (up to 50). An ad with instagramPostUrl (post or Reel link, or bare shortcode) or instagramMediaId (numeric Graph media id) runs that EXISTING organic Instagram post as the ad, keeping its likes and comments; it needs an explicit name, sharedAdSet:true and targetAdSetId or adSetName, and carries no imagePath/videoPath/postId. Each ad accepts an optional `name`, the explicit ad name in Ads Manager. Omit it and the ad is auto-named, which makes a batch reusing several distinct posts impossible to tell apart in reporting. `description` is the third Meta copy slot (under the headline), separate copy from `headline`: an offer or spec line. It falls back to the batch-wide adDescription, then to each creative shape\'s historical default.'),
       campaignId: z.string().optional().describe('Target campaign ID. When set, all ads land in this exact campaign. Wins over campaignName.'),
@@ -1453,4 +1468,4 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
   return tools;
 }
 
-module.exports = { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC, SPEND_GUARD_FORCE_DESC };
+module.exports = { buildMetaIntentTools, META_NUMERIC_ID, BULK_AD_VIDEO_ID_DESC, BULK_AD_REUSE_AD_ID_DESC, SPEND_GUARD_FORCE_DESC, IG_MEDIA_ID_MSG, INSTAGRAM_MEDIA_TYPES, INSTAGRAM_MEDIA_TYPE_DESC };
