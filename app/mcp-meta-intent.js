@@ -142,6 +142,12 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
     concurrency: { platform: 'meta' },
     input: {
       brand: brandSchema.describe('Brand name'),
+      // Pins (2026-11-27): without them discovery picks the ad account by
+      // brand name and, when nothing matches, the FIRST active account on the
+      // token, which bound lalaandleo and nourishkings to another brand's
+      // account. The engine refuses a pin the token cannot see.
+      adAccountId: z.string().optional().describe('Use exactly this Meta ad account (act_XXXXXXXXX) instead of matching by brand name. The pixel lookup runs against it. Must be visible to the connected Meta user.'),
+      pageId: z.string().optional().describe('Use exactly this Facebook Page id instead of ranking pages. Its linked Instagram account id is reported too. Must be a page the connected Meta user manages.'),
     },
     handler: async (args) => {
       const result = await runBinary(ctx, 'meta-discover', args);
@@ -1418,6 +1424,56 @@ function buildMetaIntentTools({ tool, z, ctx, defineTool, runBinary, validateBud
       }
       return toEnvelope(await runBinary(ctx, 'meta-clone-adset', args), {
         nextSuggested: ['meta_review_performance'],
+      });
+    },
+  }, tool, z, ctx));
+
+  // ── meta_create_campaign ───────────────────────────────────────────
+  //
+  // Create ONE empty campaign with an explicit name (Broad_Testing_ABO,
+  // Retargeting_ABO, ...), always PAUSED. meta-setup only ever mints the
+  // "<prefix> - Testing/Scaling/Retargeting" trio, and its names are
+  // load-bearing for existing brands, so this is the explicit-name path.
+  // The engine creates through the SAME helper bulk-push createCampaignIfMissing
+  // uses, is idempotent by exact name, and verifies by read-back.
+  //
+  // Cards like the bulk-push campaign creation it mirrors ('duplicate' in
+  // mcp-approval-policy.js): PAUSED on create, but a CBO budget is the spend
+  // surface the moment anything under it is switched on.
+  tools.push(defineTool({
+    name: 'meta_create_campaign',
+    description: 'Create ONE empty Meta campaign with an exact name, always PAUSED. budgetMode ABO (default) keeps budgets on the ad sets and the campaign carries none; budgetMode CBO puts dailyBudget (dollars, required, capped by maxDailyAdBudget) on the campaign. Idempotent: if a live campaign with exactly that name already exists, it is returned instead of creating a duplicate. Use for the standard structure (Broad_Testing_ABO, Retargeting_ABO, Broad_Scaling_CBO) before launching ad sets into it with meta_launch_test_batch.',
+    destructive: true,
+    // Idempotent by exact name on the engine side: a retry finds the campaign
+    // the first call created and returns it.
+    idempotent: true,
+    costImpact: 'spend',
+    brandRequired: true,
+    concurrency: { platform: 'meta' },
+    preview: false,
+    input: {
+      brand: brandSchema.describe('Brand name'),
+      campaignName: z.string().describe('Exact campaign name, e.g. Broad_Testing_ABO. Required; never auto-generated.'),
+      budgetMode: z.enum(['ABO', 'CBO']).optional().describe('ABO (default): budget on each ad set, none on the campaign. CBO: budget on the campaign, requires dailyBudget.'),
+      dailyBudget: z.number().optional().describe('CBO only: campaign daily budget in DOLLARS. Refused on ABO.'),
+      objective: z.enum(['OUTCOME_SALES', 'OUTCOME_TRAFFIC', 'OUTCOME_LEADS', 'OUTCOME_ENGAGEMENT', 'OUTCOME_AWARENESS', 'OUTCOME_APP_PROMOTION'])
+        .optional().describe('Campaign objective. Omit for the brand default (OUTCOME_SALES unless the brand config sets another), the same one bulk-push uses.'),
+    },
+    handler: async (args) => {
+      if (!String(args.campaignName || '').trim()) {
+        return validationEnvelope('campaignName is required: pass the exact campaign name, e.g. Broad_Testing_ABO.');
+      }
+      if (args.budgetMode === 'CBO') {
+        if (!(typeof args.dailyBudget === 'number' && args.dailyBudget > 0)) {
+          return validationEnvelope('budgetMode CBO requires dailyBudget (dollars per day).');
+        }
+        const budgetErr = guardBudget(args);
+        if (budgetErr) return budgetErr;
+      } else if (typeof args.dailyBudget === 'number' && args.dailyBudget !== 0) {
+        return validationEnvelope('dailyBudget is only allowed with budgetMode CBO: ABO budgets live on each ad set.');
+      }
+      return toEnvelope(await runBinary(ctx, 'meta-create-campaign', args), {
+        nextSuggested: ['meta_launch_test_batch', 'meta_audit'],
       });
     },
   }, tool, z, ctx));

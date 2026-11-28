@@ -403,6 +403,11 @@ const INTENT_TOOL_TO_ACTION = Object.freeze({
   // inherits the source ad set's budget server-side, so there is no reliable
   // rate signal to auto-approve against. Textbook 'duplicate'.
   'mcp__merlin__meta_clone_adset':              'duplicate',
+  // meta_create_campaign creates an empty campaign PAUSED, through the same
+  // engine helper bulk-push uses when it creates a missing campaign. Under CBO
+  // the campaign budget IS the spend surface once anything under it is
+  // switched on, so it cards like the other PAUSED-on-create builders.
+  'mcp__merlin__meta_create_campaign':          'duplicate',
 
   // Setup-style — touches ad-account state, no per-call spend
   'mcp__merlin__meta_prepare_retargeting':      'setup',
@@ -448,6 +453,7 @@ const INTENT_TOOL_LABELS = Object.freeze({
   'mcp__merlin__meta_set_optimization_goal':    'Change what a live Meta ad set optimizes for',
   'mcp__merlin__meta_set_attribution':          'Change the attribution window of a live Meta ad set',
   'mcp__merlin__meta_clone_adset':              'Clone a Meta ad set into a new PAUSED ad set',
+  'mcp__merlin__meta_create_campaign':          'Create an empty PAUSED Meta campaign',
   'mcp__merlin__meta_set_frequency_cap':        'Set a frequency cap on a Meta ad set',
 });
 
