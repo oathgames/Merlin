@@ -52,6 +52,7 @@
     "meta-bulk-push",
     "meta-clone-adset",
     "meta-create-audience",
+    "meta-create-campaign",
     "meta-create-engagement-audience",
     "meta-discover",
     "meta-dpa-setup",

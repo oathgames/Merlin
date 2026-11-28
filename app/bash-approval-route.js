@@ -68,6 +68,7 @@ const BASH_SPEND = new Set([
   // budget buys (MCP 'activate' / 'bulk-push' / 'duplicate' / 'setup' /
   // 'retarget', and the meta_* intent tools routed to 'duplicate').
   'meta-activate', 'meta-bulk-push', 'meta-duplicate', 'meta-clone-adset', 'meta-dpa-setup',
+  'meta-create-campaign',
   'meta-setup', 'meta-setup-retargeting', 'meta-retarget',
   'meta-edit-link', 'meta-refresh-creative-spec', 'meta-set-url-tags',
   'meta-set-optimization-goal', 'meta-set-attribution',

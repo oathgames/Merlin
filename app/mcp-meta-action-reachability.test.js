@@ -941,6 +941,62 @@ test('meta_clone_adset omitting dailyBudget inherits rather than being refused',
   assert.doesNotMatch(JSON.stringify(res), /budget/i);
 });
 
+// ── meta_create_campaign + meta_setup_account pins (2026-11-27) ─────
+
+test('meta_create_campaign sends name, mode, budget and objective to meta-create-campaign', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_create_campaign').handler({
+    brand: 'acme', campaignName: 'Broad_Scaling_CBO', budgetMode: 'CBO',
+    dailyBudget: 5, objective: 'OUTCOME_SALES',
+  });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-create-campaign');
+  assert.equal(cmd.campaignName, 'Broad_Scaling_CBO', 'the engine refuses an empty name; dropping it would fail every call.');
+  assert.equal(cmd.budgetMode, 'CBO');
+  assert.equal(cmd.dailyBudget, 5, 'dailyBudget is read in DOLLARS and validated by validateDailyBudget.');
+  assert.equal(cmd.objective, 'OUTCOME_SALES');
+  // Like bulk-push, the engine action carries no approved flag: the app cards
+  // it through INTENT_TOOL_TO_ACTION 'duplicate' before the handler runs.
+  assert.ok(!('approved' in cmd));
+});
+
+test('meta_create_campaign ABO sends no budget', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_create_campaign').handler({ brand: 'acme', campaignName: 'Broad_Testing_ABO' });
+  const cmd = lastCmd();
+  assert.equal(cmd.action, 'meta-create-campaign');
+  assert.equal(cmd.campaignName, 'Broad_Testing_ABO');
+  assert.ok(!('dailyBudget' in cmd), 'an ABO campaign carries no budget; the engine refuses one.');
+});
+
+test('meta_create_campaign refuses bad input before spawning the engine', async () => {
+  for (const args of [
+    { campaignName: '   ' },
+    { campaignName: 'X_CBO', budgetMode: 'CBO' },
+    { campaignName: 'X_ABO', dailyBudget: 25 },
+    // The maxDailyAdBudget cap itself is enforced in the engine by
+    // validateDailyBudget (Go: TestMetaCreateCampaignInputRejections).
+  ]) {
+    execFileCalls.length = 0;
+    const res = await tool('meta_create_campaign').handler({ brand: 'acme', ...args });
+    assert.match(JSON.stringify(res), /campaignName is required|requires dailyBudget|only allowed with budgetMode CBO/);
+    assert.equal(execFileCalls.length, 0, `${JSON.stringify(args)} must be refused locally`);
+  }
+});
+
+test('meta_setup_account forwards adAccountId and pageId pins to meta-discover', async () => {
+  execFileCalls.length = 0;
+  await tool('meta_setup_account').handler({ brand: 'acme', adAccountId: 'act_333', pageId: 'pg_2' });
+  const cmds = execFileCalls
+    .map((c) => { const i = c.args.indexOf('--cmd'); return i >= 0 ? JSON.parse(c.args[i + 1]) : null; })
+    .filter((c) => c && c.action === 'meta-discover');
+  assert.equal(cmds.length, 1, 'meta_setup_account must run meta-discover exactly once');
+  const cmd = cmds[0];
+  assert.equal(cmd.adAccountId, 'act_333',
+    'without the pin discovery falls back to brand matching / first active account (lalaandleo incident).');
+  assert.equal(cmd.pageId, 'pg_2');
+});
+
 test('meta_set_frequency_cap sends the cap window to the engine', async () => {
   execFileCalls.length = 0;
   await tool('meta_set_frequency_cap').handler({
@@ -976,7 +1032,7 @@ test('meta_set_frequency_cap refuses a window past Meta\'s 90-day cap locally', 
 // dailyBudget is omitted; the goal change has no budget field at all).
 test('the spend-shaped ad-set writes route to an always-cards action', () => {
   const policySrc = fs.readFileSync(path.join(APP_DIR, 'mcp-approval-policy.js'), 'utf8');
-  for (const name of ['meta_set_optimization_goal', 'meta_clone_adset', 'meta_set_attribution']) {
+  for (const name of ['meta_set_optimization_goal', 'meta_clone_adset', 'meta_set_attribution', 'meta_create_campaign']) {
     assert.match(policySrc, new RegExp(`'mcp__merlin__${name}':\\s*'duplicate'`),
       `${name} is costImpact:'spend' and must route to 'duplicate' — 'push' would auto-approve it in-cap.`);
   }

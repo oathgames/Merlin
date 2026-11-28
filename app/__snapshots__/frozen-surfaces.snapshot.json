@@ -49,6 +49,7 @@
       "mcp__merlin__meta_adjust_budget": "Change Meta ad set budget",
       "mcp__merlin__meta_batch_activate": "Activate MANY Meta objects at once (starts spend on all)",
       "mcp__merlin__meta_clone_adset": "Clone a Meta ad set into a new PAUSED ad set",
+      "mcp__merlin__meta_create_campaign": "Create an empty PAUSED Meta campaign",
       "mcp__merlin__meta_create_custom_audience": "Create a Meta custom audience",
       "mcp__merlin__meta_create_engagement_audience": "Create a Meta Page/Instagram engagement audience",
       "mcp__merlin__meta_dpa_setup": "Set up Meta DPA catalog retargeting (PAUSED on create)",
@@ -74,6 +75,7 @@
       "mcp__merlin__meta_batch_pause": "audit",
       "mcp__merlin__meta_build_lookalike": "audit",
       "mcp__merlin__meta_clone_adset": "duplicate",
+      "mcp__merlin__meta_create_campaign": "duplicate",
       "mcp__merlin__meta_create_custom_audience": "setup",
       "mcp__merlin__meta_create_engagement_audience": "setup",
       "mcp__merlin__meta_dpa_setup": "duplicate",
@@ -3496,6 +3498,59 @@
         "concurrency": {
           "platform": "meta"
         },
+        "costImpact": "spend",
+        "destructive": true,
+        "idempotent": true,
+        "preview": false
+      },
+      "description": "Create ONE empty Meta campaign with an exact name, always PAUSED. budgetMode ABO (default) keeps budgets on the ad sets and the campaign carries none; budgetMode CBO puts dailyBudget (dollars, required, capped by maxDailyAdBudget) on the campaign. Idempotent: if a live campaign with exactly that name already exists, it is returned instead of creating a duplicate. Use for the standard structure (Broad_Testing_ABO, Retargeting_ABO, Broad_Scaling_CBO) before launching ad sets into it with meta_launch_test_batch.",
+      "input": {
+        "brand": {
+          "description": "Brand name",
+          "pattern": "^[a-z0-9_-]{1,100}$",
+          "type": "string"
+        },
+        "budgetMode": {
+          "description": "ABO (default): budget on each ad set, none on the campaign. CBO: budget on the campaign, requires dailyBudget.",
+          "enum": [
+            "ABO",
+            "CBO"
+          ],
+          "type": "string"
+        },
+        "campaignName": {
+          "description": "Exact campaign name, e.g. Broad_Testing_ABO. Required; never auto-generated.",
+          "type": "string"
+        },
+        "dailyBudget": {
+          "description": "CBO only: campaign daily budget in DOLLARS. Refused on ABO.",
+          "type": "number"
+        },
+        "idempotencyKey": {
+          "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "objective": {
+          "description": "Campaign objective. Omit for the brand default (OUTCOME_SALES unless the brand config sets another), the same one bulk-push uses.",
+          "enum": [
+            "OUTCOME_SALES",
+            "OUTCOME_TRAFFIC",
+            "OUTCOME_LEADS",
+            "OUTCOME_ENGAGEMENT",
+            "OUTCOME_AWARENESS",
+            "OUTCOME_APP_PROMOTION"
+          ],
+          "type": "string"
+        }
+      },
+      "name": "meta_create_campaign"
+    },
+    {
+      "annotations": {
+        "brandRequired": true,
+        "concurrency": {
+          "platform": "meta"
+        },
         "costImpact": "api",
         "destructive": true,
         "idempotent": false,
@@ -4753,6 +4808,10 @@
       },
       "description": "Connect a brand to Meta by discovering the ad account, Page, and Pixel IDs and persisting them into the brand config. Re-runnable — idempotent.",
       "input": {
+        "adAccountId": {
+          "description": "Use exactly this Meta ad account (act_XXXXXXXXX) instead of matching by brand name. The pixel lookup runs against it. Must be visible to the connected Meta user.",
+          "type": "string"
+        },
         "brand": {
           "description": "Brand name",
           "pattern": "^[a-z0-9_-]{1,100}$",
@@ -4760,6 +4819,10 @@
         },
         "idempotencyKey": {
           "description": "Caller-supplied key for retry safety. Same key + same inputs = same result (24h cache). Strongly recommended for any auto-mode retry loop.",
+          "type": "string"
+        },
+        "pageId": {
+          "description": "Use exactly this Facebook Page id instead of ranking pages. Its linked Instagram account id is reported too. Must be a page the connected Meta user manages.",
           "type": "string"
         }
       },
